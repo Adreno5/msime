@@ -157,12 +157,24 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
   // 从网格的 AI 图块打开的「AI 皮肤抽卡」是 WebView 返回栈上单独的一个视图，所以系统返回手势能关掉它。
   const { aiSkins, customSkinLibrary } = client;
   const [aiOpen, setAiOpen] = useState(false);
-  useMobilePopState(phoneGrid, (event) => setAiOpen(event.state?.skinSubpage === "ai"));
+  // 鸿蒙手机上「设计我的皮肤」同样是返回栈上的一个视图，不在这页里就地展开。从「我的 → 我的设计」进来时没有这一条记录，编辑器直接打开；返回离开这页时记录里没有它，编辑器随之关上，下次进来不会再自己打开。
+  useMobilePopState(phoneGrid, (event) => {
+    setAiOpen(event.state?.skinSubpage === "ai");
+    setShowTouchSkinEditor(event.state?.skinSubpage === "editor");
+  });
   const openAi = () => {
     pushMobileSettingsState({ page: "skin", skinSubpage: "ai" });
     setAiOpen(true);
   };
   const closeAi = () => window.history.back();
+  const openEditor = () => {
+    pushMobileSettingsState({ page: "skin", skinSubpage: "editor" });
+    setShowTouchSkinEditor(true);
+  };
+  const closeEditor = () => {
+    if (window.history.state?.skinSubpage === "editor") window.history.back();
+    else setShowTouchSkinEditor(false);
+  };
   const colourMode = (
     <GroupList title="明暗">
       <SegmentedRow
@@ -231,13 +243,14 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
           theme={keyboardPreviewTheme}
           selected={customKeyboardSelected}
           customDesign={customTouchKeyboardSkin}
-          editorOpen={showTouchSkinEditor}
-          // The card previews the editor's design, so choosing it stores that design; without one the custom theme would draw its base's keyboard.
+          // 鸿蒙手机上编辑器在单独的视图里，这里的按钮只负责打开它，始终叫「设计我的皮肤」。
+          editorOpen={!phoneGrid && showTouchSkinEditor}
+          // 卡片预览的是编辑器里的设计，所以选中它就保存那个设计；没有设计时自定义主题会画它基础主题的键盘。
           onSelect={() => onCustomKeyboardChange(customTouchKeyboardSkin)}
-          onToggleEditor={() => setShowTouchSkinEditor((value) => !value)}
+          onToggleEditor={phoneGrid ? openEditor : () => setShowTouchSkinEditor((value) => !value)}
         />
       )}
-      {client.customTouchKeyboardSkins && showTouchSkinEditor && (
+      {client.customTouchKeyboardSkins && !phoneGrid && showTouchSkinEditor && (
         <SettingsGroupBlock>
           <TouchKeyboardSkinEditor
             design={customTouchKeyboardSkin}
@@ -297,9 +310,9 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
               onApplied={(id) => void client.typingStatistics?.recordSkin?.(id)}
               onOpenAi={aiSkins && customSkinLibrary ? openAi : undefined}
             />
-            {/* 设计里这页没有设置行；颜色模式、皮肤目录和社区入口、自定义主题和各界面的单独设置仍可在「更多选项」下找到。从「我的 → 社区作品 → 我的设计」进来时编辑器已经打开，它在这个折叠区里，所以折叠区一开始就展开，否则用户只看到网格。 */}
+            {/* 设计里这页没有设置行；颜色模式、皮肤目录和社区入口、自定义主题和各界面的单独设置仍可在「更多选项」下找到。编辑器不在这个折叠区里，而是单独的视图（见下方 `TouchKeyboardSkinEditor fullScreen`）。 */}
             <GroupList>
-              <MoreOptions defaultOpen={showTouchSkinEditor}>
+              <MoreOptions>
                 {colourMode}
                 {moreSkins}
                 {customThemeGroup}
@@ -499,6 +512,21 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
             setPublishSkinId(null);
             openAccountLogin();
           }}
+        />
+      )}
+      {phoneGrid && showTouchSkinEditor && shown && client.customTouchKeyboardSkins && (
+        <TouchKeyboardSkinEditor
+          fullScreen
+          design={customTouchKeyboardSkin}
+          selected={customKeyboardSelected}
+          theme={keyboardPreviewTheme}
+          disabled={busy}
+          library={client.customSkinLibrary}
+          aiSkins={client.aiSkins}
+          communitySkins={client.communitySkins}
+          onChange={(design) => onCustomThemeChange({ keyboard: design })}
+          onUse={onUseCustomKeyboard}
+          onClose={closeEditor}
         />
       )}
       {phoneGrid && aiOpen && shown && aiSkins && customSkinLibrary && (

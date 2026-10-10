@@ -422,6 +422,7 @@ export function TouchKeyboardSkinEditor({
   onChange,
   onUse,
   onClose,
+  fullScreen = false,
 }: {
   design: TouchKeyboardSkinDesign;
   selected: boolean;
@@ -433,6 +434,8 @@ export function TouchKeyboardSkinEditor({
   onChange: (design: TouchKeyboardSkinDesign) => void;
   onUse: () => void;
   onClose: () => void;
+  /** 作为独立视图呈现：覆盖整个设置界面，标题前带返回按钮，返回即 `onClose`，所以不再画「完成」。HarmonyOS 手机的皮肤页这样打开它，不在页面里就地展开。 */
+  fullScreen?: boolean;
 }) {
   const [category, setCategory] = useState<Category>("背景");
   const [undo, setUndo] = useState<TouchKeyboardSkinDesign[]>([]);
@@ -551,15 +554,34 @@ export function TouchKeyboardSkinEditor({
       setConfirmation(null);
   };
 
-  return (
-    <div className={`${skin.editor} ${skin.editorFilled}`} aria-label="自定义皮肤编辑器">
+  const editor = (
+    <div
+      className={`${fullScreen ? fullScreenColumn : skin.editor} ${skin.editorFilled}`}
+      aria-label="自定义皮肤编辑器"
+    >
+      {fullScreen && (
+        <>
+          <header className={settings.pageHeader}>
+            <ActionButton
+              action={onClose}
+              className={settings.pageBackButton}
+              ariaLabel="返回"
+              label={<FluentIcon name="arrow_left" size={22} />}
+            />
+            <h2 className={settings.pageTitle}>设计我的皮肤</h2>
+          </header>
+          <p className={doc.generationNote}>修改后自动保存，键盘随即换上</p>
+        </>
+      )}
       <div className={skin.editorHeading}>
-        <div>
-          <div className="section-title">
-            自定义皮肤
-            <small>修改后自动保存，键盘随即换上</small>
+        {!fullScreen && (
+          <div>
+            <div className="section-title">
+              自定义皮肤
+              <small>修改后自动保存，键盘随即换上</small>
+            </div>
           </div>
-        </div>
+        )}
         <div className={skin.editorHeadingActions}>
           {aiSkins && library && (
             <ActionButton
@@ -581,7 +603,7 @@ export function TouchKeyboardSkinEditor({
               label="保存设计"
             />
           )}
-          <ActionButton action={onClose} className="secondary" label="完成" />
+          {!fullScreen && <ActionButton action={onClose} className="secondary" label="完成" />}
         </div>
       </div>
       {aiGenerationOpen && aiSkins && library && (
@@ -1122,5 +1144,12 @@ export function TouchKeyboardSkinEditor({
         <ScreenKeyboardPreview theme={theme} skin="custom" customDesign={design} />
       </div>
     </div>
+  );
+  return fullScreen ? (
+    <div className={fullScreenSurface} role="dialog" aria-modal="true" aria-label="设计我的皮肤">
+      {editor}
+    </div>
+  ) : (
+    editor
   );
 }

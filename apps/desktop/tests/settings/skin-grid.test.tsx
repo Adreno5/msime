@@ -309,6 +309,42 @@ test("the AI tile opens AI 皮肤抽卡 as a full-screen view the back gesture c
   }
 });
 
+test("设计我的皮肤 opens the editor as a full-screen view, not inside the 皮肤 page", async () => {
+  const previous = window.history.state;
+  window.history.replaceState(null, "");
+  try {
+    render(
+      <SettingsPage
+        initialPage="skin"
+        client={{
+          load: vi.fn().mockResolvedValue(initial),
+          save: vi.fn(),
+          host: testHost({ platform: "harmony" }),
+          ...skinClients(),
+        }}
+      />,
+    );
+    await settingsFormReady();
+    const page = screen.getByRole("group", { name: "皮肤" });
+    fireEvent.click(within(page).getByRole("button", { name: "设计我的皮肤" }));
+    const view = screen.getByRole("dialog", { name: "设计我的皮肤" });
+    expect(window.history.state).toMatchObject({ page: "skin", skinSubpage: "editor" });
+    // 编辑器不在「皮肤」页里就地展开，按钮也不会变成「收起自定义编辑器」。
+    expect(within(page).queryByLabelText("自定义皮肤编辑器")).toBeNull();
+    expect(within(page).queryByRole("button", { name: "收起自定义编辑器" })).toBeNull();
+    expect(within(view).getByLabelText("自定义皮肤编辑器")).toBeTruthy();
+    // 返回按钮取代了「完成」。
+    expect(within(view).queryByRole("button", { name: "完成" })).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(view).getByRole("button", { name: "返回" }));
+      await new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
+    });
+    expect(screen.queryByRole("dialog", { name: "设计我的皮肤" })).toBeNull();
+  } finally {
+    window.history.replaceState(previous, "");
+  }
+});
+
 test("the HarmonyOS grid leaves out 原生 and marks 跟随系统 when the document says native", async () => {
   render(
     <SettingsPage

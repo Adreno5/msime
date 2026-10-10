@@ -18,7 +18,7 @@ Status: implemented
 - `mobile_settings` 宿主（手机）不显示 `ExternalSkinDirectoryRow`。HarmonyOS 2in1 等桌面形态不受影响，导入能力（HarmonyOS 的 `skin_directory_import`、iOS 的 `import_picked_skin`）的后端代码保留，2in1 仍在用。
 - 能用「导入皮肤」的宿主即使显示这一行，也不再显示皮肤目录路径：那是沙箱内部路径，用户既看不到也无法手动复制文件进去。
 - 手机上候选颜色取色器只在 `candidatePaletteFollowsDesktop === true` 时显示。逐个宿主核对过谁读这些颜色：HarmonyOS 手机的候选栏取键盘调色板，只有 2in1 用候选配色（`KeyboardView.ets` 的 `candidateColors()`）；Android 的候选栏不读解析出的候选配色；只有 iOS 在打开「候选栏使用主题配色」后才读，而这个字段也只有 iOS 宿主提供。桌面照旧显示。皮肤页因此不再渲染 `CandidatePaletteFallbackNotice`，组件本身仍从 `packages/ui` 导出。
-- 打开了触屏皮肤编辑器时，「更多选项」以 `defaultOpen` 展开。从账户页进入时皮肤页会重新挂载，`defaultOpen` 在 `showTouchSkinEditor` 已为真时读取。
+- 打开了触屏皮肤编辑器时，「更多选项」以 `defaultOpen` 展开。从账户页进入时皮肤页会重新挂载，`defaultOpen` 在 `showTouchSkinEditor` 已为真时读取。鸿蒙手机上这一条已被取代：编辑器改为单独的全屏视图，不在「更多选项」里，见 [HarmonyOS 手机的皮肤编辑器是单独的视图](2026-10-11-harmony-skin-editor-full-screen.md)。
 
 ## Alternatives considered
 
