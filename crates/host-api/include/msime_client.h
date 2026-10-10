@@ -419,7 +419,7 @@ char *msime_client_resource_pack_install(const uint8_t *request, size_t length,
                                          void *context);
 void msime_client_resource_pack_cancel(const uint8_t *pack, size_t length);
 char *msime_client_resource_pack_adopt(const uint8_t *request, size_t length);
-/* Pure DeepLX-compatible descriptor builder (no network I/O). Request <=16 KiB:
+/* 自定义翻译请求描述器（不做网络 I/O）：api.deepl.com / api-free.deepl.com 用 DeepL v2 格式（DeepL-Auth-Key 鉴权、text 数组，没有密钥时报错），其他地址用 DeepLX 兼容格式。Request <=16 KiB:
  * {config:{enabled,endpoint,api_key},text,source_language,target_language}.
  * Returns null if disabled; otherwise {url,method,headers,body,timeout_ms,max_response_bytes}.
  * Descriptor can contain credentials: never log it. Host enforces timeout/size,

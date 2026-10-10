@@ -6645,6 +6645,59 @@ fn custom_translation_http_bridge_is_bounded_and_pure() {
     );
 }
 
+/// 官方 DeepL 地址在描述器里换成 DeepL 的鉴权和正文；Windows、macOS、iOS 和鸿蒙的键盘都直接发这个描述器。
+#[test]
+fn custom_translation_http_bridge_speaks_deepl_to_official_endpoints() {
+    let build = |endpoint: &str, key: &str| {
+        let request = json!({"config":{"enabled":true,"endpoint":endpoint,"api_key":key},
+            "text":"测试","source_language":"zh","target_language":"en"});
+        let bytes = serde_json::to_vec(&request).unwrap();
+        read(unsafe { msime_client_custom_translation_http_request(bytes.as_ptr(), bytes.len()) })
+    };
+    let value = build(" https://api.deepl.com/v2/translate ", " synthetic-key:fx ");
+    assert_eq!(value["ok"], true);
+    assert_eq!(
+        value["value"]["url"],
+        "https://api-free.deepl.com/v2/translate"
+    );
+    assert_eq!(
+        value["value"]["headers"],
+        json!({"Content-Type":"application/json","Authorization":"DeepL-Auth-Key synthetic-key:fx"})
+    );
+    assert_eq!(
+        value["value"]["body"],
+        json!({"text":["测试"],"source_lang":"ZH","target_lang":"EN-US"})
+    );
+    assert_eq!(value["value"]["timeout_ms"], 2500);
+    assert_eq!(value["value"]["max_response_bytes"], 1048576);
+    assert_eq!(
+        build("https://api-free.deepl.com/v2/translate", "")["error"],
+        "invalid custom translation parameters"
+    );
+    // 最长的密钥加上 `DeepL-Auth-Key ` 前缀是 4111 字节，macOS 的描述器校验按这个上限放行。
+    let longest = build("https://api.deepl.com/v2/translate", &"k".repeat(4096));
+    assert_eq!(
+        longest["value"]["headers"]["Authorization"]
+            .as_str()
+            .unwrap()
+            .len(),
+        4111
+    );
+    let parse = |body: &[u8]| {
+        read(unsafe { msime_client_parse_custom_translation_response(body.as_ptr(), body.len()) })
+    };
+    let reply = br#"{"translations":[{"detected_source_language":"ZH","text":"Test"}]}"#;
+    assert_eq!(parse(reply)["value"], "Test");
+    assert!(!unsafe { msime_client_custom_translation_reply_failed(reply.as_ptr(), reply.len()) });
+    for body in [
+        br#"{"message":"Forbidden"}"#.as_slice(),
+        br#"{"message":"Quota Exceeded"}"#,
+    ] {
+        assert!(parse(body)["value"].is_null());
+        assert!(unsafe { msime_client_custom_translation_reply_failed(body.as_ptr(), body.len()) });
+    }
+}
+
 #[test]
 fn niutrans_reply_failure_rejects_unbounded_lengths() {
     assert!(unsafe { msime_client_niutrans_translation_reply_failed(b"x".as_ptr(), usize::MAX) });

@@ -252,6 +252,89 @@ pub fn is_supported_endpoint(endpoint: &str) -> bool {
     is_secure_endpoint(endpoint)
 }
 
+/// DeepL 官方 API 的两个主机：Pro 密钥走 `api.deepl.com`，Free 密钥走 `api-free.deepl.com`。
+const DEEPL_PRO_HOST: &str = "api.deepl.com";
+const DEEPL_FREE_HOST: &str = "api-free.deepl.com";
+
+/// 自定义翻译服务的一次请求：地址、请求头和 JSON 正文。带着凭据，不得写进日志。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomTranslationRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Value,
+}
+
+/// 地址是否指向 DeepL 官方 API：https、默认端口，主机名恰好是 `api.deepl.com` 或 `api-free.deepl.com`。只看主机名，不看路径：自建 DeepLX 也提供 `/v2/translate`，按路径识别会改掉这些用户现有的请求格式。
+pub fn is_deepl_api_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    // `Url` 会把写明的 443 当作默认端口去掉，所以 `port()` 为空即默认端口。
+    url.scheme() == "https"
+        && url.port().is_none()
+        && matches!(url.host_str(), Some(DEEPL_PRO_HOST | DEEPL_FREE_HOST))
+}
+
+/// DeepL 的 `target_lang`。中文和英文必须写变体：`ZH`、`EN` 只为兼容旧调用保留，文档要求改用 `ZH-HANS`/`ZH-HANT`、`EN-US`/`EN-GB`。候选释义一律简体中文，英文取美式拼写。其余语言（FR、JA、ES、RU、DE、KO）直接取大写代码。
+fn deepl_target_language(target: &str) -> String {
+    match target.to_ascii_lowercase().as_str() {
+        "zh" => "ZH-HANS".into(),
+        "en" => "EN-US".into(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+/// 构造自定义翻译服务的请求，运行时描述器和设置页的连接测试共用这一处。调用方负责先校验地址、密钥和文本；`endpoint`、`api_key` 应已去掉首尾空白。
+///
+/// - DeepL 官方 API（见 [`is_deepl_api_endpoint`]）：`Authorization: DeepL-Auth-Key <key>`，正文 `{"text":[文本],"source_lang","target_lang"}`，发往 `https://<主机>/v2/translate`。主机按密钥选：以 `:fx` 结尾的是 Free 密钥，走 `api-free.deepl.com`，否则走 `api.deepl.com`，与 DeepL 官方客户端库的判断相同；用户把 Free 密钥填到 Pro 地址（或反过来）时 DeepL 会回 403，这里直接改到对的主机。DeepL 没有密钥就不能用，空密钥返回 `None`。
+/// - 其他地址按 DeepLX 兼容格式：有密钥时 `Authorization: Bearer <key>`，正文 `{"text":文本,"source_lang","target_lang"}`，地址原样使用。
+///
+/// 源语言照常写明，不交给 DeepL 自动识别：候选词往往只有两三个字，「手紙」这样的词自动识别会当成日语，而规划阶段已经按文字判断了方向。
+pub fn custom_translation_request(
+    endpoint: &str,
+    api_key: &str,
+    text: &str,
+    source_language: &str,
+    target_language: &str,
+) -> Option<CustomTranslationRequest> {
+    let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
+    if is_deepl_api_endpoint(endpoint) {
+        if api_key.is_empty() {
+            return None;
+        }
+        let host = if api_key.ends_with(":fx") {
+            DEEPL_FREE_HOST
+        } else {
+            DEEPL_PRO_HOST
+        };
+        headers.push((
+            "Authorization".to_owned(),
+            format!("DeepL-Auth-Key {api_key}"),
+        ));
+        return Some(CustomTranslationRequest {
+            url: format!("https://{host}/v2/translate"),
+            headers,
+            body: serde_json::json!({
+                "text": [text],
+                "source_lang": source_language.to_ascii_uppercase(),
+                "target_lang": deepl_target_language(target_language),
+            }),
+        });
+    }
+    if !api_key.is_empty() {
+        headers.push(("Authorization".to_owned(), format!("Bearer {api_key}")));
+    }
+    Some(CustomTranslationRequest {
+        url: endpoint.to_owned(),
+        headers,
+        body: serde_json::json!({
+            "text": text,
+            "source_lang": source_language.to_ascii_uppercase(),
+            "target_lang": target_language.to_ascii_uppercase(),
+        }),
+    })
+}
+
 /// 区分 DeepLX 兼容回复中的失败与空回答。无 `code` 的回复必须带结果字段，显式 `error` 优先表示失败；有结果字段但译文为空仍算已回答，供宿主负缓存。
 pub fn translation_response_failed(response: &str) -> bool {
     let Ok(root) = serde_json::from_str::<Value>(response) else {
@@ -585,6 +668,91 @@ Signature=fdaffffbe1460ecd8cbc30e296ff6f49cc3b4af10b11e099462cca023fdb2c6c"
             r#"{"translation":{"text":""}}"#,
         ] {
             assert!(!translation_response_failed(response), "{response}");
+        }
+    }
+
+    /// 与 Linux provider 共用的用例：两边对同一组地址和密钥必须构造出相同的请求。
+    #[test]
+    fn custom_translation_request_matches_the_shared_contract() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../shared/contracts/custom-translation/cases.json"
+        ))
+        .unwrap();
+        let cases = contract["cases"].as_array().unwrap();
+        assert!(cases.len() >= 10);
+        for case in cases {
+            let text = |key: &str| case[key].as_str().unwrap();
+            let request = custom_translation_request(
+                text("endpoint"),
+                text("api_key"),
+                text("text"),
+                text("source_language"),
+                text("target_language"),
+            );
+            let actual = request.map(|request| {
+                let headers: serde_json::Map<String, Value> = request
+                    .headers
+                    .into_iter()
+                    .map(|(name, value)| (name, Value::String(value)))
+                    .collect();
+                serde_json::json!({"url": request.url, "headers": headers, "body": request.body})
+            });
+            assert_eq!(
+                actual.unwrap_or(Value::Null),
+                case["request"],
+                "{}",
+                text("name")
+            );
+        }
+    }
+
+    #[test]
+    fn deepl_endpoint_detection_matches_the_exact_official_hosts() {
+        for endpoint in [
+            "https://api.deepl.com/v2/translate",
+            "https://api-free.deepl.com/v2/translate",
+            "https://api-free.deepl.com",
+            "https://Api-Free.DeepL.com/v2/translate",
+        ] {
+            assert!(is_deepl_api_endpoint(endpoint), "{endpoint}");
+        }
+        for endpoint in [
+            "http://api.deepl.com/v2/translate",
+            "https://api.deepl.com.example/v2/translate",
+            "https://example.com/api.deepl.com/v2/translate",
+            "https://deepl.com/v2/translate",
+            "https://www.deepl.com/v2/translate",
+            "https://api.deepl.com:8443/v2/translate",
+            "https://deeplx.example/v2/translate",
+            "not a url",
+        ] {
+            assert!(!is_deepl_api_endpoint(endpoint), "{endpoint}");
+        }
+    }
+
+    /// DeepL v2 的成功回复带 `detected_source_language`，译文在 `translations[0].text`。
+    #[test]
+    fn parses_a_deepl_v2_reply() {
+        let reply = r#"{"translations":[{"detected_source_language":"ZH","text":"Test"}]}"#;
+        assert!(!translation_response_failed(reply));
+        assert_eq!(parse_translation_response(reply).as_deref(), Some("Test"));
+        let empty = r#"{"translations":[{"detected_source_language":"ZH","text":""}]}"#;
+        assert!(!translation_response_failed(empty));
+        assert!(parse_translation_response(empty).is_none());
+    }
+
+    /// DeepL 的错误（403 密钥无效、456 额度用完、429 过于频繁）走非 2xx 状态，宿主不会把正文交给解析；正文本身也只有 `message`，即使被交过来也只能算失败，不能当成空译文负缓存。
+    #[test]
+    fn a_deepl_error_body_is_a_failed_reply() {
+        for reply in [
+            r#"{"message":"Forbidden"}"#,
+            r#"{"message":"Quota Exceeded"}"#,
+            r#"{"message":"Too many requests"}"#,
+            r#"{"message":"Wrong endpoint. Use https://api.deepl.com"}"#,
+            "",
+        ] {
+            assert!(translation_response_failed(reply), "{reply}");
+            assert!(parse_translation_response(reply).is_none(), "{reply}");
         }
     }
 
