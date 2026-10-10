@@ -60,6 +60,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
@@ -325,6 +326,123 @@ JsonObject mcp_request(std::optional<std::string> const &options) {
                         options ? JsonValue::CreateStringValue(text(*options))
                                 : JsonValue::CreateNullValue());
   return request;
+}
+
+// ---- 词库 ----
+
+// The host options the input method runs with, which every dictionary request carries; absent until the setup wizard has prepared them.
+std::optional<std::string> runtime_options_document() {
+  const auto file = runtime_options_file();
+  if (!file)
+    return std::nullopt;
+  std::ifstream stream(*file, std::ios::binary);
+  std::string content((std::istreambuf_iterator<char>(stream)),
+                      std::istreambuf_iterator<char>());
+  JsonObject parsed{nullptr};
+  if (content.empty() || !JsonObject::TryParse(text(content), parsed))
+    return std::nullopt;
+  return content;
+}
+
+// One request of the 词库 page through msime_client_settings_dictionary, the same code the Tauri settings page runs: a write first has the Server let go of its sessions, and a refusal comes back as the page's code. Blocks, so only off the UI thread.
+Response settings_dictionary_call(std::string const &options, std::string const &action) {
+  const auto body = "{\"options\":" + options + ",\"action\":" + action + "}";
+  return take_response(msime_client_settings_dictionary(
+      reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+}
+
+// The dictionaries the page manages, in the shared page's order and words.
+constexpr std::array<std::pair<std::wstring_view, std::wstring_view>, 5> lexicon_kinds{{
+    {L"pinyin", L"全拼"},
+    {L"wubi", L"86 五笔"},
+    {L"wubi98", L"98 五笔"},
+    {L"english", L"英文"},
+    {L"quick_phrase", L"快捷短语"},
+}};
+
+std::wstring lexicon_kind_label(std::wstring_view kind) {
+  for (auto const &[id, label] : lexicon_kinds)
+    if (id == kind)
+      return std::wstring(label);
+  return L"词库";
+}
+
+// What a code looks like in each dictionary, as the shared page hints it.
+std::wstring lexicon_key_hint(std::wstring_view kind) {
+  if (kind == L"wubi" || kind == L"wubi98")
+    return L"1–4 个字母";
+  if (kind == L"quick_phrase")
+    return L"1–32 个字母";
+  if (kind == L"english")
+    return L"1–64 个字母";
+  if (kind == L"pinyin")
+    return L"完整音节，用 ' 分隔，如 ni'hao";
+  return {};
+}
+
+// The shared page's sentence for a dictionary refusal code (dictionaryErrorMessage in packages/ui/src/dictionary/dictionary-errors.ts).
+std::wstring dictionary_error_text(std::wstring const &code, std::wstring_view kind,
+                                   std::wstring const &fallback) {
+  if (code == L"dictionary_busy")
+    return L"词库正在被输入法占用，请关闭正在使用输入法的程序后重试。";
+  if (code == L"dictionary_import_rejected")
+    return L"词库拒绝了这次写入，请检查编码与词是否匹配。";
+  if (code == L"dictionary_too_large")
+    return L"词库文件过大：文件不能超过 32 MB，单行不能超过 60 KB，请拆分后再导入。";
+  if (code == L"dictionary_read_rejected")
+    return L"词库拒绝了这次读取，请稍后重试。";
+  if (code == L"dictionary_bundled_readonly")
+    return L"内置词条只能调整权重或删除，不能修改编码和词。";
+  if (code == L"dictionary_pinyin_unavailable")
+    return L"拼音表不可用，无法校验这条词的读音。";
+  if (code == L"dictionary_reset_rejected")
+    return L"清除学习数据失败，请关闭正在使用输入法的程序后重试。";
+  if (code == L"dictionary_unavailable")
+    return L"无法打开用户词库，请检查输入法是否正在运行。";
+  if (code == L"dictionary_invalid_word")
+    return L"词条内容为空、过长或含控制字符，或权重超出 1 到 100000000 的范围。";
+  if (code == L"dictionary_invalid_entry") {
+    if (kind == L"pinyin")
+      return L"拼音必须由完整音节组成，音节数需与汉字数一致，例如“你好”填 nihao 或 ni'hao。";
+    if (kind == L"wubi" || kind == L"wubi98")
+      return L"五笔编码须为 1 到 4 个字母。";
+    if (kind == L"quick_phrase")
+      return L"快捷短语编码只能包含英文字母，长度 1 到 32。";
+    if (kind == L"english")
+      return L"英文编码只能包含字母、连字符和撇号。";
+    return L"词条不符合词库规则，请检查编码与词条后再保存。";
+  }
+  return fallback;
+}
+
+// The user's local day, YYYY-MM-DD, which 背单词 counts its reviews by.
+std::wstring local_day() {
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  wchar_t day[16] = {};
+  swprintf_s(day, L"%04u-%02u-%02u", now.wYear, now.wMonth, now.wDay);
+  return day;
+}
+
+std::wstring named_string(JsonObject const &object, wchar_t const *key) {
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  return value.ValueType() == JsonValueType::String ? std::wstring(value.GetString().c_str())
+                                                    : std::wstring();
+}
+
+int64_t named_count(JsonObject const &object, wchar_t const *key) {
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  return value.ValueType() == JsonValueType::Number
+             ? static_cast<int64_t>(std::llround(value.GetNumber()))
+             : 0;
+}
+
+// A request id the host keeps receipts by, so a retried write is not applied twice.
+std::wstring request_id(std::wstring_view prefix) {
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                       .count();
+  return std::wstring(prefix) + std::to_wstring(now);
 }
 
 Response call_mcp(char *(*entry)(const uint8_t *, size_t),
@@ -3747,12 +3865,627 @@ private:
 
   // ---- 词库 ----
 
+  // ---- 词库 ----
+
+  struct LexiconEntry {
+    std::wstring kind, key, value;
+    int64_t weight = 0;
+    bool bundled = false;
+  };
+
+  struct Wordbook {
+    std::wstring id, name;
+    int64_t total = 0;
+    bool builtin = false;
+    bool pack = false;
+  };
+
+  struct VocabularyCard {
+    std::wstring word, phonetic, meaning;
+  };
+
+  struct VocabularyStatus {
+    std::vector<Wordbook> books;
+    std::wstring wordbook;
+    int64_t new_per_day = 0, session_limit = 0;
+    int64_t due = 0, answered = 0, remaining = 0;
+    std::vector<VocabularyCard> queue;
+  };
+
+  static constexpr uint32_t lexicon_page_size = 100;
+
+  // Runs `call` off the UI thread and gives its response to `done` back on it, unless the window has closed.
+  fire_and_forget run_host(std::function<Response()> call,
+                           std::function<void(Response const &)> done) {
+    auto weak = get_weak();
+    auto queue = DispatcherQueue();
+    co_await resume_background();
+    auto response = call();
+    queue.TryEnqueue([weak, done = std::move(done), response = std::move(response)] {
+      if (auto self = weak.get(); self && !self->closed_)
+        done(response);
+    });
+  }
+
+  void redraw_lexicon() {
+    if (!closed_ && current_page_ == "lexicon")
+      render_page(true);
+  }
+
+  static JsonObject entry_json(LexiconEntry const &entry) {
+    JsonObject object;
+    object.SetNamedValue(L"kind", JsonValue::CreateStringValue(entry.kind));
+    object.SetNamedValue(L"key", JsonValue::CreateStringValue(entry.key));
+    object.SetNamedValue(L"value", JsonValue::CreateStringValue(entry.value));
+    object.SetNamedValue(L"weight",
+                         JsonValue::CreateNumberValue(static_cast<double>(entry.weight)));
+    object.SetNamedValue(L"source",
+                         JsonValue::CreateStringValue(entry.bundled ? L"bundled" : L"user"));
+    return object;
+  }
+
+  // Sends one dictionary action; `done` gets the response on the UI thread. Without host options there is nothing to send to.
+  void lexicon_request(JsonObject const &action, std::function<void(Response const &)> done) {
+    const auto options = runtime_options_document();
+    if (!options) {
+      lexicon_message_ = L"输入法尚未完成初始化，完成设置向导后即可管理词库。";
+      lexicon_error_ = true;
+      redraw_lexicon();
+      return;
+    }
+    lexicon_busy_ = true;
+    run_host(
+        [options = *options, body = utf8(action.Stringify())] {
+          return settings_dictionary_call(options, body);
+        },
+        [this, done = std::move(done)](Response const &response) {
+          lexicon_busy_ = false;
+          done(response);
+          redraw_lexicon();
+        });
+    redraw_lexicon();
+  }
+
+  // 查询: the page of `offset` of the chosen dictionary, filtered by the code prefix.
+  void lexicon_list(uint32_t offset) {
+    if (lexicon_busy_)
+      return;
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"list"));
+    action.SetNamedValue(L"offset", JsonValue::CreateNumberValue(offset));
+    action.SetNamedValue(L"limit", JsonValue::CreateNumberValue(lexicon_page_size));
+    action.SetNamedValue(L"kind", JsonValue::CreateStringValue(lexicon_kind_));
+    std::wstring query = lexicon_query_;
+    query.erase(0, query.find_first_not_of(L" \t"));
+    query.erase(query.find_last_not_of(L" \t") + 1);
+    action.SetNamedValue(L"query", JsonValue::CreateStringValue(query));
+    lexicon_message_ = L"查询中…";
+    lexicon_error_ = false;
+    const auto kind = lexicon_kind_;
+    lexicon_request(action, [this, offset, kind](Response const &response) {
+      // The dictionary was switched while this page was on its way.
+      if (kind != lexicon_kind_)
+        return;
+      if (!response.ok) {
+        lexicon_message_ = dictionary_error_text(response_error(response), kind,
+                                                 L"无法读取词库。");
+        lexicon_error_ = true;
+        return;
+      }
+      try {
+        const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+        lexicon_entries_.clear();
+        for (auto const &item : value.GetNamedArray(L"entries")) {
+          const auto object = item.GetObject();
+          LexiconEntry entry{named_string(object, L"kind"), named_string(object, L"key"),
+                             named_string(object, L"value"), named_count(object, L"weight"),
+                             named_string(object, L"source") == L"bundled"};
+          if (entry.kind == kind)
+            lexicon_entries_.push_back(std::move(entry));
+        }
+        lexicon_has_more_ = value.GetNamedBoolean(L"has_more", false);
+        lexicon_offset_ = offset;
+        lexicon_listed_ = true;
+        lexicon_message_.clear();
+        lexicon_error_ = false;
+      } catch (...) {
+        lexicon_message_ = L"无法读取词库。";
+        lexicon_error_ = true;
+      }
+    });
+  }
+
+  // 新增词条 (no `previous`) or 编辑 / 调权重: a bundled word keeps its code and text, so only its weight can change.
+  fire_and_forget edit_lexicon_entry(std::optional<LexiconEntry> previous) {
+    if (lexicon_busy_)
+      co_return;
+    auto strong = get_strong();
+    const bool bundled = previous && previous->bundled;
+    const auto kind = previous ? previous->kind : lexicon_kind_;
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(360);
+    TextBox key;
+    key.Header(box_value(hstring(L"编码")));
+    key.PlaceholderText(hstring(lexicon_key_hint(kind)));
+    key.Text(hstring(previous ? previous->key : L""));
+    key.IsReadOnly(bundled);
+    TextBox value;
+    value.Header(box_value(hstring(kind == L"quick_phrase" ? L"短语" : L"词条")));
+    value.Text(hstring(previous ? previous->value : L""));
+    value.IsReadOnly(bundled);
+    NumberBox weight;
+    weight.Header(box_value(hstring(L"权重")));
+    weight.Minimum(1);
+    weight.Maximum(100000000);
+    weight.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+    weight.Value(previous ? static_cast<double>(previous->weight) : 10.0);
+    form.Children().Append(key);
+    form.Children().Append(value);
+    form.Children().Append(weight);
+    ContentDialog dialog;
+    dialog.Title(box_value(hstring(previous ? (bundled ? L"调权重" : L"编辑词条") : L"新增词条")));
+    dialog.Content(form);
+    dialog.PrimaryButtonText(L"保存");
+    dialog.CloseButtonText(L"取消");
+    dialog.DefaultButton(ContentDialogButton::Primary);
+    dialog.XamlRoot(root_.XamlRoot());
+    dialog.RequestedTheme(palette_.dark ? ElementTheme::Dark : ElementTheme::Light);
+    if (!co_await show_dialog(dialog))
+      co_return;
+    std::wstring new_key(key.Text().c_str());
+    std::wstring new_value(value.Text().c_str());
+    if (new_key.empty() || new_value.empty()) {
+      lexicon_message_ = L"编码和短语不能为空。";
+      lexicon_error_ = true;
+      redraw_lexicon();
+      co_return;
+    }
+    const double chosen = weight.Value();
+    LexiconEntry replacement{kind, new_key, new_value,
+                             std::isnan(chosen) ? 10 : static_cast<int64_t>(std::llround(chosen)),
+                             bundled};
+    if (bundled) {
+      replacement.key = previous->key;
+      replacement.value = previous->value;
+    }
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"edit"));
+    action.SetNamedValue(L"previous", previous ? JsonValue::Parse(entry_json(*previous).Stringify())
+                                               : JsonValue::CreateNullValue());
+    action.SetNamedValue(L"replacement", JsonValue::Parse(entry_json(replacement).Stringify()));
+    action.SetNamedValue(L"request_id",
+                         JsonValue::CreateStringValue(request_id(previous ? L"ui-edit-" : L"ui-add-")));
+    const uint32_t reload = previous ? lexicon_offset_ : 0;
+    lexicon_message_.clear();
+    lexicon_request(action, [this, kind, reload](Response const &response) {
+      if (!response.ok) {
+        lexicon_message_ = dictionary_error_text(response_error(response), kind,
+                                                 L"保存失败，请稍后重试。");
+        lexicon_error_ = true;
+        return;
+      }
+      lexicon_list(reload);
+    });
+  }
+
+  fire_and_forget delete_lexicon_entry(LexiconEntry entry) {
+    if (lexicon_busy_)
+      co_return;
+    auto strong = get_strong();
+    if (!co_await confirm(L"删除词条",
+                          L"“" + entry.value + L"”（" + entry.key + L"）将被删除，此操作无法撤销。",
+                          L"删除"))
+      co_return;
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"edit"));
+    action.SetNamedValue(L"previous", JsonValue::Parse(entry_json(entry).Stringify()));
+    action.SetNamedValue(L"replacement", JsonValue::CreateNullValue());
+    action.SetNamedValue(L"request_id", JsonValue::CreateStringValue(request_id(L"ui-remove-")));
+    // The last word of a later page leaves that page empty, so step back to the one before it.
+    const uint32_t reload = lexicon_entries_.size() == 1 && lexicon_offset_ >= lexicon_page_size
+                                ? lexicon_offset_ - lexicon_page_size
+                                : lexicon_offset_;
+    const auto kind = entry.kind;
+    lexicon_message_.clear();
+    lexicon_request(action, [this, kind, reload](Response const &response) {
+      if (!response.ok) {
+        lexicon_message_ = dictionary_error_text(response_error(response), kind,
+                                                 L"删除失败，请稍后重试。");
+        lexicon_error_ = true;
+        return;
+      }
+      lexicon_list(reload);
+    });
+  }
+
+  fire_and_forget reset_learned_data() {
+    if (lexicon_busy_)
+      co_return;
+    auto strong = get_strong();
+    if (!co_await confirm(L"清除学习数据",
+                          L"候选词频、用户词库（包括自己新增和修改的词条）和拼音学习记录将永久删除，此操作无法撤销。输入方案等设置不会改变。",
+                          L"清除"))
+      co_return;
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"reset"));
+    lexicon_request(action, [this](Response const &response) {
+      if (!response.ok) {
+        show_notice(dictionary_error_text(response_error(response), L"",
+                                          L"清除学习数据失败，请稍后重试。"));
+        return;
+      }
+      lexicon_entries_.clear();
+      lexicon_listed_ = false;
+      lexicon_offset_ = 0;
+      lexicon_message_.clear();
+      show_notice(L"已清除所有学习数据；输入方案和设置保持不变。", InfoBarSeverity::Success);
+    });
+  }
+
+  // A yes-or-no question before something that cannot be undone.
+  Windows::Foundation::IAsyncOperation<bool> confirm(std::wstring title, std::wstring message, std::wstring action) {
+    ContentDialog dialog;
+    dialog.Title(box_value(hstring(title)));
+    dialog.Content(box_value(hstring(message)));
+    dialog.PrimaryButtonText(hstring(action));
+    dialog.CloseButtonText(L"取消");
+    dialog.DefaultButton(ContentDialogButton::Close);
+    dialog.XamlRoot(root_.XamlRoot());
+    dialog.RequestedTheme(palette_.dark ? ElementTheme::Dark : ElementTheme::Light);
+    co_return co_await show_dialog(dialog);
+  }
+
+  // True when the user chose the dialog's primary button. WinUI shows one ContentDialog at a time and throws for a second, which inside a fire_and_forget coroutine ends the process; a click that would open another while one is up, such as a second 删除, is taken as a cancel.
+  Windows::Foundation::IAsyncOperation<bool> show_dialog(ContentDialog dialog) {
+    if (dialog_open_)
+      co_return false;
+    dialog_open_ = true;
+    bool accepted = false;
+    try {
+      accepted = co_await dialog.ShowAsync() == ContentDialogResult::Primary;
+    } catch (...) {
+    }
+    dialog_open_ = false;
+    co_return accepted;
+  }
+
+  // ---- 背单词 ----
+
+  // One 背单词 action through msime_client_vocabulary_review, against the same directories the shared app's review uses: the user's state directory, the installed resources beside MSIME.exe and the plugins under the state directory.
+  void vocabulary_request(JsonObject const &action) {
+    if (vocabulary_busy_)
+      return;
+    const auto directory = state_directory();
+    JsonObject request;
+    request.SetNamedValue(L"directory", JsonValue::CreateStringValue(hstring(directory.wstring())));
+    request.SetNamedValue(L"resources",
+                          JsonValue::CreateStringValue(hstring(shell_executable().parent_path().wstring())));
+    request.SetNamedValue(L"plugins",
+                          JsonValue::CreateStringValue(hstring((directory / L"plugins").wstring())));
+    request.SetNamedValue(L"day", JsonValue::CreateStringValue(hstring(local_day())));
+    request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
+    vocabulary_busy_ = true;
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_vocabulary_review(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this](Response const &response) {
+          vocabulary_busy_ = false;
+          vocabulary_revealed_ = false;
+          if (!response.ok) {
+            vocabulary_message_ = vocabulary_
+                                      ? L"无法读取或保存背单词进度，请稍后重试。已有的进度不会被自动清空。"
+                                      : L"无法读取背单词进度。";
+            redraw_lexicon();
+            return;
+          }
+          try {
+            const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+            VocabularyStatus status;
+            for (auto const &item : value.GetNamedArray(L"wordbooks")) {
+              const auto book = item.GetObject();
+              status.books.push_back({named_string(book, L"id"), named_string(book, L"name"),
+                                      named_count(book, L"total"),
+                                      book.GetNamedBoolean(L"builtin", false),
+                                      book.HasKey(L"pack") &&
+                                          book.GetNamedValue(L"pack").ValueType() != JsonValueType::Null});
+            }
+            const auto settings = value.GetNamedObject(L"settings");
+            status.wordbook = named_string(settings, L"wordbook");
+            status.new_per_day = named_count(settings, L"newPerDay");
+            status.session_limit = named_count(settings, L"sessionLimit");
+            status.due = named_count(value, L"due");
+            status.answered = named_count(value, L"answeredToday");
+            status.remaining = named_count(value, L"remaining");
+            for (auto const &item : value.GetNamedArray(L"queue")) {
+              const auto card = item.GetObject();
+              status.queue.push_back({named_string(card, L"word"), named_string(card, L"phonetic"),
+                                      named_string(card, L"meaning")});
+            }
+            vocabulary_ = std::move(status);
+            vocabulary_message_.clear();
+          } catch (...) {
+            vocabulary_message_ = L"无法读取背单词进度。";
+          }
+          redraw_lexicon();
+        });
+    redraw_lexicon();
+  }
+
+  static JsonObject vocabulary_action(wchar_t const *operation) {
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+    return action;
+  }
+
+  void set_vocabulary_settings(std::wstring const &wordbook, int64_t new_per_day) {
+    if (!vocabulary_)
+      return;
+    auto action = vocabulary_action(L"set_settings");
+    action.SetNamedValue(L"wordbook", JsonValue::CreateStringValue(hstring(wordbook)));
+    action.SetNamedValue(L"new_per_day",
+                         JsonValue::CreateNumberValue(static_cast<double>(new_per_day)));
+    action.SetNamedValue(L"session_limit",
+                         JsonValue::CreateNumberValue(static_cast<double>(vocabulary_->session_limit)));
+    vocabulary_request(action);
+  }
+
+  void answer_vocabulary_card(bool known) {
+    if (!vocabulary_ || vocabulary_->queue.empty())
+      return;
+    auto action = vocabulary_action(L"answer");
+    action.SetNamedValue(L"word", JsonValue::CreateStringValue(hstring(vocabulary_->queue.front().word)));
+    action.SetNamedValue(L"known", JsonValue::CreateBooleanValue(known));
+    vocabulary_request(action);
+  }
+
+  fire_and_forget remove_vocabulary_book(Wordbook book) {
+    auto strong = get_strong();
+    if (!co_await confirm(L"删除词表", L"删除「" + book.name + L"」及其复习进度？此操作无法撤销。",
+                          L"删除"))
+      co_return;
+    auto action = vocabulary_action(L"remove");
+    action.SetNamedValue(L"wordbook", JsonValue::CreateStringValue(hstring(book.id)));
+    vocabulary_request(action);
+  }
+
+  fire_and_forget reset_vocabulary_progress() {
+    auto strong = get_strong();
+    if (!co_await confirm(L"清空进度",
+                          L"清空全部词书的复习进度？已经学过的词会从头开始，此操作无法撤销。",
+                          L"清空"))
+      co_return;
+    vocabulary_request(vocabulary_action(L"reset"));
+  }
+
   void build_lexicon_page(StackPanel const &page) {
-    auto manage = add_group(page, L"管理");
-    shell_row(manage, 0xE82D, L"管理词库", L"导入、导出和编辑词库与快捷短语", L"打开",
-              nav::shell_links::dictionary);
-    shell_row(manage, 0xE8F1, L"背单词", L"在水杉输入法应用中背单词", L"打开",
-              nav::shell_links::vocabulary);
+    // 本地词库管理: the same list, edit and delete as the shared page, through msime_client_settings_dictionary.
+    auto manage = add_group(page, L"本地词库管理");
+    std::vector<Option> kinds;
+    for (auto const &[id, label] : lexicon_kinds)
+      kinds.push_back({std::wstring(id), std::wstring(label)});
+    add_row(manage, 0xE82D, L"词库",
+            L"查询、新增、编辑和删除用户词库。标有「内置」的是随输入法附带的词条，只能调整权重或删除。",
+            select_control(L"本地词库类型", std::move(kinds), lexicon_kind_,
+                           [this](std::wstring const &kind) {
+                             if (kind == lexicon_kind_)
+                               return;
+                             lexicon_kind_ = kind;
+                             lexicon_entries_.clear();
+                             lexicon_listed_ = false;
+                             lexicon_offset_ = 0;
+                             lexicon_list(0);
+                           },
+                           !lexicon_busy_));
+
+    TextBox query;
+    query.Width(180);
+    query.PlaceholderText(L"留空查看全部");
+    query.Text(hstring(lexicon_query_));
+    A11y::SetName(query, L"编码前缀");
+    query.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      lexicon_query_ = std::wstring(sender.as<TextBox>().Text().c_str());
+    });
+    query.KeyDown([this](Inspectable const &, Input::KeyRoutedEventArgs const &args) {
+      if (args.Key() == Windows::System::VirtualKey::Enter) {
+        args.Handled(true);
+        lexicon_list(0);
+      }
+    });
+    StackPanel controls;
+    controls.Orientation(Orientation::Horizontal);
+    controls.Spacing(8);
+    controls.Children().Append(query);
+    controls.Children().Append(button_control(L"查询", [this] { lexicon_list(0); }, !lexicon_busy_));
+    controls.Children().Append(button_control(
+        L"新增词条", [this] { edit_lexicon_entry(std::nullopt); }, !lexicon_busy_));
+
+    StackPanel results;
+    results.Spacing(4);
+    results.Margin(Thickness{61, 0, 25, 16});
+    const auto label = lexicon_kind_label(lexicon_kind_);
+    std::wstring status = lexicon_message_;
+    if (status.empty() && !lexicon_listed_)
+      status = L"点击查询后查看" + label + L"词条";
+    if (status.empty() && lexicon_entries_.empty())
+      status = lexicon_offset_ == 0 ? L"没有找到词条" : L"没有更多结果";
+    if (!status.empty()) {
+      results.Children().Append(
+          make_text(status, 12, lexicon_error_ ? palette_.text : palette_.sub));
+    }
+    for (auto const &entry : lexicon_entries_) {
+      Grid item;
+      item.ColumnSpacing(12);
+      item.MinHeight(36);
+      for (auto width : {GridLength{1, GridUnitType::Star}, GridLength{1, GridUnitType::Auto},
+                         GridLength{1, GridUnitType::Auto}}) {
+        ColumnDefinition column;
+        column.Width(width);
+        item.ColumnDefinitions().Append(column);
+      }
+      StackPanel words;
+      words.Orientation(Orientation::Horizontal);
+      words.Spacing(12);
+      words.VerticalAlignment(VerticalAlignment::Center);
+      auto code = make_text(entry.key, 14, palette_.sub);
+      code.FontFamily(FontFamily(L"Consolas"));
+      words.Children().Append(code);
+      words.Children().Append(make_text(entry.value, 14, palette_.text));
+      words.Children().Append(make_text(std::to_wstring(entry.weight), 12, palette_.faint));
+      if (entry.bundled)
+        words.Children().Append(make_text(L"内置", 12, palette_.faint));
+      Grid::SetColumn(words, 0);
+      item.Children().Append(words);
+      auto edit = button_control(entry.bundled ? L"调权重" : L"编辑",
+                                 [this, entry] { edit_lexicon_entry(entry); }, !lexicon_busy_);
+      Grid::SetColumn(edit, 1);
+      item.Children().Append(edit);
+      auto remove = button_control(L"删除", [this, entry] { delete_lexicon_entry(entry); },
+                                   !lexicon_busy_);
+      Grid::SetColumn(remove, 2);
+      item.Children().Append(remove);
+      results.Children().Append(item);
+    }
+    if (lexicon_listed_ && (lexicon_offset_ > 0 || lexicon_has_more_)) {
+      StackPanel pager;
+      pager.Orientation(Orientation::Horizontal);
+      pager.Spacing(12);
+      pager.Margin(Thickness{0, 8, 0, 0});
+      pager.Children().Append(button_control(
+          L"上一页", [this] { lexicon_list(lexicon_offset_ - lexicon_page_size); },
+          !lexicon_busy_ && lexicon_offset_ >= lexicon_page_size));
+      const auto first = lexicon_offset_ + 1;
+      const auto last = lexicon_offset_ + static_cast<uint32_t>(lexicon_entries_.size());
+      auto range = make_text(L"第 " + std::to_wstring(first) + L"–" + std::to_wstring(last) +
+                                 (lexicon_has_more_ ? L" 条，后面还有结果" : L" 条，没有更多结果"),
+                             12, palette_.sub);
+      range.VerticalAlignment(VerticalAlignment::Center);
+      pager.Children().Append(range);
+      pager.Children().Append(button_control(
+          L"下一页", [this] { lexicon_list(lexicon_offset_ + lexicon_page_size); },
+          !lexicon_busy_ && lexicon_has_more_));
+      results.Children().Append(pager);
+    }
+    add_row(manage, 0xE721, L"编码前缀", lexicon_key_hint(lexicon_kind_), controls, results);
+
+    // 云词库 is a panel of its own on every desktop, as in the shared app.
+    auto cloud = add_group(page, L"云词库");
+    shell_row(cloud, 0xE753, L"云词库", L"管理同步到账号的词条和备份", L"打开云词库",
+              nav::shell_links::cloud_dictionary);
+
+    build_vocabulary_group(page);
+
+    auto learned = add_group(page, L"学习数据");
+    add_row(learned, 0xE74D, L"清除候选词频、用户词库和拼音学习记录",
+            L"自己新增和修改的词条也会删除；输入方案与其他设置不会改变。",
+            button_control(L"清除全部学习数据", [this] { reset_learned_data(); }, !lexicon_busy_));
+  }
+
+  // 背单词: the books, the daily allowance and the cards, reviewed here rather than in a panel of the shared app.
+  void build_vocabulary_group(StackPanel const &page) {
+    auto group = add_group(page, L"背单词");
+    if (!indexing_ && !vocabulary_ && !vocabulary_busy_ && vocabulary_message_.empty())
+      vocabulary_request(vocabulary_action(L"load"));
+    if (!vocabulary_) {
+      add_row(group, 0xE82D, L"背单词",
+              vocabulary_busy_ ? L"正在读取…"
+                               : (vocabulary_message_.empty() ? L"用输入过的英文单词复习词汇"
+                                                              : vocabulary_message_),
+              vocabulary_message_.empty()
+                  ? FrameworkElement{nullptr}
+                  : button_control(L"重试", [this] {
+                      vocabulary_message_.clear();
+                      vocabulary_request(vocabulary_action(L"load"));
+                    }));
+      return;
+    }
+    auto const &status = *vocabulary_;
+    add_row(group, 0xE787, L"今日进度",
+            L"今日待复习 " + std::to_wstring(status.due) + L" · 已完成 " +
+                std::to_wstring(status.answered) + L" · 未开始 " + std::to_wstring(status.remaining),
+            nullptr);
+    std::vector<Option> books{{L"", L"未选择"}};
+    const Wordbook *selected = nullptr;
+    for (auto const &book : status.books) {
+      books.push_back({book.id, book.name + L"（" + std::to_wstring(book.total) + L" 词）" +
+                                    (book.pack ? L" · 插件" : L"")});
+      if (book.id == status.wordbook)
+        selected = &book;
+    }
+    add_row(group, 0xE8F1, L"词书", L"复习不会改变打字时的候选或组词。进度保存在本机，不会上传。",
+            select_control(L"词书", std::move(books), status.wordbook,
+                           [this](std::wstring const &id) {
+                             set_vocabulary_settings(id, vocabulary_->new_per_day);
+                           },
+                           !vocabulary_busy_));
+    NumberBox daily;
+    daily.Minimum(0);
+    daily.Maximum(200);
+    daily.Width(120);
+    daily.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+    daily.Value(static_cast<double>(status.new_per_day));
+    daily.IsEnabled(!vocabulary_busy_);
+    A11y::SetName(daily, L"每日新词");
+    daily.ValueChanged([this](NumberBox const &, NumberBoxValueChangedEventArgs const &args) {
+      const double value = args.NewValue();
+      if (std::isnan(value) || !vocabulary_ ||
+          static_cast<int64_t>(std::llround(value)) == vocabulary_->new_per_day)
+        return;
+      set_vocabulary_settings(vocabulary_->wordbook, std::clamp<int64_t>(std::llround(value), 0, 200));
+    });
+    add_row(group, 0xE710, L"每日新词", L"每天新加入复习的单词数，0 到 200。", daily);
+
+    StackPanel card;
+    card.Spacing(8);
+    card.Margin(Thickness{61, 0, 25, 16});
+    if (status.wordbook.empty()) {
+      card.Children().Append(make_text(L"先选一本词书。", 13, palette_.sub));
+    } else if (status.queue.empty()) {
+      card.Children().Append(make_text(L"今天的复习已经完成。", 13, palette_.sub));
+    } else {
+      auto const &current = status.queue.front();
+      auto word = make_text(current.word, 24, palette_.text);
+      word.FontWeight(Windows::UI::Text::FontWeight{600});
+      word.IsTextSelectionEnabled(true);
+      card.Children().Append(word);
+      if (!current.phonetic.empty())
+        card.Children().Append(make_text(current.phonetic, 13, palette_.sub));
+      if (vocabulary_revealed_) {
+        auto meaning = make_text(current.meaning, 14, palette_.text);
+        meaning.IsTextSelectionEnabled(true);
+        card.Children().Append(meaning);
+      }
+      StackPanel answers;
+      answers.Orientation(Orientation::Horizontal);
+      answers.Spacing(8);
+      if (!vocabulary_revealed_)
+        answers.Children().Append(button_control(L"显示释义", [this] {
+          vocabulary_revealed_ = true;
+          redraw_lexicon();
+        }));
+      answers.Children().Append(button_control(L"不认识", [this] { answer_vocabulary_card(false); },
+                                               !vocabulary_busy_));
+      answers.Children().Append(button_control(L"认识", [this] { answer_vocabulary_card(true); },
+                                               !vocabulary_busy_));
+      card.Children().Append(answers);
+    }
+    if (!vocabulary_message_.empty())
+      card.Children().Append(make_text(vocabulary_message_, 12, palette_.sub));
+    add_row(group, 0xE7BE, L"复习", L"", nullptr, card);
+
+    if (selected && selected->pack) {
+      add_row(group, 0xE74C, L"这本书来自插件", L"在「插件」页卸载；卸载后复习进度仍会保留。", nullptr);
+    } else if (selected && !selected->builtin) {
+      add_row(group, 0xE74D, L"删除这个词表", L"删除「" + selected->name + L"」及其复习进度。",
+              button_control(L"删除这个词表",
+                             [this, book = *selected] { remove_vocabulary_book(book); },
+                             !vocabulary_busy_));
+    }
+    add_row(group, 0xE777, L"清空复习进度", L"已经学过的词会从头开始。",
+            button_control(L"清空复习进度", [this] { reset_vocabulary_progress(); },
+                           !vocabulary_busy_));
   }
 
   // ---- 屏幕键盘、语音、手写 ----
@@ -4161,6 +4894,25 @@ private:
 
   std::wstring mcp_result_;
   bool mcp_busy_ = false;
+
+  // 词库: the dictionary and code prefix being looked at, the page of words last read and what the page says about it. Kept across redraws, which every request ends with.
+  std::wstring lexicon_kind_ = L"quick_phrase";
+  std::wstring lexicon_query_;
+  uint32_t lexicon_offset_ = 0;
+  std::vector<LexiconEntry> lexicon_entries_;
+  bool lexicon_has_more_ = false;
+  bool lexicon_listed_ = false;
+  bool lexicon_busy_ = false;
+  bool lexicon_error_ = false;
+  std::wstring lexicon_message_;
+  // 背单词: the last status the host answered with; one request is in flight at a time.
+  std::optional<VocabularyStatus> vocabulary_;
+  bool vocabulary_busy_ = false;
+  bool vocabulary_revealed_ = false;
+  std::wstring vocabulary_message_;
+  // A ContentDialog of this window is showing.
+  bool dialog_open_ = false;
+
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。
   bool update_checking_ = false;
