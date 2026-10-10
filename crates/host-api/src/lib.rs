@@ -16,6 +16,7 @@ use msime_client_core::host_surface::{
 };
 pub mod cloud_clipboard;
 pub mod cloud_dictionary;
+pub mod settings_dictionary;
 pub mod mcp_clients;
 pub mod system_fonts;
 use msime_client_core::preferences::{

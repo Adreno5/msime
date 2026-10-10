@@ -497,13 +497,10 @@ fn a_file_too_large_to_send_is_refused_as_too_large() {
         TOO_LARGE
     );
     assert!(host.actions.is_empty());
-    assert_eq!(
-        crate::dictionary_error_code(TOO_LARGE),
-        "dictionary_too_large"
-    );
+    assert_eq!(error_code(TOO_LARGE), "dictionary_too_large");
     // The parser's own size refusal only reaches Android's unbatched path, whose 64 KiB limit the 32 MB message would misstate.
     assert_ne!(
-        crate::dictionary_error_code(&ImportError::TooLarge.to_string()),
+        error_code(&ImportError::TooLarge.to_string()),
         "dictionary_too_large"
     );
 }
@@ -569,4 +566,59 @@ fn a_large_import_with_the_longest_request_id_still_fits() {
         serde_json::to_value(ImportIssue::Rejected).unwrap(),
         "rejected"
     );
+}
+
+#[test]
+fn an_invalid_dictionary_entry_keeps_its_own_code() {
+    for reason in [
+        "invalid dictionary entry",
+        "invalid dictionary entry: code is empty or too long",
+        "invalid dictionary entry: code contains characters this dictionary does not accept",
+        "invalid dictionary entry: Use complete pinyin syllables separated by apostrophes or spaces",
+        "invalid dictionary entry: Each character must have one pinyin syllable (maximum 64)",
+        "invalid dictionary entry: Wubi codes contain one to four letters",
+    ] {
+        assert_eq!(
+            error_code(reason),
+            "dictionary_invalid_entry",
+            "{reason}"
+        );
+    }
+    // A valid code with a bad word or weight must not be reported as a code problem, or the page tells the user to fix the wrong field.
+    for reason in [
+        "invalid dictionary entry: word is empty or too long",
+        "invalid dictionary entry: word contains a control character",
+        "invalid dictionary entry: weight is outside 1 to 100000000",
+        "invalid dictionary entry: Weight must be between 1 and 100000000",
+        "invalid dictionary entry: The word contains an unsupported control character",
+    ] {
+        assert_eq!(error_code(reason), "dictionary_invalid_word", "{reason}");
+    }
+    // A different failure that merely shares the words is not an entry refusal.
+    assert_eq!(error_code("invalid dictionary entryway"), "storage");
+    assert_eq!(error_code("dictionary edit rejected"), "storage");
+    // A bundled word refused a new code or text is told it can only be re-weighted or deleted.
+    assert_eq!(
+        error_code("bundled dictionary entry is read-only"),
+        "dictionary_bundled_readonly"
+    );
+}
+
+#[test]
+fn dictionary_mutations_quiesce_but_reads_do_not() {
+    assert!(action_requires_quiesce(
+        &serde_json::json!({"operation": "edit"})
+    ));
+    assert!(action_requires_quiesce(
+        &serde_json::json!({"operation": "import"})
+    ));
+    assert!(action_requires_quiesce(
+        &serde_json::json!({"operation": "reset"})
+    ));
+    assert!(!action_requires_quiesce(
+        &serde_json::json!({"operation": "list"})
+    ));
+    assert!(!action_requires_quiesce(
+        &serde_json::json!({"operation": "export"})
+    ));
 }

@@ -145,6 +145,16 @@ char *msime_client_create(const uint8_t *options, size_t length);
  * with the identical nonempty request ID and content.
  */
 char *msime_client_dictionary(const uint8_t *request, size_t length);
+/* The same {options, action} as msime_client_dictionary, as a settings page sends it: an edit,
+ * import or reset first has the input hosts let go of the dictionaries (the Windows Server
+ * over its auxiliary pipe) and is retried until they have; an import of a whole file (up to
+ * 48 MiB of text) is sent in batches and answered with one report; and a refusal's error is
+ * the settings pages' code: dictionary_busy, dictionary_too_large, dictionary_import_rejected,
+ * dictionary_read_rejected, dictionary_pinyin_unavailable, dictionary_unavailable,
+ * dictionary_reset_rejected, dictionary_bundled_readonly, dictionary_invalid_entry,
+ * dictionary_invalid_word or storage. {operation:"reset"} restores the bundled dictionaries
+ * and clears all learned data, returning {reset:true}. Blocks: call off the UI thread. */
+char *msime_client_settings_dictionary(const uint8_t *request, size_t length);
 /* Smart punctuation follow-up gestures. The host holds the snapshots: they belong
  * to its editor, not to Engine, and a session rebuilt while the keyboard was away
  * must not carry a gesture across the gap. The switches that gate them live in the

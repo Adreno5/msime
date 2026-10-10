@@ -5,8 +5,6 @@
 ))]
 mod ai;
 mod clipboard_history;
-#[cfg(not(target_os = "android"))]
-mod dictionary_import;
 // Only the two hosts that have to replay input into another window build this.
 // macOS delivers through the input method itself and needs none of it.
 mod notices;
@@ -2034,51 +2032,6 @@ fn start_desktop_preferences_monitor(
         });
 }
 
-/// Keep the host's reason instead of flattening every failure to "storage".
-///
-/// The host distinguishes three things the user can actually act on - the
-/// dictionary is locked by another process, the edit itself was refused, and
-/// the store could not be opened - and the page used to print one identical
-/// sentence for all of them.
-fn dictionary_error_code(reason: &str) -> &'static str {
-    match reason {
-        "dictionary maintenance busy" => "dictionary_busy",
-        // A request over the host's 64 KiB, which the batched desktop import only gives for a file over its own bound or a single line too long for any request. The shared parser's own "dictionary import is too large" is deliberately not mapped here: only Android, which sends the whole file in one request, reaches it, and there the limit is 64 KiB rather than the 32 MB this code's message names.
-        "invalid dictionary buffer" => "dictionary_too_large",
-        "dictionary import rejected" => "dictionary_import_rejected",
-        "dictionary read rejected" => "dictionary_read_rejected",
-        "dictionary pinyin unavailable" => "dictionary_pinyin_unavailable",
-        "dictionary access unavailable" => "dictionary_unavailable",
-        "learned-data reset rejected" => "dictionary_reset_rejected",
-        "bundled dictionary entry is read-only" => "dictionary_bundled_readonly",
-        // The host appends which rule the entry broke. The page words a code refusal per dictionary kind, so a word or weight refusal must not share that code, or it would send the user to fix a code that is already valid.
-        reason if reason == msime_host_api::INVALID_DICTIONARY_ENTRY => "dictionary_invalid_entry",
-        reason => match reason
-            .strip_prefix(msime_host_api::INVALID_DICTIONARY_ENTRY)
-            .and_then(|rest| rest.strip_prefix(": "))
-        {
-            Some(rule) if invalid_entry_rule_is_about_word(rule) => "dictionary_invalid_word",
-            Some(_) => "dictionary_invalid_entry",
-            None => "storage",
-        },
-    }
-}
-
-/// Does a refusal reason name the word or the weight rather than the code? These are the host's `validate_entry` rules (`word ...`, `weight ...`) and the Engine's own sentences for the same rules in `validate_personal_dictionary_entry`.
-fn invalid_entry_rule_is_about_word(rule: &str) -> bool {
-    rule.starts_with("word ")
-        || rule.starts_with("weight ")
-        || rule == "Weight must be between 1 and 100000000"
-        || rule == "The word contains an unsupported control character"
-}
-
-fn dictionary_action_requires_quiesce(action: &Value) -> bool {
-    matches!(
-        action.get("operation").and_then(Value::as_str),
-        Some("edit" | "import" | "reset")
-    )
-}
-
 #[cfg(any(target_os = "ios", test))]
 fn ios_personal_dictionary_action(action: &Value) -> bool {
     matches!(
@@ -2129,11 +2082,6 @@ async fn dictionary_request(
     let options = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let options = options.snapshot()?;
-        let requires_quiesce = dictionary_action_requires_quiesce(&action);
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        let _ = requires_quiesce;
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let user_data = options["user_data"].as_str().map(str::to_owned);
         let request = serde_json::json!({ "options": options, "action": action });
         #[cfg(target_os = "ios")]
         if ios_personal_dictionary_action(&request["action"]) {
@@ -2145,41 +2093,22 @@ async fn dictionary_request(
                 serde_json::to_vec(&request).map_err(|_| CommandError { code: "storage" })?;
             return msime_host_api::personal_dictionary_request_json(&bytes).map_err(|reason| {
                 CommandError {
-                    code: dictionary_error_code(&reason),
+                    code: msime_host_api::settings_dictionary::error_code(&reason),
                 }
             });
         }
+        // The input hosts are released before a write, an import is batched and a refusal becomes the page's code in the host API, where the native Windows settings window gets the same through msime_client_settings_dictionary. The macOS input method is also told at once over a distributed notification when the release first goes up.
         #[cfg(not(target_os = "android"))]
         {
-            // One request to the host. An import too large for one request is several, each through this, so whatever releases the input sessions below stays in force until the last of them.
-            let host = |bytes: &[u8]| msime_host_api::dictionary_request_json(bytes);
-            // The input hosts are asked to let go and the lock failure is retried until they have. On Linux and macOS that is a lease the hosts find on their timers, with the macOS input method also told at once over a distributed notification when the lease first goes up; on Windows the Server is asked over its pipe and answers once its sessions are gone. Either is renewed before each later request, so a large import that runs past the 30 second bound keeps the hosts released, and let go when `hosts` goes, after the last request, whatever the outcome.
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            let mut hosts = msime_client_core::dictionary::quiesce::QuiescedHosts::new(
-                user_data.as_deref(),
+            msime_host_api::settings_dictionary::request(
+                &request["options"],
+                &request["action"],
                 || {
                     #[cfg(target_os = "macos")]
                     msime_host_macos::quiesce_input_sessions();
                 },
-            );
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            let send = |bytes: &[u8]| {
-                if requires_quiesce {
-                    hosts.run(|| host(bytes))
-                } else {
-                    host(bytes)
-                }
-            };
-            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-            let send = host;
-            let result = dictionary_import::send_dictionary_action(
-                &request["options"],
-                &request["action"],
-                send,
-            );
-            result.map_err(|reason| CommandError {
-                code: dictionary_error_code(&reason),
-            })
+            )
+            .map_err(|code| CommandError { code })
         }
     })
     .await
