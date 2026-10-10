@@ -10,6 +10,7 @@ platforms/linux/tests/voice/doubao_auth.py
 platforms/linux/tests/dictionary/niutrans_credential_normalization.py
 platforms/linux/tests/dictionary/tencent_credential_normalization.py
 platforms/linux/tests/dictionary/custom_translation_config.py
+platforms/linux/tests/dictionary/custom_translation_contract.py
 platforms/linux/tests/dictionary/translation_provider_selection.py
 platforms/linux/tests/voice/doubao_auth_mode.py
 platforms/linux/tests/voice/provider_polish_prompt.py
