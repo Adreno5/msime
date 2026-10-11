@@ -9,11 +9,11 @@ export interface ModelSelectProps {
 /** Selects a known model while leaving custom values editable in the companion input. */
 export function ModelSelect({ models, model, ariaLabel, emptyLabel, onSelect }: ModelSelectProps) {
   return (
-    <select
+    <ControlledSelect
       aria-label={ariaLabel}
       value={models.includes(model) ? model : ""}
-      onChange={(event) => {
-        if (event.target.value) onSelect(event.target.value);
+      onChange={(value) => {
+        if (value) onSelect(value);
       }}
     >
       <option value="">{emptyLabel}</option>
@@ -22,6 +22,7 @@ export function ModelSelect({ models, model, ariaLabel, emptyLabel, onSelect }: 
           {entry}
         </option>
       ))}
-    </select>
+    </ControlledSelect>
   );
 }
+import { ControlledSelect } from "../core/controlled-select";

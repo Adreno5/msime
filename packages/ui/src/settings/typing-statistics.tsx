@@ -1,3 +1,4 @@
+import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useConfirm } from "../core/confirm";
 import {
@@ -1687,13 +1688,12 @@ export function TypingStatisticsPage({
         <div className={menuPopover} role="menu" aria-label="统计选项">
           <label className={menuItem}>
             <span>记录打字统计</span>
-            <input
+            <ControlledCheckbox
               aria-label="记录打字统计"
               className="toggle"
-              type="checkbox"
               checked={statistics.enabled}
               disabled={busy}
-              onChange={(event) => void update(() => client.setEnabled(event.target.checked))}
+              onChange={(checked) => void update(() => client.setEnabled(checked))}
             />
           </label>
           {retention && client.setRetention && (

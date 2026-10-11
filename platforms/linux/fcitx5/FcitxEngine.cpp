@@ -809,11 +809,22 @@ public:
     const auto next = !msime::linux_host::helpcode_pack(preferences_, scheme == 1 ? "shuangpin" : "quanpin").empty()
         ? (it == schemas.end() ? std::string(schemas.front()) : current)
         : it == schemas.end() || std::next(it) == schemas.end() ? std::string(schemas.front()) : std::string(*std::next(it));
+    return selectHelpcodeSchema(next);
+  }
+  // The 辅助码方案 menu's choice. Choosing a built-in schema also turns this scheme's helpcode pack off, as the settings page does, so choosing the schema the store already holds still saves while a pack is active.
+  bool selectHelpcodeSchema(const std::string &schema) {
+    const auto scheme = msime::linux_host::strict_json_value(view_, "scheme", 0u);
+    if (!session_ || (scheme != 0 && scheme != 1) || restricted() || privateInput())
+      return false;
+    if (std::none_of(msime::linux_host::kHelpcodeSchemaNames.begin(), msime::linux_host::kHelpcodeSchemaNames.end(),
+                     [&](const auto &name) { return schema == name.value; }))
+      return false;
+    const auto section = scheme == 1 ? "shuangpin_helpcode" : "quanpin_helpcode";
     if (!view_.value("editing_text", std::string{}).empty())
       command(MSIME_FINISH_COMPOSITION);
-    saveHelpcodeSchemaChoice(section, next);
+    saveHelpcodeSchemaChoice(section, schema);
     waitForPreferenceSave();
-    helpcode_schema_override_ = next;
+    helpcode_schema_override_ = schema;
     helpcode_schema_unsaved_ = unsavedChoice(section, "schema");
     close();
     if (!ensure()) return false;
@@ -4320,6 +4331,8 @@ public:
     return msime::linux_host::helpcode_status_label(state->preferences_, scheme == 1 ? "shuangpin" : "quanpin");
   }
   std::string icon(fcitx::InputContext *) const override { return "input-keyboard"; }
+  void setMenu(fcitx::Menu *menu) { fcitx::SimpleAction::setMenu(menu); }
+  // Front ends open the schema menu instead of activating an action that has one; stepping stays for a caller that activates it directly.
   void activate(fcitx::InputContext *ic) override {
     if (!ic || !ic->propertyFor(factory_)->menuTarget()) return;
     try {
@@ -4332,6 +4345,42 @@ public:
   }
 private:
   fcitx::FactoryFor<FcitxState> *factory_;
+};
+
+// One built-in schema in the 辅助码方案 menu, checked while the current scheme uses it. While a helpcode pack is active none is checked, as in the IBus menu, and choosing any of them turns the pack off.
+class FcitxHelpcodeSchemaItemAction : public fcitx::Action {
+public:
+  FcitxHelpcodeSchemaItemAction(fcitx::FactoryFor<FcitxState> *factory, const char *schema, const char *label)
+      : factory_(factory), schema_(schema), label_(label) {
+    setCheckable(true);
+  }
+  std::string shortText(fcitx::InputContext *) const override { return label_; }
+  std::string icon(fcitx::InputContext *) const override { return ""; }
+  bool isChecked(fcitx::InputContext *ic) const override {
+    if (!ic) return false;
+    const auto *state = ic->propertyFor(factory_);
+    if (!state->session_) return false;
+    const auto scheme = msime::linux_host::strict_json_value(state->view_, "scheme", 0u);
+    if (scheme != 0 && scheme != 1) return false;
+    const auto name = scheme == 1 ? "shuangpin" : "quanpin";
+    if (!msime::linux_host::helpcode_pack(state->preferences_, name).empty()) return false;
+    return state->preferences_.value(std::string(name) + "_helpcode", Json::object())
+               .value("schema", std::string(msime::linux_host::default_helpcode_schema(name))) == schema_;
+  }
+  void activate(fcitx::InputContext *ic) override {
+    if (!ic || !ic->propertyFor(factory_)->menuTarget() || isChecked(ic)) return;
+    try {
+      auto *state = ic->propertyFor(factory_);
+      if (state->selectHelpcodeSchema(schema_)) update(ic);
+    } catch (...) {
+      ic->propertyFor(factory_)->close();
+      ic->propertyFor(factory_)->clearPanel();
+    }
+  }
+private:
+  fcitx::FactoryFor<FcitxState> *factory_;
+  const char *schema_;
+  const char *label_;
 };
 
 class FcitxAutocorrectAction : public fcitx::Action {
@@ -5991,6 +6040,13 @@ public:
     wubi_code_hint_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-wubi-code-hint", &instance->userInterfaceManager());
     wubi_auto_commit_unique_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-wubi-auto-commit-unique", &instance->userInterfaceManager());
     helpcode_schema_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-helpcode-schema", &instance->userInterfaceManager());
+    // 辅助码方案 lists the built-in schemas rather than stepping through them on each click, as 输入方案 does and as the IBus menu always has.
+    helpcode_schema_action_.setMenu(&helpcode_schema_menu_);
+    for (const auto &[value, label] : msime::linux_host::kHelpcodeSchemaNames) {
+      helpcode_schema_items_.push_back(std::make_unique<FcitxHelpcodeSchemaItemAction>(&factory_, value, label));
+      helpcode_schema_items_.back()->registerAction(MSIME_EDITION_FCITX5_ADDON "-helpcode-schema-" + std::string(value), &instance->userInterfaceManager());
+      helpcode_schema_menu_.addAction(helpcode_schema_items_.back().get());
+    }
     maintenance_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-candidate-tools", &instance->userInterfaceManager());
     clipboard_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-clipboard", &instance->userInterfaceManager());
     clipboard_history_action_.registerAction(MSIME_EDITION_FCITX5_ADDON "-clipboard-history", &instance->userInterfaceManager());
@@ -6656,6 +6712,8 @@ public:
   FcitxSchemeBooleanAction wubi_code_hint_action_{&factory_, FcitxSchemeBooleanAction::Kind::WubiCodeHint};
   FcitxSchemeBooleanAction wubi_auto_commit_unique_action_{&factory_, FcitxSchemeBooleanAction::Kind::WubiAutoCommitUnique};
   FcitxHelpcodeSchemaAction helpcode_schema_action_{&factory_};
+  fcitx::Menu helpcode_schema_menu_;
+  std::vector<std::unique_ptr<FcitxHelpcodeSchemaItemAction>> helpcode_schema_items_;
   fcitx::Menu maintenance_menu_;
   FcitxMaintenanceAction maintenance_action_{&factory_, 0, "候选维护"};
   FcitxReloadServiceAction reload_service_action_{&factory_};

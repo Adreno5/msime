@@ -23,7 +23,7 @@ import * as style from "./community-style";
 import { CommunityCardAuthor } from "./community-card-author";
 import { CommunityCard } from "./community-card";
 import { CommunityMetrics } from "./community-metrics";
-import { CommunitySearchForm } from "./community-search-form";
+import { CommunityGalleryHeader } from "./community-gallery-header";
 import { CommunityDialogActions, CommunityDialogFrame } from "./community-dialog";
 import { CommunityDetailHeader } from "./community-detail-header";
 import { CommunityRatingMetrics } from "./community-rating-metrics";
@@ -49,7 +49,6 @@ import { CommunityGalleryFeedback } from "./community-gallery-feedback";
 import { ActionButton } from "../core/action-button";
 import { CommunityModerationSection } from "./community-moderation-section";
 import { CommunityActionNotice } from "./community-action-notice";
-import { CommunityGalleryHeading } from "./community-gallery-heading";
 import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { communityPublishFields } from "./community-publish-validation";
@@ -922,13 +921,11 @@ export function CommunityResourcesPage({
   }
   return (
     <CommunityPageShell>
-      <CommunitySearchForm
-        label={`搜索${resourceKindTitle(kind)}`}
-        value={search}
-        onChange={setSearch}
-        onSubmit={() => void load(false, search)}
-      />
-      <CommunityGalleryHeading
+      <CommunityGalleryHeader
+        searchLabel={`搜索${resourceKindTitle(kind)}`}
+        search={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={() => void load(false, search)}
         title={
           scope === "mine"
             ? `我的${resourceKindTitle(kind)}作品`
@@ -950,7 +947,7 @@ export function CommunityResourcesPage({
           onScopeChange={setScope}
         />
         <ActionButton action={() => setEditing(true)} className="primary" label="发布作品" />
-      </CommunityGalleryHeading>
+      </CommunityGalleryHeader>
       <CommunityGalleryFeedback
         error={error}
         empty={

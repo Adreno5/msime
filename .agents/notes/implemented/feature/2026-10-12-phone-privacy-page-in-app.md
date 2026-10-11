@@ -9,6 +9,7 @@ Status: implemented
 ## Decision
 
 - 新增设置页 `privacy`（「隐私」），`subPageParents` 挂在 `account` 下，属于「我的」标签。`settingsPageProjections` 只在触屏宿主上提供它：桌面的隐私设置在「关于」里。
+- 页面只由设置界面内部打开，不增加宿主 `SettingsCategory`；macOS 的 `settings_route_coverage.py` 在 `NOT_ROUTED` 中声明这个边界，避免把触屏子页误报为缺少宿主路由。
 - 页面三组：
   - 「你的数据」：三句话，标题是结论，说明是条件：
     - 打的字留在手机上（「云联想」默认关闭，打开后才把正在打的拼音发给 Google 输入工具）；
@@ -40,4 +41,5 @@ Status: implemented
   - Windows 上没有这一页。
 - `apps/desktop/tests/account/account-page.test.tsx`：点「隐私」调用 `onOpenPage("privacy")`，不打开网页。
 - `apps/desktop/tests/settings/settings-page-registry.test.ts`：页面列表和 `subPageParents` 加上 `privacy`。
+- `platforms/macos/tests/settings/settings_route_coverage.py`：共享页面全部有宿主路由或明确的内部入口说明，`privacy` 按触屏子页核对。
 - 没有装到模拟器上看：模拟器当时正被仓库负责人使用。
