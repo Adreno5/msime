@@ -163,6 +163,7 @@ pub(crate) fn account_command_error(error: AccountError) -> crate::CommandError 
 }
 
 /// Serializes an account response for the page. A value that cannot be serialized is reported as the service being unavailable, the code the page already handles for a failed call.
+#[cfg(any(target_os = "ios", target_os = "android", target_os = "windows", test))]
 pub(crate) fn account_value<T: serde::Serialize>(
     value: T,
 ) -> Result<serde_json::Value, AccountError> {

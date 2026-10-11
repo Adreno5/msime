@@ -1,6 +1,7 @@
 #include "../../settings/CommunityPageModel.h"
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace msime::settings::community;
@@ -11,6 +12,13 @@ void check(bool condition, const char *what) {
     std::fprintf(stderr, "FAIL: %s\n", what);
     ++failures;
   }
+}
+// The Windows targets build as C++17, which has no std::wstring::starts_with or ends_with.
+bool starts_with(std::wstring_view value, std::wstring_view prefix) {
+  return value.substr(0, prefix.size()) == prefix;
+}
+bool ends_with(std::wstring_view value, std::wstring_view suffix) {
+  return value.size() >= suffix.size() && value.substr(value.size() - suffix.size()) == suffix;
 }
 } // namespace
 
@@ -68,7 +76,7 @@ int main() {
             L"内容包含不允许发布的词语，请修改后再提交",
         "moderation sentence");
   check(candidate_skin_message(L"community_invalid") == L"内容无效，请修改后重试。" &&
-            candidate_skin_message(L"community_invalid", true).starts_with(L"服务器未接受这款皮肤"),
+            starts_with(candidate_skin_message(L"community_invalid", true), L"服务器未接受这款皮肤"),
         "publish invalid");
   check(candidate_skin_message(L"candidate_skin_exists") == L"已存在同名皮肤，安装会整体替换它。",
         "exists");
@@ -102,11 +110,11 @@ int main() {
   check(join_dot({L"自然", L"", L"小鹿", L"v1"}) == L"自然 · 小鹿 · v1", "join");
 
   // 社区插件空列表的句子。
-  check(plugin_empty_notice(true, false, false, true).ends_with(L"查看更早发布的插件。"),
+  check(ends_with(plugin_empty_notice(true, false, false, true), L"查看更早发布的插件。"),
         "skipped pages");
   check(plugin_empty_notice(false, false, true, true) == L"你还没有发布过插件。", "mine empty");
   check(plugin_empty_notice(false, true, false, true) == L"没有匹配的插件。", "filtered empty");
-  check(plugin_empty_notice(false, false, false, true).starts_with(L"社区里还没有插件，"),
+  check(starts_with(plugin_empty_notice(false, false, false, true), L"社区里还没有插件，"),
         "publishable empty");
 
   // 社区词库与回复模板（community-resources.tsx）。

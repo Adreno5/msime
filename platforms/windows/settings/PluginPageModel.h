@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <cstddef>
+#include <cwchar>
 #include <optional>
 #include <set>
 #include <string>
@@ -692,15 +693,15 @@ inline constexpr std::size_t max_mention_key_bytes = 64;
 
 // UTF-16 码元数，即 JavaScript 的 String.length。
 inline std::size_t utf16_length(std::wstring_view value) {
-  // Windows 的 wchar_t 本来就是 UTF-16 码元；别处的 wchar_t 是码点，基本平面以外的一个算两个。
-  if constexpr (sizeof(wchar_t) == 2) {
-    return value.size();
-  } else {
-    std::size_t length = 0;
-    for (const wchar_t c : value)
-      length += static_cast<unsigned long>(c) > 0xFFFF ? 2 : 1;
-    return length;
-  }
+  // Windows 的 wchar_t 本来就是 UTF-16 码元；别处的 wchar_t 是码点，基本平面以外的一个算两个。用预处理而不是 if constexpr：非模板函数里被丢弃的分支照样编译，16 位 wchar_t 上 `> 0xFFFF` 恒假，MinGW 的 -Werror=type-limits 会报错。
+#if WCHAR_MAX <= 0xFFFF
+  return value.size();
+#else
+  std::size_t length = 0;
+  for (const wchar_t c : value)
+    length += static_cast<unsigned long>(c) > 0xFFFF ? 2 : 1;
+  return length;
+#endif
 }
 
 // JavaScript 的 String.prototype.trim 去掉的字符：空白和行终止符。

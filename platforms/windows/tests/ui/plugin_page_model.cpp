@@ -163,10 +163,10 @@ int main() {
   check(mention_list_issue({{L"a", L"Zhang"}}) ==
             L"第 1 行的拼音只能是小写字母，音节之间用 ' 分隔，例如 zhang'san。",
         "an upper-case key");
-  check(mention_list_issue({{L"a", L"zhang'"}}).has_value() &&
-            mention_list_issue({{L"a", L"'zhang"}}).has_value() &&
-            mention_list_issue({{L"a", L"zh''ang"}}).has_value(),
-        "stray separators");
+  // One check per list: GCC's -Wdangling-pointer misreads several initializer-list temporaries joined by && as escaping the expression.
+  check(mention_list_issue({{L"a", L"zhang'"}}).has_value(), "a trailing separator");
+  check(mention_list_issue({{L"a", L"'zhang"}}).has_value(), "a leading separator");
+  check(mention_list_issue({{L"a", L"zh''ang"}}).has_value(), "a doubled separator");
   check(mention_list_issue({{L"张三", L""}, {L"　张三 ", L""}}) == L"「张三」重复了。",
         "duplicates are compared trimmed");
   check(mention_list_issue({{std::wstring(200, L'a'), L""}}) == L"第 1 行太长了。", "too long");
