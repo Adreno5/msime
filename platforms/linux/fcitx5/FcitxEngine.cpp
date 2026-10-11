@@ -560,7 +560,6 @@ public:
     waitForPreferenceSave();
     online_socket_.clear();
     online_query_.clear();
-    for (auto &query : online_display_queries_) query.clear();
     online_job_session_ = 0;
     invalidateOnlineRequests();
     online_due_ = {};
@@ -1560,6 +1559,7 @@ public:
   void invalidateOnlineRequests() {
     ++online_epoch_;
     online_query_.clear();
+    for (auto &query : online_dispatched_queries_) query.clear();
     for (auto &slot : online_slots_) {
       // Provider workers are detached and their results are fenced by the
       // epoch. Drop the old handles here so a slow request from a previous
@@ -1595,7 +1595,7 @@ public:
   void clearOnlineCandidates(uint8_t source) {
     if (!session_ || source >= 2) return;
     view_ = response(msime_client_clear_online_candidates(session_, source)).at("view");
-    online_display_queries_[source].clear();
+    online_dispatched_queries_[source].clear();
   }
   static bool translationPreferencesChanged(const Json &before, const Json &after) {
     for (const auto *key : {"candidate_translations", "candidate_english_gloss",
@@ -2049,7 +2049,6 @@ public:
                 reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source));
             view_ = reply.at("view");
             applied = reply.value("applied", false);
-            online_display_queries_[source] = slot.query;
             render();
           }
           // AI 的网络请求落空（失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
@@ -2082,8 +2081,9 @@ public:
       for (uint8_t source = 0; source < 2; ++source) {
         const bool enabled = source == 0 ? cloud : ai;
         auto &slot = online_slots_[source];
-        if (!enabled || slot.job.valid()) continue;
-        // Windows AiAssistant shows a cached answer as soon as the input changes; only the network request waits for the idle delay. The probe never leaves the provider.
+        // shortcut: 同查询失败后等输入或配置变化再试；需要后台恢复时改为有界退避。
+        if (!enabled || slot.job.valid() || encoded == online_dispatched_queries_[source]) continue;
+        // AI 缓存探测立即显示旧答案；它不占用防抖后网络刷新的分发记录。
         const bool cacheOnly = source == 1 && changed;
         if (!cacheOnly && now < (source == 0 ? online_due_ : ai_due_)) continue;
         auto providerQuery = query;
@@ -2108,6 +2108,7 @@ public:
               result["query"] = encoded;
               return result;
             });
+        if (!cacheOnly) online_dispatched_queries_[source] = encoded;
       }
     } catch (...) {
       online_query_.clear();
@@ -2162,10 +2163,10 @@ public:
         [query, encoded, gloss, offline, local, socket, dictionary, resources = resources_] () mutable {
           if (offline) {
             try {
-              local = response(msime_client_candidate_gloss_request(
+              local = preferOnline(response(msime_client_candidate_gloss_request(
                   reinterpret_cast<const uint8_t *>(gloss.data()), gloss.size(),
                   reinterpret_cast<const uint8_t *>(resources.data()), resources.size()))
-                  .value("translations", Json::array());
+                  .value("translations", Json::array()), local);
             } catch (...) {} // A missing local dictionary must not prevent online fallback.
           } else if (!socket.empty()) {
             auto transport = query;
@@ -2254,10 +2255,13 @@ public:
             result.is_object() &&
             (result.value("query", "") == encodedQuery || manual_query_matches) &&
             result.value("_socket", std::string{}) == translation_socket_) {
-          const auto encoded = result.value("translations", Json::array()).dump();
-          view_ = response(msime_client_apply_translations(
-              session_, msime::linux_host::strict_json_required_integer<uint64_t>(query.at("generation")), reinterpret_cast<const uint8_t *>(encoded.data()),
-              encoded.size())).at("view");
+          const auto translations = result.value("translations", Json::array());
+          if (!translations.empty()) {
+            const auto encoded = translations.dump();
+            view_ = response(msime_client_apply_translations(
+                session_, msime::linux_host::strict_json_required_integer<uint64_t>(query.at("generation")), reinterpret_cast<const uint8_t *>(encoded.data()),
+                encoded.size())).at("view");
+          }
           render();
           if (result.value("continue_online", false)) {
             startTranslation(query, false, result.at("translations"));
@@ -3670,7 +3674,7 @@ public:
   std::string space_convert_preceding_;
   uint8_t punctuation_lock_ = 0;
   std::string online_socket_, online_query_;
-  std::array<std::string, 2> online_display_queries_;
+  std::array<std::string, 2> online_dispatched_queries_;
   uint64_t online_job_session_ = 0;
   struct OnlineSlot {
     std::shared_future<Json> job;

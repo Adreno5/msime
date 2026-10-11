@@ -469,7 +469,8 @@ bool msime_client_niutrans_translation_reply_failed(const uint8_t *body, size_t 
 /* Provider body <=1 MiB. Returns translation string <=4096 bytes or null when
  * malformed/no result. No session mutation; host validates original identity. */
 char *msime_client_parse_custom_translation_response(const uint8_t *body, size_t length);
-/* Apply JSON [{"text":"candidate","translation":"gloss"}] for a candidate generation. */
+/* 同代次的非空 JSON [{"text":"candidate","translation":"gloss"}] 合并候选释义。
+ * [] 主动清空；宿主异步无结果时跳过调用，旧代次不应用。 */
 char *msime_client_apply_translations(uint64_t session, uint64_t generation,
                                       const uint8_t *translations, size_t length);
 /* Resolve copied candidates against the packaged offline English dictionary.

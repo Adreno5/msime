@@ -2784,6 +2784,7 @@ public final class MSIMEInputService extends InputMethodService {
             translations = mergedCandidateGlosses(token.generation(), false).toString();
         }
         try {
+            if (new JSONArray(translations).length() == 0) return;
             JSONObject applied = value(NativeClient.applyTranslations(
                 token.session(), token.generation(), translations));
             if (!CandidateGlossPolicy.isApplied(applied.opt("applied"))) return;
