@@ -592,6 +592,7 @@ void ServerSession::set_field_traits(uint32_t traits) {
 void ServerSession::set_commit_observe_only(bool observe_only) noexcept {
   // 错线程时 FFI 自己返回 0、什么都不改，这里不再抛出：清标志的一方在析构里调用。
   (void)msime_client_set_lifecycle(session_, lifecycle_flags(observe_only));
+  commit_observe_only_ = observe_only;
 }
 uint32_t ServerSession::typing_effect(uint32_t event) {
   check_thread();

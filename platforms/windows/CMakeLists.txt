@@ -1166,9 +1166,10 @@ add_executable(windows-input-queue tests/input/input_queue.cpp)
 target_link_libraries(windows-input-queue PRIVATE msime-windows-input)
 add_test(NAME windows-input-queue COMMAND windows-input-queue)
 set_tests_properties(windows-input-queue PROPERTIES TIMEOUT 30)
-# 接入生命周期核心后宿主库的调用顺序：测试自己实现 Server 用到的 msime_client_* 并逐条记录，所以直接编 Server 的源文件，不链共享宿主库。
+# 接入生命周期核心后宿主库的调用顺序：测试自己实现 Server 用到的 msime_client_* 并逐条记录，所以直接编 Server 的源文件（含 InputState，核对字段属性记在客户端上），不链共享宿主库。
 add_executable(windows-lifecycle-call-order tests/input/lifecycle_call_order.cpp src/input/FocusedSession.cpp
-               src/ipc/ServerSession.cpp src/ipc/ReplyComposer.cpp src/input/ChineseTextConversion.cpp)
+               src/input/InputQueue.cpp src/ipc/ServerSession.cpp src/ipc/ReplyComposer.cpp
+               src/input/ChineseTextConversion.cpp)
 target_include_directories(windows-lifecycle-call-order PRIVATE src ../../crates/host-api/include ../../shared/contracts)
 target_link_libraries(windows-lifecycle-call-order PRIVATE msime-windows-replies nlohmann_json::nlohmann_json Threads::Threads)
 if(MSVC)

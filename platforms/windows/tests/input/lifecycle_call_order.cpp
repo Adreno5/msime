@@ -1,6 +1,8 @@
-// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退用命令 19；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。
+// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎，激活时也先报属性再 set_active（全屏前台的判断由测试注入，好让属性在两次调用之间变化）；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏（韩文、整句改字、本地回车）前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退用命令 19；上屏特效只在上屏真的进了文档时发布，部分选词暂存的那一段和宿主合成的上屏都不发布；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。最后经 InputState 核对 TIP 报的属性记在客户端上，词库维护后重建的会话也拿得到。
 #include "FocusedSession.h"
+#include "InputQueue.h"
 #include "LifecyclePolicy.h"
+#include "TypingEffectSignal.h"
 #include "msime_client.h"
 
 #include <cstdlib>
@@ -34,6 +36,12 @@ uint32_t fake_scheme = 0;
 std::string fake_conversion;
 uint64_t fake_generation = 1;
 uint32_t fake_lifecycle = 0;
+// 下一次选词只用掉一部分读音时剩下的字母（部分选词）；空时整段上屏。
+std::string fake_partial_left;
+// 注入给 FocusedSession 的「全屏应用在前台」。
+bool fake_fullscreen = false;
+// InputState 建的会话用真实的前台窗口判断全屏，比较时去掉 FULLSCREEN 位。
+bool mask_fullscreen = false;
 
 void record(const char *name, uint64_t value = 0) { calls.push_back({name, value}); }
 
@@ -74,14 +82,14 @@ char *transition(const nlohmann::json &commit) {
   return answer(value);
 }
 
-// 只留和生命周期有关的调用；连续两次相同的字段属性（全屏前台判断没变）只算一次。全屏位取决于跑测试时的前台窗口，比较时去掉。
+// 只留和生命周期有关的调用；连续两次相同的字段属性只算一次。
 std::vector<std::string> trace() {
   std::vector<std::string> result;
-  uint64_t traits = 0;
+  std::optional<uint64_t> traits;
   for (const auto &call : calls) {
     if (call.name == "set_field_traits") {
-      const auto masked = call.value & ~uint64_t{MSIME_TRAIT_FULLSCREEN};
-      if (masked == traits)
+      const auto masked = mask_fullscreen ? call.value & ~uint64_t{MSIME_TRAIT_FULLSCREEN} : call.value;
+      if (traits == masked)
         continue;
       traits = masked;
       result.push_back("set_field_traits:" + std::to_string(masked));
@@ -156,6 +164,10 @@ char *msime_client_command(uint64_t, uint32_t command) {
   nlohmann::json commit = nullptr;
   if (command == MSIME_COMMIT_CANDIDATE && !fake_editing.empty()) {
     commit = "啊";
+    fake_editing = fake_partial_left;
+    fake_partial_left.clear();
+  } else if (command == MSIME_COMMIT_RAW && !fake_editing.empty()) {
+    commit = fake_editing;
     fake_editing.clear();
   } else if (command == MSIME_CANCEL || command == MSIME_CANCEL_AFTER_HOST_COMMIT) {
     fake_editing.clear();
@@ -249,6 +261,8 @@ int main() {
       FocusedSession focused(gate, client, R"({"preferences":{}})");
       focused.set_typing_statistics_sink(
           [&](const std::string &text, TypingSource) { recorded.push_back(text); });
+      focused.set_fullscreen_check([] { return fake_fullscreen; });
+      auto &effects = TypingEffectSignal::instance();
       // 会话一建好就选择加入，不等第一次激活。
       EXPECT_TRACE({"create:0", "set_lifecycle:" + std::to_string(lifecycle_flags())});
 
@@ -267,6 +281,16 @@ int main() {
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:0", "character:97"});
 
+      // 全屏应用到了前台：下一个键先报 FULLSCREEN（旧 TIP，属性仍未知），再报按键，然后才派发；离开全屏也一样排在按键前面。
+      fake_fullscreen = true;
+      REQUIRE(focused.configured_key(lease, key('A', u'a', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"set_field_traits:" + std::to_string(MSIME_TRAIT_FULLSCREEN), "key:0", "character:97"});
+      fake_fullscreen = false;
+      REQUIRE(focused.configured_key(lease, key('A', u'a', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"set_field_traits:0", "key:0", "character:97"});
+
       // 新 TIP 报来密码框，又报回普通字段：每次都立刻交给核心，带 KNOWN；核心据此关掉或放回背景音乐。
       focused.set_field_traits(FanyImeFieldTraits::Secure);
       focused.set_field_traits(FanyImeFieldTraits::Secure);
@@ -274,11 +298,29 @@ int main() {
       EXPECT_TRACE({"set_field_traits:" + std::to_string(MSIME_TRAIT_SECURE | MSIME_TRAIT_KNOWN),
                     "set_field_traits:" + std::to_string(MSIME_TRAIT_KNOWN)});
 
-      // 空格上屏：按键音先于引擎，上屏音由核心在派发里出，确认送达时只记统计，宿主不再调 commit_sound。
+      // 空格上屏：按键音先于引擎，上屏音由核心在派发里出，确认送达时只记统计，宿主不再调 commit_sound。候选窗拿到的是回复里核心算好的上屏特效，打上上屏标记。
+      (void)effects.take();
       REQUIRE(focused.configured_key(lease, key(0x20, u' ', request), TsfPreeditStyle::Pinyin, {}).has_value());
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:1", "command:" + std::to_string(MSIME_COMMIT_CANDIDATE)});
       REQUIRE(recorded == std::vector<std::string>{"啊"});
+      REQUIRE(effects.take() == typing_effect_mark_commit((1u << 17) | 3u));
+
+      // 部分选词：选中的一段留在 Server 的前缀里、没进文档，不画上屏特效（那次回复里的特效为 0 时还会把连击徽标清零），候选窗只拿到按键的特效；整段送出的那次才画。
+      REQUIRE(focused.configured_key(lease, key('N', u'n', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      calls.clear();
+      fake_partial_left = "x";
+      (void)effects.take();
+      REQUIRE(focused.configured_key(lease, key(0x20, u' ', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"key:1", "command:" + std::to_string(MSIME_COMMIT_CANDIDATE)});
+      REQUIRE(effects.take() == ((1u << 17) | 1u));
+      REQUIRE(focused.configured_key(lease, key(0x20, u' ', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"key:1", "command:" + std::to_string(MSIME_COMMIT_CANDIDATE)});
+      REQUIRE(effects.take() == typing_effect_mark_commit((1u << 17) | 3u));
+      REQUIRE(recorded == std::vector<std::string>({"啊", "啊啊"}));
 
       // 按住不放的自动重复带 MSIME_KEY_REPEAT。
       auto repeated = key('B', u'b', request);
@@ -287,13 +329,15 @@ int main() {
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:" + std::to_string(lifecycle_key(0, true)), "character:98"});
 
-      // 以词定字选不出首字时，Server 自己取字写进文档、用命令 19 丢弃组字：那是宿主合成的上屏，核心不出上屏音。
+      // 以词定字选不出首字时，Server 自己取字写进文档、用命令 19 丢弃组字：那是宿主合成的上屏，核心不出上屏音，也不画上屏特效。命令 19 那次回复里「没有上屏」的特效已经去掉，候选窗最后拿到的仍是按键的特效，不是一个清零连击的 0。
+      (void)effects.take();
       REQUIRE(focused
                   .configured_key(lease, key(0xDB, u'[', request), TsfPreeditStyle::Pinyin, {}, std::nullopt,
                                   WordCharacterBinding::Brackets)
                   .has_value());
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:0", "select_edge:0", "command:" + std::to_string(MSIME_CANCEL_AFTER_HOST_COMMIT)});
+      REQUIRE(effects.take() == ((1u << 17) | 1u));
 
       // 交给应用的键（Aux 管道）：带 PASSTHROUGH，不派发，也不开新的一轮。
       REQUIRE(focused.passthrough_key(token, 3));
@@ -311,7 +355,7 @@ int main() {
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:0", "set_lifecycle:" + std::to_string(lifecycle_flags(true)), "character:107",
                     "set_lifecycle:" + std::to_string(lifecycle_flags())});
-      REQUIRE(recorded == std::vector<std::string>({"啊", "啊", "r"}));
+      REQUIRE(recorded == std::vector<std::string>({"啊", "啊啊", "啊", "r"}));
       fake_scheme = 0;
       REQUIRE(focused.cancel_composition(lease));
       calls.clear();
@@ -328,6 +372,18 @@ int main() {
                     "set_lifecycle:" + std::to_string(lifecycle_flags())});
       fake_conversion.clear();
 
+      // 本地回车（ReplyPath::LocalCommit）：TIP 已经把读音原样写进文档，这次 MSIME_COMMIT_RAW 的上屏同样只能观察。是不是这条路径要等路由选定才知道，所以由 ReplyComposer::dispatch 打开。
+      REQUIRE(focused.configured_key(lease, key('G', u'g', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      calls.clear();
+      REQUIRE(focused.configured_key(lease, key(0x0D, u'\r', request), TsfPreeditStyle::Pinyin, {}, std::string("g"))
+                  .has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"key:2", "set_lifecycle:" + std::to_string(lifecycle_flags(true)),
+                    "command:" + std::to_string(MSIME_COMMIT_RAW),
+                    "set_lifecycle:" + std::to_string(lifecycle_flags())});
+      REQUIRE(recorded.back() == "g");
+
       // 鼠标点选：先报 MSIME_KEY_POINTER 开启新的一轮，再派发。
       REQUIRE(focused.configured_key(lease, key('D', u'd', request), TsfPreeditStyle::Pinyin, {}).has_value());
       REQUIRE(focused.confirm(lease, request++));
@@ -338,8 +394,45 @@ int main() {
       // 失去焦点：先交还音乐所有权，再让会话失焦。
       REQUIRE(focused.cancel(lease));
       EXPECT_TRACE({"set_active:0", "focus:0"});
+
+      // 再次获得焦点时全屏应用在前台：先报属性，再成为背景音乐的所有者，核心据此不放音乐。
+      fake_fullscreen = true;
+      const auto again = gate.begin(ticket, token + 1);
+      REQUIRE(again.has_value());
+      REQUIRE(focused.prepare(again->pending));
+      REQUIRE(gate.acknowledge(again->pending, [] { return true; }));
+      EXPECT_TRACE({"focus:1", "set_field_traits:" + std::to_string(MSIME_TRAIT_KNOWN | MSIME_TRAIT_FULLSCREEN),
+                    "set_active:1"});
+      REQUIRE(focused.cancel(again->pending));
+      EXPECT_TRACE({"set_active:0", "focus:0"});
+      fake_fullscreen = false;
     }
     // 销毁时核心自己关掉这个会话放的音乐，Server 不再调 music_set_active。
+    EXPECT_TRACE({"destroy:0"});
+
+    // TIP 报的字段属性记在客户端上，不要求持有焦点；连接换过之后旧票据报来的不算；词库维护丢掉会话、之后重建时，新会话一建好就拿到记下的属性。这里的会话用真实的前台窗口判断全屏，比较时去掉 FULLSCREEN。
+    mask_fullscreen = true;
+    {
+      FocusGate gate;
+      InputState state(gate, 4, R"({"preferences":{}})");
+      const PipeTicket ticket{client, {1, 2, 3}};
+      REQUIRE(state.connected(ticket).accepted);
+      EXPECT_TRACE({"create:0", "set_lifecycle:" + std::to_string(lifecycle_flags())});
+      FanyImeNamedpipeData traits{};
+      traits.event_type = FanyImePipeEventType::FieldTraits;
+      traits.client_id = client;
+      traits.keycode = FanyImeFieldTraits::Secure;
+      REQUIRE(state.set_field_traits(ticket, traits));
+      EXPECT_TRACE({"set_field_traits:" + std::to_string(MSIME_TRAIT_SECURE | MSIME_TRAIT_KNOWN)});
+      traits.keycode = 0;
+      REQUIRE(!state.set_field_traits(PipeTicket{client, {1, 2, 4}}, traits));
+      EXPECT_TRACE({});
+      REQUIRE(state.quiesce_dictionaries() == 1);
+      EXPECT_TRACE({"destroy:0"});
+      REQUIRE(state.resume_dictionaries() == 1);
+      EXPECT_TRACE({"create:0", "set_lifecycle:" + std::to_string(lifecycle_flags()),
+                    "set_field_traits:" + std::to_string(MSIME_TRAIT_SECURE | MSIME_TRAIT_KNOWN)});
+    }
     EXPECT_TRACE({"destroy:0"});
     std::cout << "Windows lifecycle call order checks passed\n";
     return 0;

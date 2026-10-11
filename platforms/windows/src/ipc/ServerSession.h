@@ -116,9 +116,10 @@ public:
     check_thread();
     return field_traits_;
   }
-  // TIP 已经从自己的宿主会话把文字写进文档的那一次派发前后开关 COMMIT_OBSERVE_ONLY（msime_client_set_lifecycle）：这些上屏只能观察、不能改写。只设标志，不会抛出。
+  // TIP 已经从自己的宿主会话把文字写进文档的那一次派发前后开关 COMMIT_OBSERVE_ONLY（msime_client_set_lifecycle）：这些上屏只能观察、不能改写。只设标志，不会抛出。平时经 CommitObserveOnly 开关。
   void set_commit_observe_only(bool observe_only) noexcept;
-  // The typing effect of one key or commit (msime_client_typing_effect): the packed combo count, tier-up bit and effect style the candidate window draws, 0 when effects and the combo counter are both off. 会话开着 FEEDBACK 时事件 0-4 由核心产生，这里只剩事件 5（绕过按键音的删除）还有意义。
+  bool commit_observe_only() const noexcept { return commit_observe_only_; }
+  // 一个键或一次上屏的打字特效（msime_client_typing_effect）：候选窗要画的连击数、升档位和特效样式打包在一起，特效和连击都关着时为 0。会话开着 FEEDBACK 时事件 0-4 由核心产生，这里只剩事件 5（绕过按键音的删除）还有意义。
   uint32_t typing_effect(uint32_t event);
   // The resolved typing effect (msime_client_typing_effect_settings) as Windows draws it: read when the session gains the focus and after each preference update, never per key, so the packed word the key path publishes is ready.
   const TypingEffectSettings &typing_effect_settings() const {
@@ -148,8 +149,28 @@ private:
   nlohmann::json preferences_ = nlohmann::json::object();
   bool lifecycle_active_ = false;
   uint32_t field_traits_ = 0;
+  bool commit_observe_only_ = false;
   TypingEffectSettings typing_effect_settings_{};
   TypingEffectPalette typing_effect_palette_{};
   void refresh_typing_effect_settings();
+};
+
+// TIP 已经从自己的宿主会话把文字写进文档的那一次派发：派发前打开 COMMIT_OBSERVE_ONLY，离开作用域时关掉，派发抛出也一样。可以嵌套：外层已经打开时，内层什么都不做，也不会提前关掉外层的。
+class CommitObserveOnly final {
+public:
+  CommitObserveOnly(ServerSession &session, bool active)
+      : session_(active && !session.commit_observe_only() ? &session : nullptr) {
+    if (session_)
+      session_->set_commit_observe_only(true);
+  }
+  ~CommitObserveOnly() {
+    if (session_)
+      session_->set_commit_observe_only(false);
+  }
+  CommitObserveOnly(const CommitObserveOnly &) = delete;
+  CommitObserveOnly &operator=(const CommitObserveOnly &) = delete;
+
+private:
+  ServerSession *session_;
 };
 } // namespace msime::windows

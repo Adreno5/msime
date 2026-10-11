@@ -266,6 +266,11 @@ const PendingReply &ReplyComposer::dispatch(
         !local_text || *local_text != prefix_ + raw)
       throw std::invalid_argument("Invalid local commit observation");
   }
+  // 这几条路径的上屏 TIP 已经从自己的宿主会话写进了文档（本地回车、整句改字的回车、韩文音节），派发前后打开 COMMIT_OBSERVE_ONLY：只能观察、不能改写。FocusedSession 按方案和整句改字已经打开时，这里什么都不做。
+  const CommitObserveOnly observe(
+      session, session.input_enabled() &&
+                   (path == ReplyPath::LocalCommit || path == ReplyPath::ConversionCommit ||
+                    path == ReplyPath::SyllableCommit));
   const auto action = translate_key(packet);
   const bool candidate_enter =
       path == ReplyPath::Selection && action.kind == KeyKind::Command &&

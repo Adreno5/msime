@@ -36,6 +36,8 @@ public:
   void set_typing_statistics_sink(TypingStatisticsSink sink) {
     statistics_ = std::move(sink);
   }
+  // 换掉「全屏应用在前台」的判断（默认看 GetForegroundWindow）。测试用它让 FULLSCREEN 在两次调用之间变化，核对属性先于按键、先于激活报给核心。
+  void set_fullscreen_check(std::function<bool()> check) { fullscreen_check_ = std::move(check); }
   bool prepare(const FocusLease &lease);
   // No operation may invalidate a key reply awaiting transport confirmation.
   std::optional<nlohmann::json> dedicated_english(const FocusLease &lease, bool exit);
@@ -164,5 +166,7 @@ private:
   ContinuationHide continuation_hide_;
   // TIP 最近一次报的字段属性；旧 TIP 没协商到 FieldTraits，一直为空。
   std::optional<uint32_t> tip_field_traits_;
+  // 空时用 foreground_is_fullscreen(GetForegroundWindow())。
+  std::function<bool()> fullscreen_check_;
 };
 } // namespace msime::windows

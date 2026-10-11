@@ -14,25 +14,6 @@
 #include "FullscreenForeground.h"
 
 namespace msime::windows {
-namespace {
-// TIP 已经从自己的宿主会话把文字写进文档的那一次派发：派发前打开 COMMIT_OBSERVE_ONLY，离开作用域时关掉，派发抛出也一样。
-class CommitObserveOnly final {
-public:
-  CommitObserveOnly(ServerSession &session, bool active) : session_(active ? &session : nullptr) {
-    if (session_)
-      session_->set_commit_observe_only(true);
-  }
-  ~CommitObserveOnly() {
-    if (session_)
-      session_->set_commit_observe_only(false);
-  }
-  CommitObserveOnly(const CommitObserveOnly &) = delete;
-  CommitObserveOnly &operator=(const CommitObserveOnly &) = delete;
-
-private:
-  ServerSession *session_;
-};
-} // namespace
 std::string
 FocusedSession::typing_statistics_directory(const std::string &options) {
   try {
@@ -622,7 +603,7 @@ std::optional<PendingReply> FocusedSession::configured_key(
         publish_typing_effect(session_.key(
             lifecycle_key(*key_class, (packet.modifiers_down & PipeMetadata::AutoRepeat) != 0)));
     {
-      // TIP 已经从自己的宿主会话把这次的上屏写进文档（韩文、注音、越南文、藏文，整句改字）：这次派发的上屏只能观察。上屏音只来自 Server 这一个会话的核心，TIP 的会话不选择加入，所以同一次上屏不会响两遍。
+      // TIP 已经从自己的宿主会话把这次的上屏写进文档（韩文、注音、越南文、藏文，整句改字）：这次派发的上屏只能观察。本地回车（ReplyPath::LocalCommit）要等路由选定才知道，由 ReplyComposer::dispatch 自己打开。上屏音只来自 Server 这一个会话的核心，TIP 的会话不选择加入，所以同一次上屏不会响两遍。
       const CommitObserveOnly observe(session_, session_.input_enabled() && tip_writes_commits(session_.view()));
       result = composer_->configured_key(session_, packet, lease.epoch, style,
                                          bindings, std::move(local_text),
@@ -636,8 +617,8 @@ std::optional<PendingReply> FocusedSession::configured_key(
 }
 void FocusedSession::refresh_field_traits() {
   // 全屏应用在前台（游戏、视频、演示，用户没想在那里听打字声）作为 FULLSCREEN 交给核心：声音和背景音乐静音，特效和连击照常。
-  session_.set_field_traits(
-      server_field_traits(tip_field_traits_, foreground_is_fullscreen(GetForegroundWindow())));
+  const bool fullscreen = fullscreen_check_ ? fullscreen_check_() : foreground_is_fullscreen(GetForegroundWindow());
+  session_.set_field_traits(server_field_traits(tip_field_traits_, fullscreen));
 }
 void FocusedSession::set_field_traits(uint32_t traits) {
   check_thread();
@@ -650,6 +631,9 @@ void FocusedSession::publish_typing_effect(uint32_t packed) {
 }
 void FocusedSession::publish_commit_feedback(const std::optional<PendingReply> &reply) {
   if (!reply)
+    return;
+  // 部分选词那一段还留在前缀里、没进文档（committed_text 为空），核心在 HOST_HOLDS_PIECES 下也不为它出声，这里同样不画，否则那次回复里为 0 的特效会把连击徽标清零；整段送出的那次再画。
+  if (!reply->committed_text)
     return;
   // 上屏不计连击，只报告当前状态；打上上屏标记，界面线程画加倍的火花和更长的闪光。
   if (const auto effect = commit_feedback(reply->source.transition))
