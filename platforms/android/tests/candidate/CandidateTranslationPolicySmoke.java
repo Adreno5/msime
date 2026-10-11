@@ -1,3 +1,4 @@
+import app.msime.android.CandidateGlossPolicy;
 import app.msime.android.CandidateTranslationPolicy;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -121,6 +122,13 @@ public final class CandidateTranslationPolicySmoke {
             "the 훈음 takes its own row under the Hanja");
         check(CandidateTranslationPolicy.renderedOwnRowLines("나라 이름 한\nKorea\n韓国") == 4,
             "each gloss row follows the 훈음 row");
+        // #6997：辅助码和释义共用一行，候选条为释义预留的行数不用知道辅助码在不在，切方案、开关辅助码时键盘不变高。
+        check(CandidateTranslationPolicy.renderedOwnRowLines(CandidateGlossPolicy.annotation("(ab)", "my; mine", true))
+                == CandidateTranslationPolicy.renderedOwnRowLines(CandidateGlossPolicy.annotation("", "my; mine", true)),
+            "a helpcode before the gloss adds no row");
+        check(CandidateTranslationPolicy.renderedOwnRowLines(CandidateGlossPolicy.annotation("(ab)", "my\nmon", true))
+                == CandidateTranslationPolicy.renderedOwnRowLines(CandidateGlossPolicy.annotation("", "my\nmon", true)),
+            "a helpcode before two target glosses adds no row");
         check(CandidateTranslationPolicy.reservedGlossRows(0, false) == 0
                 && CandidateTranslationPolicy.reservedGlossRows(1, false) == 1
                 && CandidateTranslationPolicy.reservedGlossRows(2, false) == 2,
