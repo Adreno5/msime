@@ -344,7 +344,7 @@ public final class MSIMEInputService extends InputMethodService {
     private InputConnection caretAnchorConnection;
     /** 这个输入框答应报告光标位置（`requestCursorUpdates` 返回真）；拒绝的输入框候选栏照旧停在底部。 */
     private boolean caretAnchorsReported;
-    /** 最近一次收到的光标位置（屏幕坐标，像素）：有组字时取组字第一个字的外框，否则取插入点。 */
+    /** 最近一次收到的光标位置（屏幕坐标，像素）：有组字时左边取组字第一个字，上下取整段组字和插入点所占的行；没有组字时取插入点。 */
     private boolean caretAnchorKnown;
     private float caretAnchorLeft;
     private float caretAnchorTop;
@@ -7648,7 +7648,7 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 编辑器报来光标位置（{@link #synchronizeCursorUpdates} 要的）：有组字时取组字第一个字的外框，否则取插入点，经 `getMatrix()` 换成屏幕坐标记下，候选栏跟着挪。这一次因为没有位置退回了底部的，空闲时回到光标旁（{@link CaretCandidatePolicy#dockedAfterAnchor}）。
+     * 编辑器报来光标位置（{@link #synchronizeCursorUpdates} 要的）：有组字时左边取组字第一个字，上下取整段组字和插入点所占的行（组字折行时候选栏放在最后一行下方或第一行上方），否则取插入点，经 `getMatrix()` 换成屏幕坐标记下，候选栏跟着挪。这一次因为没有位置退回了底部的，空闲时回到光标旁（{@link CaretCandidatePolicy#dockedAfterAnchor}）。
      */
     @Override public void onUpdateCursorAnchorInfo(android.view.inputmethod.CursorAnchorInfo info) {
         super.onUpdateCursorAnchorInfo(info);
@@ -7658,6 +7658,19 @@ public final class MSIMEInputService extends InputMethodService {
         android.graphics.RectF bounds;
         if (character != null) {
             bounds = new android.graphics.RectF(character);
+            // 左边对齐组字起点，上下边取整段组字和插入点所占的行：组字折到下一行时（笔画字形、超过一行宽的拼音），只按第一个字摆，候选栏会压在后面几行的组字和插入点上。
+            CharSequence composing = info.getComposingText();
+            int composingEnd = composingStart + (composing == null ? 0 : composing.length());
+            for (int index = composingStart + 1; index < composingEnd; index++) {
+                android.graphics.RectF next = info.getCharacterBounds(index);
+                if (next == null) continue;
+                bounds.top = Math.min(bounds.top, next.top);
+                bounds.bottom = Math.max(bounds.bottom, next.bottom);
+            }
+            if (!Float.isNaN(info.getInsertionMarkerHorizontal())) {
+                bounds.top = Math.min(bounds.top, info.getInsertionMarkerTop());
+                bounds.bottom = Math.max(bounds.bottom, info.getInsertionMarkerBottom());
+            }
         } else {
             float x = info.getInsertionMarkerHorizontal();
             // 这一次既没有组字外框也没有插入点（编辑器还没排版好）：保留上一次的位置。

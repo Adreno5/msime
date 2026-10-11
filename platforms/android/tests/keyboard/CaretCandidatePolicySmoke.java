@@ -69,6 +69,10 @@ public final class CaretCandidatePolicySmoke {
             "neither side fits: more room above, clamped to the top");
         check(CaretCandidatePolicy.y(-500f, -460f, 120, 60, 2000, 8) == 60, "caret scrolled above the window");
         check(CaretCandidatePolicy.y(2400f, 2440f, 120, 60, 2000, 8) == 1880, "caret scrolled below the window");
+        // 组字折行：位置的上下边是整段组字所占的行（300–340 与 340–380 两行），候选栏放在最后一行下方，翻到上方时在第一行上方。
+        check(CaretCandidatePolicy.y(300f, 380f, 120, 60, 2000, 8) == 388, "below the last line of a wrapped composition");
+        check(CaretCandidatePolicy.y(1840f, 1920f, 120, 60, 2000, 8) == 1712,
+            "above the first line of a wrapped composition near the bottom");
         check(CaretCandidatePolicy.y(Float.NaN, 340f, 120, 60, 2000, 8) == 1880, "unknown anchor sits at the bottom");
         check(CaretCandidatePolicy.y(300f, 340f, 3000, 60, 2000, 8) == 60, "taller than the window starts at the top");
         System.out.println("Android caret candidates: activation, docking, visibility, window and placement passed");

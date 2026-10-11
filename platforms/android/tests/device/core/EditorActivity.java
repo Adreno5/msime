@@ -62,6 +62,14 @@ public final class EditorActivity extends Activity {
         noCursorAnchor.setHint("Editor that reports no cursor position");
         showImeOnFocus(noCursorAnchor);
         layout.addView(noCursorAnchor);
+        // 窄的多行输入框：一段长组字放不下一行，折到下一行（#6792 候选栏跟随光标要放在组字最后一行下方）。
+        EditText wrapping = new EditText(this);
+        wrapping.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        wrapping.setContentDescription("msime-test-wrapping");
+        wrapping.setHint("Wrap");
+        showImeOnFocus(wrapping);
+        layout.addView(wrapping, new LinearLayout.LayoutParams(
+            Math.round(120 * getResources().getDisplayMetrics().density), LinearLayout.LayoutParams.WRAP_CONTENT));
         setContentView(layout);
     }
 

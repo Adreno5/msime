@@ -18,7 +18,7 @@ import java.util.function.Predicate;
 import org.json.JSONObject;
 
 /**
- * 「物理键盘时候选栏跟随光标」（#6792）的设备验收：打开本地设置后，用实体键盘打字时候选栏出现在输入框旁边而不是屏幕底部；空闲时什么也不显示，点输入框落到应用上；不报告光标位置的输入框退回停在底部的候选条；空闲时输入法窗口收起，按一下返回键应用就返回。
+ * 「物理键盘时候选栏跟随光标」（#6792）的设备验收：打开本地设置后，用实体键盘打字时候选栏出现在输入框旁边而不是屏幕底部；空闲时什么也不显示，点输入框落到应用上；不报告光标位置的输入框退回停在底部的候选条；组字折行时候选栏在最后一行下方；空闲时输入法窗口收起，按一下返回键应用就返回。
  *
  * <p>宿主只把来自非虚拟、字母型键盘设备的按下当成实体键盘打字（`HardwareKeyboardModePolicy.physicalTyping`），`adb shell input` 的虚拟设备不算，而专用 AVD 自带的 `qwerty2` 在 `hw.keyboard=no` 时不是字母型。所以安卓 12（API 31）起用系统的 `uinput` 命令接上一块 USB 键盘：它是真的 evdev 设备，系统像对待蓝牙、USB 键盘一样报告「接着实体键盘」，测试结束关掉 `uinput` 就是拔掉。更早的系统只能用 `hw.keyboard=yes` 的 AVD 自带键盘，没有就失败并说明原因。按键以这块键盘的设备号注入。
  */
@@ -30,7 +30,7 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
     private FileOutputStream uinputInput;
 
     @Override protected String successDescription() {
-        return "candidate strip beside the caret for physical typing, nothing drawn while idle, the bottom strip for an editor without cursor anchors, and one back press leaving an idle editor";
+        return "candidate strip beside the caret for physical typing, nothing drawn while idle, the bottom strip for an editor without cursor anchors, the strip below a wrapped composition, and one back press leaving an idle editor";
     }
 
     @Override protected void runChecks() throws Exception {
@@ -91,6 +91,34 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
                     + candidate + ", screen height " + screenHeight);
             type(keyboard, KeyEvent.KEYCODE_SPACE);
             await(field("msime-test-no-cursor-anchor").and(node -> equalsText("你好", node.getText())));
+
+            // 组字折到下一行：候选栏放在组字最后一行下方，不压在折下去的组字和插入点上。这个输入框 120 dp 宽，20 个字母的拼音一行放不下。
+            stage = "wrapped composition focus";
+            tap(field("msime-test-wrapping"));
+            await(field("msime-test-wrapping").and(AccessibilityNodeInfo::isFocused));
+            stage = "strip below a wrapped composition";
+            for (int run = 0; run < 4; run++)
+                type(keyboard, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_I, KeyEvent.KEYCODE_H, KeyEvent.KEYCODE_A,
+                    KeyEvent.KEYCODE_O);
+            candidate = bounds(imeCandidate("你好"));
+            Rect wrapping = bounds(field("msime-test-wrapping"));
+            // 输入框确实折成了不止一行（单行输入框的高度作参照），候选栏顶边在最后一行的下半之下；只按第一个字摆时它落在第一行下方，也就是第二行上。
+            // 多出来的一行只加行高、不加内边距，所以两行的输入框比单行高出不到一半。
+            if (wrapping.height() < plain.height() * 5 / 4)
+                throw new AssertionError("Composition did not wrap: editor " + wrapping + ", one line " + plain);
+            if (candidate.top < wrapping.bottom - plain.height() / 2)
+                throw new AssertionError("Candidate strip covers the wrapped composition: candidate " + candidate
+                    + ", editor " + wrapping + ", one line " + plain);
+            stage = "wrapped composition commit";
+            // 首选可能只取了前面一段，剩下的拼音还在组字（输入框里还有字母）；空格选到组字全部上屏为止。
+            for (int attempt = 0; attempt < 4; attempt++) {
+                type(keyboard, KeyEvent.KEYCODE_SPACE);
+                SystemClock.sleep(300);
+                AccessibilityNodeInfo editor = findVisible(field("msime-test-wrapping"));
+                if (editor != null && editor.getText() != null && !hasLetter(editor.getText())) break;
+            }
+            await(field("msime-test-wrapping").and(node -> node.getText() != null
+                && node.getText().toString().startsWith("你好") && !hasLetter(node.getText())));
 
             // 回到报告位置的输入框、空闲：整个输入法窗口收起，没有看不见的窗口去接第一下返回键，按一下应用就返回。
             stage = "idle caret mode hides the window";
@@ -186,6 +214,15 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
                 throw new AssertionError("Key injection failed");
             SystemClock.sleep(80);
         }
+    }
+
+    /** 输入框里还有没上屏的拼音字母。 */
+    private static boolean hasLetter(CharSequence text) {
+        for (int index = 0; index < text.length(); index++) {
+            char character = text.charAt(index);
+            if (character >= 'a' && character <= 'z') return true;
+        }
+        return false;
     }
 
     /** 等输入法窗口从窗口列表里消失：收起后系统不再把它当成显示中的键盘。 */
