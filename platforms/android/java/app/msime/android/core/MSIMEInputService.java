@@ -360,6 +360,13 @@ public final class MSIMEInputService extends InputMethodService {
     private boolean caretDocked;
     /** 上一次 render 时候选栏（组字、候选或提示）是否该显示，供光标位置回调判断此刻是否空闲。 */
     private boolean caretStripShown;
+    /** 输入法窗口是跟随光标的候选栏空闲时自己收起的（{@link CaretCandidatePolicy#hidesWindow}）：从发出收起请求起，到窗口再显示出来或离开输入框为止。候选栏又有内容时只叫回这样收起的窗口。 */
+    private boolean caretWindowHidden;
+    /** 发出过空闲收起请求（{@link CaretCandidatePolicy#ownHide}），离开输入框时清掉。窗口在落地前可能又被应用叫出来（`onWindowShown`），系统也可能把一次收起分几次落地，所以与 {@link #caretWindowHidden} 分开记、落地时不清：请求后 {@link CaretCandidatePolicy#HIDE_LANDING_MS} 之内落地的收起都认作自己的，不当作用户收起键盘。 */
+    private boolean caretHidePending;
+    /** 上一次因为空闲收起窗口的时刻（`uptimeMillis`），限制多久才能再收一次（{@link CaretCandidatePolicy#WINDOW_REHIDE_MS}）。 */
+    private long caretWindowHiddenAt = Long.MIN_VALUE;
+    private final Runnable caretWindowSync = this::synchronizeCaretWindow;
     private final int[] caretRootLocation = new int[2];
     /** 功能面板上直接切换的三项：模糊音（共享偏好）、单手模式（off / left / right）与隐私模式（本地设置）。 */
     boolean fuzzyPinyinEnabled;
@@ -1441,6 +1448,9 @@ public final class MSIMEInputService extends InputMethodService {
         scheduleDictionarySnapshotProcessing();
         connection = null;
         resetCaretAnchor();
+        main.removeCallbacks(caretWindowSync);
+        caretWindowHidden = false;
+        caretHidePending = false;
         selectionEcho.reset(-1, -1);
         currentDocumentIdentifier = 0;
         super.onFinishInput();
@@ -1451,8 +1461,23 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         // 键盘收起时还在调整高度就照「完成」保存：用户拖到满意的高度后直接收起键盘或切到别的应用，是把这个高度留下来的意思，原来当作取消，下次弹出就回到设置页里的旧值。只有明确点「取消」才放弃预览。
         finishInlineHeight(true);
+        // 跟随光标的候选栏空闲时自己收起的窗口不是用户收起键盘：空闲、键区收起时本来没有要关的面板，而收起请求落地前用户可能已经又开始组字，照常收尾（finishInputViewPresentation 和系统默认实现里的 finishComposingText）会把这段组字上屏、引擎里的组字也随之丢掉。所以两样都不做，落地后再按此刻的状态决定要不要叫回窗口。
+        boolean ownHide = !finishingInput && CaretCandidatePolicy.ownHide(caretHidePending, caretWindowHiddenAt,
+            android.os.SystemClock.uptimeMillis());
+        if (ownHide) {
+            caretWindowHidden = true;
+            main.post(caretWindowSync);
+            return;
+        }
         if (!finishingInput) finishInputViewPresentation();
         super.onFinishInputView(finishingInput);
+    }
+
+    @Override public void onWindowShown() {
+        super.onWindowShown();
+        caretWindowHidden = false;
+        // 系统或应用把窗口叫出来时可能正空闲（例如输入框获得焦点），按此刻的状态再收起。
+        main.post(caretWindowSync);
     }
 
     /** Match Apple's viewWillDisappear boundary while keeping the editor session alive. */
@@ -7677,6 +7702,29 @@ public final class MSIMEInputService extends InputMethodService {
             ? View.VISIBLE : View.INVISIBLE;
         if (keyboardSurface.getVisibility() != visibility) keyboardSurface.setVisibility(visibility);
         if (caret) positionCaretCandidates();
+        synchronizeCaretWindow();
+    }
+
+    /**
+     * 跟随光标的候选栏空闲时收起整个输入法窗口，候选栏又有内容时再叫出来（{@link CaretCandidatePolicy#hidesWindow}）。只叫回自己收起的窗口：用户按返回键收起的，照旧等实体键盘再开始组字时由 {@link #noteHardwareTyping} 叫出来。收起请求还没落地时不重复发；落地前又开始打字的，由 {@link #onFinishInputView} 落地后再叫回来。应用在键盘收起后又立即要求显示时，隔 {@link CaretCandidatePolicy#WINDOW_REHIDE_MS} 才再收，不和它来回打转。
+     */
+    private void synchronizeCaretWindow() {
+        main.removeCallbacks(caretWindowSync);
+        if (CaretCandidatePolicy.hidesWindow(caretCandidatesDrawn(), caretStripShown)) {
+            if (caretWindowHidden || !isInputViewShown()) return;
+            long now = android.os.SystemClock.uptimeMillis();
+            long wait = CaretCandidatePolicy.rehideDelay(caretWindowHiddenAt, now);
+            if (wait > 0) {
+                main.postDelayed(caretWindowSync, wait);
+                return;
+            }
+            caretWindowHidden = true;
+            caretHidePending = true;
+            caretWindowHiddenAt = now;
+            requestHideSelf(0);
+        } else if (caretWindowHidden && !isInputViewShown()) {
+            requestShowSelf(0);
+        }
     }
 
     private void startFloatingDrag() {

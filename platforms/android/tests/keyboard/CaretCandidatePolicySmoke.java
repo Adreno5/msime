@@ -27,6 +27,24 @@ public final class CaretCandidatePolicySmoke {
         check(!CaretCandidatePolicy.surfaceShown(true, false, true), "idle shows nothing");
         check(CaretCandidatePolicy.ANCHOR_WAIT_MS > 0 && CaretCandidatePolicy.ANCHOR_WAIT_MS <= 1000,
             "the first-anchor wait is short");
+        // 窗口：跟随光标且空闲时收起整个输入法窗口，返回键第一下才落到应用上；有内容、不跟随光标时不收起。
+        check(CaretCandidatePolicy.hidesWindow(true, false), "idle caret mode hides the window");
+        check(!CaretCandidatePolicy.hidesWindow(true, true), "composing keeps the window");
+        check(!CaretCandidatePolicy.hidesWindow(false, false), "the docked strip keeps its toolbar");
+        check(!CaretCandidatePolicy.hidesWindow(false, true), "the docked strip keeps the window while composing");
+        // 再收起的间隔：第一次立即收；应用刚把窗口叫回来时等满间隔，不来回打转。
+        check(CaretCandidatePolicy.rehideDelay(Long.MIN_VALUE, 0) == 0, "the first idle hide is immediate");
+        check(CaretCandidatePolicy.rehideDelay(1000, 1200) == CaretCandidatePolicy.WINDOW_REHIDE_MS - 200,
+            "a window shown again right away waits out the interval");
+        check(CaretCandidatePolicy.rehideDelay(1000, 1000 + CaretCandidatePolicy.WINDOW_REHIDE_MS) == 0,
+            "the interval has passed");
+        // 认出自己的收起：发过请求、在时限之内（一次请求可能分几次落地）；时限之后或没发过的都是用户收起。
+        check(CaretCandidatePolicy.ownHide(true, 1000, 1500), "the idle hide landing after the keyboard animation");
+        check(!CaretCandidatePolicy.ownHide(false, 1000, 1500), "a hide this service did not request");
+        check(!CaretCandidatePolicy.ownHide(true, 1000, 1000 + CaretCandidatePolicy.HIDE_LANDING_MS + 1),
+            "an old request no longer claims the next hide");
+        check(CaretCandidatePolicy.WINDOW_REHIDE_MS >= 100 && CaretCandidatePolicy.WINDOW_REHIDE_MS <= 1000,
+            "the rehide interval is short");
         // 收到位置：空闲时回到光标旁，组字中留在底部。
         check(!CaretCandidatePolicy.dockedAfterAnchor(true, false), "idle anchor undocks");
         check(CaretCandidatePolicy.dockedAfterAnchor(true, true), "no jump while composing");
@@ -53,6 +71,6 @@ public final class CaretCandidatePolicySmoke {
         check(CaretCandidatePolicy.y(2400f, 2440f, 120, 60, 2000, 8) == 1880, "caret scrolled below the window");
         check(CaretCandidatePolicy.y(Float.NaN, 340f, 120, 60, 2000, 8) == 1880, "unknown anchor sits at the bottom");
         check(CaretCandidatePolicy.y(300f, 340f, 3000, 60, 2000, 8) == 60, "taller than the window starts at the top");
-        System.out.println("Android caret candidates: activation, docking, visibility and placement passed");
+        System.out.println("Android caret candidates: activation, docking, visibility, window and placement passed");
     }
 }

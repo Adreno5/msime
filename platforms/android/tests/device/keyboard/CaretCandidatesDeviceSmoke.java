@@ -1,5 +1,6 @@
 package app.msime.android.test;
 
+import android.accessibilityservice.AccessibilityService;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -17,7 +18,7 @@ import java.util.function.Predicate;
 import org.json.JSONObject;
 
 /**
- * 「物理键盘时候选栏跟随光标」（#6792）的设备验收：打开本地设置后，用实体键盘打字时候选栏出现在输入框旁边而不是屏幕底部；空闲时什么也不显示，点输入框落到应用上；不报告光标位置的输入框退回停在底部的候选条。
+ * 「物理键盘时候选栏跟随光标」（#6792）的设备验收：打开本地设置后，用实体键盘打字时候选栏出现在输入框旁边而不是屏幕底部；空闲时什么也不显示，点输入框落到应用上；不报告光标位置的输入框退回停在底部的候选条；空闲时输入法窗口收起，按一下返回键应用就返回。
  *
  * <p>宿主只把来自非虚拟、字母型键盘设备的按下当成实体键盘打字（`HardwareKeyboardModePolicy.physicalTyping`），`adb shell input` 的虚拟设备不算，而专用 AVD 自带的 `qwerty2` 在 `hw.keyboard=no` 时不是字母型。所以安卓 12（API 31）起用系统的 `uinput` 命令接上一块 USB 键盘：它是真的 evdev 设备，系统像对待蓝牙、USB 键盘一样报告「接着实体键盘」，测试结束关掉 `uinput` 就是拔掉。更早的系统只能用 `hw.keyboard=yes` 的 AVD 自带键盘，没有就失败并说明原因。按键以这块键盘的设备号注入。
  */
@@ -29,7 +30,7 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
     private FileOutputStream uinputInput;
 
     @Override protected String successDescription() {
-        return "candidate strip beside the caret for physical typing, nothing drawn while idle, and the bottom strip for an editor without cursor anchors";
+        return "candidate strip beside the caret for physical typing, nothing drawn while idle, the bottom strip for an editor without cursor anchors, and one back press leaving an idle editor";
     }
 
     @Override protected void runChecks() throws Exception {
@@ -77,7 +78,7 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
             if (findVisible(described("显示软键盘")) != null || findVisible(imeCandidate("你好")) != null)
                 throw new AssertionError("Idle caret mode still draws the strip; IME showed " + imeTexts());
 
-            // 点另一个输入框：触摸穿过透明的输入法窗口落到应用上。这个输入框不报告光标位置，候选栏退回底部。
+            // 点另一个输入框：空闲时输入法窗口已收起，窗口还没收起的那一刻它也是透明、不接收触摸的，点击落到应用上。这个输入框不报告光标位置，候选栏退回底部。
             stage = "no cursor anchor focus";
             tap(field("msime-test-no-cursor-anchor"));
             await(field("msime-test-no-cursor-anchor").and(AccessibilityNodeInfo::isFocused));
@@ -90,6 +91,18 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
                     + candidate + ", screen height " + screenHeight);
             type(keyboard, KeyEvent.KEYCODE_SPACE);
             await(field("msime-test-no-cursor-anchor").and(node -> equalsText("你好", node.getText())));
+
+            // 回到报告位置的输入框、空闲：整个输入法窗口收起，没有看不见的窗口去接第一下返回键，按一下应用就返回。
+            stage = "idle caret mode hides the window";
+            tap(field("msime-test-plain"));
+            await(field("msime-test-plain").and(AccessibilityNodeInfo::isFocused));
+            // EditorActivity 在输入框获得焦点后的 3 秒内还会几次要求显示软键盘（requestIme），每次窗口出现都会被重新收起（间隔 WINDOW_REHIDE_MS）；等这些请求过去再看。
+            SystemClock.sleep(4000);
+            awaitNoImeWindow();
+            stage = "one back press leaves the editor";
+            if (!automation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK))
+                throw new AssertionError("Back action failed");
+            awaitGone(field("msime-test-plain"));
         } finally {
             if (uinput != null) unplugKeyboard(uinput);
             shell("am start -W -n app.msime.android/app.msime.android.home.HomeActivity");
@@ -173,6 +186,29 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
                 throw new AssertionError("Key injection failed");
             SystemClock.sleep(80);
         }
+    }
+
+    /** 等输入法窗口从窗口列表里消失：收起后系统不再把它当成显示中的键盘。 */
+    private void awaitNoImeWindow() {
+        long deadline = SystemClock.uptimeMillis() + 15000;
+        do {
+            boolean shown = false;
+            for (AccessibilityWindowInfo window : automation.getWindows())
+                shown |= window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD;
+            if (!shown) return;
+            SystemClock.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("Idle caret mode kept the input method window shown; IME showed " + imeTexts());
+    }
+
+    /** 等匹配的节点从所有窗口里消失。 */
+    private void awaitGone(Predicate<AccessibilityNodeInfo> match) {
+        long deadline = SystemClock.uptimeMillis() + 5000;
+        do {
+            if (findVisible(match) == null) return;
+            SystemClock.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("One back press did not leave the editor; IME showed " + imeTexts());
     }
 
     /** 候选条上的候选：只认输入法的按钮。 */

@@ -11,6 +11,12 @@ public final class CaretCandidatePolicy {
     /** 要过光标位置后等第一次报告的时长（毫秒）。编辑器通常在下一帧就报来；实体键盘第一次按下时才要位置的话，那一下的组字要等它，等不到就退回底部。 */
     public static final long ANCHOR_WAIT_MS = 300;
 
+    /** 空闲时收起窗口后，至少隔这么久（毫秒）才再收一次：有的应用一见键盘收起就要求再显示，不加间隔就会和它每帧来回打转。 */
+    public static final long WINDOW_REHIDE_MS = 500;
+
+    /** 发出空闲收起请求后多久（毫秒）之内落地的收起算作自己的：收起要等应用那边的键盘动画，模拟器上量到约半秒，应用同时要求显示时系统还会把一次收起分几次落地。过了这个时长就不再认，免得把之后用户按返回键收起键盘也当成自己的。 */
+    public static final long HIDE_LANDING_MS = 2000;
+
     private CaretCandidatePolicy() { }
 
     /**
@@ -35,6 +41,24 @@ public final class CaretCandidatePolicy {
     /** 键盘外框此刻是否显示：不跟随光标时照旧显示；跟随光标时只在候选栏有内容、且已知光标位置时显示（等第一次报告期间先不显示）。 */
     public static boolean surfaceShown(boolean following, boolean stripShown, boolean anchorKnown) {
         return !following || (stripShown && anchorKnown);
+    }
+
+    /**
+     * 输入法窗口是否该收起：跟随光标且候选栏没有内容（空闲）时什么也不画，窗口却还开着的话，系统仍当键盘在显示，第一下返回键被拿去收起这个看不见的窗口，应用要按第二下才返回，导航栏也一直是收起键盘的样子。所以空闲时收起整个窗口，开始组字时再叫出来。等第一次报告位置期间候选栏有内容，不收起。
+     */
+    public static boolean hidesWindow(boolean following, boolean stripShown) {
+        return following && !stripShown;
+    }
+
+    /** 距离上一次空闲收起窗口（{@code lastHiddenAt}，没有收起过时为 `Long.MIN_VALUE`）还要等多久（毫秒）才能再收；不用等时为 0。 */
+    public static long rehideDelay(long lastHiddenAt, long now) {
+        if (lastHiddenAt == Long.MIN_VALUE) return 0;
+        return Math.max(0, lastHiddenAt + WINDOW_REHIDE_MS - now);
+    }
+
+    /** 此刻落地的收起是不是自己的空闲收起：这个输入框里发出过请求，且距最近一次请求没超过 {@link #HIDE_LANDING_MS}。 */
+    public static boolean ownHide(boolean pending, long requestedAt, long now) {
+        return pending && now - requestedAt <= HIDE_LANDING_MS;
     }
 
     /** 退回底部后收到光标位置：空闲（候选栏不显示）时回到光标旁；正在组字时保持在底部，免得候选栏在打字途中跳走、应用跟着重新排版。 */
