@@ -194,6 +194,32 @@ fn failures_are_reported_with_their_fuel_and_fail_the_run() {
     );
 }
 
+/// `before_commit` 在一次性的快照实例上运行，它 trap 不会让持久实例失效：之后的 `commit` 照常投递，不是 `suspended`。作者文档的「失败」一节按这条写。
+#[test]
+fn a_before_commit_trap_leaves_the_instance_usable() {
+    const TRAPS_BEFORE_COMMIT: &str = r#"(module
+  (memory (export "memory") 1)
+  (func (export "msime_abi") (result i32) (i32.const 1))
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (if (i32.eq (local.get $kind) (i32.const 9)) (then unreachable))
+    (i32.const 0)))"#;
+    let declared = declaration(&[], &[Hook::BeforeCommit, Hook::Commit]);
+    let fixture = r#"{"event":"before_commit","key":true,"origin":"selection","body":"x"}
+{"event":"commit","origin":"selection","body":"x"}
+{"event":"before_commit","key":true,"origin":"selection","body":"y"}
+"#;
+    let (status, out) = run_wat(TRAPS_BEFORE_COMMIT, declared, CapabilitySet::EMPTY, fixture);
+    assert_eq!(status, EXIT_INVALID);
+    let statuses: Vec<String> = out
+        .lines()
+        .map(|line| {
+            let report: serde_json::Value = serde_json::from_str(line).unwrap();
+            report["status"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(statuses, ["unreachable", "ok", "unreachable"]);
+}
+
 #[test]
 fn an_initialisation_failure_disables_the_plugin() {
     let declared = declaration(&[], &[Hook::Commit]);
