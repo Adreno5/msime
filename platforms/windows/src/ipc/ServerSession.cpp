@@ -116,21 +116,28 @@ void ServerSession::set_input_enabled(uint64_t epoch, bool enabled) {
     input_enabled_ = enabled;
   }
 }
-nlohmann::json ServerSession::cancel_again(nlohmann::json result) {
+nlohmann::json ServerSession::cancel_again(nlohmann::json result,
+                                           uint32_t command) {
   // 韩文汉字列表或注音列表打开时，MSIME_CANCEL 只关闭列表、组字保留（msime_client.h）；越南文词和藏文音节串上的第一次只把原文重新显示出来；全拼、双拼整句改字时的第一次只退出改字回到拼音；第二次才丢弃它。
   if (result.at("commit").is_null() &&
       !result.at("view").at("editing_text").get<std::string>().empty())
-    return response(msime_client_command(session_, MSIME_CANCEL));
+    return response(msime_client_command(session_, command));
   return result;
 }
-void ServerSession::cancel_composition(uint64_t epoch) {
+void ServerSession::discard_composition(uint64_t epoch, uint32_t command) {
   check_active(epoch);
-  auto result = response(msime_client_command(session_, MSIME_CANCEL));
-  result = cancel_again(std::move(result));
+  auto result = response(msime_client_command(session_, command));
+  result = cancel_again(std::move(result), command);
   if (!result.at("commit").is_null() ||
       !result.at("view").at("editing_text").get<std::string>().empty() ||
       !result.at("view").at("candidates").empty())
     throw std::logic_error("Shared host did not cancel composition");
+}
+void ServerSession::cancel_composition(uint64_t epoch) {
+  discard_composition(epoch, MSIME_CANCEL);
+}
+void ServerSession::cancel_after_host_commit(uint64_t epoch) {
+  discard_composition(epoch, MSIME_CANCEL_AFTER_HOST_COMMIT);
 }
 nlohmann::json ServerSession::finish_composition(uint64_t epoch) {
   check_active(epoch);
@@ -265,7 +272,7 @@ KeyResult ServerSession::key(const FanyImeNamedpipeData &packet,
         !(packet.keycode == kVirtualKeyEscape &&
           (scheme::CancelRestoresRaw(static_cast<int>(result.at("view").value("scheme", 0u))) ||
            !current.value("conversion", std::string{}).empty())))
-      result = cancel_again(std::move(result));
+      result = cancel_again(std::move(result), MSIME_CANCEL);
     if (action.kind == KeyKind::CancelAndForward ||
         action.kind == KeyKind::LocalReset)
       result["handled"] = false;

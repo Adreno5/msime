@@ -1,4 +1,4 @@
-// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎，每次 focus(true) 之前都原样报一次属性（值没变也报，脚本运行时据此确认属性），激活时也先报属性再 set_active（全屏前台的判断由测试注入，好让属性在两次调用之间变化）；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏（韩文、整句改字、本地回车）前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退用命令 19；上屏特效只在上屏真的进了文档时发布，部分选词暂存的那一段和宿主合成的上屏都不发布；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。最后经 InputState 核对 TIP 报的属性记在客户端上，词库维护后重建的会话也拿得到。
+// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎，每次 focus(true) 之前都原样报一次属性（值没变也报，脚本运行时据此确认属性），激活时也先报属性再 set_active（全屏前台的判断由测试注入，好让属性在两次调用之间变化）；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏（韩文、整句改字、本地回车）前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退和 Ctrl+Enter 的译文这些 Server 合成的上屏用命令 19 丢弃组字，生命周期里记 HostCommit 而不是 Cancel；上屏特效只在上屏真的进了文档时发布，部分选词暂存的那一段和宿主合成的上屏都不发布；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。最后经 InputState 核对 TIP 报的属性记在客户端上，词库维护后重建的会话也拿得到。
 #include "FocusedSession.h"
 #include "InputQueue.h"
 #include "LifecyclePolicy.h"
@@ -40,6 +40,8 @@ uint32_t fake_lifecycle = 0;
 std::string fake_partial_left;
 // 假候选的来源（CandidateSource）；8 是整句，ServerSession::select 把它整段上屏、丢掉剩下的读音。
 uint8_t fake_source = 0;
+// 高亮候选的释义；Ctrl+Enter 只有一条释义时由 Server 合成上屏。
+std::string fake_translation;
 // 注入给 FocusedSession 的「全屏应用在前台」。
 bool fake_fullscreen = false;
 // InputState 建的会话用真实的前台窗口判断全屏，比较时去掉 FULLSCREEN 位。
@@ -63,7 +65,7 @@ nlohmann::json view() {
                           {"highlighted", true},
                           {"source", fake_source},
                           {"fixed_position", false},
-                          {"translation", ""}});
+                          {"translation", fake_translation}});
   return {{"session", fake_session},  {"generation", fake_generation}, {"focused", true},
           {"editing_text", fake_editing},  {"preedit", fake_editing},       {"caret_position", fake_editing.size()},
           {"candidates", candidates}, {"local_mode", "none"},     {"scheme", fake_scheme},
@@ -352,6 +354,19 @@ int main() {
       EXPECT_TRACE({"key:0", "select_edge:0", "command:" + std::to_string(MSIME_CANCEL_AFTER_HOST_COMMIT)});
       REQUIRE(effects.take() == ((1u << 17) | 1u));
 
+      // Ctrl+Enter 只有一条释义：Server 把译文写进文档，同样用命令 19 丢弃组字，生命周期里组字的结束原因是 HostCommit，不是 Cancel。带 Ctrl 的键不出按键音。
+      REQUIRE(focused.configured_key(lease, key('H', u'h', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      calls.clear();
+      fake_translation = "hello";
+      auto translate = key(0x0D, u'\r', request);
+      translate.modifiers_down = PipeMetadata::CandidateActive | 2u;
+      REQUIRE(focused.configured_key(lease, translate, TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      EXPECT_TRACE({"command:" + std::to_string(MSIME_CANCEL_AFTER_HOST_COMMIT)});
+      REQUIRE(fake_editing.empty());
+      fake_translation.clear();
+
       // 交给应用的键（Aux 管道）：带 PASSTHROUGH，不派发，也不开新的一轮。
       REQUIRE(focused.passthrough_key(token, 3));
       EXPECT_TRACE({"key:" + std::to_string(lifecycle_passthrough_key(3))});
@@ -368,7 +383,7 @@ int main() {
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:0", "set_lifecycle:" + std::to_string(lifecycle_flags(true)), "character:107",
                     "set_lifecycle:" + std::to_string(lifecycle_flags())});
-      REQUIRE(recorded == std::vector<std::string>({"啊", "啊啊", "啊", "r"}));
+      REQUIRE(recorded == std::vector<std::string>({"啊", "啊啊", "啊", "hello", "r"}));
       fake_scheme = 0;
       REQUIRE(focused.cancel_composition(lease));
       calls.clear();

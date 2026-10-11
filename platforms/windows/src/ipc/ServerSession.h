@@ -38,6 +38,8 @@ public:
   nlohmann::json activate(uint64_t epoch);
   nlohmann::json deactivate(uint64_t epoch);
   void cancel_composition(uint64_t epoch);
+  // Server 自己合成、已经写进文档的上屏（Ctrl+Enter 和释义列的译文、翻译页的选择）之后丢弃组字：对会话的作用同 cancel_composition，但发的是命令 19（MSIME_CANCEL_AFTER_HOST_COMMIT），生命周期里组字的结束原因记 HostCommit 而不是 Cancel。结果里没有上屏，调用方自己合成 {commit, view}。
+  void cancel_after_host_commit(uint64_t epoch);
   // MSIME_FINISH_COMPOSITION：当前组字成为上屏内容。韩文、注音、越南文和藏文用它处理那些结束组字但自身不带字符的按键。
   nlohmann::json finish_composition(uint64_t epoch);
   // One MsimeCommand, for a key whose command does not follow from translate_key: the keys of the Korean Hanja and Zhuyin lists (KoreanHanjaKey.h). Requires input enabled.
@@ -137,8 +139,10 @@ public:
 private:
   void check_thread() const;
   void check_active(uint64_t epoch) const;
-  // 取消结果让组字仍然打开时（韩文、注音的列表关闭，越南文、藏文的原文重新显示，全拼、双拼退出整句改字），再发第二次 MSIME_CANCEL 丢弃它；其他结果不变。
-  nlohmann::json cancel_again(nlohmann::json result);
+  // 取消结果让组字仍然打开时（韩文、注音的列表关闭，越南文、藏文的原文重新显示，全拼、双拼退出整句改字），再发一次同一个取消命令（MSIME_CANCEL 或 MSIME_CANCEL_AFTER_HOST_COMMIT）丢弃它，真正结束组字的那次派发仍按这个命令归类；其他结果不变。
+  nlohmann::json cancel_again(nlohmann::json result, uint32_t command);
+  // cancel_composition 和 cancel_after_host_commit 的共同实现：发 `command`，必要时再发一次，确认组字已经没了。
+  void discard_composition(uint64_t epoch, uint32_t command);
   const std::thread::id thread_ = std::this_thread::get_id();
   uint64_t client_;
   uint64_t session_ = 0;
