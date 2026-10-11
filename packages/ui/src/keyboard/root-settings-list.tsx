@@ -18,7 +18,7 @@ export interface RootSettingsRow {
   value?: string;
 }
 
-// 按设计稿的顺序排列设计稿的分组，再加上设计稿没列出的实际页面（「键盘」「候选栏」「外接键盘快捷键」「剪贴板」和「AI 辅助」），按 Android 的位置安放，这样每个页面都有入口。
+// 按设计稿的顺序排列设计稿的分组，再加上设计稿没列出的实际页面（「键盘」「候选栏」「剪贴板」和「AI 辅助」），按 Android 的位置安放，这样每个页面都有入口。
 const rootGroupLayout: readonly (readonly { id: string; icon: FluentIconName }[])[] = [
   [
     { id: "skin", icon: "color" },
@@ -29,7 +29,6 @@ const rootGroupLayout: readonly (readonly { id: string; icon: FluentIconName }[]
     { id: "input", icon: "keyboard" },
     { id: "expression", icon: "local_language" },
     { id: "dictionary", icon: "book" },
-    { id: "shortcuts", icon: "keyboard_shift" },
   ],
   [
     { id: "voice", icon: "mic" },

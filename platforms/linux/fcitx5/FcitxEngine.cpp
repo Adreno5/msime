@@ -5,6 +5,8 @@
 #include "Telemetry.h"
 #endif
 #include "../src/system/ChineseTextConversion.h"
+#include "../src/system/CapsLockRelease.h"
+#include "../../../shared/input/CapsLockTap.h"
 #include <fcitx-utils/capabilityflags.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/utf8.h>
@@ -1566,6 +1568,30 @@ public:
       slot.query.clear();
     }
   }
+  // AI 座位上的占位行（Engine 候选来源 12）换成「—」，留到组字变化为止（#6888）。座位已经换过或没开时 Host API 答 applied:false，什么都不画。
+  void resolveAiSeat(const std::string &query) {
+    if (!session_ || query.empty()) return;
+    try {
+      const auto resolved = response(msime_client_resolve_online_candidates(
+          session_, reinterpret_cast<const uint8_t *>(query.data()), query.size(), 1));
+      if (!resolved.value("applied", false)) return;
+      view_ = resolved.at("view");
+      render();
+    } catch (...) {}
+  }
+  // 不会向 AI 发问的状态下，当前组字的 AI 座位直接换成「—」；同一个查询只问一次。
+  void resolveAiSeatWithoutProvider() {
+    try {
+      const auto query = response(msime_client_online_query(session_));
+      if (!query.is_object() || !query.value("ai_eligible", false)) return;
+      const auto aiConfig = query.value("ai_assistant", Json::object());
+      if (!aiConfig.is_object() || !aiConfig.value("enabled", false)) return;
+      const auto encoded = query.dump();
+      if (encoded == ai_resolved_query_) return;
+      ai_resolved_query_ = encoded;
+      resolveAiSeat(encoded);
+    } catch (...) {}
+  }
   void clearOnlineCandidates(uint8_t source) {
     if (!session_ || source >= 2) return;
     view_ = response(msime_client_clear_online_candidates(session_, source)).at("view");
@@ -1706,6 +1732,7 @@ public:
     mode_ctrl_space_enabled_ = keybindings.value("switch_language_ctrl_space", true);
     mode_ctrl_alt_space_enabled_ =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled_ = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled_ =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
     // Windows starts a new context in Chinese unless the user said otherwise.
@@ -1879,6 +1906,7 @@ public:
             mode_ctrl_space_enabled_ = reloaded.value("switch_language_ctrl_space", true);
             mode_ctrl_alt_space_enabled_ = reloaded.value(
                 "switch_language_ctrl_alt_space", mode_ctrl_alt_space_enabled_);
+            mode_caps_lock_enabled_ = reloaded.value("switch_language_caps_lock", mode_caps_lock_enabled_);
             character_set_shortcut_enabled_ = reloaded.value(
                 "toggle_character_set_ctrl_shift_f", character_set_shortcut_enabled_);
             // The toolbar follows the reloaded switches without waiting for the
@@ -2013,14 +2041,24 @@ public:
             if (msime::linux_host::strict_json_value(item, "source", uint64_t{255}) == source)
               candidates.push_back(item.at("text"));
           }
+          bool applied = false;
           if (!candidates.empty()) {
             const auto encoded = candidates.dump();
-            view_ = response(msime_client_apply_online_candidates(
+            const auto reply = response(msime_client_apply_online_candidates(
                 session_, reinterpret_cast<const uint8_t *>(slot.query.data()), slot.query.size(),
-                reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source)).at("view");
+                reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source));
+            view_ = reply.at("view");
+            applied = reply.value("applied", false);
             render();
           }
+          // AI 的网络请求落空（失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+          if (source == 1 && !slot.cache_only && !applied) resolveAiSeat(slot.query);
         }
+      }
+      if (session_ && ic_.hasFocus() && !restricted() &&
+          (online_socket_.empty() || privateInput())) {
+        resolveAiSeatWithoutProvider();
+        return;
       }
       if (!session_ || online_socket_.empty() || privateInput() || !ic_.hasFocus() || restricted()) return;
       const auto query = response(msime_client_online_query(session_));
@@ -2060,6 +2098,7 @@ public:
         online_job_session_ = session_;
         slot.query = encoded;
         slot.epoch = online_epoch_;
+        slot.cache_only = cacheOnly;
         slot.job = detachedJob(
             [providerEncoded, encoded, socket = online_socket_] {
               auto raw = response(msime_client_online_provider_request(
@@ -3423,6 +3462,38 @@ public:
     const auto code = event.key().code();
     return sym == FcitxKey_Control_L || sym == FcitxKey_Control_R || code == 37 || code == 105;
   }
+  // 认的是 Caps_Lock 这个符号：被 xkb 选项改成 Control 或 Escape 的 Caps Lock 键不算，被改成 Caps_Lock 的 Shift 键（见上，X11 键码 50、62）也不算。
+  static bool isCapsLockKey(const fcitx::KeyEvent &event) {
+    const auto code = event.key().code();
+    return event.key().sym() == FcitxKey_Caps_Lock && code != 50 && code != 62;
+  }
+  // 单按 Caps Lock 切换中英文。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换。返回 true 表示这个按键到此为止、交给应用：切换了，或者是布防了的按下。fcitx 不把 Caps_Lock 算作修饰键，组字时按下它会照普通按键先把首选上屏，那样轻点切换上屏的就是候选而不是原文，和单按 Shift、IBus 宿主都不一样，所以布防了的按下不再往下走，组字留到松开时由切换上屏原文。
+  bool observeCapsLockTap(const fcitx::KeyEvent &event) {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    if (!isCapsLockKey(event)) {
+      if (!event.isRelease()) caps_lock_tap_.interrupt();
+      return false;
+    }
+    if (!event.isRelease()) {
+      if (caps_lock_down_) return caps_lock_tap_.armed();
+      caps_lock_down_ = true;
+      const auto raw = event.rawKey().states();
+      const bool enabled = mode_caps_lock_enabled_ && ic_.hasFocus() && !restricted() &&
+                           !privateInput() && msime::linux_host::caps_lock_release_available();
+      const bool others = raw.testAny(fcitx::KeyStates{fcitx::KeyState::Shift, fcitx::KeyState::Ctrl,
+                                                      fcitx::KeyState::Alt, fcitx::KeyState::Super,
+                                                      fcitx::KeyState::Hyper});
+      caps_lock_tap_.press(now, enabled, raw.test(fcitx::KeyState::CapsLock), others);
+      return caps_lock_tap_.armed();
+    }
+    caps_lock_down_ = false;
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (!caps_lock_tap_.release(now) || !msime::linux_host::release_caps_lock()) return false;
+    noteCapsLock(false);
+    return ensure() && toggleInputMode();
+  }
   bool key(fcitx::KeyEvent &event);
   // Characters the IME hands back to the application are still typed text: Windows counts them in the statistics (ShouldCountPassthroughChar), so English-mode letters and Chinese-mode keys the Engine declines show up in the daily totals. Keys the IME consumed already recorded their committed text.
   void countPassthroughKey(const fcitx::KeyEvent &event) const {
@@ -3609,7 +3680,11 @@ public:
     std::shared_future<Json> job;
     std::string query;
     uint64_t epoch = 0;
+    // 只查缓存的 AI 探测：它落空只是还没到网络请求，不能把 AI 座位换成「—」。
+    bool cache_only = false;
   } online_slots_[2];
+  // 不会向 AI 发问时（没有在线服务、私密输入框）最近一次把 AI 座位换成「—」的查询，避免每个定时周期都再问一遍。
+  std::string ai_resolved_query_;
   uint64_t online_epoch_ = 0;
   std::chrono::steady_clock::time_point online_due_{};
   std::chrono::steady_clock::time_point ai_due_{};
@@ -3686,6 +3761,10 @@ public:
   bool mode_ctrl_enabled_ = false;
   bool mode_ctrl_space_enabled_ = true;
   bool mode_ctrl_alt_space_enabled_ = true;
+  // 单按 Caps Lock 切换中英文（缺省关）、判定状态，以及 Caps Lock 是否按着（自动重复的按下不重新计时）。
+  bool mode_caps_lock_enabled_ = false;
+  msime::input::CapsLockTap caps_lock_tap_;
+  bool caps_lock_down_ = false;
   bool character_set_shortcut_enabled_ = true;
   // A bare modifier switches on release, and only if nothing else was typed
   // while it was held. Windows measures the same gesture; so does the IBus host.
@@ -3733,6 +3812,11 @@ public:
 // The row as the panel draws it.
 fcitx::Text candidateRowText(const Json &candidate, bool traditional, bool annotations,
                              const std::string &hanjaGloss) {
+  // Engine 候选来源 12 是 AI 座位上的占位行（「…」或「—」）：Fcitx5 的文本格式没有颜色，用斜体表示它是次要的，并标明不上屏（#6888）。
+  if (msime::linux_host::strict_json_value(candidate, "source", uint64_t{}) == 12)
+    return fcitx::Text(candidate.at("text").get<std::string>(),
+                       fcitx::TextFormatFlags{fcitx::TextFormatFlag::Italic,
+                                              fcitx::TextFormatFlag::DontCommit});
   fcitx::Text row((traditional ? msime_linux_simplified_to_traditional(candidate.at("text").get<std::string>())
                                : candidate.at("text").get<std::string>()) +
       // Engine-corrected spellings carry the same light marker Windows and the IBus host draw. Only the displayed row gets it: selection goes by session/generation/index, and text_ below, which the candidate actions (dictionary removal) read, stays the Engine's text.
@@ -6400,6 +6484,8 @@ public:
   void reset(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
     auto *state = event.inputContext()->propertyFor(&factory_);
     state->backspace_hold_.reset();
+    state->caps_lock_tap_.reset();
+    state->caps_lock_down_ = false;
     state->toggle_chord_held_ = FcitxKey_None;
     state->pending_caret_.clear();
     state->caret_forward_event_.reset();
@@ -6927,6 +7013,8 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
   const auto &key = event.key();
   const auto sym = key.sym();
   const auto states = key.states();
+  // 和裸 Shift 一样，切换之后松开事件照常交给应用；布防了的按下也只交给应用。
+  if (observeCapsLockTap(event)) return false;
   // 规范化后的符号可能已丢掉 Shift 位，光标转发必须按原始事件判断。
   caret_shift_ = event.rawKey().states().test(fcitx::KeyState::Shift);
   if (!caret_shift_ && !isShiftKey(event)) {

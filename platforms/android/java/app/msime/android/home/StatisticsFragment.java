@@ -154,7 +154,7 @@ public final class StatisticsFragment extends HomeTabFragment {
 
     // 键盘在另一个进程里，这个页面不在眼前时它一直在记。
     @Override protected void onBecameVisible() {
-        if (statistics != null) reload();
+        reload();
     }
 
     private void reload() {

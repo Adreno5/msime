@@ -7,6 +7,7 @@ use rusqlite::params;
 
 use super::journal::{open_journal, UNSTORABLE_ENTRY};
 use crate::error::{EngineError, Result};
+use crate::ime::online_batch::AI_SEAT;
 use crate::types::{CandidateSource, WordItem};
 
 /// Looks a fixed row up by `(entry_key, value)` when it is not in the list; the session passes its engine's `find_candidate`.
@@ -83,9 +84,13 @@ fn fixed_rows(user_db: &Path, context: &str) -> Result<Vec<(String, String, i32)
     let rows = statement.query_map(params![context], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
     })?;
-    let mut result = Vec::with_capacity(FIXED_SLOT_COUNT);
+    let mut result = Vec::new();
     for row in rows {
-        result.push(row?);
+        let row = row?;
+        if result.is_empty() {
+            result.reserve_exact(FIXED_SLOT_COUNT);
+        }
+        result.push(row);
     }
     Ok(result)
 }
@@ -143,11 +148,15 @@ pub(crate) fn apply_fixed_positions_with_state(
     };
 
     let mut dynamic_candidates = Vec::new();
-    if !keep_dynamic_candidate_positions && candidates.iter().any(|item| item.source.is_online()) {
+    if !keep_dynamic_candidate_positions
+        && candidates
+            .iter()
+            .any(|item| item.source.takes_online_seat())
+    {
         let original = std::mem::take(candidates);
         let (retained, dynamic): (Vec<_>, Vec<_>) = original
             .into_iter()
-            .partition(|item| !item.source.is_online());
+            .partition(|item| !item.source.takes_online_seat());
         *candidates = retained;
         dynamic_candidates = dynamic;
     }
@@ -180,15 +189,23 @@ pub(crate) fn apply_fixed_positions_with_state(
             .min(candidates.len());
         candidates.insert(index, item);
     }
+    // 云候选回到第 1 位；AI 座位上的那一行（第一条 AI 候选或占位行）回到第 2 位，其余 AI 候选排在列表末尾，回答到达时已经显示的行不动（#6888）。
+    let mut seated = false;
+    let mut extra_ai = Vec::new();
     for item in dynamic_candidates {
         let preferred = if item.source == CandidateSource::CloudSuggestion {
             1
+        } else if !seated {
+            seated = true;
+            AI_SEAT
         } else {
-            2
+            extra_ai.push(item);
+            continue;
         };
         let index = preferred.min(candidates.len());
         candidates.insert(index, item);
     }
+    candidates.append(&mut extra_ai);
 }
 
 /// One pinned value per context; a later pin replaces it (J:671-680).
@@ -330,6 +347,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_fixed_rows_do_not_reserve_unused_slots() {
+        let dir = Dir::new();
+        let journal = dir.journal();
+
+        let rows = fixed_rows(&journal, "ni").unwrap();
+
+        assert!(rows.is_empty());
+        assert_eq!(rows.capacity(), 0);
+    }
+
+    #[test]
     fn a_missing_journal_fixes_nothing_and_is_not_created() {
         let dir = Dir::new();
         let journal = dir.journal();
@@ -345,6 +373,35 @@ mod tests {
         assert_eq!(words(&list), ["甲", "云", "乙", "智", "丙"]);
         assert!(!is_pinned_candidate(&journal, "ni", "甲"));
         assert!(!journal.exists());
+    }
+
+    #[test]
+    fn the_ai_seat_returns_to_slot_two_and_extra_ai_rows_go_last() {
+        let dir = Dir::new();
+        let journal = dir.journal();
+        let pending = |list: &mut Vec<WordItem>| {
+            apply_fixed_positions(&journal, "ni", list, true, None, false);
+        };
+        let mut placeholder = vec![
+            item("ni", "甲", 3),
+            item("ni", "乙", 2),
+            online("…", CandidateSource::AiPending),
+            item("ni", "丙", 1),
+            item("ni", "丁", 1),
+        ];
+        pending(&mut placeholder);
+        assert_eq!(words(&placeholder), ["甲", "乙", "…", "丙", "丁"]);
+
+        let mut answered = vec![
+            item("ni", "甲", 3),
+            item("ni", "乙", 2),
+            online("智一", CandidateSource::AiSuggestion),
+            item("ni", "丙", 1),
+            item("ni", "丁", 1),
+            online("智二", CandidateSource::AiSuggestion),
+        ];
+        pending(&mut answered);
+        assert_eq!(words(&answered), ["甲", "乙", "智一", "丙", "丁", "智二"]);
     }
 
     #[test]

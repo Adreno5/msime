@@ -28,11 +28,16 @@ public final class RelativeTimePolicy {
 
     /** Format an ISO-8601 timestamp, returning an empty label when parsing fails. */
     public static String isoAgo(String iso, long nowMillis) {
-        if (iso == null || iso.isEmpty()) return "";
+        return timestampAgo(isoMillis(iso), nowMillis);
+    }
+
+    /** Parse an ISO-8601 instant into epoch milliseconds, or zero when unusable. */
+    public static long isoMillis(String iso) {
+        if (iso == null || iso.isEmpty()) return 0L;
         try {
-            return timestampAgo(java.time.Instant.parse(iso).toEpochMilli(), nowMillis);
+            return java.time.Instant.parse(iso).toEpochMilli();
         } catch (java.time.format.DateTimeParseException | ArithmeticException malformed) {
-            return "";
+            return 0L;
         }
     }
 }

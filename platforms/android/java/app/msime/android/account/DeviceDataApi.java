@@ -6,9 +6,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.URL;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -373,12 +371,7 @@ public final class DeviceDataApi {
 
     /** RFC 3339 时间转 Unix 毫秒；读不出时为 0。 */
     static long instant(String value) {
-        if (value == null || value.isEmpty()) return 0L;
-        try {
-            return Instant.parse(value).toEpochMilli();
-        } catch (DateTimeParseException | ArithmeticException malformed) {
-            return 0L;
-        }
+        return RelativeTimePolicy.isoMillis(value);
     }
 
     private static Profile parseProfile(JSONObject root) throws CloudApi.Failure {
@@ -407,10 +400,8 @@ public final class DeviceDataApi {
 
     /** Data summary counters are JSON integers; reject coercion and negative values. */
     public static long strictCount(Object value) throws CloudApi.Failure {
-        if (!(value instanceof Integer) && !(value instanceof Long))
-            throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
-        long count = ((Number) value).longValue();
-        if (count < 0) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
+        Long count = JsonPolicy.nonNegativeLong(value);
+        if (count == null) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
         return count;
     }
 

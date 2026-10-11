@@ -29,10 +29,13 @@ def main() -> int:
         if "Ui.setVisibilityForText(" in source:
             errors.append(f"{path}: 应直接调用 ViewPolicy.setVisibilityForText")
 
+    # 设文字并按文字显隐的组合封装 setTextAndVisibility 内部就走 setVisibilityForText，调用它同样算复用共享策略。
+    shared_calls = ("ViewPolicy.setVisibilityForText(", "ViewPolicy.setTextAndVisibility(")
     for name in EXPECTED_CALLERS:
         path = HOME / name
-        if "ViewPolicy.setVisibilityForText(" not in path.read_text(encoding="utf-8"):
-            errors.append(f"{path}: 未直接复用 ViewPolicy.setVisibilityForText")
+        source = path.read_text(encoding="utf-8")
+        if not any(call in source for call in shared_calls):
+            errors.append(f"{path}: 未直接复用 ViewPolicy 的文本可见性策略")
 
     if errors:
         print("\n".join(errors), file=sys.stderr)

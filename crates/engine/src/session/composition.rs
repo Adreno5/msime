@@ -21,6 +21,7 @@ use crate::text::count_han_chars;
 use crate::types::{
     request_autocorrect_mask, CandidateSource, LocalInputMode, QueryRequest, SchemeKey, SchemeType,
 };
+use crate::wubi::scheme::PINYIN_LOOKUP_PREFIX;
 
 /// What a selection did to the composition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -308,15 +309,29 @@ impl InputSession {
             return consumed >= total;
         }
         let selected = remove_delimiters(pinyin);
-        let raw_without_helpcodes =
-            strip_active_helpcodes(&request.raw_input, &request.raw_input_with_cases);
-        let cased_without_helpcodes =
-            strip_active_helpcodes_with_cases(&request.raw_input, &request.raw_input_with_cases);
+        // 五笔临时拼音反查的引导键 `z` 不是拼音，选词只在它后面那段拼音里计算。
+        let (raw, raw_with_cases) = self.pinyin_spelling(request);
+        let raw_without_helpcodes = strip_active_helpcodes(raw, raw_with_cases);
+        let cased_without_helpcodes = strip_active_helpcodes_with_cases(raw, raw_with_cases);
         let consumed_raw =
             raw_length_for_effective_prefix(&cased_without_helpcodes, selected.len());
+        let normalized_length = request.normalized_input.len() - self.pinyin_lookup_prefix_len();
         !(!selected.is_empty()
-            && selected.len() < request.normalized_input.len()
+            && selected.len() < normalized_length
             && consumed_raw < raw_without_helpcodes.len())
+    }
+
+    /// 五笔临时拼音反查时引导键 `z` 占的字节数，其余时候为 0。
+    pub(super) fn pinyin_lookup_prefix_len(&self) -> usize {
+        usize::from(self.engine.wubi_pinyin_lookup_active())
+    }
+
+    /// 请求里真正是拼音的那段原文（不带大小写的和带大小写的）：五笔临时拼音反查时去掉引导键 `z`，其余时候是整段原文。
+    fn pinyin_spelling<'a>(&self, request: &'a QueryRequest) -> (&'a str, &'a str) {
+        let prefix = self.pinyin_lookup_prefix_len();
+        let raw = request.raw_input.get(prefix..).unwrap_or_default();
+        let raw_with_cases = request.raw_input_with_cases.get(prefix..).unwrap_or(raw);
+        (raw, raw_with_cases)
     }
 
     /// input_session_composition.cpp:799-911.
@@ -406,15 +421,14 @@ impl InputSession {
         // Quanpin, and the quanpin rows of a wubi composition, which shorten the wubi code the same way.
         let selected = remove_delimiters(pinyin);
         if transition.continues_composition {
+            let lookup_prefix = self.pinyin_lookup_prefix_len();
             let (full_pure_pinyin, raw_without_helpcodes, cased_without_helpcodes) = {
                 let request = self.engine.request();
+                let (raw, raw_with_cases) = self.pinyin_spelling(request);
                 (
-                    request.normalized_input.clone(),
-                    strip_active_helpcodes(&request.raw_input, &request.raw_input_with_cases),
-                    strip_active_helpcodes_with_cases(
-                        &request.raw_input,
-                        &request.raw_input_with_cases,
-                    ),
+                    request.normalized_input[lookup_prefix..].to_owned(),
+                    strip_active_helpcodes(raw, raw_with_cases),
+                    strip_active_helpcodes_with_cases(raw, raw_with_cases),
                 )
             };
             transition.full_pure_pinyin = full_pure_pinyin;
@@ -427,7 +441,16 @@ impl InputSession {
                 // The rest of a spelling the user is still in the middle of stays pinyin; the wubi table answering it would swap schemes underneath them.
                 self.engine.keep_pinyin_tail();
             }
-            self.engine.replace_active_raw_input(rest, rest_with_cases);
+            if lookup_prefix > 0 {
+                // 反查里选走一段之后，剩下的拼音仍在反查里：把引导键 `z` 接回去，否则剩下的字母会被当成五笔码。
+                let prefix = char::from(PINYIN_LOOKUP_PREFIX);
+                let rest = format!("{prefix}{rest}");
+                let rest_with_cases = format!("{prefix}{rest_with_cases}");
+                self.engine
+                    .replace_active_raw_input(&rest, &rest_with_cases);
+            } else {
+                self.engine.replace_active_raw_input(rest, rest_with_cases);
+            }
             self.online_requests.invalidate();
             self.update_mixed_candidates();
             transition.current_segmentation_with_cases =

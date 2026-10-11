@@ -1577,6 +1577,11 @@ group("allows reads during composition without restarting the session", () => {
   const decision = DictionaryMaintenancePolicy.decide("list", true);
   check(decision.allowed, "dictionary reads remain available while composing");
   check(!decision.maintenance, "dictionary reads do not request maintenance");
+  // 设置页的五笔查码只读码表：组字时也能查，不停掉键盘会话，也不进个人词库队列。
+  const lookup = DictionaryMaintenancePolicy.decide("wubi_codes", true);
+  check(lookup.allowed, "wubi_codes is answered while composing");
+  check(!lookup.maintenance, "wubi_codes does not request maintenance");
+  check(!lookup.queued, "wubi_codes goes to the Engine, not the queue");
 });
 
 group("opens an exclusive window for idle mutations", () => {
@@ -4320,6 +4325,9 @@ group("keeps candidate source badges bounded to known Engine sources", () => {
   check(CandidatePresentationPolicy.badge(2) === " ☁️", "cloud candidates get a cloud badge");
   check(CandidatePresentationPolicy.badge(3) === " 🤖", "AI candidates get a robot badge");
   check(CandidatePresentationPolicy.badge(0) === "", "local candidates stay unbadged");
+  check(CandidatePresentationPolicy.badge(12) === "", "the AI placeholder carries no badge");
+  check(CandidatePresentationPolicy.aiPlaceholder(12), "source 12 is the AI placeholder");
+  check(!CandidatePresentationPolicy.aiPlaceholder(3), "a real AI candidate is not a placeholder");
 });
 
 group("offers all fixed candidate slots and checks the active one", () => {

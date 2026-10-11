@@ -308,6 +308,10 @@ pub struct HostCapabilities {
     pub typing_effects: bool,
     /// 宿主经 `msime_client_set_caps_lock` 向会话报告大写锁定状态，所以「大写锁定时使用英文标点」（`caps_lock_ascii_punctuation`）在这里有效。和上面几项一样，每个宿主只在接上这个调用的那次改动里打开它。
     pub caps_lock_punctuation: bool,
+    /// 宿主实现了「单按 Caps Lock 切换中英文」（`KeybindingPreferences::switch_language_caps_lock`）：能分辨轻点和长按，并在轻点后把大写锁定撤回。
+    pub caps_lock_language_switch: bool,
+    /// 宿主的快捷模式只从实体键盘的 Shift+字母进入，所以「Shift+字母进入快捷模式」总开关（`LocalModePreferences::shift_letter_entry`）在这里有意义。触屏键盘从菜单打开快捷模式，走的也是 Engine 的同一个入口，不提供这个开关，以免关掉后菜单失灵。
+    pub shift_letter_entry_switch: bool,
     /// The operating system release, as the machine reports it, for the feedback
     /// page to attach. Not a platform assumption like the flags above -- the host
     /// fills it in after `for_platform`, the way `system_fonts` is filled in --
@@ -677,6 +681,9 @@ impl HostCapabilities {
             typing_effects: platform.is_desktop() || platform == HostPlatform::Harmony,
             // 目前只有 macOS 报告大写锁定（`InputController.mm` 的 `syncCapsLock`）。Windows、Linux 的宿主和带实体键盘的移动端接上同一个调用后在这里加上自己。
             caps_lock_punctuation: platform == HostPlatform::Macos,
+            // 三个桌面宿主都在自己的按键路径上分辨 Caps Lock 的轻点和长按：macOS 用 IOKit 撤回大写锁定，Windows 用 SendInput 再按一次，Linux 在 X11 会话里用 XKB 撤回（Wayland 会话里由合成器持有锁定状态，宿主撤不回，那里轻点照常是大写锁定）。
+            caps_lock_language_switch: platform.is_desktop(),
+            shift_letter_entry_switch: platform.is_desktop(),
             os_version: None,
             arch: None,
             kernel_version: None,

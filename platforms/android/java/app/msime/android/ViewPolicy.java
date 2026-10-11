@@ -842,6 +842,12 @@ public final class ViewPolicy {
         setVisible(view, text != null && text.length() != 0);
     }
 
+    /** Set text and show the widget only when the supplied text is non-null and non-empty. */
+    public static void setTextAndVisibility(TextView view, CharSequence text) {
+        view.setText(text);
+        setVisibilityForText(view, text);
+    }
+
     /** Hide a view while preserving its layout space. */
     public static void setInvisible(View view) {
         view.setVisibility(View.INVISIBLE);

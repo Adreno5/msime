@@ -280,7 +280,7 @@ pub unsafe extern "C" fn msime_client_format_translation_gloss(
     })
 }
 
-/// Build a DeepLX-compatible request for a host-owned HTTP transport. No I/O.
+/// 为宿主自己的 HTTP 传输构造自定义翻译请求：DeepL 官方 API 地址用 DeepL 的格式，其他地址用 DeepLX 兼容格式。不做 I/O。
 /// # Safety
 /// `request` must reference `length` readable bytes for this call.
 #[no_mangle]
@@ -331,16 +331,25 @@ pub unsafe extern "C" fn msime_client_custom_translation_http_request(
         {
             return Err("invalid custom translation parameters".into());
         }
-        let mut headers = json!({"Content-Type": "application/json"});
-        if !config.api_key.is_empty() {
-            headers["Authorization"] = Value::String(format!("Bearer {}", config.api_key));
-        }
+        // DeepL 官方地址与 DeepLX 兼容服务的请求格式不同，由共享构造函数决定；设置页的连接测试用的也是它。
+        let request = msime_client_core::translation::custom_translation_request(
+            &config.endpoint,
+            &config.api_key,
+            &text,
+            &source_language,
+            &target_language,
+        )
+        .ok_or("invalid custom translation parameters")?;
+        let headers: serde_json::Map<String, Value> = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| (name, Value::String(value)))
+            .collect();
         Ok(json!({
-            "url": config.endpoint,
+            "url": request.url,
             "method": "POST",
             "headers": headers,
-            "body": {"text": text, "source_lang": source_language.to_ascii_uppercase(),
-                "target_lang": target_language.to_ascii_uppercase()},
+            "body": request.body,
             "timeout_ms": 2500,
             "max_response_bytes": 1048576,
         }))

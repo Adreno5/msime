@@ -436,13 +436,17 @@ HRESULT CMetasequoiaIME::_HandleCandidateWorker(TfEditCookie ec, _In_ ITfContext
                     CStringRange selectedText;
                     selectedText.Set(commit.c_str(), commit.size());
                     hrReturn = _AddCharAndFinalize(ec, pContext, &selectedText);
-                    _DeleteCandidateList(FALSE, pContext);
-                    if (SUCCEEDED(hrReturn) && pairedClosing != 0)
+                    if (FAILED(hrReturn))
                     {
-                        // 移回光标的是合成给应用的左方向键，和按标点键补全时一样要在组字结束之后再发，否则它落在还开着的组字里。
-                        _HandleCompleteCommitFirst(ec, pContext);
-                        _OpenCandidateCommitPair(pairedOpening, pairedClosing);
+                        _DeleteCandidateList(FALSE, pContext);
+                        return hrReturn;
                     }
+                    // 选中的词写进组字范围后要结束组字，和空格经 _HandleCandidateFinalize 上屏一样。以前这里只关候选列表，TSF 组字还罩在刚上屏的词上，下一个字母开始的新组字把它整段替换掉：打 pingguo 按 1 得到「苹果」，再按 n 只剩「n」。真机上 WPF 文本框里复现，2026-09-12 的 005d8820b7 引入。
+                    _smartPunctuationShadowChar = commit.back();
+                    _smartPunctuationShadowValid = true;
+                    _HandleCompleteCommitFirst(ec, pContext);
+                    // 移回光标的是合成给应用的左方向键，要在组字结束之后再发，否则它落在还开着的组字里。
+                    _OpenCandidateCommitPair(pairedOpening, pairedClosing);
                     return hrReturn;
                 }
                 if (selected.handled)

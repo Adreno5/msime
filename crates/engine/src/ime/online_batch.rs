@@ -6,6 +6,12 @@ use crate::types::{CandidateSource, WordItem};
 
 pub const AI_QUOTA: usize = 10;
 pub const CLOUD_QUOTA: usize = 1;
+/// AI 座位的下标：首选和云候选之后（列表更短时落在末尾）。
+pub const AI_SEAT: usize = 2;
+/// AI 请求还没回答时占位行的文字。
+pub const AI_PENDING_TEXT: &str = "…";
+/// AI 回答为空或失败后占位行的文字，留到组字变化为止。
+pub const AI_UNAVAILABLE_TEXT: &str = "—";
 pub const MAX_ONLINE_WORD_BYTES: usize = 4_096;
 const EXISTING_WORD_LINEAR_SCAN_LIMIT: usize = 64;
 
@@ -25,7 +31,7 @@ pub(crate) fn validate_online_candidate_batch(words: &[String], source: Candidat
     unique_online_words(words, quota).is_some()
 }
 
-/// Validate, deduplicate, enforce the quota, drop the source's previous rows and insert at 1 (cloud) or 2 (AI), skipping words already listed; after a cloud insert the AI rows move as a block to index 2. False leaves `list` untouched.
+/// 校验、去重、限额，去掉同一来源之前的行后插入，已在列表里的词跳过。云候选插在第 1 位；AI 批次的第一条坐 AI 座位（第 2 位，替换占位行），其余排在列表末尾，到达时不挪动已经显示的行（#6888）。云候选插入后 AI 座位上的那一行回到第 2 位。返回 false 时 `list` 不变。
 pub fn replace_online_candidate_batch(
     list: &mut Vec<WordItem>,
     key: &str,
@@ -49,55 +55,43 @@ pub fn replace_online_candidate_batch(
     };
     // Providers repeat candidates, so the quota counts distinct words: a repeat must neither reject a valid batch nor use up a seat (online_candidate_batch.h:32-33).
 
-    list.retain(|item| item.source != source);
+    if source == CandidateSource::AiSuggestion {
+        // 新的 AI 批次连同占位行一起替换掉之前的 AI 行。
+        list.retain(|item| !item.source.holds_ai_seat());
+    } else {
+        list.retain(|item| item.source != source);
+    }
     let new_count = mark_existing_online_words(list, &mut unique, unique_count);
     list.reserve(new_count);
-    let index = list.len().min(if source == CandidateSource::AiSuggestion {
-        2
-    } else {
-        1
-    });
-    for (offset, word) in unique.into_iter().flatten().enumerate() {
+    let mut words = unique.into_iter().flatten();
+    if source == CandidateSource::AiSuggestion {
+        if let Some(first) = words.next() {
+            let seat = list.len().min(AI_SEAT);
+            list.insert(seat, WordItem::new(key, first, 1, source, ""));
+        }
+        // 多出来的 AI 候选接在末尾：座位前后已经显示的行都不动。
+        list.extend(words.map(|word| WordItem::new(key, word, 1, source, "")));
+        return true;
+    }
+    let index = list.len().min(1);
+    for (offset, word) in words.enumerate() {
         list.insert(index + offset, WordItem::new(key, word, 1, source, ""));
     }
-    if source == CandidateSource::CloudSuggestion {
-        rehome_ai_candidates(list);
-    }
+    rehome_ai_seat(list);
     true
 }
 
-fn rehome_ai_candidates(list: &mut Vec<WordItem>) {
-    let count = list
-        .iter()
-        .filter(|item| item.source == CandidateSource::AiSuggestion)
-        .count();
-    if count == 0 {
+/// 把坐 AI 座位的那一行（第一条 AI 候选或占位行）挪回第 2 位；其余 AI 候选留在原处。原地旋转，不分配。
+pub(crate) fn rehome_ai_seat(list: &mut [WordItem]) {
+    let Some(from) = list.iter().position(|item| item.source.holds_ai_seat()) else {
         return;
+    };
+    let to = AI_SEAT.min(list.len() - 1);
+    if from > to {
+        list[to..=from].rotate_right(1);
+    } else if from < to {
+        list[from..=to].rotate_left(1);
     }
-    // 正常批次最多 10 行；公开入口接收的超配额旧列表保留原有处理方式。
-    if count > AI_QUOTA {
-        let (ai, rest): (Vec<WordItem>, Vec<WordItem>) = std::mem::take(list)
-            .into_iter()
-            .partition(|item| item.source == CandidateSource::AiSuggestion);
-        *list = rest;
-        let at = list.len().min(2);
-        list.splice(at..at, ai);
-        return;
-    }
-    let mut ai: [Option<WordItem>; AI_QUOTA] = std::array::from_fn(|_| None);
-    let mut next = 0;
-    list.retain_mut(|item| {
-        if item.source != CandidateSource::AiSuggestion {
-            return true;
-        }
-        ai[next] = Some(std::mem::take(item));
-        next += 1;
-        false
-    });
-    let at = list.len().min(2);
-    // 原向量保留移出行的容量，追加后旋转即可稳定地把 AI 块放回第二槽。
-    list.extend(ai.into_iter().flatten());
-    list[at..].rotate_right(count);
 }
 
 fn unique_online_words(
@@ -278,15 +272,16 @@ mod tests {
             &words(&["智一", "智二"]),
             CandidateSource::AiSuggestion
         ));
+        // 第一条 AI 候选坐第 2 位，其余接在末尾（#6888）。
         assert_eq!(
             shape(&list),
             vec![
                 ("你", CandidateSource::Database),
                 ("云", CandidateSource::CloudSuggestion),
                 ("智一", CandidateSource::AiSuggestion),
-                ("智二", CandidateSource::AiSuggestion),
                 ("尼", CandidateSource::Database),
                 ("泥", CandidateSource::Database),
+                ("智二", CandidateSource::AiSuggestion),
             ]
         );
         let inserted = &list[1];
@@ -296,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_cloud_row_rehomes_the_ai_block_to_slot_two() {
+    fn a_later_cloud_row_rehomes_the_ai_seat_to_slot_two() {
         let mut list = dictionary_list();
         assert!(replace_online_candidate_batch(
             &mut list,
@@ -316,11 +311,87 @@ mod tests {
                 ("你", CandidateSource::Database),
                 ("云", CandidateSource::CloudSuggestion),
                 ("智一", CandidateSource::AiSuggestion),
-                ("智二", CandidateSource::AiSuggestion),
                 ("尼", CandidateSource::Database),
                 ("泥", CandidateSource::Database),
+                ("智二", CandidateSource::AiSuggestion),
             ]
         );
+    }
+
+    fn pending_list() -> Vec<WordItem> {
+        vec![
+            row("你", CandidateSource::Database),
+            row("尼", CandidateSource::Database),
+            row(AI_PENDING_TEXT, CandidateSource::AiPending),
+            row("泥", CandidateSource::Database),
+            row("呢", CandidateSource::Database),
+            row("拟", CandidateSource::Database),
+        ]
+    }
+
+    fn non_ai_positions(list: &[WordItem]) -> Vec<(usize, &str)> {
+        list.iter()
+            .enumerate()
+            .filter(|(_, item)| !item.source.holds_ai_seat())
+            .map(|(index, item)| (index, item.word.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn an_ai_batch_replaces_the_placeholder_without_moving_other_rows() {
+        for batch in [vec!["智一"], vec!["智一", "智二", "智三"]] {
+            let mut list = pending_list();
+            let before: Vec<(usize, String)> = non_ai_positions(&list)
+                .into_iter()
+                .map(|(index, word)| (index, word.to_owned()))
+                .collect();
+            assert!(replace_online_candidate_batch(
+                &mut list,
+                "ni",
+                &words(&batch),
+                CandidateSource::AiSuggestion
+            ));
+            let after: Vec<(usize, String)> = non_ai_positions(&list)
+                .into_iter()
+                .map(|(index, word)| (index, word.to_owned()))
+                .collect();
+            assert_eq!(after, before, "{batch:?}");
+            assert_eq!(list[AI_SEAT].word, "智一");
+            assert_eq!(list[AI_SEAT].source, CandidateSource::AiSuggestion);
+            assert!(!list
+                .iter()
+                .any(|item| item.source == CandidateSource::AiPending));
+            // 多出来的 AI 候选按回答的顺序排在末尾。
+            let tail: Vec<&str> = list[6..].iter().map(|item| item.word.as_str()).collect();
+            assert_eq!(tail, batch[1..].to_vec());
+        }
+    }
+
+    #[test]
+    fn an_empty_answer_leaves_the_placeholder_in_its_seat() {
+        let original = pending_list();
+        let mut list = original.clone();
+        assert!(!replace_online_candidate_batch(
+            &mut list,
+            "ni",
+            &[],
+            CandidateSource::AiSuggestion
+        ));
+        assert_eq!(list, original);
+    }
+
+    #[test]
+    fn a_cloud_answer_after_the_placeholder_keeps_it_in_slot_two() {
+        let mut list = pending_list();
+        assert!(replace_online_candidate_batch(
+            &mut list,
+            "ni",
+            &words(&["云"]),
+            CandidateSource::CloudSuggestion
+        ));
+        assert_eq!(list[1].word, "云");
+        assert_eq!(list[AI_SEAT].source, CandidateSource::AiPending);
+        assert_eq!(list.len(), 7);
     }
 
     #[test]
@@ -356,7 +427,7 @@ mod tests {
             assert_eq!(list[1].word, "云");
             if with_ai {
                 assert_eq!(list[2].word, "智一");
-                assert_eq!(list[3].word, "智二");
+                assert_eq!(list.last().unwrap().word, "智二");
             }
         }
     }

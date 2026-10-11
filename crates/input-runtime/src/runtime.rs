@@ -396,6 +396,62 @@ impl Runtime<Session> {
         self.apply_online_candidates_snapshot(query, candidates, source, cloud_candidates, limit)
     }
 
+    /// 宿主为这个会话打开或关掉 AI 候选。打开时可以问 AI 的组字先在 AI 座位上放一行占位（来源 12，`CandidateSource::AiPending`），回答到达时由第一条 AI 候选替换，前后的候选都不挪位（#6888）。组字中途改变时立刻换一代并刷新。
+    pub fn set_ai_seat(&mut self, enabled: bool) -> Result<(), RuntimeError> {
+        if !self.engine.set_ai_seat(enabled) || self.is_idle() {
+            return Ok(());
+        }
+        self.advance()?;
+        self.refresh()
+    }
+
+    /// AI 回答为空、失败，或 `apply_online_candidates` 没有采用它时由宿主调用：这次查询的占位行换成「—」，留到组字变化为止，后面的候选不挪位。只认 AI（来源 1）；过期查询、没开 AI 的会话和已经坐着 AI 候选的座位返回 `Ok(false)`，列表不变。
+    pub fn resolve_online_candidates_owned(
+        &mut self,
+        query: OnlineQuery,
+        source: u8,
+    ) -> Result<bool, RuntimeError> {
+        if source != 1 || !query.ai_eligible {
+            return Ok(false);
+        }
+        if self.generation == u64::MAX {
+            return Err(RuntimeError::IdentityExhausted);
+        }
+        let OnlineQuery {
+            scheme,
+            generation,
+            identity,
+            query_text,
+            cache_key,
+            pinyin_segments,
+            cloud_eligible,
+            ai_eligible,
+            session_id,
+            ..
+        } = query;
+        let query = OnlineQuerySnapshot {
+            available: true,
+            scheme,
+            generation,
+            identity,
+            query_text,
+            cache_key,
+            pinyin_segments,
+            cloud_eligible,
+            ai_eligible,
+            session_id,
+        };
+        let resolved = self
+            .engine
+            .resolve_online_candidates(&query, source)
+            .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+        if resolved {
+            self.advance()?;
+            self.refresh()?;
+        }
+        Ok(resolved)
+    }
+
     /// Remove cached and visible rows for one online provider.
     pub fn clear_online_candidates(&mut self, source: u8) -> Result<(), RuntimeError> {
         if source > 1 {
@@ -1365,12 +1421,16 @@ impl<E: InputEngine> Runtime<E> {
     /// Only the online case is touched: with neither a cloud nor an AI candidate present the
     /// Engine already produces the fourth line, so there is nothing to rearrange and nothing to
     /// risk.
+    ///
+    /// AI 的座位只坐一行：第一条 AI 候选，回答到达之前是它的占位行（`CandidateSource::AiPending`）。同一批里多出来的 AI 候选排在整个列表最后，回答到达时座位前后已经显示的候选都不挪位（#6888）。
     fn normalize_online_slots(&mut self) -> bool {
         const CLOUD: u8 = 2;
         const AI: u8 = 3;
         const ENGLISH: u8 = 4;
         const EMOJI: u8 = 6;
         const KAOMOJI: u8 = 7;
+        const AI_PENDING: u8 = 12;
+        let is_ai = |source: u8| matches!(source, AI | AI_PENDING);
 
         let snapshot = &self.cached;
         let count = snapshot.candidates.len();
@@ -1387,7 +1447,7 @@ impl<E: InputEngine> Runtime<E> {
         if !snapshot
             .candidate_sources
             .iter()
-            .any(|source| *source == CLOUD || *source == AI)
+            .any(|source| *source == CLOUD || is_ai(*source))
         {
             return false;
         }
@@ -1397,7 +1457,8 @@ impl<E: InputEngine> Runtime<E> {
         // rest; dropping a candidate the user was offered is not an option here.
         //
         // The Engine never puts English first while a Chinese candidate exists, whatever its weight or pin, except for a word the user fixed at position 1 (`apply_candidate_positions`). An English candidate at index zero with locals present is that word. It keeps the first seat and the leading English seat is not filled a second time.
-        let is_local = |source: u8| !matches!(source, CLOUD | AI | ENGLISH | EMOJI | KAOMOJI);
+        let is_local =
+            |source: u8| !matches!(source, CLOUD | AI | AI_PENDING | ENGLISH | EMOJI | KAOMOJI);
         let first_source = |source: u8| {
             snapshot
                 .candidate_sources
@@ -1460,10 +1521,18 @@ impl<E: InputEngine> Runtime<E> {
         let single_kana = scheme_type(snapshot.scheme) == Some(SchemeType::JapaneseRomaji)
             && matches!((reading.next(), reading.next()), (Some(kana), None) if ('\u{3041}'..='\u{3096}').contains(&kana));
         let local_prefix = if single_kana { 2 } else { 1 };
+        // 坐 AI 座位的那一行，以及排到最后的其余 AI 候选。
+        let mut ai_rows = snapshot
+            .candidate_sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| is_ai(**source))
+            .map(|(index, _)| index);
+        let ai_seat = ai_rows.next();
         append_local(&mut order, 0, Some(local_prefix));
         if has_cloud {
             append_group(&mut order, CLOUD, 0, None);
-            append_group(&mut order, AI, 0, None);
+            order.extend(ai_seat);
         }
         if !promoted_english {
             if let Some(index) = first_english {
@@ -1471,7 +1540,7 @@ impl<E: InputEngine> Runtime<E> {
             }
         }
         if !has_cloud {
-            append_group(&mut order, AI, 0, None);
+            order.extend(ai_seat);
         }
         if let Some(index) = first_emoji {
             order.push(index);
@@ -1498,6 +1567,7 @@ impl<E: InputEngine> Runtime<E> {
             let seat = usize::from(snapshot.candidate_positions[index] - 1).min(order.len());
             order.insert(seat, index);
         }
+        order.extend(ai_rows);
         // A permutation or nothing: a missing or repeated index would silently drop a candidate.
         debug_assert_eq!(order.len(), count);
         if order.len() != count {

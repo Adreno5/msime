@@ -14,6 +14,7 @@ export function ShortcutSettingsPage() {
     macosPlatform,
     linuxPlatform,
     iosPlatform,
+    host,
     showModeSwitchShortcuts,
     showPanelShortcuts,
     showNumberRowSelection,
@@ -54,6 +55,7 @@ export function ShortcutSettingsPage() {
       showFullwidthChord={showFullwidthChord}
       fullwidthChord={fullwidthChord}
       windows={windowsPlatform}
+      capsLockLanguageSwitch={host?.caps_lock_language_switch ?? false}
       navigation={navigation}
       // iOS 键盘扩展收不到实体键，以词定字靠长按候选，没有可列的键。
       wordCharacter={iosPlatform ? undefined : wordCharacter}

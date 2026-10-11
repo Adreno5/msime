@@ -1001,8 +1001,9 @@ int main(int argc, char **argv) {
     emojiGroupResultFencing();
     require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--ai" ||
                                        std::string(argv[2]) == "--ctrl-space" ||
+                                       std::string(argv[2]) == "--caps-lock" ||
                                        std::string(argv[2]) == "--local-modes")),
-            "usage: fcitx5-native-test <verified-resources> [--ai|--ctrl-space|--local-modes]");
+            "usage: fcitx5-native-test <verified-resources> [--ai|--ctrl-space|--caps-lock|--local-modes]");
     const bool ai = argc == 3 && std::string(argv[2]) == "--ai";
     const std::string suggestion = ai ? "合成候选" : "在线";
     char temporary[] = "/tmp/msime-fcitx5-test-XXXXXX";
@@ -1415,6 +1416,113 @@ int main(int argc, char **argv) {
       state->close();
       removeFixtureTree(directory);
       std::cout << "Fcitx5 Ctrl+Space defaults, passthrough, hot-reload and repeat passed\n";
+      return 0;
+    }
+    // 单按 Caps Lock 切换中英文，从真实的 keyEvent 驱动。撤回大写锁定换成测试的实现：数撤回了几次，也能让它失败，不碰 X 服务器。按下事件带按下前的锁定状态，松开事件带按下后的。
+    if (argc == 3 && std::string(argv[2]) == "--caps-lock") {
+      static int releases = 0;
+      static bool releaseWorks = true;
+      msime::linux_host::replace_caps_lock_release_for_testing(+[] { return true; }, +[] {
+        ++releases;
+        return releaseWorks;
+      });
+      const fcitx::KeyStates lock{fcitx::KeyState::CapsLock};
+      const auto capsKey = [&](bool release, fcitx::KeyStates states) {
+        fcitx::KeyEvent event(&ic, fcitx::Key(FcitxKey_Caps_Lock, states), release);
+        engine.keyEvent(entry, event);
+        return event.accepted();
+      };
+      // 大写锁定从关到开的一次按下和松开；松开本身永远不吃掉，和裸 Shift 一样。
+      const auto tap = [&](fcitx::KeyStates extra = fcitx::KeyStates()) {
+        require(!capsKey(false, extra), "Caps Lock press was consumed");
+        require(!capsKey(true, extra | lock), "Caps Lock release was consumed");
+      };
+      require(state->input_enabled_, "Caps Lock test does not start in Chinese");
+      // 缺省关：轻点只是大写锁定，不撤回也不切换。
+      tap();
+      require(state->input_enabled_ && releases == 0, "Caps Lock switched with the preference off");
+      const auto setBinding = [&](bool enabled) {
+        auto snapshot = response(msime_client_load_preferences(
+            reinterpret_cast<const uint8_t *>(preferenceDirectory.data()), preferenceDirectory.size()));
+        const auto revision = snapshot.at("revision").get<uint64_t>();
+        snapshot["preferences"]["keybindings"]["switch_language_caps_lock"] = enabled;
+        const auto document = snapshot.dump();
+        response(msime_client_save_preferences(
+            reinterpret_cast<const uint8_t *>(preferenceDirectory.data()), preferenceDirectory.size(),
+            revision, reinterpret_cast<const uint8_t *>(document.data()), document.size()));
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+          state->refreshPreferences();
+          if (state->mode_caps_lock_enabled_ == enabled) return;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < deadline);
+        require(false, "Caps Lock preference did not hot-reload");
+      };
+      setBinding(true);
+      tap();
+      require(!state->input_enabled_ && releases == 1, "a Caps Lock tap did not release the lock and switch to English");
+      // 英文透传时同样处理，切回中文。
+      tap();
+      require(state->input_enabled_ && releases == 2, "a Caps Lock tap did not switch back from English passthrough");
+      // 按住超过 300 毫秒是要大写锁定。
+      require(!capsKey(false, fcitx::KeyStates()), "held Caps Lock press was consumed");
+      std::this_thread::sleep_for(std::chrono::milliseconds(350));
+      require(!capsKey(true, lock), "held Caps Lock release was consumed");
+      require(state->input_enabled_ && releases == 2, "a long Caps Lock press switched or released the lock");
+      // 大写锁定开着时按 Caps Lock 是关掉它。
+      require(!capsKey(false, lock) && !capsKey(true, fcitx::KeyStates()), "Caps Lock that turns the lock off was consumed");
+      require(state->input_enabled_ && releases == 2, "turning Caps Lock off switched");
+      // 按着 Caps Lock 打字是在用大写锁定。
+      require(!capsKey(false, fcitx::KeyStates()), "Caps Lock press before a letter was consumed");
+      {
+        fcitx::KeyEvent letter(&ic, fcitx::Key(FcitxKey_A, lock));
+        engine.keyEvent(entry, letter);
+        require(!letter.accepted(), "a Caps Lock letter was composed");
+      }
+      require(!capsKey(true, lock), "Caps Lock release after a letter was consumed");
+      require(state->input_enabled_ && releases == 2, "typing while Caps Lock was held switched");
+      // 和修饰键一起按是组合键。
+      tap(fcitx::KeyStates(fcitx::KeyState::Shift));
+      require(state->input_enabled_ && releases == 2, "Shift+Caps Lock switched");
+      // 撤不回大写锁定就不切换。
+      releaseWorks = false;
+      tap();
+      require(state->input_enabled_ && releases == 3, "a Caps Lock tap switched although the lock stayed on");
+      releaseWorks = true;
+      // 组字中先上屏原文再切换，和裸 Shift 一样。
+      const auto committed = ic.committed;
+      for (const auto sym : {FcitxKey_n, FcitxKey_i}) {
+        fcitx::KeyEvent letter(&ic, fcitx::Key(sym));
+        engine.keyEvent(entry, letter);
+        require(letter.accepted(), "Caps Lock composition test did not compose");
+      }
+      tap();
+      require(!state->input_enabled_ && ic.committed == committed + "ni" && releases == 4,
+              "a Caps Lock tap did not commit the reading before switching");
+      tap();
+      require(state->input_enabled_, "a Caps Lock tap did not switch back after the commit");
+      // 组字中长按 Caps Lock 是要大写锁定：fcitx 不把 Caps_Lock 算作修饰键，布防了的按下也不能把首选上屏。
+      for (const auto sym : {FcitxKey_n, FcitxKey_i}) {
+        fcitx::KeyEvent letter(&ic, fcitx::Key(sym));
+        engine.keyEvent(entry, letter);
+      }
+      require(!capsKey(false, fcitx::KeyStates()), "Caps Lock press during a composition was consumed");
+      std::this_thread::sleep_for(std::chrono::milliseconds(350));
+      require(!capsKey(true, lock), "Caps Lock release during a composition was consumed");
+      require(state->input_enabled_ && ic.committed == committed + "ni" &&
+                  ic.inputPanel().clientPreedit().toString() == "ni",
+              "a long Caps Lock press during a composition committed or switched");
+      {
+        fcitx::KeyEvent cancel(&ic, fcitx::Key(FcitxKey_Escape));
+        engine.keyEvent(entry, cancel);
+      }
+      setBinding(false);
+      tap();
+      require(state->input_enabled_ && releases == 5, "a disabled Caps Lock switched or released the lock");
+      state->close();
+      removeFixtureTree(directory);
+      msime::linux_host::replace_caps_lock_release_for_testing(nullptr, nullptr);
+      std::cout << "Fcitx5 Caps Lock tap, long press, chords, failed release and hot-reload passed\n";
       return 0;
     }
     // The host's statistics gate, not the store, is what keeps an opt-out from reaching the statistics file. First with statistics off after a preference tick, then with them turned on in the store while the host has not ticked since: a commit or passthrough key that slipped past the host would be recorded by that open store and replace the document, so only the host's cached switch can keep it untouched. The preference reload below is the tick that opens the gate, and the check after it proves recording resumes.

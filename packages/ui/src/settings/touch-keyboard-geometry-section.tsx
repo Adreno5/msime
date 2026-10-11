@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { SettingsGroupNote } from "./settings-group-note";
-import { Checks, GroupList, Row, Select, type SegmentedOption } from "../core/platform-controls";
+import { Checks, GroupList, type SegmentedOption } from "../core/platform-controls";
 import { SliderRow } from "./slider-row";
 import { SwitchRow } from "./switch-row";
 import { ActionRow } from "./action-row";
 import { SettingsGroupBlock } from "./settings-group-block";
 import type { SwipeSymbolsDirection } from "./mobile-keyboard-feedback-section";
 import { SegmentedRow } from "./segmented-row";
+import { SelectRow } from "./select-row";
 
 export type TouchToolbarPreferences = {
   layout: boolean;
@@ -291,18 +292,17 @@ export function TouchKeyboardGeometrySection({
                 checked={swipeSymbols}
                 onChange={(enabled) => onSwipeSymbolsChange?.(enabled)}
               />
-              <Row title="滑动方向">
-                <Select
-                  disabled={tabletFullKeysBusy || !swipeSymbols}
-                  value={swipeSymbolsDirection}
-                  onChange={(event) =>
-                    onSwipeSymbolsDirectionChange?.(event.target.value as SwipeSymbolsDirection)
-                  }
-                >
-                  <option value="down">下滑</option>
-                  <option value="up">上滑</option>
-                </Select>
-              </Row>
+              <SelectRow
+                title="滑动方向"
+                disabled={tabletFullKeysBusy || !swipeSymbols}
+                value={swipeSymbolsDirection}
+                onChange={(event) =>
+                  onSwipeSymbolsDirectionChange?.(event.target.value as SwipeSymbolsDirection)
+                }
+              >
+                <option value="down">下滑</option>
+                <option value="up">上滑</option>
+              </SelectRow>
             </>
           )}
           {glideTyping !== undefined && (

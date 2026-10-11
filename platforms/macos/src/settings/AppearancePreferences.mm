@@ -55,8 +55,10 @@ static NSString *const ShuangpinPreeditKey = @"MSIMEClientShuangpinPreeditUsesRa
 /// 五笔码表版本：`wubi86` 或 `wubi98`，写进共享偏好文档的 `wubi_profile`。
 static NSString *const WubiProfileKey = @"MSIMEClientWubiProfile";
 static NSString *const LocalModesKey = @"MSIMEClientLocalModes";
+/// 「Shift+字母进入快捷模式」总开关和各模式开关存在同一张表里（共享文档的 `local_modes.shift_letter_entry`），缺省同样是开；设置窗口把它单独放在模式网格上方。
+static NSString *const ShiftLetterEntryMode = @"shift_letter_entry";
 static NSArray<NSArray<NSString *> *> *LocalModeControls() {
-    return @[@[@"quick_phrase", @"快捷短语（K 模式）"], @[@"date_time", @"日期与时间（T 模式）"],
+    return @[@[ShiftLetterEntryMode, @"Shift+字母进入快捷模式"], @[@"quick_phrase", @"快捷短语（K 模式）"], @[@"date_time", @"日期与时间（T 模式）"],
              @[@"unicode", @"Unicode 录入（U 模式）"], @[@"emoji", @"Emoji（E 模式）"],
              @[@"kaomoji", @"颜文字（M 模式）"], @[@"super_jianpin", @"超级简拼（J 模式）"],
              @[@"temporary_english", @"临时英文（Y 模式）"], @[@"temporary_japanese", @"临时日语（R 模式）"]];
@@ -329,6 +331,7 @@ static NSString *const WubiMixedPinyinKey = @"MSIMEClientWubiMixedPinyin";
 static NSString *const InputModeShortcutKey = @"MSIMEClientInputModeShortcut";
 static NSString *const ShiftTapShortcutKey = @"MSIMEClientShiftTapShortcut";
 static NSString *const ControlTapShortcutKey = @"MSIMEClientControlTapShortcut";
+static NSString *const CapsLockTapShortcutKey = @"MSIMEClientCapsLockTapShortcut";
 static NSString *const ControlOptionSpaceShortcutKey = @"MSIMEClientControlOptionSpaceShortcut";
 static NSString *const CharacterSetShortcutKey = @"MSIMEClientCharacterSetShortcut";
 static NSString *const FullWidthShortcutKey = @"MSIMEClientFullWidthShortcut";
@@ -440,6 +443,7 @@ static NSDictionary<NSString *, NSString *> *SharedOverrideProperties() {
         InputModeShortcutKey : @"sharedInputModeShortcut",
         ShiftTapShortcutKey : @"sharedShiftTapShortcut",
         ControlTapShortcutKey : @"sharedControlTapShortcut",
+        CapsLockTapShortcutKey : @"sharedCapsLockTapShortcut",
         ControlOptionSpaceShortcutKey : @"sharedControlOptionSpaceShortcut",
         CharacterSetShortcutKey : @"sharedCharacterSetShortcut",
         FullWidthShortcutKey : @"sharedFullWidthShortcut",
@@ -540,6 +544,7 @@ static NSDictionary<NSString *, MSIMESettingProbe> *SettingProbes() {
             InputModeShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.inputModeShortcut); },
             ShiftTapShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.shiftTapShortcut); },
             ControlTapShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.controlTapShortcut); },
+            CapsLockTapShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.capsLockTapShortcut); },
             ControlOptionSpaceShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.controlOptionSpaceShortcut); },
             CharacterSetShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.characterSetShortcut); },
             FullWidthShortcutKey : ^id(MSIMEAppearancePreferences *p) { return @(p.fullWidthShortcut); },
@@ -990,8 +995,10 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
     NSNumber *_sharedInputModeShortcut;
     NSNumber *_sharedShiftTapShortcut;
     NSNumber *_sharedControlTapShortcut;
+    NSNumber *_sharedCapsLockTapShortcut;
     NSSwitch *_shiftTapShortcutToggle;
     NSSwitch *_controlTapShortcutToggle;
+    NSSwitch *_capsLockTapShortcutToggle;
     NSNumber *_sharedControlOptionSpaceShortcut;
     NSSwitch *_controlOptionSpaceShortcutToggle;
     NSNumber *_sharedCharacterSetShortcut;
@@ -1269,7 +1276,8 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
         keys[@"switch_language_shift"] = @(([_defaults objectForKey:ShiftTapShortcutKey] != nil) ? self.shiftTapShortcut : self.inputModeShortcut);
         merged[@"keybindings"] = keys;
     }
-    for (NSArray *entry in @[@[ControlTapShortcutKey, @"switch_language_ctrl", @(self.controlTapShortcut)]]) {
+    for (NSArray *entry in @[@[ControlTapShortcutKey, @"switch_language_ctrl", @(self.controlTapShortcut)],
+                             @[CapsLockTapShortcutKey, @"switch_language_caps_lock", @(self.capsLockTapShortcut)]]) {
         if ([_defaults objectForKey:entry[0]] == nil) continue;
         id existing = merged[@"keybindings"];
         NSMutableDictionary *keys = [existing isKindOfClass:NSDictionary.class] ? [existing mutableCopy] : [NSMutableDictionary dictionary];
@@ -1471,11 +1479,19 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
         if (LocalModeBoolean(value))
             _sharedLocalModes[entry[0]] = value;
     }
-    for (NSButton *button in _localModeButtons)
+    [self refreshLocalModeButtons];
+}
+// 总开关关掉时各模式的勾选保留原值，只是暂时不起作用，所以置灰而不改值。
+- (void)refreshLocalModeButtons {
+    const BOOL shiftLetterEntry = [self localModeEnabled:ShiftLetterEntryMode];
+    for (NSButton *button in _localModeButtons) {
         button.state = [self localModeEnabled:button.identifier] ? NSControlStateValueOn : NSControlStateValueOff;
+        button.enabled = shiftLetterEntry || [button.identifier isEqual:ShiftLetterEntryMode];
+    }
 }
 - (void)localModeChanged:(NSButton *)sender {
     [self setLocalMode:sender.identifier enabled:sender.state == NSControlStateValueOn];
+    [self refreshLocalModeButtons];
 }
 - (NSImage *)decorationImageForDark:(BOOL)dark { return dark ? _darkDecorationImage : _lightDecorationImage; }
 - (NSImage *)backgroundImageForDark:(BOOL)dark { return dark ? _darkBackgroundImage : _lightBackgroundImage; }
@@ -1927,6 +1943,7 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
             _sharedShiftTapShortcut = shift;
         }
         if (LocalModeBoolean(keys[@"switch_language_ctrl"])) _sharedControlTapShortcut = keys[@"switch_language_ctrl"];
+        if (LocalModeBoolean(keys[@"switch_language_caps_lock"])) _sharedCapsLockTapShortcut = keys[@"switch_language_caps_lock"];
         id inputMode = keys[@"switch_language_ctrl_alt_space"];
         if (LocalModeBoolean(inputMode)) _sharedControlOptionSpaceShortcut = inputMode;
         id enabled = keys[@"toggle_character_set_ctrl_shift_f"];
@@ -2344,6 +2361,15 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
 }
 - (BOOL)controlTapShortcut {
     return _sharedControlTapShortcut ? _sharedControlTapShortcut.boolValue : [_defaults boolForKey:ControlTapShortcutKey];
+}
+// 缺省为关，和共享偏好 `keybindings.switch_language_caps_lock` 一致。
+- (BOOL)capsLockTapShortcut {
+    return _sharedCapsLockTapShortcut ? _sharedCapsLockTapShortcut.boolValue : [_defaults boolForKey:CapsLockTapShortcutKey];
+}
+- (void)setCapsLockTapShortcut:(BOOL)value {
+    _sharedCapsLockTapShortcut = nil;
+    [_defaults setBool:value forKey:CapsLockTapShortcutKey];
+    [self preferencesChanged];
 }
 - (void)setControlTapShortcut:(BOOL)value {
     _sharedControlTapShortcut = nil;
@@ -3075,11 +3101,11 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
     _candidateEnglishGlossToggle.state = self.candidateEnglishGloss ? NSControlStateValueOn : NSControlStateValueOff;
     _quanpinHelpcodeToggle.state = self.quanpinHelpcodeEnabled ? NSControlStateValueOn : NSControlStateValueOff;
     _shuangpinHelpcodeToggle.state = self.shuangpinHelpcodeEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-    for (NSButton *button in _localModeButtons)
-        button.state = [self localModeEnabled:button.identifier] ? NSControlStateValueOn : NSControlStateValueOff;
+    [self refreshLocalModeButtons];
     _inputModeShortcutToggle.state = self.inputModeShortcut ? NSControlStateValueOn : NSControlStateValueOff;
     _shiftTapShortcutToggle.state = self.shiftTapShortcut ? NSControlStateValueOn : NSControlStateValueOff;
     _controlTapShortcutToggle.state = self.controlTapShortcut ? NSControlStateValueOn : NSControlStateValueOff;
+    _capsLockTapShortcutToggle.state = self.capsLockTapShortcut ? NSControlStateValueOn : NSControlStateValueOff;
     _controlOptionSpaceShortcutToggle.state = self.controlOptionSpaceShortcut ? NSControlStateValueOn : NSControlStateValueOff;
     _characterSetShortcutToggle.state = self.characterSetShortcut ? NSControlStateValueOn : NSControlStateValueOff;
     [_layoutButton selectItemAtIndex:self.vertical ? 1 : 0];
@@ -3523,6 +3549,7 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
     [appRuleScroll.widthAnchor constraintEqualToAnchor:appRuleControls.widthAnchor].active = YES;
     _shiftTapShortcutToggle = MSIMESettingSwitch(self, @selector(shiftTapShortcutChanged:), @"单按 Shift 切换中英文");
     _controlTapShortcutToggle = MSIMESettingSwitch(self, @selector(controlTapShortcutChanged:), @"单按 Control 切换中英文");
+    _capsLockTapShortcutToggle = MSIMESettingSwitch(self, @selector(capsLockTapShortcutChanged:), @"单按 Caps Lock 切换中英文");
     _controlOptionSpaceShortcutToggle = MSIMESettingSwitch(self, @selector(controlOptionSpaceShortcutChanged:), @"Control + Option + 空格切换中英文");
     _characterSetShortcutToggle = MSIMESettingSwitch(self, @selector(characterSetShortcutChanged:), @"Control + Shift + F 切换简繁");
     _fullWidthToggle = MSIMESettingSwitch(self, @selector(fullWidthChanged:), @"全角输入（Option + Shift + H）");
@@ -3830,14 +3857,21 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
     // 实用功能 was a page holding this one card, and its summary was the only place in the window
     // that said how the eight modes are entered. The page is gone and the sentence is not: it is the
     // first thing in the card, where the grid it describes is.
+    NSButton *shiftLetterEntryButton = nil;
+    NSMutableArray<NSButton *> *modeButtons = [NSMutableArray array];
     for (NSArray<NSString *> *entry in LocalModeControls()) {
         NSButton *button = [NSButton checkboxWithTitle:entry[1] target:self action:@selector(localModeChanged:)];
         button.identifier = entry[0];
         [_localModeButtons addObject:button];
+        if ([entry[0] isEqual:ShiftLetterEntryMode]) shiftLetterEntryButton = button;
+        else [modeButtons addObject:button];
     }
+    [self refreshLocalModeButtons];
     NSBox *localModesCard = MSIMECardWithViews(@[
-        MSIMEDetailLabel(@"未组词时按 Shift 加一个字母，临时切到另一种输入方式。"),
-        [self settingCheckboxes:_localModeButtons columns:2],
+        MSIMEDetailLabel(@"未组词时按 Shift 加一个字母，临时切到另一种输入方式。关掉总开关后 Shift+字母照常打出大写字母，下面各模式的开关保留。"),
+        shiftLetterEntryButton,
+        MSIMECardSeparator(),
+        [self settingCheckboxes:modeButtons columns:2],
     ], 8.0);
     localModesCard.accessibilityLabel = @"快捷模式卡片";
 
@@ -4141,6 +4175,10 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
         [self settingRow:@"Shift + 空格切换中英文" control:_inputModeShortcutToggle aka:@[@"中英文切换"]],
         [self settingRow:@"单按 Shift 切换中英文" control:_shiftTapShortcutToggle aka:@[@"中英文切换"]],
         [self settingRow:@"单按 Control 切换中英文" control:_controlTapShortcutToggle aka:@[@"中英文切换"]],
+        [self settingRow:@"单按 Caps Lock 切换中英文"
+                  detail:@"轻点（300 毫秒内松开）切换中英文，不打开大写锁定；按住更久照常打开大写锁定。若打开了系统的「使用大写锁定键切换 ABC」，请先把它关掉。"
+                 control:_capsLockTapShortcutToggle
+                     aka:@[@"中英文切换", @"大写锁定"]],
         [self settingRow:@"Control + Option + 空格切换中英文" control:_controlOptionSpaceShortcutToggle aka:@[@"中英文切换"]],
         [self settingRow:@"Control + Shift + F 切换简繁" control:_characterSetShortcutToggle aka:@[@"繁体"]],
         [self settingRow:@"Option + Shift + H 切换全半角"
@@ -4172,7 +4210,7 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
                                 summary:@"切换中英文、翻页选字与开始语音输入使用的按键。"
                                 content:@[
         [self sectionHeader:@"输入状态切换"
-                       keys:@[InputModeShortcutKey, ShiftTapShortcutKey, ControlTapShortcutKey,
+                       keys:@[InputModeShortcutKey, ShiftTapShortcutKey, ControlTapShortcutKey, CapsLockTapShortcutKey,
                               ControlOptionSpaceShortcutKey, CharacterSetShortcutKey, FullWidthShortcutKey,
                               VoiceHotkeyCtrlF9Key, VoiceHotkeyRightAltKey, VoiceHotkeyCtrlCommandKey,
                               VoiceHotkeyCtrlOptionKey, VoiceHotkeyHoldSpaceKey]],
@@ -4798,6 +4836,7 @@ static NSArray<NSString *> *PinyinSpellings(NSString *text) {
 - (void)wubiProfileChanged:(NSPopUpButton *)sender { self.wubiProfile = sender.indexOfSelectedItem == 1 ? @"wubi98" : @"wubi86"; }
 - (void)preeditChanged:(NSPopUpButton *)sender { self.shuangpinPreeditUsesRaw = sender.indexOfSelectedItem == 1; }
 - (void)inputModeShortcutChanged:(NSSwitch *)sender { self.inputModeShortcut = sender.state == NSControlStateValueOn; }
+- (void)capsLockTapShortcutChanged:(NSSwitch *)sender { self.capsLockTapShortcut = sender.state == NSControlStateValueOn; }
 - (void)defaultImeModeChanged:(NSPopUpButton *)sender { self.defaultImeMode = sender.indexOfSelectedItem == 1 ? @"english" : @"chinese"; }
 - (void)imeModeScopeChanged:(NSPopUpButton *)sender { self.imeModeScope = sender.indexOfSelectedItem == 1 ? @"global" : @"app"; }
 - (void)shiftTapShortcutChanged:(NSSwitch *)sender { self.shiftTapShortcut = sender.state == NSControlStateValueOn; }

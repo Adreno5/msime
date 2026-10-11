@@ -17,7 +17,6 @@ test("maps the settings tab icon and compact labels", () => {
 test("uses touch friendly page titles where desktop labels differ", () => {
   expect(mobilePageTitle("appearance", "候选窗口")).toBe("候选栏");
   expect(mobilePageTitle("screen-keyboard", "屏幕键盘")).toBe("键盘");
-  expect(mobilePageTitle("shortcuts", "快捷键")).toBe("外接键盘快捷键");
   expect(mobilePageTitle("account", "账号与同步")).toBe("我的");
   expect(mobilePageTitle("community", "社区")).toBe("社区");
 });

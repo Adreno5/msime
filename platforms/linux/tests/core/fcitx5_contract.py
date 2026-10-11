@@ -343,6 +343,7 @@ for key in (
     "switch_language_ctrl",
     "switch_language_ctrl_space",
     "switch_language_ctrl_alt_space",
+    "switch_language_caps_lock",
     "toggle_character_set_ctrl_shift_f",
 ):
     assert key in source, key

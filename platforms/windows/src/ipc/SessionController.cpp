@@ -61,8 +61,14 @@ SessionController::SessionController(
                 nlohmann::json candidates = nlohmann::json::array();
                 for (auto &text : result.candidates)
                   candidates.push_back(std::move(text));
-                auto view = state.apply_ai_candidates(
-                    result.lease, result.query, candidates.dump());
+                auto view = result.candidates.empty()
+                                ? std::optional<nlohmann::json>{}
+                                : state.apply_ai_candidates(
+                                      result.lease, result.query,
+                                      candidates.dump());
+                // 回答为空、失败或被拒：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+                if (!view)
+                  view = state.resolve_ai_candidates(result.lease, result.query);
                 if (view) {
                   candidates_.online(result.lease, *view);
                   // AI insertion changes the visible candidate generation just

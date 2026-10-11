@@ -116,6 +116,8 @@ static inline NSString *MSIMECandidateGlossRun(NSString *reading, NSString *tran
 @property(nonatomic, strong) NSFont *numberFont;
 @property(nonatomic) BOOL candidateHighlighted;
 @property(nonatomic) BOOL candidateFixed;
+// AI 座位上的占位行（Engine 候选来源 12）：等回答时是「…」，回答为空或失败后是「—」，画成次要色，选它什么都不上屏。
+@property(nonatomic) BOOL candidatePending;
 @property(nonatomic, copy) NSString *translation;
 // How each gloss line is read, "\n"-joined parallel to translation. Drawn after its line and never part of what a gloss column commits.
 @property(nonatomic, copy) NSString *pronunciation;

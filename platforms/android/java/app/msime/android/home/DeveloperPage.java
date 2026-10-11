@@ -278,6 +278,7 @@ public final class DeveloperPage extends DetailPage {
             local.choice(AndroidLocalSettings.MCP_RETENTION));
         if (!include.any()) return;
         busy = true;
+        long request = ++generation;
         render();
         String expectedAccountId = cloudAccountId;
         String expectedSessionId = cloudSessionId;
@@ -305,6 +306,10 @@ public final class DeveloperPage extends DetailPage {
                 FilePolicy.deleteQuietly(zip);
             }
         }, result -> {
+            if (request != generation) {
+                busy = false;
+                return;
+            }
             busy = false;
             if (result == null || result.created == null) {
                 MsToast.show(requireContext(), result == null ? "上传失败，请重试" : result.error);
@@ -337,6 +342,7 @@ public final class DeveloperPage extends DetailPage {
             .setOnCancelListener(dialog -> render())
             .setPositiveButton("删除", (dialog, which) -> {
                 busy = true;
+                long request = ++generation;
                 render();
                 HostTask.runNetwork(this, context -> {
                     try {
@@ -346,6 +352,10 @@ public final class DeveloperPage extends DetailPage {
                         return failureMessage(failure);
                     }
                 }, error -> {
+                    if (request != generation) {
+                        busy = false;
+                        return;
+                    }
                     busy = false;
                     if (error == null || !error.isEmpty()) {
                         MsToast.show(requireContext(), error == null ? "删除失败，请重试" : error);
@@ -373,6 +383,7 @@ public final class DeveloperPage extends DetailPage {
 
     private void regenerate(Consumer<String> then) {
         busy = true;
+        long request = ++generation;
         render();
         String expectedAccountId = cloudAccountId;
         String expectedSessionId = cloudSessionId;
@@ -384,6 +395,10 @@ public final class DeveloperPage extends DetailPage {
                 return new String[] {null, failureMessage(failure)};
             }
         }, result -> {
+            if (request != generation) {
+                busy = false;
+                return;
+            }
             busy = false;
             if (result == null || result[0] == null) {
                 MsToast.show(requireContext(), result == null ? "重新生成失败，请重试" : result[1]);

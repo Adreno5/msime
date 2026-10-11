@@ -1525,6 +1525,9 @@ pub struct LocalModePreferences {
     /// The `@` mode also offers China's provinces, cities and counties from the Engine's built-in table, after the user's own names. Off by default, and only meaningful while `mention` is on.
     #[serde(default)]
     pub mention_places: bool,
+    /// 「Shift+字母进入快捷模式」总开关：关掉后没有组字时 Shift+U/T/K/E/M/J/Y/R/V 不进入快捷模式，照常打出大写字母，上面各模式自己的开关保留原值。默认开，和以前的行为一样；缺这个键的旧文档读作开。
+    #[serde(default = "enabled_by_default")]
+    pub shift_letter_entry: bool,
 }
 
 impl Default for LocalModePreferences {
@@ -1542,6 +1545,7 @@ impl Default for LocalModePreferences {
             command: false,
             mention: false,
             mention_places: false,
+            shift_letter_entry: true,
         }
     }
 }
@@ -1867,6 +1871,9 @@ pub struct KeybindingPreferences {
     /// macOS 的 Option+Shift+H、Windows 和 Android 的 Alt+Shift+H 切换全半角。macOS 从上线起就无条件占用这个组合键，所以默认开：这个偏好是把组合键还给应用，而不是打开一个原本关着的功能。没有这个组合键的宿主忽略它。
     #[serde(default = "enabled_by_default")]
     pub toggle_fullwidth_option_shift_h: bool,
+    /// 单按 Caps Lock 切换中英文：按下后在 300 毫秒内松开、期间没有别的键，算一次轻点，切换输入法自己的中英文模式，并把大写锁定撤回关闭；按住更久照常打开大写锁定。大写锁定已经开着时按它照常关掉，不切换。默认关；只有声明 `HostCapabilities::caps_lock_language_switch` 的宿主读它。
+    #[serde(default)]
+    pub switch_language_caps_lock: bool,
 }
 
 impl Default for KeybindingPreferences {
@@ -1878,6 +1885,7 @@ impl Default for KeybindingPreferences {
             switch_language_ctrl_alt_space: true,
             toggle_character_set_ctrl_shift_f: true,
             toggle_fullwidth_option_shift_h: true,
+            switch_language_caps_lock: false,
         }
     }
 }

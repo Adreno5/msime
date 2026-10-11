@@ -24,6 +24,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
@@ -47,7 +48,9 @@ import android.widget.PopupMenu;
 import android.widget.PopupWindow;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputContentInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.MimeTypeMap;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -63,6 +66,8 @@ import app.msime.android.keyboard.EnglishSuggestionPolicy;
 import app.msime.android.policy.HostOptionsPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -315,6 +320,12 @@ public final class MSIMEInputService extends InputMethodService {
     LinearLayout recentClipRow;
     Button recentClipButton;
     private final Runnable recentClipExpiry = this::render;
+    /** 发送「最近复制」图片（#6781）时读剪贴板图片、写缓存副本和清理副本都在这条线程上。 */
+    private final ExecutorService clipboardImageWorker = Executors.newSingleThreadExecutor();
+    /** 换输入框或收起输入时加一：点了发送之后输入框变了，读完的图片就不再提交给新的输入框。 */
+    private long clipboardImageGeneration;
+    /** 发出 {@link ClipboardImagePolicy#RETENTION_MS} 之后删掉缓存里的副本。 */
+    private final Runnable clipboardImageCleanup = this::clearClipboardImages;
     boolean toolbarFloating;
     /** 本地设置 `platform.android.toolbar_text_edit`：工具栏上显示「文本编辑」按钮。 */
     boolean toolbarTextEdit;
@@ -324,8 +335,10 @@ public final class MSIMEInputService extends InputMethodService {
     private int floatingY = FloatingKeyboardPolicy.DEFAULT_Y_FRACTION;
     /** 浮动面板顶部的拖动条，只在浮动时显示。 */
     FloatingKeyboardBar floatingBar;
-    /** 上一次套到窗口上的是不是浮动布局；起初是系统默认的停靠布局。 */
+    /** 上一次套到窗口上的是不是浮动布局（浮动键盘或跟随光标的候选栏）；起初是系统默认的停靠布局。 */
     private boolean floatingLayoutApplied;
+    /** 上一次套上的浮动布局是不是跟随光标的候选栏：它和浮动键盘的外框宽度、拖动条不同，在两者之间切换也要重新套。 */
+    private boolean caretLayoutApplied;
     /** 第一次浮动前窗口与系统 inputArea 原来的高度，停靠时原样恢复；{@link Integer#MIN_VALUE} 表示还没记下。 */
     private int dockedWindowHeight = Integer.MIN_VALUE;
     private int dockedInputAreaHeight = Integer.MIN_VALUE;
@@ -336,6 +349,36 @@ public final class MSIMEInputService extends InputMethodService {
     /** 窗口的系统栏内边距（像素），浮动时把面板限制在状态栏与导航栏之间。 */
     private final android.graphics.Rect systemBarInsets = new android.graphics.Rect();
     private final int[] floatingLocation = new int[2];
+    /** 「物理键盘时候选栏跟随光标」（本地设置 HARDWARE_CARET_CANDIDATES，{@link CaretCandidatePolicy}）。 */
+    boolean caretCandidates;
+    /** 向哪个 InputConnection 要过光标位置（`requestCursorUpdates`）；换了输入框或不再需要时重新要或撤回。 */
+    private InputConnection caretAnchorConnection;
+    /** 这个输入框答应报告光标位置（`requestCursorUpdates` 返回真）；拒绝的输入框候选栏照旧停在底部。 */
+    private boolean caretAnchorsReported;
+    /** 最近一次收到的光标位置（屏幕坐标，像素）：有组字时左边取组字第一个字，上下取整段组字和插入点所占的行；没有组字时取插入点。 */
+    private boolean caretAnchorKnown;
+    private float caretAnchorLeft;
+    private float caretAnchorTop;
+    private float caretAnchorBottom;
+    /** 刚要过光标位置，还在等第一次报告（{@link CaretCandidatePolicy#ANCHOR_WAIT_MS}）；等的期间要显示的候选栏先不显示，不退回底部。 */
+    private boolean caretAnchorPending;
+    /** 等第一次报告的期限到了：还没收到就不再等，下一次 render 让要显示的候选栏退回底部。 */
+    private final Runnable caretAnchorWaitExpired = () -> {
+        caretAnchorPending = false;
+        if (keyboardRoot != null && !caretAnchorKnown) render();
+    };
+    /** 这一次因为显示候选栏时还不知道光标在哪儿而退回底部（{@link CaretCandidatePolicy#docked}）。 */
+    private boolean caretDocked;
+    /** 上一次 render 时候选栏（组字、候选或提示）是否该显示，供光标位置回调判断此刻是否空闲。 */
+    private boolean caretStripShown;
+    /** 输入法窗口是跟随光标的候选栏空闲时自己收起的（{@link CaretCandidatePolicy#hidesWindow}）：从发出收起请求起，到窗口再显示出来或离开输入框为止。候选栏又有内容时只叫回这样收起的窗口。 */
+    private boolean caretWindowHidden;
+    /** 发出过空闲收起请求（{@link CaretCandidatePolicy#ownHide}），离开输入框时清掉。窗口在落地前可能又被应用叫出来（`onWindowShown`），系统也可能把一次收起分几次落地，所以与 {@link #caretWindowHidden} 分开记、落地时不清：请求后 {@link CaretCandidatePolicy#HIDE_LANDING_MS} 之内落地的收起都认作自己的，不当作用户收起键盘。 */
+    private boolean caretHidePending;
+    /** 上一次因为空闲收起窗口的时刻（`uptimeMillis`），限制多久才能再收一次（{@link CaretCandidatePolicy#WINDOW_REHIDE_MS}）。 */
+    private long caretWindowHiddenAt = Long.MIN_VALUE;
+    private final Runnable caretWindowSync = this::synchronizeCaretWindow;
+    private final int[] caretRootLocation = new int[2];
     /** 功能面板上直接切换的三项：模糊音（共享偏好）、单手模式（off / left / right）与隐私模式（本地设置）。 */
     boolean fuzzyPinyinEnabled;
     String oneHandedMode = "off";
@@ -1234,6 +1277,7 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         long startGeneration = ++engineStartGeneration;
         cloudClipboardGeneration++;
+        clipboardImageGeneration++;
         // 只有接下来要建引擎会话的输入框才停掉空闲同步：建会话前 scheduleEngineStartup 会先在同一个工作线程上同步一轮。焦点落到不打字的窗口（桌面、设置页）时系统同样会调这里，原先一律停掉，离开输入框 500 ms 后的空闲同步几乎总被取消，导入词库的词条就一直等不到写入。
         if (info != null && EditorPolicy.useEngine(info.inputType)) cancelPersonalDictionarySynchronization();
         boolean newDocument = !restarting || currentDocumentIdentifier == 0;
@@ -1243,6 +1287,7 @@ public final class MSIMEInputService extends InputMethodService {
         imeBottomRow.resetSpaceCursor();
         stop(false);
         connection = getCurrentInputConnection();
+        resetCaretAnchor();
         selectionEcho.reset(info == null ? -1 : info.initialSelStart,
             info == null ? -1 : info.initialSelEnd);
         ensureCandidateTranslationStore();
@@ -1364,6 +1409,8 @@ public final class MSIMEInputService extends InputMethodService {
         Telemetry.beginInputSession(this);
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
         if (clipboard != null) clipboard.addPrimaryClipChangedListener(clipboardWatcher);
+        // 键盘进程上次没走到 onDestroy 就被回收时，发出去的图片副本还留在缓存里。
+        clearClipboardImages();
     }
 
     @Override public void onStartInputView(EditorInfo info, boolean restarting) {
@@ -1405,6 +1452,7 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         engineStartGeneration++;
         cloudClipboardGeneration++;
+        clipboardImageGeneration++;
         imeBottomRow.resetSpaceCursor();
         imeCalculator.clear();
         imeEmailSuffixes.clear();
@@ -1414,6 +1462,10 @@ public final class MSIMEInputService extends InputMethodService {
         schedulePersonalDictionarySynchronization(false);
         scheduleDictionarySnapshotProcessing();
         connection = null;
+        resetCaretAnchor();
+        main.removeCallbacks(caretWindowSync);
+        caretWindowHidden = false;
+        caretHidePending = false;
         selectionEcho.reset(-1, -1);
         currentDocumentIdentifier = 0;
         super.onFinishInput();
@@ -1424,8 +1476,23 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         // 键盘收起时还在调整高度就照「完成」保存：用户拖到满意的高度后直接收起键盘或切到别的应用，是把这个高度留下来的意思，原来当作取消，下次弹出就回到设置页里的旧值。只有明确点「取消」才放弃预览。
         finishInlineHeight(true);
+        // 跟随光标的候选栏空闲时自己收起的窗口不是用户收起键盘：空闲、键区收起时本来没有要关的面板，而收起请求落地前用户可能已经又开始组字，照常收尾（finishInputViewPresentation 和系统默认实现里的 finishComposingText）会把这段组字上屏、引擎里的组字也随之丢掉。所以两样都不做，落地后再按此刻的状态决定要不要叫回窗口。
+        boolean ownHide = !finishingInput && CaretCandidatePolicy.ownHide(caretHidePending, caretWindowHiddenAt,
+            android.os.SystemClock.uptimeMillis());
+        if (ownHide) {
+            caretWindowHidden = true;
+            main.post(caretWindowSync);
+            return;
+        }
         if (!finishingInput) finishInputViewPresentation();
         super.onFinishInputView(finishingInput);
+    }
+
+    @Override public void onWindowShown() {
+        super.onWindowShown();
+        caretWindowHidden = false;
+        // 系统或应用把窗口叫出来时可能正空闲（例如输入框获得焦点），按此刻的状态再收起。
+        main.post(caretWindowSync);
     }
 
     /** Match Apple's viewWillDisappear boundary while keeping the editor session alive. */
@@ -1460,6 +1527,9 @@ public final class MSIMEInputService extends InputMethodService {
         hardwareKeyboardUserExpanded = HardwareKeyboardModePolicy.userExpandedAfterConfiguration(
             hardwareKeyboardUserExpanded, hardwareKeyboardAttached, attached);
         hardwareKeyboardAttached = attached;
+        // 旋转、分屏后光标在屏幕上的位置变了：让编辑器立即重报一次，候选栏先按旧位置夹在新窗口里，新位置到了再挪过去。
+        if (caretAnchorsAvailable())
+            connection.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
         JSONObject preferences = preferencesSnapshot == null ? null
             : preferencesSnapshot.optJSONObject("preferences");
         KeyboardSkin next = keyboardSkin(preferences);
@@ -1482,6 +1552,8 @@ public final class MSIMEInputService extends InputMethodService {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
         if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipboardWatcher);
         main.removeCallbacks(recentClipExpiry);
+        main.removeCallbacks(clipboardImageCleanup);
+        clipboardImageGeneration++;
         imeLetterRows.cancelBackspaceRepeat();
         cancelInputViewRefresh();
         engineStartGeneration++;
@@ -1494,6 +1566,9 @@ public final class MSIMEInputService extends InputMethodService {
         flushKeyPresses();
         typingStatisticsWorker.shutdown();
         emojiWorker.shutdown();
+        // 同样排在 shutdown 之前：正在复制的那张写完后，这一步把它和更早的副本一起删掉。
+        clearClipboardImages();
+        clipboardImageWorker.shutdown();
         imeVoiceEntry.shutdown();
         imeKeyFeedback.shutdown();
         imeLayoutRows.shutdown();
@@ -1572,6 +1647,10 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     private void stop(boolean finish) {
+        // Rebuilding the Engine (including an in-place privacy-mode restart) invalidates any
+        // clipboard image copy still running on the worker. Its completion must not submit an
+        // image after the user has enabled the privacy gate.
+        clipboardImageGeneration++;
         candidateTranslationBindingEpoch++;
         candidateTranslationVerifiedGeneration = -1L;
         candidateTranslationAppliedGeneration = -1L;
@@ -1890,6 +1969,7 @@ public final class MSIMEInputService extends InputMethodService {
         toolbarFloating = localSettings.bool(AndroidLocalSettings.TOOLBAR_FLOATING);
         toolbarTextEdit = localSettings.bool(AndroidLocalSettings.TOOLBAR_TEXT_EDIT);
         floatingKeyboard = localSettings.bool(AndroidLocalSettings.FLOATING_KEYBOARD);
+        caretCandidates = localSettings.bool(AndroidLocalSettings.HARDWARE_CARET_CANDIDATES);
         // 拖动进行中不让重读覆盖手指下的位置；松手后的保存会把它写回文件。
         if (!floatingDragging) {
             floatingX = localSettings.integer(AndroidLocalSettings.FLOATING_KEYBOARD_X);
@@ -2975,6 +3055,7 @@ public final class MSIMEInputService extends InputMethodService {
             String requestSignature) {
         boolean cloudComplete = false;
         boolean aiComplete = false;
+        String aiResolveDocument = null;
         try {
             JSONObject query = new JSONObject(document);
             cloudComplete = !requestsCloud(query);
@@ -3001,6 +3082,7 @@ public final class MSIMEInputService extends InputMethodService {
                 return;
             }
             final String queryDocument = aiDocument;
+            aiResolveDocument = aiDocument;
             JSONObject descriptor = aiRequestDescriptor(onSessionThread(targetSession, epoch,
                 () -> NativeClient.aiRequestForQuery(targetSession, queryDocument)));
             if (descriptor == null) return;
@@ -3016,6 +3098,12 @@ public final class MSIMEInputService extends InputMethodService {
         } catch (JSONException | RuntimeException | LinkageError ignored) {
             // 在线候选是可选能力，解析或服务异常交给 finally 触发下一次重试。
         } finally {
+            // AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+            if (!aiComplete && aiResolveDocument != null && epoch == onlineEpoch) {
+                final String resolveDocument = aiResolveDocument;
+                applyOnlineResult(targetSession, epoch,
+                    () -> NativeClient.resolveOnlineCandidates(targetSession, resolveDocument, 1));
+            }
             if (!cloudComplete || !aiComplete)
                 releaseOnlineSignatureIfCurrent(requestSignature, epoch, targetSession);
         }
@@ -5748,6 +5836,34 @@ public final class MSIMEInputService extends InputMethodService {
         return new PrimaryClip(text, description.getTimestamp(), sensitive);
     }
 
+    /** 系统剪贴板里当前的那一张图片：content URI、具体图片类型、复制时刻（读不到时为 0）和是否被标为敏感（#6781）。 */
+    record PrimaryImage(Uri uri, String mimeType, long copiedAtMs, boolean sensitive) {
+        String identity() {
+            return ClipboardCapturePolicy.identity(copiedAtMs,
+                ClipboardImagePolicy.identityText(uri.toString(), mimeType));
+        }
+    }
+
+    /**
+     * 读系统剪贴板当前的那一张图片；没有剪贴板内容、第一项不是 content URI、描述里没有具体的图片类型时为 null。只读描述和 URI，不打开图片。
+     *
+     * <p>和 {@link #readPrimaryClip()} 一样，敏感标记照样返回，由调用方决定怎么对待。
+     */
+    PrimaryImage readPrimaryImage() {
+        ClipboardManager manager = getSystemService(ClipboardManager.class);
+        ClipData clip = manager == null || !manager.hasPrimaryClip() ? null : manager.getPrimaryClip();
+        ClipDescription description = clip == null ? null : clip.getDescription();
+        if (clip == null || clip.getItemCount() == 0 || description == null) return null;
+        String[] types = new String[description.getMimeTypeCount()];
+        for (int index = 0; index < types.length; index++) types[index] = description.getMimeType(index);
+        String mimeType = ClipboardImagePolicy.imageMimeType(types);
+        Uri uri = clip.getItemAt(0).getUri();
+        if (mimeType == null || uri == null || !"content".equals(uri.getScheme())) return null;
+        boolean sensitive = description.getExtras() != null
+            && description.getExtras().getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false);
+        return new PrimaryImage(uri, mimeType, description.getTimestamp(), sensitive);
+    }
+
     /**
      * 把当前剪贴板文本记进本机历史。
      *
@@ -5797,7 +5913,7 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 把系统剪贴板里刚复制的那一条交给工具栏的「最近复制」（#5692）。
+     * 把系统剪贴板里刚复制的那一条交给工具栏的「最近复制」（#5692）；复制的是一张图片时交的是它的身份和类型（#6781），发不发得出去由 {@link #recentImageSendable} 按当前输入框决定。
      *
      * <p>`copiedNow` 为真时是复制监听：这一下就是用户刚复制的，系统给不出复制时刻也按现在算。为假时是弹出键盘时的补看：先只读剪贴板的描述（不读内容）看复制时刻，过了显示窗口就不读内容；读不到复制时刻时不提供，免得一条很久以前的内容被当成刚复制的。系统标为敏感的内容、剪贴板历史或本地开关关着、隐私模式和密码类输入框都不提供，前两种连剪贴板都不读。
      */
@@ -5813,8 +5929,15 @@ public final class MSIMEInputService extends InputMethodService {
             if (copiedAt <= 0 && copiedNow) copiedAt = now;
             if (!RecentClipboardSuggestion.fresh(copiedAt, now)) return;
             PrimaryClip clip = readPrimaryClip();
-            if (clip == null || clip.sensitive()) return;
-            recentClip.offer(clip.identity(), clip.text(), copiedAt);
+            // 不是文字时看是不是一张图片（#6781）：同样丢弃敏感内容，只记身份和类型。
+            PrimaryImage image = clip == null ? readPrimaryImage() : null;
+            if (image != null) {
+                if (image.sensitive()) return;
+                recentClip.offerImage(image.identity(), image.mimeType(), copiedAt);
+            } else {
+                if (clip == null || clip.sensitive()) return;
+                recentClip.offer(clip.identity(), clip.text(), copiedAt);
+            }
         } catch (SecurityException error) {
             return;
         }
@@ -5834,12 +5957,128 @@ public final class MSIMEInputService extends InputMethodService {
         if (!previousClipboard && clipboardHistoryEnabled) offerRecentClip(false);
     }
 
-    /** 点工具栏上的「最近复制」：粘贴它，这一条不再出现。 */
+    /** 点工具栏上的「最近复制」：粘贴它（是图片时发送它），这一条不再出现。 */
     void pasteRecentClip() {
-        String text = recentClip.text(System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        if (recentClip.imageMimeType(now) != null) {
+            sendRecentImage(now);
+            return;
+        }
+        String text = recentClip.text(now);
         recentClip.dismiss();
         if (text != null) insertClipboardText(text);
         render();
+    }
+
+    /**
+     * 「最近复制」的图片现在能不能发到当前输入框（#6781）：有一张还没过期的图片，并且输入框经 `EditorInfo.contentMimeTypes` 声明收这种图片。不收的输入框（很多聊天应用、所有不支持富内容的输入框）里不显示，图片仍在系统剪贴板上，长按输入框粘贴照样能用。
+     */
+    boolean recentImageSendable(long nowMs) {
+        String mimeType = recentClip.imageMimeType(nowMs);
+        EditorInfo info = getCurrentInputEditorInfo();
+        return mimeType != null && info != null
+            && ClipboardImagePolicy.accepts(info.contentMimeTypes, mimeType)
+            && clipboardImageExtension(mimeType) != null;
+    }
+
+    /**
+     * 缓存副本用的扩展名；这种图片发出去后收图应用看到的不是图片类型时为 null，这时不提供发送（#6781）。
+     *
+     * <p>FileProvider 报给收图应用的类型（`ContentResolver.getType`）只按文件扩展名经 `MimeTypeMap` 反查，查不到就是 `application/octet-stream`。所以扩展名先取系统表给这种类型的那个，系统表不认时用 {@link ClipboardImagePolicy#extension} 的常见写法补位，最后按 FileProvider 的做法反查一遍：反查出来不是图片，收图应用拿到的类型就和 commitContent 里声明的对不上，按类型校验的应用会拒收或当成普通文件。这种图仍在系统剪贴板上，长按输入框粘贴照样能用。
+     */
+    static String clipboardImageExtension(String mimeType) {
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        String extension = types.getExtensionFromMimeType(mimeType);
+        if (extension == null) extension = ClipboardImagePolicy.extension(mimeType);
+        if (extension == null) return null;
+        String served = types.getMimeTypeFromExtension(extension);
+        return served != null && served.startsWith("image/") ? extension : null;
+    }
+
+    /**
+     * 把「最近复制」的图片发到当前输入框（#6781）。
+     *
+     * <p>先在主线程上核对：输入框还收这种图片、隐私规则允许、剪贴板里还是同一张（身份一致，没有被清空或换成别的）、没有被标为敏感。然后在 {@link #clipboardImageWorker} 上把图读进缓存副本（{@link ClipboardImageCache}），回到主线程用 `commitContent` 交给输入框。这一条点过就收起，不论成败。
+     */
+    private void sendRecentImage(long nowMs) {
+        String identity = recentClip.identity(nowMs);
+        String mimeType = recentClip.imageMimeType(nowMs);
+        boolean sendable = recentImageSendable(nowMs);
+        recentClip.dismiss();
+        render();
+        if (identity == null || mimeType == null || connection == null
+                || !imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)) return;
+        if (!sendable) {
+            notice("这个输入框不支持直接发送图片，可以长按输入框粘贴");
+            return;
+        }
+        PrimaryImage image;
+        try {
+            image = readPrimaryImage();
+        } catch (SecurityException error) {
+            image = null;
+        }
+        if (image == null || image.sensitive() || !identity.equals(image.identity())) {
+            notice("复制的图片已不在剪贴板里");
+            return;
+        }
+        final long generation = clipboardImageGeneration;
+        final File directory = new File(getCacheDir(), ClipboardImagePolicy.DIRECTORY);
+        final android.content.ContentResolver resolver = getContentResolver();
+        final Uri source = image.uri();
+        final String extension = clipboardImageExtension(mimeType);
+        clipboardImageWorker.execute(() -> {
+            File copy = null;
+            String failure = null;
+            try (InputStream input = resolver.openInputStream(source)) {
+                copy = ClipboardImageCache.replace(input, directory, extension, ClipboardImagePolicy.MAX_BYTES);
+            } catch (ClipboardImageCache.TooLargeException error) {
+                failure = "图片太大，不能直接发送，可以长按输入框粘贴";
+            } catch (IOException | RuntimeException error) {
+                // 图片来自别的应用的 provider，它在 openFile 里抛的 NullPointerException、IllegalStateException 等会经 binder 原样抛到这里；这是系统边界，漏掉一个就会让整个键盘进程崩掉、这一次也收不到提示。
+                failure = "无法读取复制的图片";
+            }
+            final File sent = copy;
+            final String reason = failure;
+            main.post(() -> commitClipboardImage(generation, sent, mimeType, reason));
+        });
+    }
+
+    /** {@link #sendRecentImage} 在主线程上的后半段：输入框没变时把副本经 FileProvider 交给它，并安排过一会儿删掉副本。 */
+    private void commitClipboardImage(long generation, File copy, String mimeType, String failure) {
+        if (generation != clipboardImageGeneration || connection == null) {
+            // 读图期间换了输入框或收起了键盘：这张不再发，副本也不留。
+            clearClipboardImages();
+            return;
+        }
+        if (failure != null || copy == null) {
+            notice(failure == null ? "无法读取复制的图片" : failure);
+            return;
+        }
+        boolean sent;
+        try {
+            Uri uri = ClipboardImageCache.contentUri(this, copy);
+            InputContentInfo content = new InputContentInfo(uri,
+                new ClipDescription(ClipboardImagePolicy.LABEL, new String[] {mimeType}));
+            sent = connection.commitContent(content,
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null);
+        } catch (IOException | IllegalArgumentException error) {
+            sent = false;
+        }
+        main.removeCallbacks(clipboardImageCleanup);
+        if (!sent) {
+            clearClipboardImages();
+            notice("这个输入框没有收下图片，可以长按输入框粘贴");
+            return;
+        }
+        main.postDelayed(clipboardImageCleanup, ClipboardImagePolicy.RETENTION_MS);
+    }
+
+    /** 在 {@link #clipboardImageWorker} 上清空缓存里的图片副本；键盘进程正在退出、线程已经停了时什么也不做（退出前已经排过一次清理）。 */
+    private void clearClipboardImages() {
+        if (clipboardImageWorker.isShutdown()) return;
+        File directory = new File(getCacheDir(), ClipboardImagePolicy.DIRECTORY);
+        clipboardImageWorker.execute(() -> ClipboardImageCache.clear(directory));
     }
 
     void dismissRecentClip() {
@@ -6333,6 +6572,8 @@ public final class MSIMEInputService extends InputMethodService {
         configureCandidateTextLayout(button, labelLines);
         KeyboardTypographyPolicy.setKeyTextSize(button, candidateFontSize);
         ViewPolicy.setSelected(button, highlighted);
+        // AI 座位上的占位行（Engine 候选来源 12，「…」或「—」）画淡一些，和真候选区分开；按钮会复用，其他候选恢复不透明（#6888）。
+        button.setAlpha(InputViewValuePolicy.integer(candidate, "source", -1) == 12 ? 0.45f : 1f);
         // render() attaches the button and applies the complete skin tree once below.
         // Avoid creating its candidate drawables before that pass.
         String description = "候选 " + (slot + 1) + "：" + text
@@ -6837,12 +7078,12 @@ public final class MSIMEInputService extends InputMethodService {
         keyboardSurface.addOnLayoutChangeListener((changed, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> {
             if (inlineHeightBar != null) inlineHeightBar.setHeightPixels(bottom - top);
-            // 面板变高变窄（换布局、调高度、旋转）后按存着的千分比重新摆，保证仍在窗口里。
-            if (floatingDrawn()) positionFloatingKeyboard();
+            // 面板变高变窄（换布局、调高度、旋转）后按存着的千分比重新摆，保证仍在窗口里；跟随光标的候选栏换了内容、变了高度后同样按光标重新摆。
+            if (overlayDrawn()) positionKeyboardSurface();
         });
         keyboardRoot.addOnLayoutChangeListener((changed, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> {
-            if (floatingDrawn()) positionFloatingKeyboard();
+            if (overlayDrawn()) positionKeyboardSurface();
         });
         imeStyler.applyKeyboardSurfaceGeometry();
         LinearLayout keyboard = LayoutPolicy.column(this);
@@ -6851,7 +7092,7 @@ public final class MSIMEInputService extends InputMethodService {
             imeBottomBar.readInsets(insets);
             systemBarInsets.set(imeBottomBar.insets());
             imeBottomBar.apply((LinearLayout) target);
-            if (floatingDrawn()) positionFloatingKeyboard();
+            if (overlayDrawn()) positionKeyboardSurface();
             return insets;
         });
         keyboardSurface.addView(keyboard, LayoutPolicy.frameMatchParentParams());
@@ -7418,15 +7659,27 @@ public final class MSIMEInputService extends InputMethodService {
         return FloatingKeyboardPolicy.active(floatingKeyboard, hardwareKeyboardMode);
     }
 
+    /** 候选栏此刻是否跟随光标（{@link CaretCandidatePolicy#active}）：外接键盘的候选条模式里、开关打开且这个输入框报告光标位置时。 */
+    boolean caretCandidatesDrawn() {
+        return CaretCandidatePolicy.active(caretCandidates, hardwareKeysCollapsed(), caretAnchorsAvailable(), caretDocked);
+    }
+
+    /** 键盘外框此刻是否悬在应用上面（浮动键盘或跟随光标的候选栏）：输入法窗口铺满、根视图透明、只有外框接收触摸。两者互斥：浮动键盘在候选条模式里不生效。 */
+    boolean overlayDrawn() {
+        return floatingDrawn() || caretCandidatesDrawn();
+    }
+
     /**
-     * 把浮动 / 停靠套到输入法窗口上。浮动时窗口、系统的 inputArea 与键盘根视图都铺满屏幕（根视图透明，见 ImeStyler.applySkin），键盘外框缩窄成一块面板，{@link #onComputeInsets} 只把面板算作可触摸区域、内容区不占高度，所以应用既不被顶起也不被压缩，面板外的触摸落到应用上。停靠时把窗口和 inputArea 恢复成第一次浮动前的高度。
+     * 把浮动 / 停靠套到输入法窗口上。浮动（以及候选栏跟随光标）时窗口、系统的 inputArea 与键盘根视图都铺满屏幕（根视图透明，见 ImeStyler.applySkin），键盘外框缩窄成一块面板，{@link #onComputeInsets} 只把面板算作可触摸区域、内容区不占高度，所以应用既不被顶起也不被压缩，面板外的触摸落到应用上。停靠时把窗口和 inputArea 恢复成第一次浮动前的高度。
      *
      * @param force 系统重建了窗口里的布局（{@link #setInputView}、{@link #updateFullscreenMode}）时为真，状态没变也重新套一遍
      */
     private void applyFloatingLayout(boolean force) {
-        boolean floating = floatingDrawn();
-        if (!force && floating == floatingLayoutApplied) return;
+        boolean caret = caretCandidatesDrawn();
+        boolean floating = caret || floatingDrawn();
+        if (!force && floating == floatingLayoutApplied && caret == caretLayoutApplied) return;
         floatingLayoutApplied = floating;
+        caretLayoutApplied = caret;
         android.app.Dialog dialog = getWindow();
         android.view.Window window = dialog == null ? null : dialog.getWindow();
         if (window != null) {
@@ -7458,10 +7711,11 @@ public final class MSIMEInputService extends InputMethodService {
                 keyboardRoot.setLayoutParams(params);
             }
         }
-        if (floatingBar != null) ViewPolicy.setVisible(floatingBar, floating);
+        // 拖动条只属于浮动键盘；跟随光标的候选栏由光标位置决定，不能拖。
+        if (floatingBar != null) ViewPolicy.setVisible(floatingBar, floating && !caret);
         imeStyler.applyKeyboardSurfaceGeometry();
         if (imeFrame.keyboard != null) imeFrame.keyboard.requestApplyInsets();
-        positionFloatingKeyboard();
+        positionKeyboardSurface();
     }
 
     @Override public void setInputView(View view) {
@@ -7476,12 +7730,12 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 浮动时：内容区与可见区都从窗口底边算起（应用不让出高度），只有面板接收触摸。停靠时用系统默认的计算。
+     * 浮动时：内容区与可见区都从窗口底边算起（应用不让出高度），只有面板接收触摸。停靠时用系统默认的计算。跟随光标的候选栏同样如此；它空闲时不显示，可触摸区域为空，所有触摸都落到应用上。
      */
     @Override public void onComputeInsets(InputMethodService.Insets outInsets) {
         super.onComputeInsets(outInsets);
         // 浮动时 inputArea 铺满窗口，系统默认的算法会把整个窗口算成键盘、把应用压没，所以这里总要覆盖；面板还没布局时可触摸区域为空。
-        if (!floatingDrawn() || keyboardSurface == null) return;
+        if (!overlayDrawn() || keyboardSurface == null) return;
         android.app.Dialog dialog = getWindow();
         android.view.Window window = dialog == null ? null : dialog.getWindow();
         if (window == null) return;
@@ -7490,6 +7744,10 @@ public final class MSIMEInputService extends InputMethodService {
         outInsets.visibleTopInsets = height;
         keyboardSurface.getLocationInWindow(floatingLocation);
         outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION;
+        if (keyboardSurface.getVisibility() != View.VISIBLE) {
+            outInsets.touchableRegion.setEmpty();
+            return;
+        }
         outInsets.touchableRegion.set(floatingLocation[0], floatingLocation[1],
             floatingLocation[0] + keyboardSurface.getWidth(), floatingLocation[1] + keyboardSurface.getHeight());
     }
@@ -7516,6 +7774,156 @@ public final class MSIMEInputService extends InputMethodService {
             + FloatingKeyboardPolicy.offset(floatingX, floatingFreeWidth()));
         keyboardSurface.setTranslationY(systemBarInsets.top
             + FloatingKeyboardPolicy.offset(floatingY, floatingFreeHeight()));
+    }
+
+    /** 按当前布局摆放键盘外框：跟随光标的候选栏按光标摆，其余情况交给浮动键盘（停靠时清掉平移）。 */
+    void positionKeyboardSurface() {
+        if (caretCandidatesDrawn()) positionCaretCandidates();
+        else positionFloatingKeyboard();
+    }
+
+    /**
+     * 把候选栏摆到光标旁（{@link CaretCandidatePolicy#x} / {@link CaretCandidatePolicy#y}）：光标的屏幕坐标换算成根视图里的坐标，范围是系统栏之间的区域，所以旋转、分屏或窗口变化后仍在窗口里。还没收到光标位置时候选栏不显示，先按底边居中摆好。
+     */
+    private void positionCaretCandidates() {
+        if (keyboardSurface == null || keyboardRoot == null) return;
+        keyboardRoot.getLocationOnScreen(caretRootLocation);
+        float left = caretAnchorKnown ? caretAnchorLeft - caretRootLocation[0] : Float.NaN;
+        float top = caretAnchorKnown ? caretAnchorTop - caretRootLocation[1] : Float.NaN;
+        float bottom = caretAnchorKnown ? caretAnchorBottom - caretRootLocation[1] : Float.NaN;
+        int x = CaretCandidatePolicy.x(left, keyboardSurface.getWidth(), systemBarInsets.left,
+            keyboardRoot.getWidth() - systemBarInsets.right);
+        int y = CaretCandidatePolicy.y(top, bottom, keyboardSurface.getHeight(), systemBarInsets.top,
+            keyboardRoot.getHeight() - systemBarInsets.bottom, pixels(CaretCandidatePolicy.GAP_DP));
+        keyboardSurface.setTranslationX(x);
+        keyboardSurface.setTranslationY(y);
+    }
+
+    /** 当前输入框是否答应报告光标位置：要过位置的正是此刻的 InputConnection，且它没有拒绝。 */
+    private boolean caretAnchorsAvailable() {
+        return caretAnchorsReported && caretAnchorConnection != null && caretAnchorConnection == connection;
+    }
+
+    /** 换输入框或离开输入框：上一个输入框的光标位置和「这一次退回底部」都不再适用，下一次 render 重新要位置。 */
+    private void resetCaretAnchor() {
+        main.removeCallbacks(caretAnchorWaitExpired);
+        caretAnchorConnection = null;
+        caretAnchorsReported = false;
+        caretAnchorKnown = false;
+        caretAnchorPending = false;
+        caretDocked = false;
+    }
+
+    /**
+     * 按需向当前输入框要光标位置（{@link CaretCandidatePolicy}）：开关打开、走引擎的输入框、配置报告接着实体键盘或已在候选条模式时，要求持续报告（`CURSOR_UPDATE_MONITOR`）并立即报一次（`CURSOR_UPDATE_IMMEDIATE`）；不再需要时撤回，免得编辑器每挪一次光标都白算一遍。要在实体键盘第一次按下之前就要：那一下同时开始组字，到那时才要，位置一定来不及，这一次的候选栏就会退回底部。每次 render 开头调用，状态没变时什么也不做。
+     */
+    private void synchronizeCursorUpdates() {
+        InputConnection current = connection;
+        boolean wanted = caretCandidates && current != null && EditorPolicy.useEngine(editorInputType)
+            && (hardwareKeyboardAttached || hardwareKeyboardMode);
+        boolean requested = caretAnchorConnection != null && caretAnchorConnection == current;
+        if (wanted == requested) return;
+        if (requested) current.requestCursorUpdates(0);
+        resetCaretAnchor();
+        if (!wanted) return;
+        caretAnchorConnection = current;
+        caretAnchorsReported = current.requestCursorUpdates(
+            InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
+        caretAnchorPending = caretAnchorsReported;
+        if (caretAnchorPending) main.postDelayed(caretAnchorWaitExpired, CaretCandidatePolicy.ANCHOR_WAIT_MS);
+    }
+
+    /**
+     * 编辑器报来光标位置（{@link #synchronizeCursorUpdates} 要的）：有组字时左边取组字第一个字，上下取整段组字和插入点所占的行（组字折行时候选栏放在最后一行下方或第一行上方），否则取插入点，经 `getMatrix()` 换成屏幕坐标记下，候选栏跟着挪。这一次因为没有位置退回了底部的，空闲时回到光标旁（{@link CaretCandidatePolicy#dockedAfterAnchor}）。
+     */
+    @Override public void onUpdateCursorAnchorInfo(android.view.inputmethod.CursorAnchorInfo info) {
+        super.onUpdateCursorAnchorInfo(info);
+        if (info == null || !caretAnchorsAvailable()) return;
+        int composingStart = info.getComposingTextStart();
+        android.graphics.RectF character = composingStart < 0 ? null : info.getCharacterBounds(composingStart);
+        android.graphics.RectF bounds;
+        if (character != null) {
+            bounds = new android.graphics.RectF(character);
+            // 左边对齐组字起点，上下边取整段组字和插入点所占的行：组字折到下一行时（笔画字形、超过一行宽的拼音），只按第一个字摆，候选栏会压在后面几行的组字和插入点上。
+            CharSequence composing = info.getComposingText();
+            int composingEnd = composingStart + (composing == null ? 0 : composing.length());
+            for (int index = composingStart + 1; index < composingEnd; index++) {
+                android.graphics.RectF next = info.getCharacterBounds(index);
+                if (next == null) continue;
+                bounds.top = Math.min(bounds.top, next.top);
+                bounds.bottom = Math.max(bounds.bottom, next.bottom);
+            }
+            if (!Float.isNaN(info.getInsertionMarkerHorizontal())) {
+                bounds.top = Math.min(bounds.top, info.getInsertionMarkerTop());
+                bounds.bottom = Math.max(bounds.bottom, info.getInsertionMarkerBottom());
+            }
+        } else {
+            float x = info.getInsertionMarkerHorizontal();
+            // 这一次既没有组字外框也没有插入点（编辑器还没排版好）：保留上一次的位置。
+            if (Float.isNaN(x)) return;
+            bounds = new android.graphics.RectF(x, info.getInsertionMarkerTop(), x, info.getInsertionMarkerBottom());
+        }
+        info.getMatrix().mapRect(bounds);
+        main.removeCallbacks(caretAnchorWaitExpired);
+        caretAnchorPending = false;
+        caretAnchorKnown = true;
+        caretAnchorLeft = bounds.left;
+        caretAnchorTop = bounds.top;
+        caretAnchorBottom = bounds.bottom;
+        if (keyboardRoot == null) return;
+        boolean docked = CaretCandidatePolicy.dockedAfterAnchor(caretDocked, caretStripShown);
+        if (docked != caretDocked) {
+            // 回到光标旁要换窗口布局和根视图底色，走一遍完整的 render。
+            caretDocked = docked;
+            render();
+            return;
+        }
+        // 等到第一次报告时候选栏才显示出来；此后只是挪位置。
+        applyCaretCandidates(caretStripShown);
+    }
+
+    /**
+     * 按候选栏该不该显示（组字、候选或提示）更新跟随光标的状态，每次 render 和每次收到光标位置时调用：要显示而既不知道光标在哪儿、也不在等第一次报告时，这一次退回底部并立即换成停靠布局；跟随光标时候选栏只在有内容且已知位置时显示（不显示时仍占着布局，位置可以先算好），显示时摆到光标旁。
+     */
+    private void applyCaretCandidates(boolean stripShown) {
+        caretStripShown = stripShown;
+        boolean following = caretCandidates && hardwareKeysCollapsed() && caretAnchorsAvailable();
+        boolean docked = CaretCandidatePolicy.docked(caretDocked, following, stripShown, caretAnchorKnown,
+            caretAnchorPending);
+        if (docked != caretDocked) {
+            caretDocked = docked;
+            applyFloatingLayout(false);
+            imeBottomBar.apply(imeFrame.keyboard);
+        }
+        if (keyboardSurface == null) return;
+        boolean caret = caretCandidatesDrawn();
+        int visibility = CaretCandidatePolicy.surfaceShown(caret, stripShown, caretAnchorKnown)
+            ? View.VISIBLE : View.INVISIBLE;
+        if (keyboardSurface.getVisibility() != visibility) keyboardSurface.setVisibility(visibility);
+        if (caret) positionCaretCandidates();
+        synchronizeCaretWindow();
+    }
+
+    /**
+     * 跟随光标的候选栏空闲时收起整个输入法窗口，候选栏又有内容时再叫出来（{@link CaretCandidatePolicy#hidesWindow}）。只叫回自己收起的窗口：用户按返回键收起的，照旧等实体键盘再开始组字时由 {@link #noteHardwareTyping} 叫出来。收起请求还没落地时不重复发；落地前又开始打字的，由 {@link #onFinishInputView} 落地后再叫回来。应用在键盘收起后又立即要求显示时，隔 {@link CaretCandidatePolicy#WINDOW_REHIDE_MS} 才再收，不和它来回打转。
+     */
+    private void synchronizeCaretWindow() {
+        main.removeCallbacks(caretWindowSync);
+        if (CaretCandidatePolicy.hidesWindow(caretCandidatesDrawn(), caretStripShown)) {
+            if (caretWindowHidden || !isInputViewShown()) return;
+            long now = android.os.SystemClock.uptimeMillis();
+            long wait = CaretCandidatePolicy.rehideDelay(caretWindowHiddenAt, now);
+            if (wait > 0) {
+                main.postDelayed(caretWindowSync, wait);
+                return;
+            }
+            caretWindowHidden = true;
+            caretHidePending = true;
+            caretWindowHiddenAt = now;
+            requestHideSelf(0);
+        } else if (caretWindowHidden && !isInputViewShown()) {
+            requestShowSelf(0);
+        }
     }
 
     private void startFloatingDrag() {
@@ -7616,6 +8024,7 @@ public final class MSIMEInputService extends InputMethodService {
      */
     private void restartSessionForPrivacy() {
         if (session == 0 || runtimeOptionsBase.isEmpty()) return;
+        long startGeneration = ++engineStartGeneration;
         if (connection != null && view != null && !InputViewValuePolicy.editingText(view).isEmpty())
             command(FINISH_COMPOSITION_COMMAND);
         boolean panelOpen = ViewPolicy.isVisible(moreToolsScroll);
@@ -7627,11 +8036,13 @@ public final class MSIMEInputService extends InputMethodService {
             if (learningSuppressed()) options.getJSONObject("preferences").put("learning", false);
             runtimeOptionsForSnapshot = options.toString();
             message = "共享运行时准备中";
-            scheduleEngineStartup(runtimeOptionsForSnapshot, ++engineStartGeneration);
+            scheduleEngineStartup(runtimeOptionsForSnapshot, startGeneration);
         } catch (JSONException error) {
             message = "共享运行时未就绪：仅直接输入";
         }
     }
+
+    long inputLifecycleGeneration() { return engineStartGeneration; }
 
     /** 功能面板的手写：切到手写方案；已经是手写时切回上一个中文方案。 */
     void toggleHandwritingScheme() {
@@ -7676,7 +8087,9 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     void render() {
-        // 浮动开关或外接键盘的候选条模式变了：先把窗口换成对应的布局，下面判断分离式键盘、单手模式时用的是新状态。
+        // 候选栏跟随光标要先知道这个输入框报不报告光标位置。
+        synchronizeCursorUpdates();
+        // 浮动开关、外接键盘的候选条模式或候选栏跟随光标变了：先把窗口换成对应的布局，下面判断分离式键盘、单手模式时用的是新状态。
         applyFloatingLayout(false);
         // 底栏随本地设置、浮动、外接键盘的候选条模式和旋转出现或消失。
         imeBottomBar.apply(imeFrame.keyboard);
@@ -7843,20 +8256,24 @@ public final class MSIMEInputService extends InputMethodService {
         }
         boolean keysCollapsed = hardwareKeysCollapsed();
         imeFrame.setKeysCollapsed(keysCollapsed);
+        applyCaretCandidates(!idle || hasDiagnostic);
         // 候选条模式里空闲时工具栏总要显示：展开键在上面，「显示方式：隐藏」时整副键盘会只剩导航栏那一截。
         boolean toolbarRow = !heightMode && idle && !hasDiagnostic && (!toolbarHidden || keysCollapsed);
         // 开始打字就收起「最近复制」：用户已经在输入别的内容了。
         if (!idle) recentClip.dismiss();
         long nowMs = System.currentTimeMillis();
         // 候选条模式里不换上「最近复制」：它会盖住工具栏上展开软键盘的那个键。
-        String recent = toolbarRow && !keysCollapsed && !anyToolbarPanelOpen() && recentClipEnabled()
-            && connection != null && imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)
-            ? recentClip.text(nowMs) : null;
-        imeToolbar.updateRecentClipRow(recent);
+        boolean recentAllowed = toolbarRow && !keysCollapsed && !anyToolbarPanelOpen() && recentClipEnabled()
+            && connection != null && imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY);
+        String recent = recentAllowed ? recentClip.text(nowMs) : null;
+        // 图片只在当前输入框收得下时才占这一行（#6781）。
+        boolean recentImage = recentAllowed && recentImageSendable(nowMs);
+        imeToolbar.updateRecentClipRow(recent, recentImage);
         main.removeCallbacks(recentClipExpiry);
-        if (recent != null) main.postDelayed(recentClipExpiry, recentClip.remainingMs(nowMs) + 50);
+        boolean recentShown = recent != null || recentImage;
+        if (recentShown) main.postDelayed(recentClipExpiry, recentClip.remainingMs(nowMs) + 50);
         if (shortcutScroll != null)
-            ViewPolicy.setVisible(shortcutScroll, toolbarRow && recent == null);
+            ViewPolicy.setVisible(shortcutScroll, toolbarRow && !recentShown);
         if (candidateLine != null)
             ViewPolicy.setVisible(candidateLine, !heightMode && !idle && !hasDiagnostic);
         if (!ViewPolicy.isVisible(replyKeyboard))

@@ -16,6 +16,8 @@ Fcitx5 现在也消费共享 `keybindings` 的五个模式快捷键与 `default_
 
 `msime-linux-settings` 的「快捷键 → 输入模式切换」下拉框提供 Shift、单击 Ctrl、Ctrl+Space、Ctrl+Alt+Space 和「不使用」。Ctrl+Space 对应 `keybindings.switch_language_ctrl_space`，旧配置缺少字段时仍默认开启；多项同时启用时按选项顺序显示第一项，打开页面不改写配置。用户选择时一次更新四个布尔值，仅保留选中的切换键；「不使用」全部关闭。关闭后两个宿主都不拦截新的 Ctrl+Space 按下、重复和松开，也不改变正在输入的拼音；保存后热重载。下拉框不改 IBus/Fcitx5 的全局快捷键，框架若占用同名组合键，需在框架设置中另行关闭。专项验收复用现有原生测试入口：`ibus-engine-smoke <已验证词库目录> --ctrl-space` 与 `fcitx5-native-test <已验证词库目录> --ctrl-space`。
 
+同一组里的「单按 Caps Lock 切换中英文」（`keybindings.switch_language_caps_lock`，缺省关）与下拉框互不排斥。两个宿主按 `Caps_Lock` 符号认键（被 xkb 选项改成 Control、Escape 的 Caps Lock 不算，被 `shift:both_capslock` 一类选项改成 `Caps_Lock` 的 Shift 也不算）：按下前大写锁定是关的、没有和修饰键一起按、按着期间没有按别的键、300 毫秒内松开，就先用 `XkbLockModifiers` 撤回大写锁定，撤回成功再像裸 Shift 一样切换（组字中先上屏原文），松开事件照常交给应用。撤回只在 X11 会话里做得到（`src/system/CapsLockRelease.cpp`，构建时找到 libX11 才编进来）；`WAYLAND_DISPLAY` 有值或 `XDG_SESSION_TYPE=wayland` 时锁定状态归合成器，宿主不布防，轻点照常是大写锁定。
+
 Fcitx5 状态栏切换输入方案、双拼方案和辅助码方案时，除了写共享偏好库，还给当前输入上下文留一个 override：会话按 `runtime-options.json` 建立，而这份文件只有设置页会同步。override 只在与偏好库一致时保留；设置页或别的窗口改过偏好库后，偏好热重载和新建会话都会丢掉它、改用偏好库的值，所以与 Windows 一样，设置页改方案所有窗口都跟着变。新建会话时这几项一律取偏好库的值，不取 `runtime-options.json` 里可能已过时的值，状态栏选辅助码方案时一并清掉的辅助码表插件也一样；状态栏切输入方案时与 IBus 一样清掉辅助码方案 override，全拼下选的辅助码不会带进双拼。保存失败的选择不回滚：与 IBus 的 `failed_menu_save` 一样，待重试的保存跨焦点保留，只在保存成功或偏好目录变更时清掉，「未落盘」标记记在各个 override 自己身上，偏好库真正存下这个值之前菜单不会跳回去。
 
 Fcitx5 的 `ime_mode_scope` 也真正决定中英文状态的记忆范围：`app` 按输入上下文报告的程序名保存有界的应用级状态，`global` 在当前 Fcitx5 进程内共享一个状态；失焦时先记录（会话留给托盘菜单，到有输入上下文获得焦点时才关闭，见「状态区」的说明；托盘上的中英文切换会更新这份记录），重新聚焦并重建会话时恢复，而不是重新套用 `default_ime_mode`。匿名或缺失程序名使用共享的匿名槽位，不把状态写入偏好文件。
@@ -107,6 +109,37 @@ msime-linux-setup --update --download   # 升级之后只取回过期的那几�
 **Fcitx5 的状态区入口需要桌面提供托盘宿主。** 中英文、简繁、工具栏这些动作挂在输入法状态区，由托盘（StatusNotifierItem）承载；部分发行版以 `fcitx5 --disable notificationitem` 启动，那些入口就不会出现。输入本身不受影响，设置也仍可从应用列表里的「水杉输入法」或 `msime-linux-settings` 打开；要让它们显示，需要在桌面侧恢复托盘。这属于发行版与桌面的配置，输入法不代劳，也不因此改为创建脱离输入上下文的悬浮窗口。
 
 判定规则由 `tests/core/setup_resolution.py` 钉住，不需要词库也不联网：哪份词库算可用、锁里没有 URL 的那项归哪个归档、去哪里找锁和已有词库。加入输入法列表由 `tests/core/setup_registration.py` 钉住：用桩代替 `gdbus`、`gsettings`、`ibus` 与 `pgrep`，验证每种宿主写的是哪一项、`ibus restart` 只在引擎未被列出时执行、重复运行不重复写入、D-Bus 失败与 Fcitx5 丢弃写入时退回手动步骤、`--no-register` 不发起任何调用。升级更新由 `tests/core/setup_update.py` 钉住：词库从本机的 HTTP 桩取，验证只请求过期的那一项且下载进新目录、旧目录原样不动、一致的文件是硬链接，`msime-linux-prepare --refresh` 运行时租约有效且会话锁被独占、拿到的是新目录，配置随后指向新代次且不留副本与租约；会话不释放、刷新失败、下载中途失败时配置都不变，旧目录不动；装在与数据目录重合的前缀下时照常更新，随包词库目录以及不带 `--update` 的重复首次配置都被拒绝；门禁里它还直接运行构建出的 `msime-linux-prepare --refresh`，确认相对路径以 2 退出、与编译进去的锁不符的词库以 3 退出且不改写配置。
+
+### 设置窗口闪烁、打不开或空白
+
+设置窗口由 WebKitGTK 绘制。WebKitGTK 的 GPU 路径（合成模式与 DMA-BUF 渲染器）在部分驱动与合成器组合上有问题，设置启动器 `msime-linux-settings` 按下面的规则给两个环境变量定默认值：
+
+- 加载了 NVIDIA 专有驱动（`/proc/driver/nvidia/version` 或 `/sys/module/nvidia` 存在，nvidia-open 也算）：默认 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 和 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，改用 CPU 绘制，规避窗口一启动就报 `Error 71 (Protocol error) dispatching to Wayland display` 退出（#3273、#5834）。
+- 其他机器：两个变量都不设，由 WebKit 自己选择渲染路径。早先的版本对所有机器都设成 `1`，在 niri 下会让窗口持续闪烁（#6847），在其他桌面上会让滚动不跟手（#6403）。
+
+自己设了的非空值一律优先，启动器不改；空值当作没设。所以默认判断不适合你的机器时，可以显式覆盖：
+
+- 没有 NVIDIA 却打不开、空白或报 Error 71：两个变量都设成 `1`。
+- 有 NVIDIA 但想试 GPU 绘制，或 NVIDIA 下窗口闪烁：两个变量都设成 `0`。只设其中一个不够：任一变量为 `1` 都会让 WebKit 退回 CPU 绘制。
+
+终端里临时试一次：先确认旧的设置进程已经完全退出（`pgrep -af msime-linux-desktop` 没有输出；设置外壳是单实例的，关掉窗口后进程还会留十分钟，再次打开会复用它和它启动时的环境），再运行
+
+```sh
+WEBKIT_DISABLE_COMPOSITING_MODE=0 WEBKIT_DISABLE_DMABUF_RENDERER=0 msime-linux-settings
+```
+
+从早先的版本升级上来后，同样要先让旧的设置进程完全退出，新的默认值才会生效。早先的启动器在所有机器上都把两个变量设成 `1`，这个值留在它拉起的设置进程的环境里。升级时这个进程如果还在（关掉窗口后的十分钟内都算），再打开设置会由它把启动交给新程序（见上文「安装后首次使用」里升级后设置应用的那一段）：新程序是旧进程直接启动的，没有经过新的启动器，继承的仍是两个 `1`，窗口照旧闪烁；它关掉窗口后同样会留十分钟，这期间再打开都复用它。所以升级后先关掉设置窗口，等到 `pgrep -af msime-linux-desktop` 没有输出（等十分钟，或关窗几秒后执行 `pkill -f msime-linux-desktop`）再打开设置。这一步只需做一次，之后的设置进程都由新的启动器拉起。
+
+要让终端、应用菜单和 IBus/Fcitx5 菜单里的「设置」都用同样的值，把它们写进 `~/.config/environment.d/` 下的一个文件，例如 `~/.config/environment.d/msime-webkit.conf`：
+
+```ini
+WEBKIT_DISABLE_COMPOSITING_MODE=0
+WEBKIT_DISABLE_DMABUF_RENDERER=0
+```
+
+然后重新登录。由 systemd 用户实例管理的会话（GNOME、KDE Plasma、用 `niri-session` 启动的 niri 等）会读这个目录；不经过它的会话，把这两行写进合成器自己的环境配置（例如 Hyprland 的 `env = WEBKIT_DISABLE_COMPOSITING_MODE,0`）。输入法菜单里的入口由 IBus 或 Fcitx5 进程拉起，用的是它们启动时的环境，只在 shell 配置（`~/.bashrc` 等）里设变量对它们无效。不必再用包装脚本加 `MSIME_CLIENT_SETTINGS_COMMAND`；那个变量仍然可用，设了时输入法菜单改为运行它指定的命令，环境由那条命令自己负责。
+
+不要为此设 `GDK_BACKEND`：启动器不改它，设置窗口在 Wayland 会话里本来就用 Wayland 后端。报告问题时请附上显卡型号与驱动、合成器及版本、`pacman -Q webkit2gtk-4.1`（或发行版对应的包）的输出、输出是否用了分数缩放，以及上面两种覆盖各自的结果。
 
 ### Omarchy
 
@@ -392,7 +425,7 @@ Fcitx5 切换中英文时，以及焦点移到另一个输入框时（共享偏�
 {"version":1,"kind":"translation","query":{"generation":9,"target_language":"en","candidates":["你好","世界"],"provider":"tencent"}}
 ```
 
-服务应在一行内返回 `{"translations":[{"text":"你好","translation":"hello"}]}`；未知候选可以省略。独立入口 `msime-linux-translation /absolute/provider.sock` 从标准输入读取同一 TranslationQuery JSON 并输出受界限的 JSON 响应，供 GTK/Qt 面板或其他 Linux 宿主复用。`provider` 是设置页「翻译服务」当前的选择（`none`、`account`、`tencent`、`niutrans`、`custom`），即使所选服务配置不全也照实填写，是必填字段，缺少它的请求按格式错误拒绝；服务只能询问这一家，选「关闭」或所选服务不可用时不发出任何请求，不得退回腾讯。腾讯密钥只存在于服务自己的 `tencent-provider.json`，协议里不传。启用自定义翻译时，请求还会携带已验证的 `custom_translation` endpoint 和 API Key，provider 可据此调用兼容 DeepLX 的服务。宿主只接受最多 9 个候选、每项最多 4096 字节、每次完整响应最多 8 秒、128 KiB，并把返回的 generation 原样交给 Host API 校验；过期视图不会被更新。服务必须由用户管理绝对 Unix socket，负责所有凭据、网络访问和日志策略，输入法不会记录原始输入或 API Key。关闭 `preferences.candidate_translations` 后不会发起该请求。候选翻译会按当前候选布局附加到 IBus 候选行。
+服务应在一行内返回 `{"translations":[{"text":"你好","translation":"hello"}]}`；未知候选可以省略。独立入口 `msime-linux-translation /absolute/provider.sock` 从标准输入读取同一 TranslationQuery JSON 并输出受界限的 JSON 响应，供 GTK/Qt 面板或其他 Linux 宿主复用。`provider` 是设置页「翻译服务」当前的选择（`none`、`account`、`tencent`、`niutrans`、`custom`），即使所选服务配置不全也照实填写，是必填字段，缺少它的请求按格式错误拒绝；服务只能询问这一家，选「关闭」或所选服务不可用时不发出任何请求，不得退回腾讯。腾讯密钥只存在于服务自己的 `tencent-provider.json`，协议里不传。启用自定义翻译时，请求还会携带已验证的 `custom_translation` endpoint 和 API Key，provider 可据此调用兼容 DeepLX 的服务或 DeepL 官方 API。宿主只接受最多 9 个候选、每项最多 4096 字节、每次完整响应最多 8 秒、128 KiB，并把返回的 generation 原样交给 Host API 校验；过期视图不会被更新。服务必须由用户管理绝对 Unix socket，负责所有凭据、网络访问和日志策略，输入法不会记录原始输入或 API Key。关闭 `preferences.candidate_translations` 后不会发起该请求。候选翻译会按当前候选布局附加到 IBus 候选行。
 
 “翻译当前句子”是显式动作，不受 `candidate_translations` 自动开关控制。它发送 `sentence: true` 的单项请求，最多 512 个 Unicode 字符；普通候选翻译仍最多 9 项、每项 40 个字符。结果复用当前候选代次写回候选区，过期结果会丢弃。
 
@@ -564,7 +597,7 @@ Emoji 本地 CLI 的 `msime-linux-emoji --local` 会按显式资源目录、其�
 
 离线中文手写模型（zinnia 格式，26.8 MB，LGPL-2.1）不进版本库：`resources/handwriting-model.lock.json` 按 msime-engine 固定提交的 HTTPS 地址、字节数和 SHA-256 锁定模型与许可证，`python3 scripts/fetch_handwriting_model.py` 把两者下载到 `target/handwriting-model`（`--out` 可改），不符即丢弃、已符合则跳过。CMake 在该目录存在时自动使用（也可 `-DMSIME_HANDWRITING_MODEL_DIR=/absolute/dir` 指定），逐个按锁校验后装到 `${CMAKE_INSTALL_DATADIR}/msime-client/handwriting`，锁本身装到 `${CMAKE_INSTALL_DATADIR}/msime-client` 作来源记录。随不随包由 `MSIME_BUNDLE_HANDWRITING_MODEL` 决定：默认 `ON`，打包时缺少模型直接失败，`packaging/` 下各发行版的定义和 Nix 都按这个默认随包；发布页的 deb/rpm 由 `package-container.sh` 以 `-DMSIME_BUNDLE_HANDWRITING_MODEL=OFF` 配置，不下载也不安装模型和它的许可证，用户需要手写时由设置应用按同一份锁把两者下载到自己的状态目录（手写资源包）。面板应只引用受信任的安装路径或这份按锁校验过的下载。
 
-若要把 Tauri 设置窗口一并安装，可先用 `pnpm --filter @msime/desktop tauri build --no-bundle` 生成 Linux 二进制，再在 CMake 配置阶段传入 `-DMSIME_DESKTOP_BINARY=/absolute/path/to/msime-desktop`。安装会增加 `msime-linux-desktop`、`msime-linux-settings` 和桌面菜单项；设置启动器按 `MSIME_CLIENT_HOST_OPTIONS`、`MSIME_IBUS_OPTIONS`、用户配置路径、安装时配置的系统配置路径的顺序选择绝对 runtime-options，并把它传给 Tauri 宿主，不把开发机路径写入桌面文件。启动器默认设置 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 与 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，规避部分驱动上的 GBM 缓冲分配失败与 Wayland 显式同步协议错误（NVIDIA 驱动加 KWin 时 DMA-BUF 渲染器会让窗口一启动就报 Error 71 退出，只禁用合成不够），终端、桌面菜单及输入法菜单入口均生效；不强制切换 GTK 后端。排查时可显式把其中任一变量设为 `0` 恢复对应路径，需先退出已运行的设置进程，避免单实例复用旧环境。两个变量都让设置页退回 CPU 绘制：右侧内容区每滚一步都整块重绘，带模糊的阴影每次都要重新模糊一遍，所以 Linux 下的分组和皮肤卡片只用不带模糊的边框与硬阴影（#6403）；往设置页里加带模糊的 `box-shadow`、`filter: blur` 或 `backdrop-filter` 之前，先在关掉合成的 WebKitGTK 里量一下滚动。设置页的“语音输入”分类可打开独立语音面板，面板调用同一 provider 并把识别结果提交到打开前捕获的编辑器。Linux IBus 与 Fcitx5 菜单顶层的“词库…”“设置…”“关于水杉输入法”以及“桌面工具”中的“帮助”“反馈”分别路由到共享 Tauri 的对应设置页（`msime-linux-settings --panel dictionary|settings|about|help|feedback` 同样如此）；“快捷键”分类提供“重启输入法服务”按钮：先用 `fcitx5-remote --check` 探测当前会话，Fcitx5 正在运行时经 `gdbus` 调用它的 `ReloadAddonConfig`（参数 `msime`）重置水杉插件，否则调用当前用户的 `ibus restart`。探测不会通过 D-Bus 启动一个原本未运行的 Fcitx5，也不会为了刷新 MSIME 杀掉承载其他输入法的整个 Fcitx5 进程。普通配置保存仍通过 runtime-options 文件热重载，不需要为了设置变更重启服务。
+若要把 Tauri 设置窗口一并安装，可先用 `pnpm --filter @msime/desktop tauri build --no-bundle` 生成 Linux 二进制，再在 CMake 配置阶段传入 `-DMSIME_DESKTOP_BINARY=/absolute/path/to/msime-desktop`。安装会增加 `msime-linux-desktop`、`msime-linux-settings` 和桌面菜单项；设置启动器按 `MSIME_CLIENT_HOST_OPTIONS`、`MSIME_IBUS_OPTIONS`、用户配置路径、安装时配置的系统配置路径的顺序选择绝对 runtime-options，并把它传给 Tauri 宿主，不把开发机路径写入桌面文件。加载了 NVIDIA 专有驱动内核模块（`/proc/driver/nvidia/version` 或 `/sys/module/nvidia` 存在，nvidia-open 也算）时，启动器默认设置 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 与 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，规避 NVIDIA 上的 GBM 缓冲分配失败与 Wayland 显式同步协议错误（NVIDIA 驱动加 KWin 时 DMA-BUF 渲染器会让窗口一启动就报 Error 71 退出，只禁用合成不够）；其他机器上两个变量都不设，由 WebKit 自己决定渲染路径。终端、桌面菜单及输入法菜单入口都经过这个启动器，得到同样的默认值；不强制切换 GTK 后端。调用方显式给出的非空值原样保留，空值按未设置处理；遇到设置窗口闪烁、打不开或空白时怎么覆盖，见上文「设置窗口闪烁、打不开或空白」。两个变量都让设置页退回 CPU 绘制：右侧内容区每滚一步都整块重绘，带模糊的阴影每次都要重新模糊一遍，所以 Linux 下的分组和皮肤卡片只用不带模糊的边框与硬阴影（#6403），NVIDIA 用户仍走这条路径；往设置页里加带模糊的 `box-shadow`、`filter: blur` 或 `backdrop-filter` 之前，先在关掉合成的 WebKitGTK 里量一下滚动。设置页的“语音输入”分类可打开独立语音面板，面板调用同一 provider 并把识别结果提交到打开前捕获的编辑器。Linux IBus 与 Fcitx5 菜单顶层的“词库…”“设置…”“关于水杉输入法”以及“桌面工具”中的“帮助”“反馈”分别路由到共享 Tauri 的对应设置页（`msime-linux-settings --panel dictionary|settings|about|help|feedback` 同样如此）；“快捷键”分类提供“重启输入法服务”按钮：先用 `fcitx5-remote --check` 探测当前会话，Fcitx5 正在运行时经 `gdbus` 调用它的 `ReloadAddonConfig`（参数 `msime`）重置水杉插件，否则调用当前用户的 `ibus restart`。探测不会通过 D-Bus 启动一个原本未运行的 Fcitx5，也不会为了刷新 MSIME 杀掉承载其他输入法的整个 Fcitx5 进程。普通配置保存仍通过 runtime-options 文件热重载，不需要为了设置变更重启服务。
 
 ## 隔离验证
 
@@ -691,7 +724,7 @@ IBus 宿主在后台通过共享 Host API 查询随包 `msime-english.db`。目�
 
 同一服务接受 `kind:"translation"`，沿用 Windows 默认腾讯 TMT、自定义 DeepLX 的选择顺序。默认翻译增加 `--tencent-config /absolute/private-tencent.json`，配置文件必须是当前用户所有、其他用户无权限的普通文件，包含 `secret_id`、`secret_key`，以及可选 `region`（默认 `ap-guangzhou`）。凭据只在 provider 中读取，TC3 签名请求固定发送到腾讯 TMT HTTPS 地址，不接受请求覆盖地址。未提供腾讯配置时仍可使用云候选、AI 和自定义翻译。腾讯私有配置在每次腾讯翻译请求开始时重新读取，无需重启服务；建议通过原子替换更新文件。读取使用非阻塞文件描述符，只接受不超过 16 KiB 的 UTF-8 普通文件，并核对读取前后的文件信息。文件删除、权限变宽或内容无效时跳过腾讯翻译，恢复有效配置后下次请求重新使用；自定义翻译不会读取腾讯配置。每批请求使用同一份凭据和区域快照，缓存按该快照摘要隔离。 腾讯凭据与 Windows 一致，先清除首尾 ASCII 空格、制表符和换行，再进行校验和签名；仅空白、占位符及含内部空白或控制字符的凭据仍会被拒绝。仅首尾空白变化不会使缓存失效。
 
-启用共享设置中的 `custom_translation` 后，服务使用请求中的 endpoint 和可选 API Key 调用 DeepLX 兼容接口，支持本机 HTTP 服务或 HTTPS，禁止重定向。 与 Windows 一致，请求前清除 endpoint 和 API Key 的首尾 ASCII 空格、制表符及换行；归一化后的快照同时用于两个翻译方向和缓存标识。API Key 归一化后为空时不发送 Authorization。自定义服务失败不会回退到腾讯。英文候选译为中文；中文候选译为所选英语、法语、日语、西班牙语、俄语、德语或韩语。源文本超过 40 个字符或不符合中英文候选规则时跳过。中文筛选沿用 Windows 的汉字范围，包含兼容汉字和扩展区，允许带汉字的中英数字混排；包含 Emoji、符号图形、零宽连接符、Emoji 变体选择符或键帽组合标记时跳过。纯英文仍只接受字母、空格、连字符和撇号。IBus 在候选更新后等待 500 毫秒停顿再读取 Engine 当前查询并发出翻译请求；连续输入会重置定时器，失焦、禁用或切换配置会取消待发请求。腾讯按翻译方向批量请求，自定义服务逐条请求，每次网络操作超时 2.5 秒，批次在 6 秒预算用尽后停止发起新请求；宿主在后台最多等待 8 秒，过期代次仍由现有 Host API 拒绝。
+启用共享设置中的 `custom_translation` 后，服务使用请求中的 endpoint 和可选 API Key 调用 DeepLX 兼容接口，支持本机 HTTP 服务或 HTTPS，禁止重定向。endpoint 的主机名恰好是 `api.deepl.com` 或 `api-free.deepl.com` 时改按 DeepL 官方 API 发请求：`Authorization: DeepL-Auth-Key <key>`，正文 `text` 为数组，`target_lang` 中文用 `ZH-HANS`、英文用 `EN-US`，发往 `/v2/translate`，主机按密钥是否以 `:fx` 结尾选 Free 或 Pro；没有 API Key 时不发请求。规则与共享 Rust 实现相同，用例在 `shared/contracts/custom-translation/cases.json`，`tests/dictionary/custom_translation_contract.py` 逐条核对。 与 Windows 一致，请求前清除 endpoint 和 API Key 的首尾 ASCII 空格、制表符及换行；归一化后的快照同时用于两个翻译方向和缓存标识。API Key 归一化后为空时不发送 Authorization。自定义服务失败不会回退到腾讯。英文候选译为中文；中文候选译为所选英语、法语、日语、西班牙语、俄语、德语或韩语。源文本超过 40 个字符或不符合中英文候选规则时跳过。中文筛选沿用 Windows 的汉字范围，包含兼容汉字和扩展区，允许带汉字的中英数字混排；包含 Emoji、符号图形、零宽连接符、Emoji 变体选择符或键帽组合标记时跳过。纯英文仍只接受字母、空格、连字符和撇号。IBus 在候选更新后等待 500 毫秒停顿再读取 Engine 当前查询并发出翻译请求；连续输入会重置定时器，失焦、禁用或切换配置会取消待发请求。腾讯按翻译方向批量请求，自定义服务逐条请求，每次网络操作超时 2.5 秒，批次在 6 秒预算用尽后停止发起新请求；宿主在后台最多等待 8 秒，过期代次仍由现有 Host API 拒绝。
 
 翻译结果压平换行并过滤控制字符，内存缓存最多 2048 项，成功结果保留 480 秒、失败保留 30 秒。缓存按 provider、凭据摘要和语言方向隔离，不写入磁盘。
 

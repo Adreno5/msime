@@ -42,3 +42,27 @@ export function translationEndpointIssue(endpoint: string): string {
   }
   return "远程翻译服务必须使用 HTTPS；HTTP 仅支持本机回环地址。";
 }
+
+/** DeepL 官方 API 的两个主机，与 crates/client-core/src/translation.rs 的 `is_deepl_api_endpoint` 一致，两边都按 shared/contracts/custom-translation/cases.json 的用例核对。 */
+const DEEPL_API_HOSTS = ["api.deepl.com", "api-free.deepl.com"];
+
+/** 地址是否指向 DeepL 官方 API：https、默认端口、主机名恰好是 `api.deepl.com` 或 `api-free.deepl.com`。共享层对这种地址改用 DeepL 的请求格式。 */
+export function isDeepLApiEndpoint(endpoint: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint.trim());
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === "https:" && parsed.port === "" && DEEPL_API_HOSTS.includes(parsed.hostname)
+  );
+}
+
+/** 自定义翻译的 API Key 问题：DeepL 官方地址没有密钥时共享层不构造请求，键盘不会发出翻译，所以要在设置页说出来，而不是保存后静默没有释义。 */
+export function customTranslationKeyIssue(endpoint: string, apiKey: string): string {
+  if (isDeepLApiEndpoint(endpoint) && !apiKey.trim()) {
+    return "DeepL 官方 API 需要填写 Auth Key；留空时不会发出翻译请求。";
+  }
+  return "";
+}

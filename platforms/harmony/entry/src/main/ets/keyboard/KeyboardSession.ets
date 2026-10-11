@@ -4275,7 +4275,10 @@ export class KeyboardSession implements HardwareKeyTarget {
     if (epoch !== this.onlineEpoch || handle !== this.handle) return;
     const assistant = aiQuery.ai_assistant;
     if (assistant?.enabled === true && aiQuery.ai_eligible) {
-      complete = await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch) && complete;
+      const aiApplied: boolean = await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch);
+      // 向 AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+      if (!aiApplied) this.resolveAiSeat(handle, aiDocument, epoch);
+      complete = aiApplied && complete;
     }
     if (!complete) this.releaseOnlineSignatureIfCurrent(requestSignature, epoch, handle);
   }
@@ -4322,6 +4325,19 @@ export class KeyboardSession implements HardwareKeyTarget {
     } finally {
       this.onlineRequests.delete(request);
       request.destroy();
+    }
+  }
+
+  /** AI 座位上的占位行换成「—」；座位已经换过或没开时 Host API 答 applied:false，什么都不画。 */
+  private resolveAiSeat(handle: number, queryDocument: string, epoch: number): void {
+    if (epoch !== this.onlineEpoch || handle !== this.handle) return;
+    try {
+      const resolved: NativeReply<OnlineApplyValue> = JSON.parse(client.resolveOnlineCandidates(
+        handle, queryDocument, 1)) as NativeReply<OnlineApplyValue>;
+      if (resolved.ok === true && NativeReplyPolicy.hasValue(resolved.value)
+        && resolved.value.applied) this.render(resolved.value.view);
+    } catch (error) {
+      KeyboardLog.error(`AI seat unresolved: ${describeError(error)}`);
     }
   }
 

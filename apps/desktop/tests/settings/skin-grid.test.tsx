@@ -243,7 +243,7 @@ function skinClients() {
   };
 }
 
-test("the HarmonyOS phone's 皮肤 page is the grid, with its settings under 更多选项", async () => {
+test("the HarmonyOS phone's 皮肤 page is only the grid, without 更多选项", async () => {
   const save = vi.fn().mockImplementation(async (_revision: number, preferences) => ({
     ...initial,
     revision: 4,
@@ -263,10 +263,11 @@ test("the HarmonyOS phone's 皮肤 page is the grid, with its settings under 更
   await settingsFormReady();
   const page = screen.getByRole("group", { name: "皮肤" });
   expect(within(page).queryByRole("region", { name: "主题列表" })).toBeNull();
-  const more = within(page).getByText("更多选项").closest("details")!;
-  expect(within(more).getByRole("radiogroup", { name: "颜色模式" })).toBeTruthy();
-  expect(within(more).getByText("自定义主题")).toBeTruthy();
-  expect(within(more).getByText("高级")).toBeTruthy();
+  // 颜色模式、在线皮肤、自定义主题和各界面的明暗覆盖都不在手机皮肤页上。
+  expect(within(page).queryByText("更多选项")).toBeNull();
+  expect(within(page).queryByRole("radiogroup", { name: "颜色模式" })).toBeNull();
+  expect(within(page).queryByText("自定义主题")).toBeNull();
+  expect(within(page).queryByText("高级")).toBeNull();
   fireEvent.click(within(page).getByRole("button", { name: "夜青" }));
   expect(within(page).getByRole("button", { name: "夜青" }).getAttribute("aria-pressed")).toBe(
     "true",
@@ -304,6 +305,46 @@ test("the AI tile opens AI 皮肤抽卡 as a full-screen view the back gesture c
       await new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
     });
     expect(screen.queryByRole("dialog", { name: "AI 皮肤抽卡" })).toBeNull();
+  } finally {
+    window.history.replaceState(previous, "");
+  }
+});
+
+test("tapping the chosen 我的皮肤 card again opens the editor as a full-screen view", async () => {
+  const previous = window.history.state;
+  window.history.replaceState(null, "");
+  try {
+    render(
+      <SettingsPage
+        initialPage="skin"
+        client={{
+          load: vi.fn().mockResolvedValue(initial),
+          save: vi.fn(),
+          host: testHost({ platform: "harmony" }),
+          ...skinClients(),
+        }}
+      />,
+    );
+    await settingsFormReady();
+    const page = screen.getByRole("group", { name: "皮肤" });
+    const card = () => within(page).getByRole("button", { name: /我的皮肤/ });
+    // 第一次点选中它，再点一次打开编辑器。
+    if (card().getAttribute("aria-pressed") !== "true") fireEvent.click(card());
+    expect(card().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(card());
+    const view = screen.getByRole("dialog", { name: "设计我的皮肤" });
+    expect(window.history.state).toMatchObject({ page: "skin", skinSubpage: "editor" });
+    // 编辑器不在「皮肤」页里就地展开，按钮也不会变成「收起自定义编辑器」。
+    expect(within(page).queryByLabelText("自定义皮肤编辑器")).toBeNull();
+    expect(within(page).queryByRole("button", { name: "收起自定义编辑器" })).toBeNull();
+    expect(within(view).getByLabelText("自定义皮肤编辑器")).toBeTruthy();
+    // 返回按钮取代了「完成」。
+    expect(within(view).queryByRole("button", { name: "完成" })).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(view).getByRole("button", { name: "返回" }));
+      await new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
+    });
+    expect(screen.queryByRole("dialog", { name: "设计我的皮肤" })).toBeNull();
   } finally {
     window.history.replaceState(previous, "");
   }

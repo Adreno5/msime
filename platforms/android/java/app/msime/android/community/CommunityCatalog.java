@@ -9,7 +9,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import javax.net.ssl.HttpsURLConnection;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,7 +34,6 @@ public final class CommunityCatalog {
     private static final int MAX_NAME_CHARACTERS = 32;
     private static final int MAX_DESCRIPTION_CHARACTERS = 280;
     private static final int MAX_AUTHOR_CHARACTERS = 128;
-    private static final UUID NIL_UUID = new UUID(0L, 0L);
 
     /**
      * One catalogue entry, flattened to what a list row shows.
@@ -422,13 +420,7 @@ public final class CommunityCatalog {
     }
 
     private static boolean validUuid(String value) {
-        if (value == null) return false;
-        try {
-            UUID parsed = UUID.fromString(value);
-            return !NIL_UUID.equals(parsed) && parsed.toString().equalsIgnoreCase(value);
-        } catch (IllegalArgumentException error) {
-            return false;
-        }
+        return JsonPolicy.nonNilUuid(value);
     }
 
     private static boolean validName(String value, int maximum) {
@@ -450,17 +442,15 @@ public final class CommunityCatalog {
     }
 
     static Long countNumber(Object raw) {
-        if (!(raw instanceof Number number)) return null;
-        if (!(raw instanceof Integer) && !(raw instanceof Long)) return null;
-        long integer = number.longValue();
+        Long integer = JsonPolicy.nonNegativeLong(raw);
+        if (integer == null) return null;
         return integer >= 0 && integer <= MAX_JAVASCRIPT_INTEGER ? integer : null;
     }
 
     private static Double decimal(JSONObject value, String key) {
         Object raw = value.opt(key);
         if (raw == null || raw == JSONObject.NULL) return 0.0;
-        if (!(raw instanceof Number number)) return null;
-        double result = number.doubleValue();
+        double result = NumberPolicy.strictDouble(raw, Double.NaN);
         return Double.isFinite(result) ? result : null;
     }
 

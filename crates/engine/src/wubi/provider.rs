@@ -159,7 +159,7 @@ impl WubiProvider {
     }
 }
 
-fn open_read_only(path: &Path) -> Option<Connection> {
+pub(crate) fn open_read_only(path: &Path) -> Option<Connection> {
     // An empty path is how `RuntimePaths` spells a missing file; SQLite would open a private temporary database for it instead.
     if path.as_os_str().is_empty() {
         return None;

@@ -30,7 +30,8 @@ int main() {
         NSMutableDictionary<NSString *, NSButton *> *buttons = [NSMutableDictionary dictionary];
         for (NSControl *control in MSIMEFindPreferenceControls(prefsRoot, NSSelectorFromString(@"localModeChanged:")))
             buttons[control.identifier] = (id)control;
-        assert(buttons.count == 8);
+        // 八种模式加上「Shift+字母进入快捷模式」总开关。
+        assert(buttons.count == 9 && buttons[@"shift_letter_entry"].state == NSControlStateValueOn);
         NSButton *fuzzy = (id)MSIMEFindPreferenceControl(prefsRoot, @selector(fuzzyPinyinChanged:));
         NSView *fuzzyCard = MSIMEFindPreferenceView(prefsRoot, ^BOOL(NSView *view) {
             return [view.accessibilityLabel isEqual:@"模糊音卡片（全拼与双拼）"];
@@ -144,6 +145,27 @@ int main() {
                 assert([session command:MSIME_CANCEL error:&error]);
             }
         }
+        // 总开关关掉：各模式的勾选不变但置灰，Shift+T 不再进入日期时间模式，大写 T 交还应用；打开后照旧。
+        prefs.inputScheme = @"quanpin";
+        NSButton *master = buttons[@"shift_letter_entry"];
+        master.state = NSControlStateValueOff;
+        [NSApp sendAction:master.action to:master.target from:master];
+        assert(![prefs localModeEnabled:@"shift_letter_entry"] && [prefs localModeEnabled:@"date_time"]);
+        assert(!buttons[@"date_time"].enabled && buttons[@"date_time"].state == NSControlStateValueOn && master.enabled);
+        assert([[prefs sharedPreferencesByMerging:base][@"local_modes"][@"shift_letter_entry"] isEqual:@NO]);
+        NSDictionary *masterOff = @{@"format_version": @1, @"revision": @(++revision),
+            @"preferences": [prefs sharedPreferencesByMerging:shared[@"preferences"]]};
+        assert([[session updatePreferencesSnapshot:masterOff error:&error][@"deferred"] isEqual:@NO]);
+        NSDictionary *capital = [session typeASCII:'T' shift:YES error:&error];
+        assert([capital[@"handled"] isEqual:@NO] && [capital[@"view"][@"local_mode"] isEqual:@"none"]);
+        master.state = NSControlStateValueOn;
+        [NSApp sendAction:master.action to:master.target from:master];
+        assert(buttons[@"date_time"].enabled);
+        NSDictionary *masterOn = @{@"format_version": @1, @"revision": @(++revision),
+            @"preferences": [prefs sharedPreferencesByMerging:shared[@"preferences"]]};
+        assert([[session updatePreferencesSnapshot:masterOn error:&error][@"deferred"] isEqual:@NO]);
+        assert([[session typeASCII:'T' shift:YES error:&error][@"view"][@"local_mode"] isEqual:@"date_time"]);
+        assert([session command:MSIME_CANCEL error:&error]);
         assert([session closeWithError:&error] && !error);
 
         // The other half of the same contract, which nothing here covered: with the resource gone the mode
