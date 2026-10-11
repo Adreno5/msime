@@ -539,16 +539,13 @@ public final class BackendAccount {
     }
 
     static boolean validChatModels(List<ChatModel> models, String defaultModel) {
-        if (models == null || models.isEmpty() || models.size() > MAX_CHAT_MODELS || defaultModel == null
-                || defaultModel.isEmpty() || TextPolicy.utf8Length(defaultModel) > 200
-                || TextPolicy.hasControl(defaultModel) || !TextPolicy.validUnicode(defaultModel))
+        if (models == null || models.isEmpty() || models.size() > MAX_CHAT_MODELS
+                || !TextPolicy.boundedNonEmpty(defaultModel, 200))
             return false;
         java.util.HashSet<String> ids = new java.util.HashSet<>(models.size());
         boolean hasDefault = false;
         for (ChatModel model : models) {
-            if (model == null || model.id() == null || model.id().isEmpty()
-                    || TextPolicy.utf8Length(model.id()) > 200 || TextPolicy.hasControl(model.id())
-                    || !TextPolicy.validUnicode(model.id())
+            if (model == null || !TextPolicy.boundedNonEmpty(model.id(), 200)
                     || !ids.add(model.id())) return false;
             if (defaultModel.equals(model.id())) hasDefault = true;
         }
@@ -556,8 +553,7 @@ public final class BackendAccount {
     }
 
     static boolean validChatRequest(List<ChatMessage> messages, String model) {
-        if (model == null || model.isEmpty() || TextPolicy.utf8Length(model) > 200
-                || TextPolicy.hasControl(model) || !TextPolicy.validUnicode(model)
+        if (!TextPolicy.boundedNonEmpty(model, 200)
                 || messages == null || messages.isEmpty() || messages.size() > 16) return false;
         int bytes = 0;
         for (ChatMessage message : messages) {
