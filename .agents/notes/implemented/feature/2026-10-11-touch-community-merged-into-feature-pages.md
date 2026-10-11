@@ -10,7 +10,7 @@ Status: implemented
 
 ## Decision
 
-- 触屏宿主（`mobilePlatform` 为真：鸿蒙手机，以及同样渲染这套外壳的 Android、iOS Tauri 界面和 iPad 侧栏）的底部标签页只剩设置 / 统计 / 我的。`mobilePrimaryPageIds` 去掉 `community`，`mobileLastPageByTab` 和 `harmonyTabIcon` 随之去掉它；`settingsPageProjections` 在触屏宿主上不提供 `community` 页，旧的历史记录或深链接指向它时落回默认页。桌面不变：「社区」页仍只从账号页「我的内容」进入，`CommunityPage` 等组件都保留。
+- 触屏宿主（`mobilePlatform` 为真：鸿蒙手机，以及同样渲染这套外壳的 Android、iOS Tauri 界面和 iPad 侧栏）的底部标签页不再有「社区」。`mobilePrimaryPageIds` 去掉 `community`，`mobileLastPageByTab` 和 `harmonyTabIcon` 随之去掉它；空出的第二格换成「对话」，底部仍是四个标签页，见 [触屏底部标签栏的第二格从「社区」换成「对话」](2026-10-11-touch-chat-tab-replaces-community.md)；`settingsPageProjections` 在触屏宿主上不提供 `community` 页，旧的历史记录或深链接指向它时落回默认页。桌面不变：「社区」页仍只从账号页「我的内容」进入，`CommunityPage` 等组件都保留。
 - 每类社区内容都在它所属的功能页上，完整图库是那一页上的子视图：
   - 皮肤页：鸿蒙手机的网格照旧列出社区第一页，网格下方一行「浏览更多皮肤」；其他触屏宿主沿用「在线皮肤」一行，按钮改叫「浏览更多皮肤」。
   - 词库页：鸿蒙手机的「发现词库」照旧列前 8 个、可直接添加，组末一行「浏览更多词库」；其他触屏宿主加一组「社区词库」，只有这一行。
@@ -28,7 +28,7 @@ Status: implemented
 
 ## Consequences
 
-- **收益**：皮肤、词库、回复模板都在用它们的那一页上浏览和添加，标签栏少一格；「我的」里的社区作品各行直接落到对应功能页的相应范围。返回手势的层次与皮肤页编辑器、AI 抽卡一致。
+- **收益**：皮肤、词库、回复模板都在用它们的那一页上浏览和添加，标签栏不再为社区占一格（那一格换成了「对话」）；「我的」里的社区作品各行直接落到对应功能页的相应范围。返回手势的层次与皮肤页编辑器、AI 抽卡一致。
 - **代价**：想同时逛三类内容的人要分别去三个页面。图库是覆盖整个界面的子视图，打开时看不到底部标签栏。AI 辅助页每次进入都请求一次社区回复模板列表。触屏宿主上的 `CommunityHomePage`（带分段控件的社区首页）不再被用到，组件仍保留给桌面的「社区」页。
 - **已知上限**：Android、iOS 的原生应用是否同样去掉「社区」由各自的改动决定，本篇只覆盖共享设置界面；在原生应用改完之前，两边的导航会不一致。以后给功能页加新的子视图，沿用 `communityGallery` / `skinSubpage` 这类历史记录标记，并让 `popstate` 按记录设置开关，否则返回手势会把功能页一起带走。
 
@@ -38,5 +38,5 @@ Status: implemented
 - 同一文件里：鸿蒙手机 AI 辅助页的「回复模板」只列前 5 个，「添加」依次调用 `save(id, true)`、`detail`、`storeReply` 并提示「已添加「…」到高情商回复键盘」，「浏览更多回复模板」打开全部范围的图库；Android 外壳把结果写在组里；桌面没有这一组，也不读社区列表；Android 外壳的词库页从「社区词库」打开词库图库。
 - `apps/desktop/tests/settings/harmony-phone-dictionary.test.tsx`：「浏览更多词库」打开词库图库，关掉图库后重读词库列表。
 - `apps/desktop/tests/community/community-skins.test.tsx`、`community-resources.test.tsx`：传入 `historyPage` 时详情记录留在所在功能页，并保留 `communityGallery`。
-- `core/mobile-tab-bar.test.tsx`、`settings/mobile-app-chrome.test.tsx`、`settings-page-projections.test.ts`、`settings-navigation-helpers.test.ts`、`settings.test.tsx`、`skin-community-entry.test.tsx`：触屏宿主只有三个标签页，没有「社区」页；桌面有社区客户端时仍有「社区」页。
+- `core/mobile-tab-bar.test.tsx`、`settings/mobile-app-chrome.test.tsx`、`settings-page-projections.test.ts`、`settings-navigation-helpers.test.ts`、`settings.test.tsx`、`skin-community-entry.test.tsx`：触屏宿主的标签栏没有「社区」，也没有「社区」页；桌面有社区客户端时仍有「社区」页。
 - 没有在 HarmonyOS 模拟器或真机上验证；视觉与手势由后续在模拟器上检查。

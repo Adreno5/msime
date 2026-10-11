@@ -88,8 +88,10 @@ test("projects mobile pages into tabs, grouped settings, and sidebar sections", 
   });
 
   expect(mobile.availablePages.find((page) => page.id === "appearance")?.title).toBe("候选栏");
+  // 原来「社区」的第二格换成了 AI 对话。
   expect(mobile.mobilePrimaryPages.map((page) => page.id)).toEqual([
     "home",
+    "chat",
     "typing-statistics",
     "account",
   ]);
@@ -98,7 +100,7 @@ test("projects mobile pages into tabs, grouped settings, and sidebar sections", 
   const listed = mobile.mobileSecondaryGroups.flatMap((group) =>
     group.pages.map((page) => page.id),
   );
-  for (const id of ["home", "community", "typing-statistics", "account", "shortcuts"]) {
+  for (const id of ["home", "chat", "community", "typing-statistics", "account", "shortcuts"]) {
     expect(listed).not.toContain(id);
   }
   expect(listed).not.toContain("floating-toolbar");
@@ -120,12 +122,22 @@ test("projects mobile pages into tabs, grouped settings, and sidebar sections", 
   );
 });
 
-// iPad 与手机同样 mobilePlatform 为真：标签栏上的统计、我的不在侧栏里重复出现，侧栏只在首页之后列出分组；触屏宿主没有「社区」页，侧栏里也没有它。
+// 没有对话客户端的触屏宿主没有「对话」这一格，标签栏只剩三格，而不是留一个打不开的标签页。
+test("a touch host without a chat client has no 对话 tab", () => {
+  const mobile = project({ mobilePlatform: true, hasChat: false });
+  expect(mobile.mobilePrimaryPages.map((page) => page.id)).toEqual([
+    "home",
+    "typing-statistics",
+    "account",
+  ]);
+});
+
+// iPad 与手机同样 mobilePlatform 为真：标签栏上的对话、统计、我的不在侧栏里重复出现，侧栏只在首页之后列出分组；触屏宿主没有「社区」页，侧栏里也没有它。
 test("keeps the tab pages out of the iPad sidebar", () => {
   const ipad = project({ mobilePlatform: true });
   const sidebar = ipad.sidebarGroups.flatMap((group) => group.pages.map((page) => page.id));
   expect(sidebar[0]).toBe("home");
-  for (const id of ["community", "typing-statistics", "account"]) {
+  for (const id of ["chat", "community", "typing-statistics", "account"]) {
     expect(sidebar).not.toContain(id);
   }
 });

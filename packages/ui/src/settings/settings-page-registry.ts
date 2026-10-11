@@ -81,7 +81,7 @@ export const pages = [
     icon: new URL("../assets/feedback.svg", import.meta.url).href,
   },
   { id: "about", title: "关于", icon: new URL("../assets/about.svg", import.meta.url).href },
-  // Reached from inside a page rather than from the navigation; see `subPageParents`.
+  // 不在导航分组里。桌面从「AI 辅助」页里的一行进入（见 `subPageParents`）；触屏宿主上它是底部的「对话」标签页（见 `mobilePrimaryPageIds`），在那里没有上级页面。
   { id: "chat", title: "AI 对话", icon: new URL("../assets/help.svg", import.meta.url).href },
   {
     id: "vocabulary",

@@ -2556,6 +2556,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
   const mobileInitialTab = mobileTabForPage(page);
   const mobileLastPageByTab = useRef<Record<MobilePrimaryPageId, SettingsPageId>>({
     home: mobileInitialTab === "home" ? page : "home",
+    chat: mobileInitialTab === "chat" ? page : "chat",
     "typing-statistics": mobileInitialTab === "typing-statistics" ? page : "typing-statistics",
     account: mobileInitialTab === "account" ? page : "account",
   });
@@ -2921,8 +2922,11 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
       mobileHiddenPageIds,
       mobilePageTitle,
     });
-  // A sub-page lights its parent in the navigation and offers the way back to it.
-  const navigationPage: SettingsPageId = subPageParents[page] ?? page;
+  // 子页面在导航里点亮它的上级页面，并提供回到上级的入口。触屏宿主上「AI 对话」是底部的「对话」标签页，不再是「AI 辅助」的子页面，标签页的根页面没有上级。
+  const navigationPage: SettingsPageId =
+    mobilePlatform && mobilePrimaryPageIds.includes(page as MobilePrimaryPageId)
+      ? page
+      : (subPageParents[page] ?? page);
   const { mobileActiveTab, selectPage, selectMobileTab, openAccountLogin, finishAccountLogin } =
     useSettingsNavigation({
       mobilePlatform,
@@ -2940,7 +2944,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
   // HarmonyOS 手机设计稿给每个页面都加大标题（包括 设置、统计、我的）；其他触屏宿主的三个标签页一打开就是已经表明自身名称的内容。
   const untitledOnPhone: readonly SettingsPageId[] =
     settingsPlatform === "harmony" ? [] : ["home", "typing-statistics", "account"];
-  // 设计稿里从一个页面内部打开另一个页面的行，例如「AI 辅助」上的「AI 对话」。
+  // 设计稿里从一个页面内部打开另一个页面的行，例如「词库」上的「背单词」。
   const pageEntry = (id: SettingsPageId) => availablePages.find((item) => item.id === id);
   const { communityGallery, openCommunityGallery, closeCommunityGallery } =
     useCommunityGallerySubview({
@@ -3400,7 +3404,7 @@ function SettingsShell(props: SettingsPageProps) {
     page === "skin" && Boolean(client.communityCandidateSkins) && skinView === "community";
   const pluginCommunityShown =
     page === "plugins" && Boolean(client.communityPlugins) && pluginView === "community";
-  // 子页面（「AI 辅助」下的「AI 对话」、「词库」下的「背单词」、「帮助与反馈」下的「帮助」）在返回时写出父页面的名字。
+  // 子页面（「词库」下的「背单词」、「帮助与反馈」下的「帮助」，桌面上还有「AI 辅助」下的「AI 对话」）在返回时写出父页面的名字。
   const parentPage =
     navigationPage !== page ? availablePages.find((item) => item.id === navigationPage) : undefined;
   // HarmonyOS 手机和边缘滑动一样，沿导航推入的 WebView 历史返回。设置打开时所在的页面身后没有设置的历史条目（最多只有宿主自己的，比如引导页的），所以从那里按钮改为向上，以替换当前条目的方式去到上级页面或所在标签页的根页面：如果推入新条目，刚离开的页面会留在上级页面后面，系统返回手势会回到它。此后上级页面占据最底部的条目，所以它自己的返回按钮也同样向上。
@@ -3425,7 +3429,7 @@ function SettingsShell(props: SettingsPageProps) {
     macShell || settingsPlatform === "hm2" || ipadShell || (winShell && !titlebarShown);
   const sidebarBrandShown = !mobilePlatform && !titlebarShown;
   const navNeedle = navQuery.trim().toLocaleLowerCase();
-  // iPad 的标签栏已有统计和我的；`settingsPageProjections` 在手机和 iPad 上都不把这几个标签页列进侧栏，这里不必再过滤一次。
+  // iPad 的标签栏已有对话、统计和我的；`settingsPageProjections` 在手机和 iPad 上都不把这几个标签页列进侧栏，这里不必再过滤一次。
   const shownSidebarGroups = navNeedle
     ? sidebarGroups
         .map((group) => ({

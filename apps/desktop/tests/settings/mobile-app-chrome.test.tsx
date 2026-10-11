@@ -637,6 +637,31 @@ test("a HarmonyOS phone titles the 设置, 统计 and 我的 roots", async () =>
   expect(untitled.parentElement?.className).toContain("max-phone:sr-only");
 });
 
+// 「对话」是标签页的根页面：鸿蒙手机照设计稿给它加大标题，但不滑入、不带返回按钮；其他触屏宿主也不再有回到「AI 辅助」的返回链接。
+test("the 对话 tab is a titled tab root with no way back to AI 辅助", async () => {
+  const chat = {
+    models: vi.fn().mockResolvedValue({ data: [], defaultModel: "" }),
+    complete: vi.fn(),
+  };
+  renderSettings("harmony", {}, undefined, { chat });
+  await settingsFormReady();
+  const bar = screen.getByRole("navigation", { name: "主要功能" });
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  const title = await screen.findByRole("heading", { level: 1, name: "AI 对话" });
+  expect(title.parentElement?.className).not.toContain("max-phone:sr-only");
+  expect(screen.queryByRole("button", { name: "返回" })).toBeNull();
+  cleanup();
+
+  renderSettings("android", {}, "chat", { chat });
+  await screen.findByRole("region", { name: "AI 对话" });
+  expect(screen.queryByRole("button", { name: "返回AI 辅助" })).toBeNull();
+  expect(
+    within(screen.getByRole("navigation", { name: "主要功能" }))
+      .getByRole("button", { name: "对话" })
+      .getAttribute("aria-current"),
+  ).toBe("page");
+});
+
 // 设计稿把手机页面叫作 皮肤、表达、开发者选项 和 反馈，桌面侧栏则叫 主题、标点与翻译、维护与诊断 和 帮助与反馈。
 test("a touch host uses the design's page names", async () => {
   renderSettings("harmony", {}, "expression");
