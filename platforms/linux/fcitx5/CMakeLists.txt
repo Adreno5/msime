@@ -283,6 +283,14 @@ if(BUILD_TESTING)
           "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/daemon.py"
           "${MSIME_FCITX5_TEST_RESOURCES}" "${MSIME_HOST_LIBRARY}"
           "$<TARGET_FILE:msime-fcitx5>")
+      foreach(online_case cloud-empty cloud-failure ai-empty ai-failure ai-cache-hit)
+        add_test(NAME fcitx5-online-${online_case}
+          COMMAND "${DBUS_RUN_SESSION}" --
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/online_requests.py"
+            "${MSIME_FCITX5_TEST_RESOURCES}" "${MSIME_HOST_LIBRARY}"
+            "$<TARGET_FILE:msime-fcitx5>" "${online_case}")
+        set_tests_properties(fcitx5-online-${online_case} PROPERTIES TIMEOUT 60)
+      endforeach()
       find_program(XVFB_RUN xvfb-run)
       if(XVFB_RUN)
         add_test(NAME fcitx5-page-number-visibility

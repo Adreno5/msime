@@ -24,7 +24,7 @@ HEIGHT_PX_CALLERS = (
     "SkinsPage.java",
 )
 BOTTOM_INSET_CALLERS = (
-    "KeyboardTryoutActivity.java",
+    "ChatFragment.java",
 )
 PAGE_BOTTOM_INSET_CALLERS = (
     "DetailPage.java",

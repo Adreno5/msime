@@ -5,6 +5,7 @@ import {
   SettingsPage,
   SettingsStartupPage,
   WelcomeFlowPage,
+  HarmonyLaunchSplash,
   type DictionaryClient,
   type DictionaryCollectionsClient,
   type DictionaryCollectionsView,
@@ -175,6 +176,8 @@ interface NativeBridge {
   onboardingFinished(): void;
   /** `{"ok":true,"value":string|null}`：键盘要求本窗口打开的页面，只交出一次，第二次读取回复 null。 */
   pendingPage(): string;
+  /** 页面的第一帧已经上屏：宿主撤掉页面加载期间盖在网页上的启动画面。 */
+  launchPainted(): void;
 }
 
 declare global {
@@ -1240,11 +1243,7 @@ function makeClient(
   // 只读一次：能力记录在应用运行期间不会变化，下面的反馈报告据此写明版本。
   const host = unwrap<HostCapabilities>(native.hostCapabilities());
   const setup = imeSetupClient(native);
-  // 状态栏和导航栏属于窗口，只有宿主够得着。
-  const chrome: HostChromeClient | undefined =
-    typeof native.setSystemBars === "function"
-      ? { setSystemBars: (bars) => native.setSystemBars(JSON.stringify(bars)) }
-      : undefined;
+  const chrome = hostChrome(native);
   // 「反馈」经账号桥接提交：有人登录时桥接附上已登录的会话，无人登录时附上设备的匿名账号会话（宿主在原生层持有，与 Android 一致）。只有两者都没有时（例如匿名注册还没成功）提交才会以 `account_unauthorized` 被拒绝，页面会如实提示。
   const feedback: FeedbackClient = {
     submit: async (report) => {
@@ -1686,20 +1685,115 @@ function HarmonySettings({
   );
 }
 
+/** 开屏用的应用主题按明暗缓存在本页的 localStorage 里：下次冷启动时桥接还没就绪，开屏就靠它画成设置页的季节色。 */
+function launchThemeKey(dark: boolean): string {
+  return `msime.launch-theme.${dark ? "dark" : "light"}`;
+}
+
+function cachedLaunchTheme(dark: boolean): ResolvedAppTheme | null {
+  try {
+    const value = window.localStorage.getItem(launchThemeKey(dark));
+    const theme = value === null ? null : (JSON.parse(value) as unknown);
+    return theme !== null &&
+      typeof theme === "object" &&
+      typeof (theme as ResolvedAppTheme).accent === "string" &&
+      typeof (theme as ResolvedAppTheme).background === "string"
+      ? (theme as ResolvedAppTheme)
+      : null;
+  } catch {
+    // 存储不可用或内容损坏：这次开屏用平台默认色，桥接就绪后会改正。
+    return null;
+  }
+}
+
+function cacheLaunchTheme(dark: boolean, theme: ResolvedAppTheme | null): void {
+  try {
+    if (theme === null) window.localStorage.removeItem(launchThemeKey(dark));
+    else window.localStorage.setItem(launchThemeKey(dark), JSON.stringify(theme));
+  } catch {
+    // 存不下只是下次开屏先用默认色。
+  }
+}
+
+/** 告诉宿主页面已经画出来了。只在页面加载时调用：桥接对象在页面加载前就已注册，等它只是以防万一；等不到时宿主几秒后自己撤掉启动画面。 */
+function reportLaunchPainted(): void {
+  whenBridgeReady()
+    .then((native) => {
+      if (typeof native.launchPainted === "function") native.launchPainted();
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * 子树第一次提交后再等两帧（第一帧回调时这一帧还没上屏）调用 `onPainted`。
+ *
+ * 冷启动时宿主在网页上盖着和系统启动窗一模一样的启动画面，页面加载期间不露出空白的网页；开屏的第一帧又和启动窗一样，所以第一帧上屏后撤掉盖板，看起来是同一个画面接着动起来。每次重画都要包着同一个子树，否则开屏会重新挂载、动画从头播。
+ */
+function AfterFirstPaint({ onPainted, children }: { onPainted: () => void; children: ReactNode }) {
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(onPainted);
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [onPainted]);
+  return children;
+}
+
+/** 状态栏和导航栏属于窗口，只有宿主够得着。 */
+function hostChrome(native: NativeBridge): HostChromeClient | undefined {
+  return typeof native.setSystemBars === "function"
+    ? { setSystemBars: (bars) => native.setSystemBars(JSON.stringify(bars)) }
+    : undefined;
+}
+
 const root = document.getElementById("root");
 if (root) {
   const app = createRoot(root);
   // 启动页是第一帧，所以必须在它渲染前设好主题。它跟随系统，直到知道用户自选外观的欢迎流程或设置页接管文档。
   const stopFollowingSystemTheme = followSystemTheme();
-  // Waiting for the bridge took up to five seconds against a blank white window. Every other host
-  // shows the shared startup page while it opens; there was never a reason for this one not to.
+  // 等桥接最多要五秒。手机上每次冷启动都播开屏（与首次启动欢迎流程里的同一段），页面一加载就开始，动画本身盖住等待；播完且桥接就绪才进设置。二合一是桌面形态，没有手机开屏，照旧显示共享的启动页。此时还不知道宿主报告的形态，按与样式表 max-phone 相同的宽度判断。
+  const phoneLaunch = window.matchMedia("(max-width: 600px)").matches;
+  let endSplash: () => void = () => undefined;
+  const splashEnded = new Promise<void>((resolve) => {
+    endSplash = resolve;
+  });
+  // 同一个函数传给每一次重画，开屏的计时才不会从头开始。
+  const finishSplash = () => endSplash();
+  // 开屏用设置页将要使用的季节强调色。桥接就绪前解析不了，用上次启动缓存的那份；没有缓存时是平台默认色。
+  const launchDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   app.render(
     <StrictMode>
-      <SettingsStartupPage />
+      <AfterFirstPaint onPainted={reportLaunchPainted}>
+        {phoneLaunch ? (
+          <HarmonyLaunchSplash appTheme={cachedLaunchTheme(launchDark)} onDone={finishSplash} />
+        ) : (
+          <SettingsStartupPage />
+        )}
+      </AfterFirstPaint>
     </StrictMode>,
   );
   whenBridgeReady()
     .then(async (native) => {
+      // 桥接就绪：按当前的应用主题重画开屏并缓存给下次启动（只有换季那次颜色会变），系统栏换成开屏的底色，动画接着播。
+      if (phoneLaunch) {
+        const launchTheme = appThemeClient(native)?.resolve(launchDark) ?? null;
+        cacheLaunchTheme(launchDark, launchTheme);
+        app.render(
+          <StrictMode>
+            <AfterFirstPaint onPainted={reportLaunchPainted}>
+              <HarmonyLaunchSplash
+                appTheme={launchTheme}
+                chrome={hostChrome(native)}
+                onDone={finishSplash}
+              />
+            </AfterFirstPaint>
+          </StrictMode>,
+        );
+      }
       // A refused query answers "no onboarding": someone who has been using the keyboard for weeks
       // should not be sent back to a welcome screen because one system call did not answer.
       const onboarding = await whenOnboardingKnown(native);
@@ -1709,13 +1803,18 @@ if (root) {
       // 两者都在这里、在 React 之外读取，因为都是一次性的宿主读取：链接的页面只交出一次，而闪屏标记马上就要写入。
       const linkedPage = pendingLinkedPage(native);
       const splashUnseen = !splashSeen(native);
+      if (phoneLaunch) {
+        await splashEnded;
+        // 开屏已经播过，首次启动的欢迎流程不再重播同一段。
+        if (splashUnseen && typeof native.markSplashSeen === "function") native.markSplashSeen();
+      }
       stopFollowingSystemTheme();
       app.render(
         <StrictMode>
           <HarmonySettings
             native={native}
             onboarding={onboarding}
-            splashUnseen={splashUnseen}
+            splashUnseen={!phoneLaunch && splashUnseen}
             linkedPage={linkedPage}
           />
         </StrictMode>,

@@ -119,6 +119,7 @@ import { PrivacyGate } from './PrivacyGate';
 import { PhraseList, PHRASE_LIST_ERROR, PHRASE_LIST_LOADING, PHRASE_LIST_READY } from './faces/PhraseList';
 import { VoiceListening } from './faces/VoiceListening';
 
+import { TextPolicy } from './TextPolicy';
 /**
  * The 26-key touch keyboard, laid out to the same metrics as the iOS extension in
  * platforms/ios/KeyboardExtension/Sources/KeyboardViewController.swift, which is the reference
@@ -3003,7 +3004,7 @@ struct KeyboardView {
     const word: number = KeyboardFormFactor.isDesktop()
       ? CandidateWidthPolicy.chipContentVp(candidate, index, this.settings.candidateFontSize,
         CandidateNumberFontPolicy.size(this.settings.candidateFontSize))
-      : Array.from(candidate.text).length * this.settings.candidateFontSize;
+      : TextPolicy.characters(candidate.text).length * this.settings.candidateFontSize;
     if (!KeyboardSession.shared.glossesExpected()) {
       return CandidateChipWidth.chip(word, false, 0, padding);
     }
@@ -4013,7 +4014,7 @@ struct KeyboardView {
 
   /** 注释最多能画多宽：它的列宽，或上方的词更宽时取词宽。 */
   private chipGlossMaxWidth(candidate: CandidateEntry): number {
-    return CandidateChipWidth.content(Array.from(candidate.text).length * this.chipFontSize(), true,
+    return CandidateChipWidth.content(TextPolicy.characters(candidate.text).length * this.chipFontSize(), true,
       this.chipGlossColumn());
   }
 
@@ -4305,14 +4306,17 @@ struct KeyboardView {
       && (KeyboardScheme.usesNineKeyFace(this.nineKey, this.localMode) || this.twentySixKeyDigitGrid());
   }
 
-  /** 0 在字母层上参与拼写，由 Engine 读取；在数字层上与其他九个数字一样直接输入。 */
+  /**
+   * 0 在数字层上与其他九个数字一样直接输入。字母层上它不参与拼写：九键的组码只有 2~9，Engine 不接 0，交给它就是按了没反应。所以和 Android 的 `commitNineKeyLiteral` 一样，正在打的拼音先按原样上屏，再输入 0。
+   */
   private typeNineKeyZero(): void {
     if (this.symbols) {
       this.typeNineKeyDigit('0');
       return;
     }
     KeyboardSession.shared.recordKey(KeyIdPolicy.nineKey('0'));
-    KeyboardSession.shared.press(0x30, false);
+    KeyboardSession.shared.commitRaw();
+    KeyboardSession.shared.insert('0');
   }
 
   /**
@@ -4486,17 +4490,7 @@ struct KeyboardView {
           KeyboardSession.shared.recordKey(KeyIdPolicy.character('.'));
           KeyboardSession.shared.punctuation(0x2e);
         });
-        // 0 is inserted on the digit layer for the same reason the other nine are, and spelled on
-        // the letter layer, where the Engine reads it as a candidate position.
-        this.nineKeyControl('0', '数字 0', this.symbols
-          ? () => {
-            KeyboardSession.shared.recordKey(KeyIdPolicy.nineKey('0'));
-            KeyboardSession.shared.punctuation(0x30);
-          }
-          : () => {
-            KeyboardSession.shared.recordKey(KeyIdPolicy.nineKey('0'));
-            KeyboardSession.shared.press(0x30, false);
-          });
+        this.nineKeyControl('0', '数字 0', () => this.typeNineKeyZero());
       }
       .width(`${NINE_KEY_COLUMN_PERCENT}%`)
       .height('100%')
@@ -5402,7 +5396,7 @@ struct KeyboardView {
   private deleteReplySourceCharacter(): void {
     if (this.replySource.length === 0) return;
     this.resetReplyResults();
-    const characters: string[] = Array.from(this.replySource);
+    const characters: string[] = TextPolicy.characters(this.replySource);
     characters.pop();
     this.replySource = characters.join('');
     this.replyNotice = this.replySource.length === 0 ? '剪贴板里没有文字' : '选择风格生成回复';

@@ -37,15 +37,13 @@ import app.msime.android.ViewPolicy;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 /**
- * 宿主主界面：底部四个 tab 共用一个 Fragment 容器，详情页压在同一个容器里。
+ * 宿主主界面：底部四个 tab（设置、对话、统计、我的）共用一个 Fragment 容器，详情页压在同一个容器里。第二格原先是「社区」，社区内容并进了皮肤、词库、表达和 AI 几个功能页（各页末尾的「浏览更多…」压入 {@link CommunityFragment} 的完整列表），这一格换成了 AI 对话（{@link ChatFragment}）。
  *
  * First-run dictionary preparation is started from here, because this is the launcher and there is
  * nowhere else the user reliably arrives. It never enables or selects the input method on their
  * behalf -- that remains a decision taken in system settings.
  *
- * Each tab is created once and then hidden rather than replaced. Replacing tore the page down on
- * every switch: coming back to 社区 re-fetched the listing over the network and threw away how far
- * the user had scrolled, and 统计 forgot which of its four segments was open.
+ * 每个 tab 只建一次，之后藏起来而不是替换掉。替换会在每次切换时把页面拆掉：统计会忘了打开的是四段里的哪一段，滚动位置也跟着丢。
  *
  * <p>导航只有一个回退栈：{@link SettingsNavigator} 把详情页压进 `home_content`（底部导航保持可见），返回一层弹出一页，栈空了再回到第一个 tab，再返回才离开应用。切到别的 tab 或再点一次当前 tab 都先清空栈，所以返回不会把用户带回另一个 tab 里的旧页面。进程被杀后 FragmentManager 自己恢复 tab 页和栈，这里不会再添加一遍。
  *
@@ -63,8 +61,9 @@ public final class HomeActivity extends AppCompatActivity {
     /** 底部进度条走满的时长。 */
     private static final long INTRO_PROGRESS_MILLIS = 2400;
     private static final long INTRO_FADE_MILLIS = 260;
+    /** 按 `HostDeepLink.TAB_*` 下标排的底部导航项，顺序与 `res/menu/bottom_tabs.xml` 相同（`tests/home/BottomTabsSmoke.java` 核对）。 */
     private static final int[] TAB_IDS = {
-        R.id.tab_settings, R.id.tab_community, R.id.tab_statistics, R.id.tab_account,
+        R.id.tab_settings, R.id.tab_chat, R.id.tab_statistics, R.id.tab_account,
     };
 
     private BottomNavigationView tabs;
@@ -72,7 +71,6 @@ public final class HomeActivity extends AppCompatActivity {
     /** 保存状态之后才到达的深链，等回到前台再执行。 */
     @Nullable private Intent pendingLink;
     private int selected = FIRST_TAB;
-    @Nullable private CommunityRequest.Kind pendingKind;
     /** A tab whose kept instance is stale and has to be built again on the next switch to it. */
     private int rebuild;
     @Nullable private ValueAnimator breath;
@@ -137,6 +135,8 @@ public final class HomeActivity extends AppCompatActivity {
         }
 
         if (state != null) selected = state.getInt(STATE_TAB, FIRST_TAB);
+        // 保存下来的 tab 不在现在的底部导航里时回到第一个 tab。
+        if (tabIndex(selected) == HostDeepLink.NO_TAB) selected = FIRST_TAB;
         // 先在没有监听器时标出选中项，再装监听器：否则这一下会被当成「再点一次当前 tab」而清掉恢复回来的回退栈。
         tabs.setSelectedItemId(selected);
         tabs.setOnItemSelectedListener(item -> {
@@ -390,17 +390,23 @@ public final class HomeActivity extends AppCompatActivity {
         state.putBoolean(STATE_ONBOARDING_AFTER_INTRO, onboardingAfterIntro);
     }
 
-    /** Switch to one of the four tabs, as a row on another tab can ask to. */
+    /** 切到底部的某个 tab，别的 tab 里的行可以这样跳过去。 */
     public void openTab(int itemId) {
         if (tabs != null) tabs.setSelectedItemId(itemId);
     }
 
     /** 当前 tab 的下标，取值是 `HostDeepLink.TAB_*`。 */
     int selectedTabIndex() {
+        int index = tabIndex(selected);
+        return index == HostDeepLink.NO_TAB ? HostDeepLink.TAB_SETTINGS : index;
+    }
+
+    /** 底部导航项对应的 `HostDeepLink.TAB_*` 下标；不是现在的底部导航项时为 `HostDeepLink.NO_TAB`。 */
+    private static int tabIndex(int itemId) {
         for (int i = 0; i < TAB_IDS.length; i++) {
-            if (TAB_IDS[i] == selected) return i;
+            if (TAB_IDS[i] == itemId) return i;
         }
-        return HostDeepLink.TAB_SETTINGS;
+        return HostDeepLink.NO_TAB;
     }
 
     /** 按下标切 tab（`HostDeepLink.TAB_*`）；切换时清空回退栈。 */
@@ -431,17 +437,16 @@ public final class HomeActivity extends AppCompatActivity {
     }
 
     /**
-     * Switch to the community tab and open it on one kind of work.
-     *
-     * <p>The kept instance is discarded for this: which kind the tab opens on is an argument, and
-     * the one on screen is showing another.
+     * 切到「对话」tab 并弹出键盘，设置首页状态卡上的「试用键盘」用它：试用键盘就是在对话页的输入框里打字。直接点底部那一格进来不弹键盘。
      */
+    void openChat() {
+        openTab(R.id.tab_chat);
+        if (getSupportFragmentManager().findFragmentByTag(tag(R.id.tab_chat)) instanceof ChatFragment chat) chat.focusInput();
+    }
+
+    /** 打开某一类社区作品的完整列表。社区 tab 撤掉以后，它是压在设置 tab 上的一页（见 {@link CommunityFragment#browse}）。 */
     public void openCommunity(CommunityRequest.Kind kind) {
-        pendingKind = kind;
-        rebuild = R.id.tab_community;
-        clearStack();
-        if (selected == R.id.tab_community) show(R.id.tab_community);
-        else openTab(R.id.tab_community);
+        CommunityFragment.browse(this, kind);
     }
 
     private void show(int itemId) {
@@ -476,11 +481,7 @@ public final class HomeActivity extends AppCompatActivity {
     }
 
     private Fragment create(int itemId) {
-        if (itemId == R.id.tab_community) {
-            CommunityRequest.Kind kind = pendingKind;
-            pendingKind = null;
-            return CommunityFragment.forKind(kind);
-        }
+        if (itemId == R.id.tab_chat) return new ChatFragment();
         if (itemId == R.id.tab_statistics) return new StatisticsFragment();
         if (itemId == R.id.tab_account) return new AccountFragment();
         return new KeyboardFragment();

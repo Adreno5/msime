@@ -464,6 +464,7 @@ export function CommunitySkinsPage({
   preferences,
   onApplyPreferences,
   onSkinApplied,
+  historyPage = "community",
 }: {
   client: CommunitySkinClient;
   theme: "light" | "dark";
@@ -480,6 +481,8 @@ export function CommunitySkinsPage({
   onApplyPreferences?: (next: Preferences) => void | Promise<void>;
   /** 「使用」刚把某个皮肤用到键盘上时，以该皮肤的社区 id 调用。 */
   onSkinApplied?: (id: string) => void;
+  /** 手机上打开详情时压入的历史记录所属的设置页。触屏宿主在「皮肤」页里打开这个图库，记录要留在那一页，返回手势才会先关详情、再关图库；缺省是桌面的「社区」页。 */
+  historyPage?: string;
 }) {
   const categoryFilter = useCommunitySkinCategoryFilter();
   const categoryRequest = categoryFilter.request;
@@ -611,7 +614,7 @@ export function CommunitySkinsPage({
   const open = (skin: CommunitySkin) => {
     if (mobile && typeof window !== "undefined") {
       pushMobileSettingsState({
-        page: "community",
+        page: historyPage,
         communityDetail: { kind: "skin", id: skin.id },
       });
     }

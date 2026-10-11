@@ -10,7 +10,7 @@ HOME = ROOT / "platforms/android/java/app/msime/android/home"
 UI = HOME / "Ui.java"
 EXPECTED_CALLERS = (
     "InputDialog.java",
-    "KeyboardTryoutActivity.java",
+    "ChatFragment.java",
 )
 
 

@@ -76,8 +76,8 @@ fn read_entries(directory: &Path, name: &str) -> Result<Vec<HelpcodeEntry>, Stri
 
 /// 码表文本的严格解析，规则见模块文档。
 pub(crate) fn parse_table(bytes: &[u8], name: &str) -> Result<Vec<HelpcodeEntry>, String> {
-    let mut entries = Vec::with_capacity(MAX_ENTRIES);
-    let mut seen = HashSet::with_capacity(MAX_ENTRIES);
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
     for (number, line) in data_lines(bytes, name)? {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -95,6 +95,10 @@ pub(crate) fn parse_table(bytes: &[u8], name: &str) -> Result<Vec<HelpcodeEntry>
         }
         if !(1..=2).contains(&code.len()) || !code.bytes().all(|byte| byte.is_ascii_lowercase()) {
             return Err(format!("{name} 第 {number} 行的码必须是 1 到 2 个小写字母"));
+        }
+        if entries.is_empty() {
+            entries.reserve(MAX_ENTRIES);
+            seen.reserve(MAX_ENTRIES);
         }
         if !seen.insert(scalar) {
             return Err(format!("{name} 里「{scalar}」出现了不止一次"));

@@ -24,8 +24,8 @@ public final class SettingsSearchIndexSmoke {
     private static final Pattern PAGE = Pattern.compile(
         "^    ([A-Z_]+)\\(\"([A-Za-z]+)\", \"([^\"]*)\", HostDeepLink\\.TAB_[A-Z]+((?:,\\s*\"[^\"]*\")*)\\s*\\)[,;]",
         Pattern.MULTILINE);
-    /** 独立数一遍 `PageId` 有几项，防止上面的正则漏掉某一项而让检查静悄悄地变少。 */
-    private static final Pattern PAGE_HEAD = Pattern.compile("^    [A-Z_]+\\(\"[A-Za-z]+Page\", ", Pattern.MULTILINE);
+    /** 独立数一遍 `PageId` 有几项，防止上面的正则漏掉某一项而让检查静悄悄地变少。类名不一定以 Page 结尾：社区作品的完整列表是 `CommunityFragment`。 */
+    private static final Pattern PAGE_HEAD = Pattern.compile("^    [A-Z_]+\\(\"[A-Za-z]+\", ", Pattern.MULTILINE);
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
     /** 页面里的设置行：`GroupCard` 的 toggle / nav / slider，以及开发者页包了一层的 uploadToggle。 */
     private static final Pattern ROW = Pattern.compile("\\.(?:toggle|nav|slider)\\(\\s*\"([^\"]+)\"");
@@ -113,7 +113,7 @@ public final class SettingsSearchIndexSmoke {
         String[][] rows = {
             {"TYPING", "只出单字"}, {"TYPING", "云候选"},
             {"TYPING", "普通话"}, {"TYPING", "粤语"}, {"TYPING", "日语"}, {"TYPING", "韩语"}, {"TYPING", "越南语"},
-            {"TYPING", "藏语"},
+            {"TYPING", "藏语"}, {"TYPING", "在候选栏中显示双拼辅助码"}, {"TYPING", "在候选栏中显示全拼辅助码"},
             {"EXPRESSION", "智能标点"}, {"EXPRESSION", "英文联想"},
             {"LEXICON", "记忆新词"},
             {"PRIVACY", "用水杉账号翻译候选"}, {"PRIVACY", "匿名使用统计"}, {"PRIVACY", "剪贴板历史"},

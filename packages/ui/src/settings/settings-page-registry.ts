@@ -64,7 +64,7 @@ export const pages = [
     title: "账号与同步",
     icon: new URL("../assets/account.svg", import.meta.url).href,
   },
-  // 触屏宿主的「社区」主标签页，不属于任何导航分组。桌面宿主的侧栏没有这一页：候选窗口皮肤在「主题」页浏览，插件包在「插件」页浏览；Windows 只从账号页「我的内容」里的词库、回复模板几行进入这一页。
+  // 「社区」页不属于任何导航分组，桌面宿主的侧栏没有这一页：候选窗口皮肤在「主题」页浏览，插件包在「插件」页浏览，Windows 只从账号页「我的内容」里的词库、回复模板几行进入这一页。触屏宿主没有这一页，社区内容列在皮肤、词库、AI 辅助这些功能页里。
   {
     id: "community",
     title: "社区",
@@ -81,7 +81,7 @@ export const pages = [
     icon: new URL("../assets/feedback.svg", import.meta.url).href,
   },
   { id: "about", title: "关于", icon: new URL("../assets/about.svg", import.meta.url).href },
-  // Reached from inside a page rather than from the navigation; see `subPageParents`.
+  // 不在导航分组里。桌面从「AI 辅助」页里的一行进入（见 `subPageParents`）；触屏宿主上它是底部的「对话」标签页（见 `mobilePrimaryPageIds`），在那里没有上级页面。
   { id: "chat", title: "AI 对话", icon: new URL("../assets/help.svg", import.meta.url).href },
   {
     id: "vocabulary",

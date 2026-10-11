@@ -31,7 +31,8 @@ extension BackendAccountClient {
           Set(catalog.data.map(\.id)).count == catalog.data.count else { throw Failure(status: 0) }
     return catalog
   }
-  func chat(messages: [ChatMessage], model: String, session: BackendAccountSession,
+  /// `model` 为 `nil` 时请求体不带 `model`，由后端用它配置的默认模型；需要指定模型的调用方照旧传 id。
+  func chat(messages: [ChatMessage], model: String? = nil, session: BackendAccountSession,
             matchingUserID expected: String? = nil,
             matchingSessionID expectedSessionID: UUID? = nil) async throws -> String {
     let identity = try await session.credentials(matchingUserID: expected, matchingSessionID: expectedSessionID)
@@ -44,13 +45,14 @@ extension BackendAccountClient {
     return reply
   }
 
-  func chat(messages: [ChatMessage], model: String, token: String) async throws -> String {
-    struct Body: Encodable { let messages: [ChatMessage]; let model: String; let max_tokens = 2048; let stream = false }
+  func chat(messages: [ChatMessage], model: String? = nil, token: String) async throws -> String {
+    // 合成的 Encodable 对可选属性用 encodeIfPresent，`model` 为 nil 时整个键不出现在请求体里。
+    struct Body: Encodable { let messages: [ChatMessage]; let model: String?; let max_tokens = 2048; let stream = false }
     struct Response: Decodable {
       struct Choice: Decodable { let message: ChatMessage }
       let choices: [Choice]
     }
-    guard Self.validChatModelID(model), (1...16).contains(messages.count),
+    guard model.map(Self.validChatModelID) ?? true, (1...16).contains(messages.count),
           messages.allSatisfy({ ["user", "assistant", "system"].contains($0.role) && Self.validChatMessageContent($0.content) })
     else { throw Failure(status: 400) }
     let body = try JSONEncoder().encode(Body(messages: messages, model: model))

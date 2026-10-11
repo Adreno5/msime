@@ -103,6 +103,7 @@ function setup({ harmonyPhone = true } = {}) {
   };
   const setDraft = vi.fn();
   const selectPage = vi.fn();
+  const openCommunityGallery = vi.fn();
   const model = {
     client: {
       dictionary,
@@ -119,6 +120,8 @@ function setup({ harmonyPhone = true } = {}) {
     openPanel: vi.fn(),
     pageEntry: (id: string) => (id === "vocabulary" ? { id, title: "背单词" } : undefined),
     selectPage,
+    communityGallery: null,
+    openCommunityGallery,
     phrases: [],
     phrasePage: { offset: 0, hasMore: false, status: "" },
     dictionaryFailures: [],
@@ -128,14 +131,26 @@ function setup({ harmonyPhone = true } = {}) {
     dictionaryKind: "quick_phrase",
     dictionaryFormat: "standard",
   } as unknown as SettingsFormModel;
-  render(
-    <SettingsFormContext.Provider value={model}>
+  const tree = (value: SettingsFormModel) => (
+    <SettingsFormContext.Provider value={value}>
       <ToastProvider>
         <DictionarySettingsPage />
       </ToastProvider>
-    </SettingsFormContext.Provider>,
+    </SettingsFormContext.Provider>
   );
-  return { collections, dictionary, communityResources, setDraft, selectPage };
+  const view = render(tree(model));
+  /** 以外壳打开或关上本页上的社区图库后的模型重画。 */
+  const showGallery = (communityGallery: SettingsFormModel["communityGallery"]) =>
+    view.rerender(tree({ ...model, communityGallery }));
+  return {
+    collections,
+    dictionary,
+    communityResources,
+    setDraft,
+    selectPage,
+    openCommunityGallery,
+    showGallery,
+  };
 }
 
 function groupTitles(): string[] {
@@ -315,6 +330,23 @@ test("a community dictionary is added as its own dictionary, from its latest det
   await waitFor(() => expect(collections.installCommunity).toHaveBeenCalledTimes(1));
   expect(vi.mocked(collections.installCommunity).mock.calls[0][0].id).toBe("r-game");
   await waitFor(() => expect(add.textContent).toBe("已添加"));
+});
+
+// 「发现词库」只列前几个，最后一行打开本页上的完整社区词库图库；在图库里添加的词库，关掉图库时读进「已安装」。
+test("发现词库 ends with 浏览更多词库, and closing the gallery reads the dictionaries again", async () => {
+  const { collections, openCommunityGallery, showGallery } = setup();
+  const discover = group("发现词库");
+  fireEvent.click(await within(discover).findByRole("button", { name: "浏览更多词库" }));
+  expect(openCommunityGallery).toHaveBeenCalledWith({
+    category: "dictionary",
+    scope: "",
+    initialMine: false,
+  });
+  await waitFor(() => expect(collections.flush).toHaveBeenCalledTimes(1));
+
+  showGallery({ category: "dictionary", scope: "", initialMine: false });
+  showGallery(null);
+  await waitFor(() => expect(collections.flush).toHaveBeenCalledTimes(2));
 });
 
 test("the built-in dictionary searches by pinyin and is always on", async () => {

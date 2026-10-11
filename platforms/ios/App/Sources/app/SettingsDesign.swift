@@ -215,16 +215,11 @@ struct SettingsSearchPill: View {
 ///
 /// 宿主 app 无法判断键盘是否已添加、是否已获得完全访问权限 —— iOS 对这两者都没有公开 API，而由键盘写入的标记在用户撤销权限后仍会保留 —— 所以每一步都显示中性的序号标记，而不是设计稿的 ✓ / ! 状态，两个 去开启 链接也始终显示。
 struct KeyboardStatusCard: View {
-  /// 试用键盘 的行为：把试用页推入手机的导航栈，或执行一个操作（iPad 在侧栏中选中试用页）。
-  enum Tryout {
-    case push
-    case action(() -> Void)
-  }
-
   let scheme: ChineseInputScheme
-  let tryout: Tryout
+  /// 试用键盘 的行为。试用页就是「对话」标签页，所以手机和 iPad 都是切到那个标签页（`AppNavigation.openChat`），不再在设置里另外推入一份。
+  let tryout: () -> Void
 
-  init(scheme: ChineseInputScheme, tryout: Tryout) {
+  init(scheme: ChineseInputScheme, tryout: @escaping () -> Void) {
     self.scheme = scheme
     self.tryout = tryout
   }
@@ -284,17 +279,10 @@ struct KeyboardStatusCard: View {
     .contentShape(Capsule())
   }
 
-  @ViewBuilder private var tryoutButton: some View {
-    switch tryout {
-    case .push:
-      NavigationLink(destination: KeyboardTryoutView(focusOnAppear: true)) { tryoutLabel }
-        .buttonStyle(DimOnPressButtonStyle())
-        .accessibilityIdentifier("keyboardTryoutLink")
-    case .action(let action):
-      Button(action: action) { tryoutLabel }
-        .buttonStyle(DimOnPressButtonStyle())
-        .accessibilityIdentifier("keyboardTryoutLink")
-    }
+  private var tryoutButton: some View {
+    Button(action: tryout) { tryoutLabel }
+      .buttonStyle(DimOnPressButtonStyle())
+      .accessibilityIdentifier("keyboardTryoutLink")
   }
 }
 

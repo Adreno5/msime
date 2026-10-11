@@ -12,6 +12,7 @@ pub(crate) use msime_engine::ordering::{
     reorders_candidates as runtime_reorders_candidates, LATTICE_SOURCE,
 };
 use msime_engine::SchemeType;
+use std::collections::HashSet;
 
 pub enum Action {
     ResetCache,
@@ -323,7 +324,7 @@ impl Runtime<Session> {
             // cannot select the pre-provider page and Windows UI mailboxes can
             // recognize the replacement as a new rendered generation.
             self.advance()?;
-            self.refresh()
+            self.refresh_online_candidates()
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         }
         Ok(applied)
@@ -446,7 +447,7 @@ impl Runtime<Session> {
             .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         if resolved {
             self.advance()?;
-            self.refresh()?;
+            self.refresh_online_candidates()?;
         }
         Ok(resolved)
     }
@@ -465,7 +466,7 @@ impl Runtime<Session> {
             .clear_online_candidates(source)
             .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         self.advance()?;
-        self.refresh()
+        self.refresh_online_candidates()
     }
 
     fn apply_online_candidates_snapshot(
@@ -497,7 +498,7 @@ impl Runtime<Session> {
             .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         if applied {
             self.advance()?;
-            self.refresh()
+            self.refresh_online_candidates()
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         }
         Ok(applied)
@@ -828,6 +829,7 @@ impl<E: InputEngine> Runtime<E> {
             preedit: self.cached.preedit.clone(),
             phrase_prefix: self.phrase_prefix.clone(),
             reading: self.cached.reading.clone(),
+            display_reading: self.cached.display_reading.clone(),
             editing_text: self.cached.editing_text.clone(),
             caret_position: self.cached.caret_position,
             conversion: self.cached.conversion.clone(),
@@ -1044,8 +1046,7 @@ impl<E: InputEngine> Runtime<E> {
         Ok(true)
     }
 
-    /// Apply translations to the current candidate generation. Stale async
-    /// responses are ignored so a newer candidate window cannot be polluted.
+    /// 同代次非空释义合并，空数组显式清理；旧代次回包不能更新展示。
     pub fn apply_translations(
         &mut self,
         generation: u64,
@@ -1063,7 +1064,17 @@ impl<E: InputEngine> Runtime<E> {
                     .unwrap_or(false);
             }
         }
-        self.translations = translations;
+        if translations.is_empty() {
+            self.translations.clear();
+        } else {
+            let candidates: HashSet<&str> =
+                self.cached.candidates.iter().map(String::as_str).collect();
+            self.translations.extend(
+                translations
+                    .into_iter()
+                    .filter(|(text, _)| candidates.contains(text.as_str())),
+            );
+        }
         true
     }
 
@@ -1659,6 +1670,18 @@ impl<E: InputEngine> Runtime<E> {
         true
     }
 
+    pub(crate) fn refresh_online_candidates(&mut self) -> Result<(), RuntimeError> {
+        // 在线结果不改变组字，只保留前后都存在的词条释义；代次校验照旧。
+        let mut translations = std::mem::take(&mut self.translations);
+        let before: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
+        translations.retain(|text, _| before.contains(text.as_str()));
+        self.refresh()?;
+        let after: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
+        translations.retain(|text, _| after.contains(text.as_str()));
+        self.translations = translations;
+        Ok(())
+    }
+
     pub(crate) fn refresh(&mut self) -> Result<(), RuntimeError> {
         self.snapshot_valid = false;
         self.translations.clear();
@@ -1694,6 +1717,7 @@ impl<E: InputEngine> Runtime<E> {
                     dedicated_english: false,
                     preedit: String::new(),
                     reading: String::new(),
+                    display_reading: String::new(),
                     editing_text: String::new(),
                     caret_position: 0,
                     segment_raw_boundaries: vec![],

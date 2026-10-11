@@ -85,6 +85,10 @@ public:
   std::optional<nlohmann::json> resolve_ai_candidates(const FocusLease &lease,
                                                       const std::string &query);
   std::optional<std::string> translation_query(const FocusLease &lease);
+  // Rebuild the AI descriptor on the input queue immediately before dispatch;
+  // settings may have changed after the key reply was composed.
+  std::optional<std::string> ai_request(const FocusLease &lease,
+                                        const std::string &query);
   std::optional<nlohmann::json>
   apply_translations(const FocusLease &lease, uint64_t generation,
                      const std::string &translations);

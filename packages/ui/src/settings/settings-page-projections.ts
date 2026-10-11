@@ -63,13 +63,15 @@ export function settingsPageProjections({
         (item.id !== "vocabulary" || hasVocabularyReview) &&
         (item.id !== "account" || hasAccount) &&
         (item.id !== "chat" || hasChat) &&
-        (item.id !== "community" || hasCommunity) &&
+        // 触屏宿主没有「社区」页：社区内容列在皮肤、词库、AI 辅助这些功能页里，完整图库是那些页面上的子视图。
+        (item.id !== "community" || (hasCommunity && !mobilePlatform)) &&
         (item.id !== "floating-toolbar" || showFloatingToolbar) &&
         (item.id !== "developer" || showDeveloperPage) &&
         (item.id !== "plugins" || hasPlugins) &&
         (item.id !== "handwriting" || hasHandwriting) &&
         (item.id !== "more" || mobilePlatform) &&
-        (item.id !== "try-keyboard" || (mobilePlatform && hasHomePage)),
+        // 有对话的触屏宿主在「对话」标签里试键盘，独立的试用页只留给没有对话的宿主。
+        (item.id !== "try-keyboard" || (mobilePlatform && hasHomePage && !hasChat)),
     )
     .map((item) => ({
       ...item,

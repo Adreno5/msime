@@ -136,10 +136,18 @@ SessionController::SessionController(
              settled_since_ = std::chrono::steady_clock::now();
              if (reply.online_query) {
                (void)cloud_.submit(lease, *reply.online_query);
-               // The same query carries the resolved AI config and the
-               // ai_eligible flag; the AI worker decides for itself whether it
-               // applies, so an ineligible query costs nothing here.
-               (void)ai_.submit(lease, *reply.online_query);
+               // Rebuild the descriptor on the input queue after delivery: a
+               // preference update may have landed after this reply was composed.
+               const auto query = *reply.online_query;
+               const auto refresh = input_.submit([this, lease, query](InputState &state) {
+                 if (stopping_)
+                   return;
+                 const auto descriptor = state.ai_request(lease, query);
+                 (void)ai_.submit(lease, query,
+                                  descriptor.value_or(std::string{}));
+               });
+               if (!refresh)
+                 (void)ai_.submit(lease, query, std::string{});
              }
            },
            [this](const FocusLease &lease, const PendingReply &reply) {

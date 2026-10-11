@@ -13,7 +13,7 @@ EXPECTED_CALLERS = (
     "DistributionView.java",
     "KeyHeatmapView.java",
     "KeyboardPreview.java",
-    "KeyboardTryoutActivity.java",
+    "ChatFragment.java",
     "LoginSheet.java",
     "PageDots.java",
 )

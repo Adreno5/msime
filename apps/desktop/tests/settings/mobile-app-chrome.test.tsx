@@ -379,10 +379,19 @@ test("a touch host calls the keyboard pages by their touch names", async () => {
   expect(screen.getByRole("heading", { level: 1, name: "屏幕键盘" })).toBeTruthy();
 });
 
-// Each of the four tabs exists only where its page does, and each page is gated on the client capability behind it.
+// 每个标签页只在对应页面存在时出现，每个页面又取决于它背后的客户端能力。社区客户端在，但触屏宿主已没有「社区」标签页。
+const typingStatistics = {
+  load: vi.fn().mockResolvedValue({
+    availability: "neverWritten",
+    statistics: { enabled: false, total: 0, days: {}, detail: {} },
+  }),
+  setEnabled: vi.fn(),
+  reset: vi.fn(),
+};
+
 const allTabs = {
   account: {},
-  typingStatistics: {},
+  typingStatistics,
   communitySkins: { list: vi.fn().mockResolvedValue({ skins: [], has_more: false }) },
 };
 
@@ -406,7 +415,7 @@ test("a wide iOS host splits the 设置 tab and gives the other tabs the whole w
     const sidebar = screen.getByRole("navigation", { name: "设置分类" });
     expect(within(sidebar).getByRole("heading", { level: 2, name: "设置" })).toBeTruthy();
     expect(within(sidebar).getByRole("searchbox", { name: "搜索设置" })).toBeTruthy();
-    // The tab bar already carries these, so the split does not list them a second time.
+    // 标签栏上已经有这些，分栏不再列第二遍；触屏宿主没有「社区」页，侧栏里也没有它。
     for (const name of ["社区", "打字统计", "我的"]) {
       expect(within(sidebar).queryByRole("button", { name })).toBeNull();
     }
@@ -416,7 +425,7 @@ test("a wide iOS host splits the 设置 tab and gives the other tabs the whole w
 
     fireEvent.click(
       within(screen.getByRole("navigation", { name: "主要功能" })).getByRole("button", {
-        name: "社区",
+        name: "统计",
       }),
     );
     expect(sidebar.className).toContain("ipad:hidden");
@@ -447,7 +456,7 @@ test("a phone page collapses its large title into a compact bar once scrolled", 
 
   fireEvent.click(
     within(screen.getByRole("navigation", { name: "主要功能" })).getByRole("button", {
-      name: "社区",
+      name: "统计",
     }),
   );
   expect(
@@ -608,15 +617,6 @@ function appThemeClient() {
   return { client, change };
 }
 
-const typingStatistics = {
-  load: vi.fn().mockResolvedValue({
-    availability: "neverWritten",
-    statistics: { enabled: false, total: 0, days: {}, detail: {} },
-  }),
-  setEnabled: vi.fn(),
-  reset: vi.fn(),
-};
-
 const shell = () => document.querySelector<HTMLElement>("[data-settings-shell]")!;
 
 // 设计稿给每个 HarmonyOS 手机页面都加标题，标签页根页面也不例外；其他触屏宿主的 统计 和 我的 不加标题，它们的内容已经表明了自己是什么页面。
@@ -635,6 +635,31 @@ test("a HarmonyOS phone titles the 设置, 统计 and 我的 roots", async () =>
   renderSettings("android", {}, "typing-statistics", { typingStatistics });
   const untitled = await screen.findByRole("heading", { level: 1, name: "统计" });
   expect(untitled.parentElement?.className).toContain("max-phone:sr-only");
+});
+
+// 「对话」是标签页的根页面：鸿蒙手机照设计稿给它加大标题，但不滑入、不带返回按钮；其他触屏宿主也不再有回到「AI 辅助」的返回链接。
+test("the 对话 tab is a titled tab root with no way back to AI 辅助", async () => {
+  const chat = {
+    models: vi.fn().mockResolvedValue({ data: [], defaultModel: "" }),
+    complete: vi.fn(),
+  };
+  renderSettings("harmony", {}, undefined, { chat });
+  await settingsFormReady();
+  const bar = screen.getByRole("navigation", { name: "主要功能" });
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  const title = await screen.findByRole("heading", { level: 1, name: "AI 对话" });
+  expect(title.parentElement?.className).not.toContain("max-phone:sr-only");
+  expect(screen.queryByRole("button", { name: "返回" })).toBeNull();
+  cleanup();
+
+  renderSettings("android", {}, "chat", { chat });
+  await screen.findByRole("region", { name: "AI 对话" });
+  expect(screen.queryByRole("button", { name: "返回AI 辅助" })).toBeNull();
+  expect(
+    within(screen.getByRole("navigation", { name: "主要功能" }))
+      .getByRole("button", { name: "对话" })
+      .getAttribute("aria-current"),
+  ).toBe("page");
 });
 
 // 设计稿把手机页面叫作 皮肤、表达、开发者选项 和 反馈，桌面侧栏则叫 主题、标点与翻译、维护与诊断 和 帮助与反馈。

@@ -208,6 +208,12 @@ public final class TextPolicy {
             && !hasControl(value) && validUnicode(value);
     }
 
+    /** Return whether text is non-empty, Unicode-valid, control-free and within a UTF-8 byte bound. */
+    public static boolean boundedNonEmpty(String value, int maxBytes) {
+        return value != null && !value.isEmpty() && utf8Length(value) <= maxBytes
+            && !hasControl(value) && validUnicode(value);
+    }
+
     /** Return text with Unicode whitespace stripped, treating null as empty. */
     public static String stripped(String value) {
         return value == null ? "" : value.strip();

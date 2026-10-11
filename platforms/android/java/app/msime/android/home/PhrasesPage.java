@@ -9,10 +9,11 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import androidx.annotation.Nullable;
 import app.msime.android.CommonPhrasesStore;
+import app.msime.android.CommunityRequest;
 import app.msime.android.ViewPolicy;
 
 /**
- * 常用语页（设置、「我的」和键盘常用语面板下方的按钮都进这一页）：一组常用语，点一条修改正文，行尾一个「删除」，下面一组「添加常用语」。
+ * 常用语页（设置、「我的」和键盘常用语面板下方的按钮都进这一页）：一组常用语，点一条修改正文，行尾一个「删除」，下面一组「添加常用语」和「浏览社区短语包」（进社区短语的完整列表）。
  *
  * <p>读写全部经 {@link CommonPhrasesStore}，键盘的「常用语」面板读的是同一份，所以这里改完键盘下次打开面板就能看到。修改经 {@link CommonPhrasesStore#replace}，条目仍属于原来的来源（自己添加的或某个短语包）。
  */
@@ -69,6 +70,9 @@ public final class PhrasesPage extends DetailPage {
         if (!current.phrases().isEmpty()) list.footer("点一条常用语可以修改。");
         GroupCard add = GroupCard.add(target, null);
         add.button("添加常用语", null, "添加", this::showAddDialog);
+        // 社区短语包装进来就在这一页里；浏览和添加在社区短语的完整列表里，表达页的「发现短语」也通向那里。
+        add.nav("浏览社区短语包", "别人分享的短语包，添加后出现在这里", null,
+            () -> CommunityFragment.browse(requireContext(), CommunityRequest.Kind.PHRASE));
     }
 
     private void remove(CommonPhrasesStore.Phrase phrase) {

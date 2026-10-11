@@ -37,6 +37,17 @@ export const sliderControl =
   "block w-40 max-phone:w-32 harmony:flex harmony:h-[30px] harmony:w-[110px] harmony:items-center";
 /** A slider row's track with its current value read out after it, as the reference window's slider rows show it. */
 export const sliderWithValue = "flex items-center gap-3 harmony:gap-2.5";
+/** 整行宽的滑块（`SliderRow` 的 `wide`）：HarmonyOS 手机上标题独占一行，轨道在下一行铺满，数值跟在轨道右侧。 */
+export const sliderControlWide =
+  "block min-w-0 flex-1 harmony:flex harmony:h-[30px] harmony:items-center";
+export const sliderWithValueWide = `${sliderWithValue} w-full`;
+/** HarmonyOS 手机键盘页「尺寸」组顶部的预览：不带「预览」标签，底下一行拖动提示，和它调的滑块在同一张卡片里。 */
+export const phoneKeyboardPreview = "min-w-0 [padding:var(--p-row-pad)]";
+export const phoneKeyboardPreviewHint =
+  "m-0 mt-2.5 text-center [font-size:var(--p-sub-fs)] [color:var(--p-sub)]";
+/** 一张卡片末尾整行居中的警示文字按钮，例如「恢复默认」：不再另写标题和说明。 */
+export const centeredDangerRow =
+  "flex min-h-[var(--p-row-h)] w-full cursor-pointer items-center justify-center border-0 bg-transparent [padding:var(--p-row-pad)] [font-size:var(--p-row-fs)] text-[var(--danger-text)] active:bg-[var(--p-hover)] disabled:cursor-default disabled:opacity-50";
 /** 滑块后的数值：宽到能放下两位数字，数值变化时轨道不会移动。HarmonyOS 用次要颜色以 13px 显示在固定 46px 宽的列中，足以放下 18px 这样带单位的值。 */
 export const sliderValue =
   "min-w-[2ch] text-right tabular-nums harmony:w-[46px] harmony:shrink-0 harmony:text-[13px] harmony:text-[var(--p-sub)]";
@@ -325,10 +336,10 @@ export const collapsedTitle = (shown: boolean) =>
 // ---- the phone tab bar ----
 
 /*
- * The four bottom tabs of a touch host, shown below phone width and, on an iPad, under the split at every width. iOS and iPadOS float them in a glass capsule clear of the screen edges; Android is Material 3's 80px navigation bar; HarmonyOS is a flat 76px bar. The bottom inset clears the gesture area on each.
+ * 触屏宿主的底部标签栏（设置、对话、统计、我的），手机宽度以下显示，iPad 上在任何宽度都显示在分栏下方。各列按标签个数均分，不写死列数：宿主不提供 AI 对话时没有「对话」这一格，写死的四列会让三个标签挤在左边。iOS 和 iPadOS 把它浮在离开屏幕边缘的玻璃胶囊里；Android 是 Material 3 的 80px 导航栏；HarmonyOS 是平铺的 76px 栏。底部留出各自的手势区域。
  */
 export const mobileTabBar =
-  "hidden max-phone:order-2 max-phone:grid max-phone:shrink-0 max-phone:grid-cols-4 ios:mx-5 ios:mb-[max(0.5rem,env(safe-area-inset-bottom,0px))] ios:rounded-full ios:bg-[rgba(40,40,42,0.78)] ios:p-[5px] ios:shadow-[0_0_0_0.5px_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.5)] ios:backdrop-blur-[20px] ios:backdrop-saturate-[1.8] ios:light-theme:bg-[rgba(255,255,255,0.78)] ios:light-theme:shadow-[0_0_0_0.5px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)] android:min-h-20 android:bg-[#1d201d] android:pt-3 android:pb-[env(safe-area-inset-bottom,0px)] android:light-theme:bg-[#ebefe7] harmony:min-h-[76px] harmony:bg-[#141414] harmony:pt-2 harmony:pb-[env(safe-area-inset-bottom,0px)] harmony:light-theme:bg-[#f1f3f5] ipad:col-span-2 ipad:row-start-2 ipad:mx-5 ipad:mb-[max(0.5rem,env(safe-area-inset-bottom,0px))] ipad:grid ipad:grid-cols-4 ipad:rounded-full ipad:bg-[rgba(40,40,42,0.78)] ipad:p-[5px] ipad:shadow-[0_0_0_0.5px_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.5)] ipad:backdrop-blur-[20px] ipad:backdrop-saturate-[1.8] ipad:light-theme:bg-[rgba(255,255,255,0.78)] ipad:light-theme:shadow-[0_0_0_0.5px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)]";
+  "hidden max-phone:order-2 max-phone:grid max-phone:shrink-0 max-phone:grid-flow-col max-phone:auto-cols-fr ios:mx-5 ios:mb-[max(0.5rem,env(safe-area-inset-bottom,0px))] ios:rounded-full ios:bg-[rgba(40,40,42,0.78)] ios:p-[5px] ios:shadow-[0_0_0_0.5px_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.5)] ios:backdrop-blur-[20px] ios:backdrop-saturate-[1.8] ios:light-theme:bg-[rgba(255,255,255,0.78)] ios:light-theme:shadow-[0_0_0_0.5px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)] android:min-h-20 android:bg-[#1d201d] android:pt-3 android:pb-[env(safe-area-inset-bottom,0px)] android:light-theme:bg-[#ebefe7] harmony:min-h-[76px] harmony:bg-[#141414] harmony:pt-2 harmony:pb-[env(safe-area-inset-bottom,0px)] harmony:light-theme:bg-[#f1f3f5] ipad:col-span-2 ipad:row-start-2 ipad:mx-5 ipad:mb-[max(0.5rem,env(safe-area-inset-bottom,0px))] ipad:grid ipad:grid-flow-col ipad:auto-cols-fr ipad:rounded-full ipad:bg-[rgba(40,40,42,0.78)] ipad:p-[5px] ipad:shadow-[0_0_0_0.5px_rgba(255,255,255,0.12),0_8px_24px_rgba(0,0,0,0.5)] ipad:backdrop-blur-[20px] ipad:backdrop-saturate-[1.8] ipad:light-theme:bg-[rgba(255,255,255,0.78)] ipad:light-theme:shadow-[0_0_0_0.5px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)]";
 /** A tab: the accent when selected (Android keeps the text colour and lets the indicator carry it), the secondary text colour otherwise. iOS fills the selected tab's pill. */
 export const mobileTab = (selected: boolean) =>
   `flex min-w-0 cursor-pointer flex-col items-center border-0 bg-transparent p-0 font-medium ios:gap-px ios:rounded-full ios:pt-[5px] ios:pb-1 ios:text-[10px] android:gap-1 android:text-xs harmony:gap-0.5 harmony:text-[10px] ipad:gap-px ipad:rounded-full ipad:pt-[5px] ipad:pb-1 ipad:text-[10px] ${

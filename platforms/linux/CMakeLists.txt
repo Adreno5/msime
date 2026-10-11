@@ -250,6 +250,9 @@ if(BUILD_TESTING)
     add_test(NAME ibus-page-number-visibility
       COMMAND ibus-engine-smoke "${MSIME_ENGINE_RESOURCES}" --page-number)
     set_tests_properties(ibus-page-number-visibility PROPERTIES TIMEOUT 60)
+    add_test(NAME ibus-empty-translation
+      COMMAND ibus-engine-smoke "${MSIME_ENGINE_RESOURCES}" --empty-translation)
+    set_tests_properties(ibus-empty-translation PROPERTIES TIMEOUT 60)
     add_test(NAME ibus-caps-lock-tap
       COMMAND ibus-engine-smoke "${MSIME_ENGINE_RESOURCES}" --caps-lock)
     set_tests_properties(ibus-caps-lock-tap PROPERTIES TIMEOUT 60)

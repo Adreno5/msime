@@ -879,6 +879,28 @@ group("bounds and deduplicates asynchronous online AI candidates", () => {
   );
 });
 
+group("online candidate identity changes with provider eligibility", () => {
+  const query = {
+    generation: 1,
+    session_id: 7,
+    identity: "fixture",
+    cache_key: "ni'hao",
+    cloud_eligible: true,
+    ai_eligible: true,
+    cloud_candidates: true,
+    ai_assistant: { enabled: true, model: "fixture", candidate_limit: 2 },
+  };
+  const original = OnlineCandidatePolicy.signature(query);
+  check(
+    OnlineCandidatePolicy.signature({ ...query, cloud_eligible: false }) !== original,
+    "cloud eligibility invalidates an online request while AI remains eligible",
+  );
+  check(
+    OnlineCandidatePolicy.signature({ ...query, ai_eligible: false }) !== original,
+    "AI eligibility invalidates an online request while cloud remains eligible",
+  );
+});
+
 group("native success replies require a value", () => {
   check(NativeReplyPolicy.hasValue({}), "an object value is present");
   check(
@@ -2510,6 +2532,18 @@ group("a runtime selection that changes nothing produces no update", () => {
 });
 
 console.log("NineKeyLayout");
+
+group("TextPolicy.characters splits by code point, not by UTF-16 code unit", () => {
+  // 鸿蒙的 ArkTS 运行时上 Array.from 和展开都按码元拆，emoji 会变成两个落单的代理项；这个函数用 for...of，在那里也按字符拆。
+  const parts = TextPolicy.characters("a😊b");
+  check(parts.length === 3 && parts[1] === "😊", "an emoji is one character");
+  check(TextPolicy.characters("").length === 0, "an empty string has no characters");
+  check(!TextPolicy.hasControl("你好👋"), "an emoji is not a control character");
+  check(
+    TextPolicy.validMultiline("第一行\n😊", 100, true),
+    "a multi-line text with an emoji is valid",
+  );
+});
 
 group("the quanpin grid is three by three and sends characters, not labels", () => {
   const rows: NineKey[][] = NineKeyLayout.rows();
@@ -13695,6 +13729,50 @@ group("community skin categories filter, publish and change through the bridge",
     });
 });
 
+// 对话请求在传输层就失败（断网、连接被重置）时，鸿蒙抛的是 BusinessError 对象而不是 Error：它要变成页面不认识的 account_network，对话页写「连接失败」，而不是「聊天服务暂不可用」。
+group("a chat request that fails in transport reads as a network failure", () => {
+  let stored: string | null = null;
+  const store: AccountSessionStore = {
+    load: () => stored,
+    save: (value) => {
+      stored = value;
+    },
+    clear: () => {
+      stored = null;
+    },
+  };
+  let offline = false;
+  const transport: AccountTransport = {
+    request: async (_method, path) => {
+      if (path === "/v1/auth/login")
+        return {
+          status: 200,
+          body: JSON.stringify({
+            access_token: "a".repeat(64),
+            refresh_token: "b".repeat(64),
+            token_type: "Bearer",
+            expires_in: 3600,
+            user: { id: "u1", display_name: "Test", created_at: "2026-01-01" },
+          }),
+        };
+      if (offline) throw { code: 2300056, message: "Failure when receiving data from the peer" };
+      return { status: 404, body: "{}" };
+    },
+  };
+  const bridge = new AccountCloudBridge(transport, store);
+  void bridge
+    .handle('{"operation":"login","challenge_id":"challenge","credential":"123456"}')
+    .then(() => {
+      offline = true;
+      void bridge.handle('{"operation":"chat","chat_operation":"models"}').then((result) => {
+        check(
+          JSON.parse(result).error === "account_network",
+          "a dropped connection is a network failure",
+        );
+      });
+    });
+});
+
 group("the account assistant answers with a model list and one reply", () => {
   let stored: string | null = null;
   const store: AccountSessionStore = {
@@ -13713,8 +13791,13 @@ group("the account assistant answers with a model list and one reply", () => {
     timeoutMs?: number;
   }[] = [];
   let models = '{"data":[{"id":"fast"},{"id":"careful"}],"default_model":"careful"}';
+  // MiniMax-M3 这样的回复：带 emoji，message 里还有一个 reasoning_content。鸿蒙的 ArkTS 运行时把 emoji 按码元拆成两个落单的代理项，逐字符校验曾因此把整条回复拒掉、页面显示「聊天服务暂不可用」。
   let completion = JSON.stringify({
-    choices: [{ message: { role: "assistant", content: "第一行\n第二行" } }],
+    choices: [
+      {
+        message: { role: "assistant", content: "第一行\n第二行 👋😊", reasoning_content: "想一想" },
+      },
+    ],
   });
   const transport: AccountTransport = {
     request: async (method, path, _token, body, timeoutMs) => {
@@ -13768,7 +13851,10 @@ group("the account assistant answers with a model list and one reply", () => {
         check(reply.ok === true, "a completion is accepted");
         // A conversation is written in paragraphs. The bridge's other validators reject control
         // characters, which would have refused every multi-line answer the assistant gives.
-        check(reply.value.content === "第一行\n第二行", "newlines in a reply are content");
+        check(
+          reply.value.content === "第一行\n第二行 👋😊",
+          "newlines and emoji in a reply are content",
+        );
         const sent = calls.find((call) => call.path === "/v1/chat/completions");
         check(sent?.body?.max_tokens === 2048, "the shared request shape is sent");
         check(sent?.body?.stream === false, "and it does not ask for a stream");

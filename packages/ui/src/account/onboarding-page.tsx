@@ -118,21 +118,54 @@ function HarmonySplash({ onDone }: { onDone: () => void }) {
       <span className={onboarding.hSplashDiscBox} aria-hidden="true">
         <span className={onboarding.hSplashRipple} />
         <span className={onboarding.hSplashDisc} />
+        <span className={onboarding.hSplashDiscVeil} />
         <svg className={onboarding.hSplashLogo} viewBox="0 0 116 132">
           <path className={onboarding.hSplashFrame} d={msimeFramePath} />
+          <path className={onboarding.hSplashFrameVeil} d={msimeFramePath} />
           <path className={onboarding.hSplashStroke} d={msimeStrokePath} pathLength={1} />
         </svg>
       </span>
-      <span className={onboarding.splashName} aria-hidden="true">
-        水杉输入法
-      </span>
-      <span className={onboarding.splashTagline} aria-hidden="true">
-        METASEQUOIA IME
+      <span className={onboarding.hSplashCaption} aria-hidden="true">
+        <span className={onboarding.splashName}>水杉输入法</span>
+        <span className={onboarding.splashTagline}>METASEQUOIA IME</span>
       </span>
       <span className={onboarding.hSplashTrack} aria-hidden="true">
         <span className={onboarding.hSplashFill} />
       </span>
     </button>
+  );
+}
+
+/**
+ * 鸿蒙手机每次冷启动的开屏：和首次启动欢迎流程里的同一段动画（`HarmonySplash`），铺满屏幕，播完或点一下就结束。
+ *
+ * 宿主在页面一加载就画它，不等桥接：动画本身盖住冷启动的等待，取代原来「正在打开设置」的转圈页。桥接就绪后宿主再画一次并传入 `chrome`，系统栏换成开屏的底色；`onDone` 必须是同一个函数，否则重画时计时会从头开始。
+ *
+ * `appTheme` 是设置页将要使用的应用主题：开屏用它的季节强调色，从开屏进设置不会从一套配色硬切到另一套。桥接就绪前宿主还解析不了主题，传的是上次启动缓存下来的那份。
+ */
+export function HarmonyLaunchSplash({
+  appTheme,
+  chrome,
+  onDone,
+}: {
+  appTheme?: ResolvedAppTheme | null;
+  chrome?: HostChromeClient;
+  onDone: () => void;
+}) {
+  const dark = documentDark();
+  useHarmonyWelcomeSystemBars(chrome, appTheme ?? null, dark, true);
+  return (
+    <main
+      className={onboarding.hSplashShell}
+      aria-label="开屏"
+      data-onboarding-shell=""
+      data-mobile=""
+      data-platform="harmony"
+      data-season={seasonAttr(appTheme)}
+      style={appThemeStyle(appTheme ?? null, dark, "harmony")}
+    >
+      <HarmonySplash onDone={onDone} />
+    </main>
   );
 }
 

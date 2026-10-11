@@ -13,7 +13,7 @@ CONSUMERS = {
     "InputDialog.java": 1,
     "AiSkinPage.java": 2,
     "FeedbackPage.java": 1,
-    "KeyboardTryoutActivity.java": 1,
+    "ChatFragment.java": 1,
 }
 
 

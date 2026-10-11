@@ -54,9 +54,28 @@ if rg -n 'VariantGroup|showJapaneseVariants' \
   echo "Android must not duplicate Engine-owned Japanese kana variant tables" >&2
   exit 1
 fi
+# 偏好每秒重读一次，重读前后的键盘皮肤要按实际画出来的样子比（KeyboardSkin#displayKey，KeyboardSkinDisplayKeySmoke 覆盖它的语义）。直接比 `skin.key()` 时，渲染写回的当季配色和重读重建的 classic 基础色永远不等，跟随系统皮肤下键盘每秒整页重画一次。
+if rg -n 'previousSkin = skin\.key\(\)|previousSkin\.equals\(skin\.key\(\)\)' "$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java" \
+  || ! rg -q 'previousSkin\.equals\(skin\.displayKey\(' "$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java"; then
+  echo "Android preference reloads must compare the drawn skin (KeyboardSkin#displayKey), not skin.key()" >&2
+  exit 1
+fi
 # 日语九键的五向提示按下就显示（#6716）：0.3.1 曾把它推迟到系统长按时长之后，用户感觉每个假名都慢半拍。提示已收进被按的键里，不再需要这个延迟。
 if rg -n 'getLongPressTimeout' "$repo_root/platforms/android/java/app/msime/android/core/ImeLayoutRows.java"; then
   echo "The Japanese nine-key flick guide must show on touch-down, not after the long-press timeout" >&2
+  exit 1
+fi
+# 只改大小写时不重建键行（#6997）：重建出的新键在下一次布局前宽高为 0，Shift 之后立刻按下的字母找不到键而被丢掉。Shift、一次性大写用掉和自动大写都经 refreshLetterCase 就地改键面；字母键的气泡读按下时的键面，不能用建键时记下的那个。触发和重建之间允许夹着 `//` 注释行（Shift 处理里就有一行），不然改回 rebuildKeyRows 时这道检查认不出来。
+if rg -U -n '(consumeLetter\(\)\)\s*\{?|letterCase\.toggle\(SystemClock\.uptimeMillis\(\)\);|applyAutomatic\(next\)\))(\s*//[^\n]*)*\s*imeLetterRows\.rebuildKeyRows\(\)' \
+    "$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java" \
+  || rg -n 'showKeyPreview\(key, face\)' "$repo_root/platforms/android/java/app/msime/android/core/ImeLetterRows.java"; then
+  echo "A letter-case change must relabel the keys in place (ImeLetterRows.refreshLetterCase), not rebuild the rows" >&2
+  exit 1
+fi
+# 换应用、换页面时会话要在后台建一两秒，view 那之前是空的（#6997）：双拼提示按上次记下的方案画，不能因为 view 暂时为空就清掉，否则会话一到提示和下边距同时出现，整排字母跳一下。
+if ! rg -q 'ShuangpinKeyHintPolicy\.profileWithoutView\(' \
+    "$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java"; then
+  echo "Double-pinyin key hints must keep the remembered profile while the view is briefly missing" >&2
   exit 1
 fi
 # Hangul composition is Engine state. Android labels the Dubeolsik keys and sends their ASCII letters; a syllable table here would be a second automaton that can drift from the Engine's.
@@ -367,6 +386,15 @@ fi
 if rg -n 'optBoolean\("ok"' \
     "$repo_root/platforms/android/java/app/msime/android/home/TypingPage.java"; then
   echo "Android typing host capabilities must require a typed boolean ok field" >&2
+  exit 1
+fi
+# 输入页要有「在候选栏中显示辅助码」开关，写回当前方案那一族的 `show_in_candidate_window`，默认值和 client-core 一致（缺整个对象时双拼显示、全拼不显示，对象里缺这一项时显示）。没有它时双拼辅助码一直占着候选提示位，想看释义只能把辅助码整个关掉（#6997）。
+helpcode_body=$(rg -A 12 'if \(helpcodeOn\) \{' \
+  "$repo_root/platforms/android/java/app/msime/android/home/TypingPage.java" || true)
+if ! rg -q 'helpcode == null \? shuangpin : helpcode\.optBoolean\("show_in_candidate_window", true\)' <<< "$helpcode_body" \
+  || ! rg -q 'aux\.toggle\(shuangpin \? "在候选栏中显示双拼辅助码" : "在候选栏中显示全拼辅助码"' <<< "$helpcode_body" \
+  || ! rg -q 'saveHelpcode\(family, shuangpin, "show_in_candidate_window", checked\)' <<< "$helpcode_body"; then
+  echo "Android typing settings must offer the helpcode display switch that writes <family>.show_in_candidate_window (#6997)" >&2
   exit 1
 fi
 # The typing statistics badge reads a native dictionary count; malformed status must leave the

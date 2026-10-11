@@ -5848,7 +5848,7 @@ static void TestStyledExternalSkin(MSIMEInputController *controller, HiddenCandi
     assert(mkdtemp(temporary));
     const std::filesystem::path root(temporary);
     std::filesystem::create_directories(root / "styled" / "assets");
-    auto writeManifest = [&](const char *align) {
+    auto writeManifest = [&](const char *align, const char *lightSurface = "#FFF7FA") {
         std::ofstream manifest(root / "styled" / "skin.toml");
         manifest << R"toml(schema_version = 1
 id = "styled"
@@ -5874,7 +5874,7 @@ fit = "stretch"
 surface = "#121314"
 translation = "#9FB4E0"
 [candidate.light]
-surface = "#FFF7FA"
+surface = ")toml" << lightSurface << R"toml("
 [toolbar]
 corner_radius_dip = 5
 [toolbar.dark]
@@ -5948,6 +5948,23 @@ background = "#F4F8FF"
     NSImageView *decoration = (id)chrome.subviews.lastObject;
     assert([decoration isKindOfClass:NSImageView.class]);
     assert(std::abs(NSMidX(decoration.frame) - NSWidth(chrome.bounds) / 2) < 0.01);
+    for (NSView *child in chrome.subviews) assert(![child isKindOfClass:NSVisualEffectView.class]);
+    // 旧版皮肤格式没有材质字段；半透明表面只改变颜色的 alpha，不能隐式开启模糊。
+    writeManifest("center", "#D9D9DB99");
+    panel.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    [styled reloadSkins];
+    [controller appearanceChanged:nil];
+    chrome = (id)panel.contentView;
+    NSVisualEffectView *material = nil;
+    for (NSView *child in chrome.subviews)
+        if ([child isKindOfClass:NSVisualEffectView.class]) material = (id)child;
+    assert(material == nil);
+    // 纯透明表面同样不创建材质视图。
+    writeManifest("center", "#D9D9DB00");
+    [styled reloadSkins];
+    [controller appearanceChanged:nil];
+    chrome = (id)panel.contentView;
+    for (NSView *child in chrome.subviews) assert(![child isKindOfClass:NSVisualEffectView.class]);
     panel.appearance = nil;
     std::filesystem::remove_all(root);
 }
@@ -6780,6 +6797,7 @@ static void TestApplyCandidateTranslationSnapshotsAreReused() {
 @property(nonatomic) NSUInteger applications;
 @property(nonatomic) NSUInteger descriptorRequests;
 @property(nonatomic) BOOL rejectNextAI;
+@property(nonatomic, copy) NSString *authToken;
 // resolveOnlineCandidatesForSource: 被调用的次数；resolveApplies 时像 Host API 一样把 AI 座位换成「—」并回 applied。
 @property(nonatomic) NSUInteger resolutions;
 @property(nonatomic) BOOL resolveApplies;
@@ -6798,7 +6816,8 @@ static void TestApplyCandidateTranslationSnapshotsAreReused() {
     if ([query[@"ai_assistant"][@"provider"] isEqual:@"invalid"]) return nil;
     NSString *context = [query[@"ai_context"] isKindOfClass:NSString.class] ? query[@"ai_context"] : @"";
     return @{ @"url": @"https://synthetic.invalid/chat", @"method": @"POST",
-        @"headers": @{ @"Content-Type": @"application/json", @"Authorization": @"Bearer synthetic" },
+        @"headers": @{ @"Content-Type": @"application/json", @"Authorization":
+            [@"Bearer " stringByAppendingString:self.authToken ?: @"synthetic"] },
         @"body": @{ @"messages": @[@{ @"role": @"system", @"content": @"synthetic" },
             @{ @"role": @"user", @"content": context }] }, @"timeout_ms": @8000,
         @"connect_timeout_ms": @2500, @"max_response_bytes": @1048576 };
@@ -6992,7 +7011,7 @@ static void TestAiCacheIgnoresUserDictionaryRows() {
     [controller setValue:@{ @"candidates": @[@{ @"text": @"用户词", @"source": @1 },
         @{ @"text": @"…", @"source": @12 }] } forKey:@"view"];
     [controller synchronizeAITranslations];
-    assert(session.applications == 2 && session.descriptorRequests == 1);
+    assert(session.applications == 2 && session.descriptorRequests == 2);
     // 已经坐着 AI 候选时不再重放缓存。
     next = [session.query mutableCopy];
     next[@"generation"] = @([next[@"generation"] unsignedLongLongValue] + 1);
@@ -7024,7 +7043,7 @@ static void TestAiCandidateCacheAcrossGenerations() {
     session.query = next;
     [controller setValue:@{ @"candidates": @[@{ @"text": @"普通候选", @"source": @0 }] } forKey:@"view"];
     [controller synchronizeAITranslations];
-    assert(session.applications == 2 && session.descriptorRequests == 1 && controller.aiBatches.count == 1);
+    assert(session.applications == 2 && session.descriptorRequests == 2 && controller.aiBatches.count == 1);
     NSMutableDictionary *changedContext = [session.query mutableCopy];
     changedContext[@"generation"] = @([changedContext[@"generation"] unsignedLongLongValue] + 1);
     changedContext[@"ai_context"] = @"另一个上下文";
@@ -7034,7 +7053,38 @@ static void TestAiCandidateCacheAcrossGenerations() {
     timer = [controller valueForKey:@"aiTimer"];
     assert(timer && controller.aiBatches.count == 1);
     [timer fire];
-    assert(controller.aiBatches.count == 2 && session.descriptorRequests == 2);
+    assert(controller.aiBatches.count == 2 && session.descriptorRequests == 3);
+    [controller cancelAITranslations];
+}
+
+static void TestAiCandidateCacheDoesNotSurviveCredentialRotation() {
+    AIShortcutController *controller = [AIShortcutController alloc];
+    controller.aiBatches = [NSMutableArray array];
+    AIShortcutSession *session = [AIShortcutSession new];
+    session.authToken = @"synthetic-first";
+    session.query = @{ @"scheme": @0, @"generation": @1, @"identity": @"synthetic-ai-rotation",
+        @"query_text": @"nihao", @"cache_key": @"nihao-rotation", @"pinyin_segments": @[@"ni", @"hao"],
+        @"ai_context": @"", @"cloud_eligible": @NO, @"ai_eligible": @YES,
+        @"cloud_candidates": @YES, @"ai_assistant": @{ @"enabled": @YES, @"candidate_limit": @3 },
+        @"session_id": @1 };
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:[ShortcutClient new] forKey:@"activeClient"];
+    [controller synchronizeAITranslations];
+    [(NSTimer *)[controller valueForKey:@"aiTimer"] fire];
+    controller.aiBatches[0].reply(@[@{ @"translation": @"旧凭据候选" }]);
+    assert(session.applications == 1 && session.descriptorRequests == 1);
+
+    session.authToken = @"synthetic-second";
+    NSMutableDictionary *next = [session.query mutableCopy];
+    next[@"generation"] = @([next[@"generation"] unsignedLongLongValue] + 1);
+    session.query = next;
+    [controller setValue:@{ @"candidates": @[@{ @"text": @"本地候选", @"source": @0 }] } forKey:@"view"];
+    [controller synchronizeAITranslations];
+    assert(session.applications == 1 && session.descriptorRequests == 2);
+    NSTimer *timer = [controller valueForKey:@"aiTimer"];
+    assert(timer && controller.aiBatches.count == 1);
+    [timer fire];
+    assert(controller.aiBatches.count == 2);
     [controller cancelAITranslations];
 }
 
@@ -8855,6 +8905,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestAiPlaceholderResolvesAfterAnEmptyAnswer(); }
         @autoreleasepool { TestAiCacheIgnoresUserDictionaryRows(); }
         @autoreleasepool { TestAiCandidateCacheAcrossGenerations(); }
+        @autoreleasepool { TestAiCandidateCacheDoesNotSurviveCredentialRotation(); }
         @autoreleasepool { TestAiCandidateCacheTracksProviderSettings(); }
         @autoreleasepool { TestAiCandidateDescriptorFailureIsRetryable(); }
         @autoreleasepool { TestAiCandidateEngineDelivery(); }
@@ -9610,6 +9661,7 @@ int main(int argc, char **argv) {
             assert(styledChrome.cornerRadius == 6.0 && layoutPanel.alphaValue == 1.0);
             assert(std::abs(styledChrome.fillColor.alphaComponent - plain.surface.a * 0.5) < 0.002);
             assert(std::abs(styledChrome.strokeColor.alphaComponent - plain.border.a * 0.5) < 0.002);
+            for (NSView *child in styledChrome.subviews) assert(![child isKindOfClass:NSVisualEffectView.class]);
             scaledRow = candidateRow(NO);
             assert([scaledRow.fillColor isEqual:SkinColor(plain.selected)] && scaledRow.cornerRadius <= styledChrome.cornerRadius);
             if (MSIMECandidateButton *highlighted = candidateRow(YES)) assert([highlighted.titleColor isEqual:SkinColor(plain.selectedText)]);
