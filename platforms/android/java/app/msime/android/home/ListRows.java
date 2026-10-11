@@ -32,8 +32,7 @@ final class ListRows {
         badge.setImageResource(icon);
         ((TextView) row.findViewById(R.id.row_title)).setText(title);
         TextView detail = row.findViewById(R.id.row_value);
-        detail.setText(value);
-        ViewPolicy.setVisibilityForText(detail, value);
+        ViewPolicy.setTextAndVisibility(detail, value);
         ViewPolicy.setEnabledWithAlpha(row, action != null, 0.5f);
         ViewPolicy.bindOptionalClick(row, action);
         parent.addView(row);

@@ -214,13 +214,8 @@ public final class GroupCard {
         TextView text = ViewPolicy.trailingValue(context, "", Ui.TEXT_ROW_TITLE, ThemeColorPolicy.subText(context));
         LinearLayout.LayoutParams params = LayoutPolicy.rowGapParams(context, Ui.ROW_GAP);
         row.view.addView(text, params);
-        setText(text, value);
+        ViewPolicy.setTextAndVisibility(text, value);
         return text;
-    }
-
-    private static void setText(TextView view, @Nullable CharSequence text) {
-        view.setText(text);
-        ViewPolicy.setVisibilityForText(view, text);
     }
 
     /** 一行设置；保留各部件的引用，页面在数据变化后原地改写它们。 */
@@ -251,7 +246,7 @@ public final class GroupCard {
             LinearLayout.LayoutParams subtitleParams = LayoutPolicy.wrapParams();
             subtitleParams.topMargin = DimensionPolicy.pixels(owner.context, 1);
             texts.addView(subtitle, subtitleParams);
-            setText(subtitle, subtitleText);
+            ViewPolicy.setTextAndVisibility(subtitle, subtitleText);
             view.addView(texts, LayoutPolicy.weightedWrapParams(1f));
         }
 
@@ -267,11 +262,13 @@ public final class GroupCard {
 
         public void setTitle(CharSequence text) { title.setText(text); }
 
-        public void setSubtitle(@Nullable CharSequence text) { setText(subtitle, text); }
+        public void setSubtitle(@Nullable CharSequence text) {
+            ViewPolicy.setTextAndVisibility(subtitle, text);
+        }
 
         /** 改写行尾的值（导航行、值行、滑块行的数值标签）。 */
         public void setValue(@Nullable CharSequence text) {
-            if (value != null) setText(value, text);
+            if (value != null) ViewPolicy.setTextAndVisibility(value, text);
         }
 
         /** 开关行从代码里改状态，不触发回调。 */
