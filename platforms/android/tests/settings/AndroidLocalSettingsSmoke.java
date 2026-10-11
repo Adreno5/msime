@@ -128,6 +128,8 @@ public final class AndroidLocalSettingsSmoke {
         check(!fresh.bool(AndroidLocalSettings.TOOLBAR_TEXT_EDIT), "text edit toolbar button hidden by default");
         check(fresh.integer(AndroidLocalSettings.FLOATING_KEYBOARD_X) == 500
             && fresh.integer(AndroidLocalSettings.FLOATING_KEYBOARD_Y) == 1000, "floating position default");
+        // 物理键盘时候选栏跟随光标（#6792）：默认关，只在本机。
+        check(!fresh.bool(AndroidLocalSettings.HARDWARE_CARET_CANDIDATES), "caret candidates off by default");
         // 键盘底栏：默认开，只在本机。
         check(fresh.bool(AndroidLocalSettings.BOTTOM_BAR), "bottom bar on by default");
         // 底部留白（#6392）：默认关，老用户的键盘高度不变；只在本机。
@@ -162,6 +164,7 @@ public final class AndroidLocalSettingsSmoke {
         for (String local : new String[] {AndroidLocalSettings.INCOGNITO, AndroidLocalSettings.VOICE_CONTRIBUTE_AUDIO,
                 AndroidLocalSettings.KEYBOARD_HEIGHT_ADJUSTMENT, AndroidLocalSettings.FLOATING_KEYBOARD,
                 AndroidLocalSettings.FLOATING_KEYBOARD_X, AndroidLocalSettings.FLOATING_KEYBOARD_Y,
+                AndroidLocalSettings.HARDWARE_CARET_CANDIDATES,
                 AndroidLocalSettings.TOOLBAR_FLOATING, AndroidLocalSettings.TOOLBAR_TEXT_EDIT, AndroidLocalSettings.BOTTOM_BAR, AndroidLocalSettings.BOTTOM_PADDING,
                 AndroidLocalSettings.DEVELOPER_DEBUG_OVERLAY,
                 AndroidLocalSettings.DEVELOPER_LOG_LEVEL, AndroidLocalSettings.DEVELOPER_INPUT_LOG,

@@ -324,8 +324,10 @@ public final class MSIMEInputService extends InputMethodService {
     private int floatingY = FloatingKeyboardPolicy.DEFAULT_Y_FRACTION;
     /** 浮动面板顶部的拖动条，只在浮动时显示。 */
     FloatingKeyboardBar floatingBar;
-    /** 上一次套到窗口上的是不是浮动布局；起初是系统默认的停靠布局。 */
+    /** 上一次套到窗口上的是不是浮动布局（浮动键盘或跟随光标的候选栏）；起初是系统默认的停靠布局。 */
     private boolean floatingLayoutApplied;
+    /** 上一次套上的浮动布局是不是跟随光标的候选栏：它和浮动键盘的外框宽度、拖动条不同，在两者之间切换也要重新套。 */
+    private boolean caretLayoutApplied;
     /** 第一次浮动前窗口与系统 inputArea 原来的高度，停靠时原样恢复；{@link Integer#MIN_VALUE} 表示还没记下。 */
     private int dockedWindowHeight = Integer.MIN_VALUE;
     private int dockedInputAreaHeight = Integer.MIN_VALUE;
@@ -336,6 +338,29 @@ public final class MSIMEInputService extends InputMethodService {
     /** 窗口的系统栏内边距（像素），浮动时把面板限制在状态栏与导航栏之间。 */
     private final android.graphics.Rect systemBarInsets = new android.graphics.Rect();
     private final int[] floatingLocation = new int[2];
+    /** 「物理键盘时候选栏跟随光标」（本地设置 HARDWARE_CARET_CANDIDATES，{@link CaretCandidatePolicy}）。 */
+    boolean caretCandidates;
+    /** 向哪个 InputConnection 要过光标位置（`requestCursorUpdates`）；换了输入框或不再需要时重新要或撤回。 */
+    private InputConnection caretAnchorConnection;
+    /** 这个输入框答应报告光标位置（`requestCursorUpdates` 返回真）；拒绝的输入框候选栏照旧停在底部。 */
+    private boolean caretAnchorsReported;
+    /** 最近一次收到的光标位置（屏幕坐标，像素）：有组字时取组字第一个字的外框，否则取插入点。 */
+    private boolean caretAnchorKnown;
+    private float caretAnchorLeft;
+    private float caretAnchorTop;
+    private float caretAnchorBottom;
+    /** 刚要过光标位置，还在等第一次报告（{@link CaretCandidatePolicy#ANCHOR_WAIT_MS}）；等的期间要显示的候选栏先不显示，不退回底部。 */
+    private boolean caretAnchorPending;
+    /** 等第一次报告的期限到了：还没收到就不再等，下一次 render 让要显示的候选栏退回底部。 */
+    private final Runnable caretAnchorWaitExpired = () -> {
+        caretAnchorPending = false;
+        if (keyboardRoot != null && !caretAnchorKnown) render();
+    };
+    /** 这一次因为显示候选栏时还不知道光标在哪儿而退回底部（{@link CaretCandidatePolicy#docked}）。 */
+    private boolean caretDocked;
+    /** 上一次 render 时候选栏（组字、候选或提示）是否该显示，供光标位置回调判断此刻是否空闲。 */
+    private boolean caretStripShown;
+    private final int[] caretRootLocation = new int[2];
     /** 功能面板上直接切换的三项：模糊音（共享偏好）、单手模式（off / left / right）与隐私模式（本地设置）。 */
     boolean fuzzyPinyinEnabled;
     String oneHandedMode = "off";
@@ -1243,6 +1268,7 @@ public final class MSIMEInputService extends InputMethodService {
         imeBottomRow.resetSpaceCursor();
         stop(false);
         connection = getCurrentInputConnection();
+        resetCaretAnchor();
         selectionEcho.reset(info == null ? -1 : info.initialSelStart,
             info == null ? -1 : info.initialSelEnd);
         ensureCandidateTranslationStore();
@@ -1414,6 +1440,7 @@ public final class MSIMEInputService extends InputMethodService {
         schedulePersonalDictionarySynchronization(false);
         scheduleDictionarySnapshotProcessing();
         connection = null;
+        resetCaretAnchor();
         selectionEcho.reset(-1, -1);
         currentDocumentIdentifier = 0;
         super.onFinishInput();
@@ -1460,6 +1487,9 @@ public final class MSIMEInputService extends InputMethodService {
         hardwareKeyboardUserExpanded = HardwareKeyboardModePolicy.userExpandedAfterConfiguration(
             hardwareKeyboardUserExpanded, hardwareKeyboardAttached, attached);
         hardwareKeyboardAttached = attached;
+        // 旋转、分屏后光标在屏幕上的位置变了：让编辑器立即重报一次，候选栏先按旧位置夹在新窗口里，新位置到了再挪过去。
+        if (caretAnchorsAvailable())
+            connection.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
         JSONObject preferences = preferencesSnapshot == null ? null
             : preferencesSnapshot.optJSONObject("preferences");
         KeyboardSkin next = keyboardSkin(preferences);
@@ -1890,6 +1920,7 @@ public final class MSIMEInputService extends InputMethodService {
         toolbarFloating = localSettings.bool(AndroidLocalSettings.TOOLBAR_FLOATING);
         toolbarTextEdit = localSettings.bool(AndroidLocalSettings.TOOLBAR_TEXT_EDIT);
         floatingKeyboard = localSettings.bool(AndroidLocalSettings.FLOATING_KEYBOARD);
+        caretCandidates = localSettings.bool(AndroidLocalSettings.HARDWARE_CARET_CANDIDATES);
         // 拖动进行中不让重读覆盖手指下的位置；松手后的保存会把它写回文件。
         if (!floatingDragging) {
             floatingX = localSettings.integer(AndroidLocalSettings.FLOATING_KEYBOARD_X);
@@ -6836,12 +6867,12 @@ public final class MSIMEInputService extends InputMethodService {
         keyboardSurface.addOnLayoutChangeListener((changed, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> {
             if (inlineHeightBar != null) inlineHeightBar.setHeightPixels(bottom - top);
-            // 面板变高变窄（换布局、调高度、旋转）后按存着的千分比重新摆，保证仍在窗口里。
-            if (floatingDrawn()) positionFloatingKeyboard();
+            // 面板变高变窄（换布局、调高度、旋转）后按存着的千分比重新摆，保证仍在窗口里；跟随光标的候选栏换了内容、变了高度后同样按光标重新摆。
+            if (overlayDrawn()) positionKeyboardSurface();
         });
         keyboardRoot.addOnLayoutChangeListener((changed, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> {
-            if (floatingDrawn()) positionFloatingKeyboard();
+            if (overlayDrawn()) positionKeyboardSurface();
         });
         imeStyler.applyKeyboardSurfaceGeometry();
         LinearLayout keyboard = LayoutPolicy.column(this);
@@ -6850,7 +6881,7 @@ public final class MSIMEInputService extends InputMethodService {
             imeBottomBar.readInsets(insets);
             systemBarInsets.set(imeBottomBar.insets());
             imeBottomBar.apply((LinearLayout) target);
-            if (floatingDrawn()) positionFloatingKeyboard();
+            if (overlayDrawn()) positionKeyboardSurface();
             return insets;
         });
         keyboardSurface.addView(keyboard, LayoutPolicy.frameMatchParentParams());
@@ -7417,15 +7448,27 @@ public final class MSIMEInputService extends InputMethodService {
         return FloatingKeyboardPolicy.active(floatingKeyboard, hardwareKeyboardMode);
     }
 
+    /** 候选栏此刻是否跟随光标（{@link CaretCandidatePolicy#active}）：外接键盘的候选条模式里、开关打开且这个输入框报告光标位置时。 */
+    boolean caretCandidatesDrawn() {
+        return CaretCandidatePolicy.active(caretCandidates, hardwareKeysCollapsed(), caretAnchorsAvailable(), caretDocked);
+    }
+
+    /** 键盘外框此刻是否悬在应用上面（浮动键盘或跟随光标的候选栏）：输入法窗口铺满、根视图透明、只有外框接收触摸。两者互斥：浮动键盘在候选条模式里不生效。 */
+    boolean overlayDrawn() {
+        return floatingDrawn() || caretCandidatesDrawn();
+    }
+
     /**
-     * 把浮动 / 停靠套到输入法窗口上。浮动时窗口、系统的 inputArea 与键盘根视图都铺满屏幕（根视图透明，见 ImeStyler.applySkin），键盘外框缩窄成一块面板，{@link #onComputeInsets} 只把面板算作可触摸区域、内容区不占高度，所以应用既不被顶起也不被压缩，面板外的触摸落到应用上。停靠时把窗口和 inputArea 恢复成第一次浮动前的高度。
+     * 把浮动 / 停靠套到输入法窗口上。浮动（以及候选栏跟随光标）时窗口、系统的 inputArea 与键盘根视图都铺满屏幕（根视图透明，见 ImeStyler.applySkin），键盘外框缩窄成一块面板，{@link #onComputeInsets} 只把面板算作可触摸区域、内容区不占高度，所以应用既不被顶起也不被压缩，面板外的触摸落到应用上。停靠时把窗口和 inputArea 恢复成第一次浮动前的高度。
      *
      * @param force 系统重建了窗口里的布局（{@link #setInputView}、{@link #updateFullscreenMode}）时为真，状态没变也重新套一遍
      */
     private void applyFloatingLayout(boolean force) {
-        boolean floating = floatingDrawn();
-        if (!force && floating == floatingLayoutApplied) return;
+        boolean caret = caretCandidatesDrawn();
+        boolean floating = caret || floatingDrawn();
+        if (!force && floating == floatingLayoutApplied && caret == caretLayoutApplied) return;
         floatingLayoutApplied = floating;
+        caretLayoutApplied = caret;
         android.app.Dialog dialog = getWindow();
         android.view.Window window = dialog == null ? null : dialog.getWindow();
         if (window != null) {
@@ -7457,10 +7500,11 @@ public final class MSIMEInputService extends InputMethodService {
                 keyboardRoot.setLayoutParams(params);
             }
         }
-        if (floatingBar != null) ViewPolicy.setVisible(floatingBar, floating);
+        // 拖动条只属于浮动键盘；跟随光标的候选栏由光标位置决定，不能拖。
+        if (floatingBar != null) ViewPolicy.setVisible(floatingBar, floating && !caret);
         imeStyler.applyKeyboardSurfaceGeometry();
         if (imeFrame.keyboard != null) imeFrame.keyboard.requestApplyInsets();
-        positionFloatingKeyboard();
+        positionKeyboardSurface();
     }
 
     @Override public void setInputView(View view) {
@@ -7475,12 +7519,12 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 浮动时：内容区与可见区都从窗口底边算起（应用不让出高度），只有面板接收触摸。停靠时用系统默认的计算。
+     * 浮动时：内容区与可见区都从窗口底边算起（应用不让出高度），只有面板接收触摸。停靠时用系统默认的计算。跟随光标的候选栏同样如此；它空闲时不显示，可触摸区域为空，所有触摸都落到应用上。
      */
     @Override public void onComputeInsets(InputMethodService.Insets outInsets) {
         super.onComputeInsets(outInsets);
         // 浮动时 inputArea 铺满窗口，系统默认的算法会把整个窗口算成键盘、把应用压没，所以这里总要覆盖；面板还没布局时可触摸区域为空。
-        if (!floatingDrawn() || keyboardSurface == null) return;
+        if (!overlayDrawn() || keyboardSurface == null) return;
         android.app.Dialog dialog = getWindow();
         android.view.Window window = dialog == null ? null : dialog.getWindow();
         if (window == null) return;
@@ -7489,6 +7533,10 @@ public final class MSIMEInputService extends InputMethodService {
         outInsets.visibleTopInsets = height;
         keyboardSurface.getLocationInWindow(floatingLocation);
         outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION;
+        if (keyboardSurface.getVisibility() != View.VISIBLE) {
+            outInsets.touchableRegion.setEmpty();
+            return;
+        }
         outInsets.touchableRegion.set(floatingLocation[0], floatingLocation[1],
             floatingLocation[0] + keyboardSurface.getWidth(), floatingLocation[1] + keyboardSurface.getHeight());
     }
@@ -7515,6 +7563,120 @@ public final class MSIMEInputService extends InputMethodService {
             + FloatingKeyboardPolicy.offset(floatingX, floatingFreeWidth()));
         keyboardSurface.setTranslationY(systemBarInsets.top
             + FloatingKeyboardPolicy.offset(floatingY, floatingFreeHeight()));
+    }
+
+    /** 按当前布局摆放键盘外框：跟随光标的候选栏按光标摆，其余情况交给浮动键盘（停靠时清掉平移）。 */
+    void positionKeyboardSurface() {
+        if (caretCandidatesDrawn()) positionCaretCandidates();
+        else positionFloatingKeyboard();
+    }
+
+    /**
+     * 把候选栏摆到光标旁（{@link CaretCandidatePolicy#x} / {@link CaretCandidatePolicy#y}）：光标的屏幕坐标换算成根视图里的坐标，范围是系统栏之间的区域，所以旋转、分屏或窗口变化后仍在窗口里。还没收到光标位置时候选栏不显示，先按底边居中摆好。
+     */
+    private void positionCaretCandidates() {
+        if (keyboardSurface == null || keyboardRoot == null) return;
+        keyboardRoot.getLocationOnScreen(caretRootLocation);
+        float left = caretAnchorKnown ? caretAnchorLeft - caretRootLocation[0] : Float.NaN;
+        float top = caretAnchorKnown ? caretAnchorTop - caretRootLocation[1] : Float.NaN;
+        float bottom = caretAnchorKnown ? caretAnchorBottom - caretRootLocation[1] : Float.NaN;
+        int x = CaretCandidatePolicy.x(left, keyboardSurface.getWidth(), systemBarInsets.left,
+            keyboardRoot.getWidth() - systemBarInsets.right);
+        int y = CaretCandidatePolicy.y(top, bottom, keyboardSurface.getHeight(), systemBarInsets.top,
+            keyboardRoot.getHeight() - systemBarInsets.bottom, pixels(CaretCandidatePolicy.GAP_DP));
+        keyboardSurface.setTranslationX(x);
+        keyboardSurface.setTranslationY(y);
+    }
+
+    /** 当前输入框是否答应报告光标位置：要过位置的正是此刻的 InputConnection，且它没有拒绝。 */
+    private boolean caretAnchorsAvailable() {
+        return caretAnchorsReported && caretAnchorConnection != null && caretAnchorConnection == connection;
+    }
+
+    /** 换输入框或离开输入框：上一个输入框的光标位置和「这一次退回底部」都不再适用，下一次 render 重新要位置。 */
+    private void resetCaretAnchor() {
+        main.removeCallbacks(caretAnchorWaitExpired);
+        caretAnchorConnection = null;
+        caretAnchorsReported = false;
+        caretAnchorKnown = false;
+        caretAnchorPending = false;
+        caretDocked = false;
+    }
+
+    /**
+     * 按需向当前输入框要光标位置（{@link CaretCandidatePolicy}）：开关打开、走引擎的输入框、配置报告接着实体键盘或已在候选条模式时，要求持续报告（`CURSOR_UPDATE_MONITOR`）并立即报一次（`CURSOR_UPDATE_IMMEDIATE`）；不再需要时撤回，免得编辑器每挪一次光标都白算一遍。要在实体键盘第一次按下之前就要：那一下同时开始组字，到那时才要，位置一定来不及，这一次的候选栏就会退回底部。每次 render 开头调用，状态没变时什么也不做。
+     */
+    private void synchronizeCursorUpdates() {
+        InputConnection current = connection;
+        boolean wanted = caretCandidates && current != null && EditorPolicy.useEngine(editorInputType)
+            && (hardwareKeyboardAttached || hardwareKeyboardMode);
+        boolean requested = caretAnchorConnection != null && caretAnchorConnection == current;
+        if (wanted == requested) return;
+        if (requested) current.requestCursorUpdates(0);
+        resetCaretAnchor();
+        if (!wanted) return;
+        caretAnchorConnection = current;
+        caretAnchorsReported = current.requestCursorUpdates(
+            InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
+        caretAnchorPending = caretAnchorsReported;
+        if (caretAnchorPending) main.postDelayed(caretAnchorWaitExpired, CaretCandidatePolicy.ANCHOR_WAIT_MS);
+    }
+
+    /**
+     * 编辑器报来光标位置（{@link #synchronizeCursorUpdates} 要的）：有组字时取组字第一个字的外框，否则取插入点，经 `getMatrix()` 换成屏幕坐标记下，候选栏跟着挪。这一次因为没有位置退回了底部的，空闲时回到光标旁（{@link CaretCandidatePolicy#dockedAfterAnchor}）。
+     */
+    @Override public void onUpdateCursorAnchorInfo(android.view.inputmethod.CursorAnchorInfo info) {
+        super.onUpdateCursorAnchorInfo(info);
+        if (info == null || !caretAnchorsAvailable()) return;
+        int composingStart = info.getComposingTextStart();
+        android.graphics.RectF character = composingStart < 0 ? null : info.getCharacterBounds(composingStart);
+        android.graphics.RectF bounds;
+        if (character != null) {
+            bounds = new android.graphics.RectF(character);
+        } else {
+            float x = info.getInsertionMarkerHorizontal();
+            // 这一次既没有组字外框也没有插入点（编辑器还没排版好）：保留上一次的位置。
+            if (Float.isNaN(x)) return;
+            bounds = new android.graphics.RectF(x, info.getInsertionMarkerTop(), x, info.getInsertionMarkerBottom());
+        }
+        info.getMatrix().mapRect(bounds);
+        main.removeCallbacks(caretAnchorWaitExpired);
+        caretAnchorPending = false;
+        caretAnchorKnown = true;
+        caretAnchorLeft = bounds.left;
+        caretAnchorTop = bounds.top;
+        caretAnchorBottom = bounds.bottom;
+        if (keyboardRoot == null) return;
+        boolean docked = CaretCandidatePolicy.dockedAfterAnchor(caretDocked, caretStripShown);
+        if (docked != caretDocked) {
+            // 回到光标旁要换窗口布局和根视图底色，走一遍完整的 render。
+            caretDocked = docked;
+            render();
+            return;
+        }
+        // 等到第一次报告时候选栏才显示出来；此后只是挪位置。
+        applyCaretCandidates(caretStripShown);
+    }
+
+    /**
+     * 按候选栏该不该显示（组字、候选或提示）更新跟随光标的状态，每次 render 和每次收到光标位置时调用：要显示而既不知道光标在哪儿、也不在等第一次报告时，这一次退回底部并立即换成停靠布局；跟随光标时候选栏只在有内容且已知位置时显示（不显示时仍占着布局，位置可以先算好），显示时摆到光标旁。
+     */
+    private void applyCaretCandidates(boolean stripShown) {
+        caretStripShown = stripShown;
+        boolean following = caretCandidates && hardwareKeysCollapsed() && caretAnchorsAvailable();
+        boolean docked = CaretCandidatePolicy.docked(caretDocked, following, stripShown, caretAnchorKnown,
+            caretAnchorPending);
+        if (docked != caretDocked) {
+            caretDocked = docked;
+            applyFloatingLayout(false);
+            imeBottomBar.apply(imeFrame.keyboard);
+        }
+        if (keyboardSurface == null) return;
+        boolean caret = caretCandidatesDrawn();
+        int visibility = CaretCandidatePolicy.surfaceShown(caret, stripShown, caretAnchorKnown)
+            ? View.VISIBLE : View.INVISIBLE;
+        if (keyboardSurface.getVisibility() != visibility) keyboardSurface.setVisibility(visibility);
+        if (caret) positionCaretCandidates();
     }
 
     private void startFloatingDrag() {
@@ -7675,7 +7837,9 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     void render() {
-        // 浮动开关或外接键盘的候选条模式变了：先把窗口换成对应的布局，下面判断分离式键盘、单手模式时用的是新状态。
+        // 候选栏跟随光标要先知道这个输入框报不报告光标位置。
+        synchronizeCursorUpdates();
+        // 浮动开关、外接键盘的候选条模式或候选栏跟随光标变了：先把窗口换成对应的布局，下面判断分离式键盘、单手模式时用的是新状态。
         applyFloatingLayout(false);
         // 底栏随本地设置、浮动、外接键盘的候选条模式和旋转出现或消失。
         imeBottomBar.apply(imeFrame.keyboard);
@@ -7842,6 +8006,7 @@ public final class MSIMEInputService extends InputMethodService {
         }
         boolean keysCollapsed = hardwareKeysCollapsed();
         imeFrame.setKeysCollapsed(keysCollapsed);
+        applyCaretCandidates(!idle || hasDiagnostic);
         // 候选条模式里空闲时工具栏总要显示：展开键在上面，「显示方式：隐藏」时整副键盘会只剩导航栏那一截。
         boolean toolbarRow = !heightMode && idle && !hasDiagnostic && (!toolbarHidden || keysCollapsed);
         // 开始打字就收起「最近复制」：用户已经在输入别的内容了。

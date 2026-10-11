@@ -206,13 +206,13 @@ final class ImeBottomBar {
     }
 
     /**
-     * 按当前状态给键盘列套底部内边距并摆放底栏：浮动时四边都不留；停靠时留出系统栏，底栏画着时底部再加上底栏和它下面让出的手势区，底栏不画而「底部留白」开着时再加一段同高的空白。insets 变化和每次 render 都调用，状态没变时不触发重新布局。
+     * 按当前状态给键盘列套底部内边距并摆放底栏：浮动（以及候选栏跟随光标）时四边都不留；停靠时留出系统栏，底栏画着时底部再加上底栏和它下面让出的手势区，底栏不画而「底部留白」开着时再加一段同高的空白。insets 变化和每次 render 都调用，状态没变时不触发重新布局。
      *
      * @param keyboard 键盘的竖向一列
      */
     void apply(LinearLayout keyboard) {
         if (keyboard == null) return;
-        if (s.floatingDrawn()) {
+        if (s.overlayDrawn()) {
             if (bar != null) ViewPolicy.hide(bar);
             ViewPolicy.setPaddingIfChanged(keyboard, 0, 0, 0, 0);
             return;
