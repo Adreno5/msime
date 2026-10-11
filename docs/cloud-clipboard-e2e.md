@@ -111,7 +111,7 @@
 
 ### 不变的接口
 
-`DELETE /v1/users/me/clipboard`（清空）、`DELETE /v1/users/me/clipboard/{id}`、`PUT /v1/users/me/clipboard/{id}/pin`、`PUT /v1/users/me/clipboard/retention` 的格式不变。`PUT /v1/users/me/clipboard/settings` 关闭云剪贴板时，除了条目，还会删除密钥、封装和全部设备登记。
+`DELETE /v1/users/me/clipboard`（清空）、`DELETE /v1/users/me/clipboard/{id}`、`PUT /v1/users/me/clipboard/{id}/pin`、`PUT /v1/users/me/clipboard/retention` 的格式不变。`PUT /v1/users/me/clipboard/settings` 关闭云剪贴板时，除了条目，还会删除密钥、封装和全部设备登记；`DELETE /v1/users/me/data` 选了剪贴板时同样删除这四样。
 
 ### 迁移
 
