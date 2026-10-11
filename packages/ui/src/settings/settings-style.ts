@@ -236,9 +236,10 @@ export const windowIcon =
   "block size-[9px] h-2.5 object-contain [pointer-events:none] light-theme:[filter:invert(1)_brightness(0.2)] linux:size-2 linux:h-2";
 
 /*
- * macOS has no caption of its own here: the traffic lights sit over the top of the sidebar, and the page names itself in a 52px toolbar that stays at the top of the content as it scrolls, over a blurred copy of what passes beneath. Both are drag regions. The lights keep the toolbar's left edge clear when the window is narrow enough to drop the sidebar.
+ * macOS has no caption of its own here: the traffic lights sit over the top of the sidebar, and the page names itself in a 52px toolbar that stays at the top of the content as it scrolls, over a blurred copy of what passes beneath. Both are drag regions. The lights keep the toolbar's left edge clear when the window is narrow enough to drop the sidebar. The sidebar itself scrolls, so pin its drag row or navigation slides under the traffic lights (#7186).
  */
-export const macosDragRow = "-mx-3 h-[52px] shrink-0";
+export const macosDragRow =
+  "sticky top-0 z-10 -mx-3 h-[52px] shrink-0 bg-[rgba(46,46,48,0.96)] light-theme:bg-[rgba(232,232,234,0.96)]";
 export const macosToolbar =
   "sticky top-0 z-10 flex h-[52px] shrink-0 items-center gap-3.5 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(31,31,33,0.82)] px-5 backdrop-blur-[20px] backdrop-saturate-[1.8] select-none light-theme:border-[rgba(0,0,0,0.07)] light-theme:bg-[rgba(242,242,244,0.82)] max-phone:pl-[88px] [&>h1]:m-0 [&>h1]:min-w-0 [&>h1]:truncate [&>h1]:text-[15px] [&>h1]:font-bold";
 
