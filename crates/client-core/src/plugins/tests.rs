@@ -2211,9 +2211,22 @@ fn helpcode_tables_are_bounded_and_load_as_codes() {
 }
 
 #[test]
-fn helpcode_parser_reserves_its_bounded_entry_capacity() {
-    let entries = helpcode_pack::parse_table("你=ni\n".as_bytes(), "table.txt").unwrap();
-    assert_eq!(entries.len(), 1);
+fn helpcode_parser_reserves_capacity_from_input_size() {
+    for (input, expected_len) in [("é=a", 1), ("é=a\n", 1), ("é=a\nê=b", 2)] {
+        let input = input.as_bytes();
+        let entries = helpcode_pack::parse_table(input, "table.txt").unwrap();
+        assert_eq!(entries.len(), expected_len);
+        assert_eq!(
+            entries.capacity(),
+            (input.len().saturating_add(1) / 5).min(helpcode_pack::MAX_ENTRIES)
+        );
+    }
+
+    let full: String = (0..helpcode_pack::MAX_ENTRIES)
+        .map(|index| format!("{}=n\n", char::from_u32(0x4e00 + index as u32).unwrap()))
+        .collect();
+    let entries = helpcode_pack::parse_table(full.as_bytes(), "table.txt").unwrap();
+    assert_eq!(entries.len(), helpcode_pack::MAX_ENTRIES);
     assert_eq!(entries.capacity(), helpcode_pack::MAX_ENTRIES);
 }
 
