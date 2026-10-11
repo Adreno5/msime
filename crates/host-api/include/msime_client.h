@@ -84,7 +84,7 @@ char *msime_client_community_moderation(const uint8_t *request, size_t length);
 /* Google 登录：由宿主自己监听回环端口、打开系统浏览器、经自己的 HTTPS 栈申请 challenge 并提交授权码（鸿蒙）。这里给出与桌面端相同的判定。Request 是 UTF-8 JSON，最多 32 KiB。
  * {operation:"target",port}: port 是宿主在 127.0.0.1 上监听的端口（>=1024）。Value {target}: 向 POST /v1/auth/challenges 发 {provider:"google",target,purpose:"login"} 时用的回跳地址。
  * {operation:"plan",authorization_url,target,expires_in}: 后端返回的 authorization_url 与 expires_in。Value {state,wait_ms,max_request_bytes,io_timeout_ms}: 链接通过校验，可以用系统浏览器打开；最多等 wait_ms 毫秒；每个连接最多读 max_request_bytes 字节、最多 io_timeout_ms 毫秒拿到请求头，超出就以 head:null 回复并关掉。链接不是指向这个监听的 Google 授权链接、或 challenge 太短时返回 account_unavailable，不要打开它。
- * {operation:"reply",head,state}: head 是一个连接读到的请求头（到第一个空行为止，含），没读到完整请求头时为 null；state 是 plan 给的。Value {outcome,code?,error?,response}: 把 response 原样写回这个连接再关闭。outcome 为 ignored 时继续等下一个连接；code 时用 POST /v1/auth/login {challenge_id,credential:code} 完成登录；failed 时结束登录，error 是 account_cancelled（用户在 Google 页面拒绝）或 account_unavailable。 */
+ * {operation:"reply",head,state,return_link?}: head 是一个连接读到的请求头（到第一个空行为止，含），没读到完整请求头时为 null；state 是 plan 给的；return_link 可省略，是宿主注册的、能把应用拉回前台的 `scheme://路径` 链接（如鸿蒙的 msime://auth/google），回跳页据此画「回到水杉输入法」按钮，形状不合格时不画，回复照常。Value {outcome,code?,error?,response}: 把 response 原样写回这个连接再关闭。outcome 为 ignored 时继续等下一个连接；code 时用 POST /v1/auth/login {challenge_id,credential:code} 完成登录；failed 时结束登录，error 是 account_cancelled（用户在 Google 页面拒绝）或 account_unavailable。 */
 char *msime_client_google_loopback(const uint8_t *request, size_t length);
 /* options is a readable UTF-8 buffer of length bytes; maximum 1 MiB.
  * Object: api_version=1, resources/user_data/cache/dictionaries (absolute paths),
