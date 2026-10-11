@@ -254,7 +254,7 @@ mod desktop {
             }
         }
 
-        /// 按记下的操作排好当前列表：可见行里，锁定的座位不动，其余座位先放插件点名的行（按优先次序），再放没点名的行（保持原来的相对顺序）；被隐藏的行按原来的顺序排在最后。
+        /// 按记下的操作排好当前列表：可见行里，锁定的座位不动，其余座位先放插件点名的行（按优先次序），再放没点名的行（保持原来的相对顺序）；被隐藏的行按引擎原来的次序排在最后。
         fn arrange_candidates(&mut self, ready: bool) {
             if !ready || (self.plugins.order.is_empty() && self.plugins.hidden.is_empty()) {
                 self.plugins.hidden_rows = 0;
@@ -305,7 +305,10 @@ mod desktop {
                     order.push(row);
                 }
             }
-            order.extend((0..count).filter(|seat| hidden[*seat]));
+            // 隐藏的行按引擎原来的次序排：末尾里的位置变动（落定重排提上来一行隐藏行之类）不改变座位顺序，不会被当成可见行挪动过。
+            let mut tail: Vec<usize> = (0..count).filter(|seat| hidden[*seat]).collect();
+            tail.sort_unstable_by_key(|seat| engine_index(*seat));
+            order.extend(tail);
             // 一个排列，否则什么都不动：缺一个或重一个下标都会悄悄丢掉候选。
             debug_assert_eq!(order.len(), count);
             if order.len() != count {

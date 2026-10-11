@@ -539,6 +539,33 @@ fn side_channel_calls_replay_by_identity_without_running_the_transform() {
     assert!(harness.shown().contains(&"丙".to_owned()));
 }
 
+/// 落定重排提上来的是一行隐藏行时，可见的行一行没动：不算挪动，高亮留在原处，旧的候选 ID 仍然有效。
+#[test]
+fn a_settled_rerank_that_only_reshuffles_hidden_rows_is_not_a_move() {
+    let mut engine = TransformEngine::new(&["甲", "乙", "丙", "丁"]);
+    engine.sources = vec![LATTICE_SOURCE; 4];
+    let mut harness = Harness::new(engine, vec![ops(&[], &[2, 3], &[])]);
+    let model = favouring_model(&['甲', '乙', '丙', '丁'], &['丁']);
+    harness
+        .runtime
+        .set_settled_reranker(Some(Reranker::new(std::sync::Arc::new(model))));
+    harness.key(b'a');
+    harness.runtime.dispatch(Action::NextCandidate).unwrap();
+    assert_eq!(harness.shown(), ["甲", "乙"]);
+    assert_eq!(harness.runtime.highlighted, 1);
+    let generation = harness.runtime.generation();
+    let epoch = harness.runtime.candidates_epoch();
+    let order = harness.runtime.seat_order();
+
+    assert!(!harness.runtime.rerank_settled());
+    assert_eq!(harness.shown(), ["甲", "乙"]);
+    assert_eq!(harness.runtime.highlighted, 1);
+    assert_eq!(harness.runtime.generation(), generation);
+    assert_eq!(harness.runtime.candidates_epoch(), epoch);
+    assert_eq!(harness.runtime.seat_order(), order);
+    assert_eq!(harness.calls(), 1);
+}
+
 #[test]
 fn expanding_inside_a_dispatch_runs_the_transform_again() {
     let mut engine = TransformEngine::new(&["甲", "乙", "丙", "丁"]);
