@@ -388,6 +388,18 @@ void candidate_mailbox_tests() {
     require(typed->x == 100 && typed->y == 100 && typed->caret_anchor_known &&
             typed->caret_anchor_x == -200 && typed->caret_anchor_y == 300);
   }
+  // 释义或云候选到达时整个展示按 Engine 视图重建，锚点也要跟着留下：真机上打开英文释义后，提示每次都退到了屏幕下方居中。
+  mailbox.translations(relaunched, {{"session", 1},
+                                    {"generation", 215},
+                                    {"focused", true},
+                                    {"editing_text", "U4"},
+                                    {"preedit", "U4"},
+                                    {"candidates", nlohmann::json::array()}});
+  {
+    const auto glossed = mailbox.snapshot(gate);
+    require(glossed->caret_anchor_known && glossed->caret_anchor_x == -200 &&
+            glossed->caret_anchor_y == 300);
+  }
   const auto anchored_again = activate(replacement, 6);
   require(publish(anchored_again, 216));
   require(!mailbox.snapshot(gate)->caret_anchor_known);

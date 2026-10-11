@@ -144,10 +144,17 @@ private:
       const bool game_host = latest_->game_host;
       // Tab 预选的释义列在 ReplyComposer 里活到下一个按键，释义或云候选在这之间送到时下划线不能丢；高亮候选已经没有那一列时就不画了，上屏时 ReplyComposer 也按这条规则判断。
       const int armed_gloss_column = latest_->armed_gloss_column;
+      // Show/Move 报过的组字锚点同样属于原有的展示；释义或云候选一到就把它丢掉的话，输入模式提示会找不到光标。
+      const bool caret_anchor_known = latest_->caret_anchor_known;
+      const int caret_anchor_x = latest_->caret_anchor_x;
+      const int caret_anchor_y = latest_->caret_anchor_y;
       latest_ =
           candidate_presentation_from_view(lease, view, latest_->x, latest_->y,
                                            prefix, latest_->traditional_output);
       latest_->game_host = game_host;
+      latest_->caret_anchor_known = caret_anchor_known;
+      latest_->caret_anchor_x = caret_anchor_x;
+      latest_->caret_anchor_y = caret_anchor_y;
       latest_->armed_gloss_column =
           candidate_armed_gloss_column(latest_->candidates, armed_gloss_column);
       attach_candidate_readings(latest_->candidates, readings_);
