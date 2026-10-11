@@ -93,11 +93,17 @@ pub fn account_request<A: AccountApi, S: AccountSessionStorage>(
                 .map(|()| json!({ "enabled": enabled }))
                 .map_err(|error| error.code())
         }
-        "add" => clipboard_value(session.add_clipboard(field("text")?)),
-        "delete" => session
-            .delete_clipboard(Some(field("id")?))
-            .map(|()| json!({}))
-            .map_err(|error| error.code()),
+        "add" => {
+            let text = field("text")?;
+            clipboard_value(session.add_clipboard(text))
+        }
+        "delete" => {
+            let id = field("id")?;
+            session
+                .delete_clipboard(Some(id))
+                .map(|()| json!({}))
+                .map_err(|error| error.code())
+        }
         "devices" => clipboard_value(session.clipboard_devices()),
         "approve" => clipboard_value(session.approve_clipboard_device(field("device_id")?)),
         "reject" => clipboard_value(session.reject_clipboard_device(field("device_id")?)),
