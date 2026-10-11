@@ -88,6 +88,16 @@ char *msime_client_community_moderation(const uint8_t *request, size_t length);
  * {operation:"plan",authorization_url,target,expires_in}: 后端返回的 authorization_url 与 expires_in。Value {state,wait_ms,max_request_bytes,io_timeout_ms}: 链接通过校验，可以用系统浏览器打开；最多等 wait_ms 毫秒；每个连接最多读 max_request_bytes 字节、最多 io_timeout_ms 毫秒拿到请求头，超出就以 head:null 回复并关掉。链接不是指向这个监听的 Google 授权链接、或 challenge 太短时返回 account_unavailable，不要打开它。
  * {operation:"reply",head,state}: head 是一个连接读到的请求头（到第一个空行为止，含），没读到完整请求头时为 null；state 是 plan 给的。Value {outcome,code?,error?,response}: 把 response 原样写回这个连接再关闭。outcome 为 ignored 时继续等下一个连接；code 时用 POST /v1/auth/login {challenge_id,credential:code} 完成登录；failed 时结束登录，error 是 account_cancelled（用户在 Google 页面拒绝）或 account_unavailable。 */
 char *msime_client_google_loopback(const uint8_t *request, size_t length);
+/* 原生设置窗口的账号操作，与共享应用（Tauri）的十四个 account_* 命令相同，用同一份本用户会话文件。Request 是 length 字节（最多 64 KiB）的 UTF-8 JSON {directory, legacy_directory?, action}：directory 是共享应用登录时写 account-session.json 的目录的绝对路径（Windows 是 %LOCALAPPDATA%\<本版本的用户目录>\account，与 msime_client_account_access_token 相同）；legacy_directory 可选，是旧版本放会话的目录（Windows 是 %LOCALAPPDATA%\<tauri identifier>），本进程第一次用到 directory 时，directory 还没有会话而这里有，就把它搬过去。每个 directory 在进程里只有一个会话对象，会话文件每次都重新读，刷新令牌时与共享应用和输入法共用 account-refresh.lock。响应不含令牌。
+ * action 是下列之一，value 与共享账号页（packages/ui/src/account/account-page.tsx）读到的形状相同；user 是 {id,displayName,createdAt,email?,avatarUrl?,avatarUploaded?}，avatarUrl 只在是本客户端会去取的头像地址时出现，avatarUploaded 只在头像是用户上传的（可以移除）时为 true：
+ * {operation:"status"} → {user|null}，只读本地文件。{operation:"providers"} → {email,phone,apple,google}。
+ * {operation:"request_code",provider:"email"|"phone",target} → {challengeId,expiresIn}。{operation:"login",challenge_id,code}（code 是 6 位数字）→ {user}。
+ * {operation:"google_login"} → {user}：在 127.0.0.1 上监听回环端口、申请 Google challenge、用系统浏览器打开校验过的授权链接（只在 Windows 上；其他平台是 account_unavailable），等浏览器回跳后登录。最多阻塞约 5 分钟；用户在 Google 页面拒绝或调用了 google_cancel 时是 account_cancelled。{operation:"google_cancel"} → null，立即返回，结束同一 directory 上进行中的 google_login。
+ * {operation:"profile"} → {user,providers:[...]}（providers 是已绑定的登录方式，去重）。{operation:"rename",display_name}（非空、首尾无空白、最多 64 个字符）→ 同 profile。
+ * {operation:"avatar"} → null 或 "data:<image/png|image/jpeg>;base64,<...>"（未登录或没有头像时为 null）。{operation:"upload_avatar",path}：path 是宿主自己的文件对话框选中的 PNG 或 JPEG 的绝对路径，最多 1 MiB → 同 profile；不是这样的文件时是 account_invalid。{operation:"remove_avatar"} → 同 profile。
+ * {operation:"logout",all} → null（all 为 true 时退出所有设备；本地会话总会先清掉）。{operation:"delete"} → null（注销账号，成功后清掉本地会话）。{operation:"forget"} → null（只清掉本地会话，用于会话已失效时）。
+ * 失败时 error 是账号错误码：account_invalid（请求或参数不合法）、account_unauthorized（未登录或会话失效）、account_rate_limited、account_storage、account_cancelled、account_conflict、account_unavailable、account_blocked_content、account_screening_unavailable、account_banned。除 status、google_cancel、forget 外都会阻塞网络：放在工作线程上调用。 */
+char *msime_client_account(const uint8_t *request, size_t length);
 /* options is a readable UTF-8 buffer of length bytes; maximum 1 MiB.
  * Object: api_version=1, resources/user_data/cache/dictionaries (absolute paths),
  * preferences={scheme, candidate_page_size, learning, chinese_punctuation,

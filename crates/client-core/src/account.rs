@@ -425,6 +425,8 @@ mod avatar;
 mod client;
 mod file_storage;
 mod google;
+/// 账号页读到的脱敏响应，Tauri 的账号命令和原生设置窗口的 C 接口共用。
+pub mod page;
 mod session;
 /// 本地偏好与账号设置同步文档之间的映射，Tauri 和安卓原生宿主共用。
 pub mod settings_sync;

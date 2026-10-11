@@ -209,6 +209,7 @@ pub(crate) fn keyboard_reranker(
     sentence_model(&options.resources, configured).map(Reranker::new)
 }
 
+pub mod account;
 pub mod android_data;
 pub mod candidates;
 pub mod credentials;
