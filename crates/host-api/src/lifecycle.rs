@@ -537,6 +537,12 @@ impl LifecycleState {
         self.scripts.focus_in();
     }
 
+    /// 测量直接对着脚本集合投递。
+    #[cfg(test)]
+    pub(crate) fn scripts_mut(&mut self) -> &mut ScriptSet {
+        &mut self.scripts
+    }
+
     pub(crate) fn flags(&self) -> u32 {
         self.flags
     }

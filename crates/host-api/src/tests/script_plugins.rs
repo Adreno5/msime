@@ -3,7 +3,9 @@
 //! 模块用 WAT 写（`msime-script-runtime` 的 `test-support`），编译好直接放进进程缓存，哈希每个测试各不相同；只有后台编译线程那一例从磁盘上的包走完整路径，模块按字节手写。脚本经 `log` 把看到的东西写出来：级别是事件类型或 import 的返回码，文本是读到的文本。测试线程有自己的进程开关和 panic 总开关，互不影响。
 
 use super::*;
-use crate::lifecycle::{KEY_PASSTHROUGH, TRAIT_ELEVATED, TRAIT_KNOWN, TRAIT_PRIVATE, TRAIT_SECURE};
+use crate::lifecycle::{
+    LifecycleEvent, KEY_PASSTHROUGH, TRAIT_ELEVATED, TRAIT_KNOWN, TRAIT_PRIVATE, TRAIT_SECURE,
+};
 use crate::scripts::{
     insert_ready, TEST_PANIC, TEST_PANICKED, TEST_SCRIPT_LOG, TEST_SLOW, TEST_SWITCH,
 };
@@ -828,37 +830,64 @@ fn a_grant_whose_hash_no_longer_matches_the_pack_never_runs() {
     assert_eq!(process_health(&fixture, "stale", &stale), (0, None));
 }
 
-/// 本地测量（默认忽略）：一个最小观察类脚本让一次字母键的派发多花多少时间。`cargo test -p msime-host-api [--release] -- --ignored --nocapture measure_minimal_hook_cost_per_key`。
+/// 本地测量（默认忽略）：宿主一侧投递一个事件的全部开销，包括运行条件检查、构造事件、按授权复制文本、执行一个空的钩子和记账。整次按键的派发是几十到几百微秒，这点开销淹没在它的抖动里，所以直接对着会话的脚本集合量。`cargo test -p msime-host-api [--release] --lib -- --ignored --nocapture measure_delivery_cost`。
 #[test]
 #[ignore]
-fn measure_minimal_hook_cost_per_key() {
-    let rounds = 400;
-    let time_letters = |fixture: &Fixture| {
-        let started = Instant::now();
-        for _ in 0..rounds {
-            letter(fixture.handle, b'n');
-            msime_client_key(fixture.handle, 3);
-            read(msime_client_command(fixture.handle, 3));
-        }
-        started.elapsed() / (2 * rounds)
+fn measure_delivery_cost() {
+    let fixture = fixture();
+    let noop = format!(
+        r#"(module {HEADER} (func (export "msime_on_event") (param i32) (result i32) (i32.const 0)))"#
+    );
+    // 申请并被授予 `read_candidates`：每次 candidates_shown 都把候选页复制进插件的上下文。
+    let candidates = format!(
+        r#"(module
+  (import "msime" "candidate_count" (func $count (result i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param i32) (result i32) (i32.const 0)))"#
+    );
+    install(
+        &fixture,
+        &[
+            Script::new("noop", noop, &[Hook::CompositionUpdate]),
+            Script::new("candidates", candidates, &[Hook::CandidatesShown])
+                .reading(Capability::ReadCandidates, true),
+        ],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    for key in b"ni" {
+        letter(fixture.handle, *key);
+    }
+    let rounds = 100_000u32;
+    let measure = |event: LifecycleEvent| {
+        SESSIONS.with(|sessions| {
+            let mut sessions = sessions.borrow_mut();
+            let session = sessions.get_mut(&fixture.handle).unwrap();
+            let view = session.runtime.view();
+            let state = session.lifecycle.as_deref_mut().unwrap();
+            let context = state.context();
+            let texts = crate::scripts::CallTexts {
+                view: Some(&view),
+                ..Default::default()
+            };
+            let scripts = state.scripts_mut();
+            let started = Instant::now();
+            for _ in 0..rounds {
+                scripts.next_turn();
+                scripts.deliver(&event, context, &texts);
+            }
+            (started.elapsed() / rounds, view.candidates.len())
+        })
     };
-    let without = {
-        let fixture = fixture();
-        install(&fixture, &[], 1);
-        opt_in(&fixture, TRAIT_KNOWN);
-        time_letters(&fixture)
-    };
-    let with = {
-        let fixture = fixture();
-        let noop = format!(
-            r#"(module {HEADER} (func (export "msime_on_event") (param i32) (result i32) (i32.const 0)))"#
-        );
-        install(&fixture, &[Script::new("noop", noop, &OBSERVE)], 1);
-        opt_in(&fixture, TRAIT_KNOWN);
-        time_letters(&fixture)
-    };
+    let (update, _) = measure(LifecycleEvent::CompositionUpdate);
+    let (shown, rows) = measure(LifecycleEvent::CandidatesShown {
+        count: 0,
+        page: 0,
+        highlighted: Some(0),
+    });
     println!(
-        "per dispatch: without scripts {without:?}, with one script on every observe hook {with:?}, profile {}",
+        "per delivery ({} build): composition_update to an empty hook {update:?}; candidates_shown with read_candidates, {rows} rows copied {shown:?}",
         if cfg!(debug_assertions) { "dev" } else { "release" }
     );
+    assert!(take_log().is_empty());
 }
