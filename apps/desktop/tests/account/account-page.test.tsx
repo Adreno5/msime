@@ -1464,7 +1464,8 @@ test("Harmony 我的 groups its rows with real values and destinations", async (
   // 旧的区块都没了：没有工具分组，没有内嵌的同步卡片，也没有数据区块标题。
   expect(screen.queryByRole("region", { name: "工具" })).toBeNull();
   expect(screen.queryByRole("heading", { name: "本地数据与云端作品" })).toBeNull();
-  expect(screen.getByText(/皮肤设计和打字统计保存在本机/)).not.toBeNull();
+  // 底部那段「保存在本机、不会自动上传」的说明也删了：Android 会自动同步，鸿蒙和 iOS 也要改成自动同步，这句话不成立。
+  expect(screen.queryByText(/皮肤设计和打字统计保存在本机/)).toBeNull();
 });
 
 test("Harmony 应用主题 saves the theme chosen in its action sheet", async () => {
