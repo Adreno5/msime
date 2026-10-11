@@ -170,7 +170,9 @@
 | Android | 应用私有目录下的 `cloud-clipboard-keystore`，与账号会话一样先用 AndroidKeyStore 加密 | 主进程、`:ime` 进程与 Tauri 设置页 |
 | HarmonyOS | 与账号会话同一个应用私有目录下的 `cloud-clipboard-keystore` | 设置应用与键盘 |
 
-Tauri 移动端（iOS、Android）经平台插件读写：`loadCloudClipboardKeystore` 返回 `{"value": string|null}`，`saveCloudClipboardKeystore` 的参数是 `{"value": string}`。
+文件里只有密钥串本身；读取时忽略末尾的换行，否则手工编辑或换行风格不同的写入会让密钥串解析失败，驱动随之生成新的设备身份，这台设备就要重新批准。
+
+Tauri 移动端（iOS、Android）经平台插件读写：`loadCloudClipboardKeystore` 返回 `{"value": string|null}`，`saveCloudClipboardKeystore` 的参数是 `{"value": string}`。没有单独的清除命令，插件的 `clearSession` 同时删除密钥串。
 
 ### 共享面板的动作
 
@@ -179,4 +181,6 @@ Tauri 移动端（iOS、Android）经平台插件读写：`loadCloudClipboardKey
 - `{"operation": "devices"}`：驱动的 `status`。
 - `{"operation": "approve" | "reject" | "remove", "device_id": "…"}`、`{"operation": "reset"}`：对应驱动的同名操作。
 
-这五个动作的结果都是驱动 `status` 的结果形状。驱动返回的错误按宿主原有的错误通道交给面板，错误码保持驱动给出的 `code`（例如 `clipboard_device_pending`、`clipboard_sync_disabled`、`clipboard_key_conflict`）。
+这五个动作的结果都是驱动 `status` 的结果形状。驱动返回的错误按宿主原有的错误通道交给面板，错误码保持驱动给出的 `code`（例如 `clipboard_device_pending`、`clipboard_sync_disabled`、`clipboard_key_conflict`）。macOS 的 Tauri 面板经 IPC 交给原生 provider，失败时的回复是 `{"ok": false, "error": "<code>", "status": <n>}`。
+
+Linux 上由用户自己运行的 socket provider（Fcitx5 与设置窗口经 `msime_client_cloud_clipboard_provider_request` 转发给它）同样会收到这五个动作，它自己持有凭据和网络，要按本文档实现加密，并以驱动的结果形状应答，失败时回 `{"ok": false, "error": "<code>"}`。
