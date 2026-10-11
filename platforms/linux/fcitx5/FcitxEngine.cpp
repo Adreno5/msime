@@ -1510,6 +1510,30 @@ public:
       slot.query.clear();
     }
   }
+  // AI 座位上的占位行（Engine 候选来源 12）换成「—」，留到组字变化为止（#6888）。座位已经换过或没开时 Host API 答 applied:false，什么都不画。
+  void resolveAiSeat(const std::string &query) {
+    if (!session_ || query.empty()) return;
+    try {
+      const auto resolved = response(msime_client_resolve_online_candidates(
+          session_, reinterpret_cast<const uint8_t *>(query.data()), query.size(), 1));
+      if (!resolved.value("applied", false)) return;
+      view_ = resolved.at("view");
+      render();
+    } catch (...) {}
+  }
+  // 不会向 AI 发问的状态下，当前组字的 AI 座位直接换成「—」；同一个查询只问一次。
+  void resolveAiSeatWithoutProvider() {
+    try {
+      const auto query = response(msime_client_online_query(session_));
+      if (!query.is_object() || !query.value("ai_eligible", false)) return;
+      const auto aiConfig = query.value("ai_assistant", Json::object());
+      if (!aiConfig.is_object() || !aiConfig.value("enabled", false)) return;
+      const auto encoded = query.dump();
+      if (encoded == ai_resolved_query_) return;
+      ai_resolved_query_ = encoded;
+      resolveAiSeat(encoded);
+    } catch (...) {}
+  }
   void clearOnlineCandidates(uint8_t source) {
     if (!session_ || source >= 2) return;
     view_ = response(msime_client_clear_online_candidates(session_, source)).at("view");
@@ -1957,15 +1981,25 @@ public:
             if (msime::linux_host::strict_json_value(item, "source", uint64_t{255}) == source)
               candidates.push_back(item.at("text"));
           }
+          bool applied = false;
           if (!candidates.empty()) {
             const auto encoded = candidates.dump();
-            view_ = response(msime_client_apply_online_candidates(
+            const auto reply = response(msime_client_apply_online_candidates(
                 session_, reinterpret_cast<const uint8_t *>(slot.query.data()), slot.query.size(),
-                reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source)).at("view");
+                reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source));
+            view_ = reply.at("view");
+            applied = reply.value("applied", false);
             online_display_queries_[source] = slot.query;
             render();
           }
+          // AI 的网络请求落空（失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+          if (source == 1 && !slot.cache_only && !applied) resolveAiSeat(slot.query);
         }
+      }
+      if (session_ && ic_.hasFocus() && !restricted() &&
+          (online_socket_.empty() || privateInput())) {
+        resolveAiSeatWithoutProvider();
+        return;
       }
       if (!session_ || online_socket_.empty() || privateInput() || !ic_.hasFocus() || restricted()) return;
       const auto query = response(msime_client_online_query(session_));
@@ -2004,6 +2038,7 @@ public:
         online_job_session_ = session_;
         slot.query = encoded;
         slot.epoch = online_epoch_;
+        slot.cache_only = cacheOnly;
         slot.job = detachedJob(
             [providerEncoded, encoded, socket = online_socket_] {
               auto raw = response(msime_client_online_provider_request(
@@ -3547,7 +3582,11 @@ public:
     std::shared_future<Json> job;
     std::string query;
     uint64_t epoch = 0;
+    // 只查缓存的 AI 探测：它落空只是还没到网络请求，不能把 AI 座位换成「—」。
+    bool cache_only = false;
   } online_slots_[2];
+  // 不会向 AI 发问时（没有在线服务、私密输入框）最近一次把 AI 座位换成「—」的查询，避免每个定时周期都再问一遍。
+  std::string ai_resolved_query_;
   uint64_t online_epoch_ = 0;
   std::chrono::steady_clock::time_point online_due_{};
   std::chrono::steady_clock::time_point ai_due_{};
@@ -3671,6 +3710,11 @@ public:
 // The row as the panel draws it.
 fcitx::Text candidateRowText(const Json &candidate, bool traditional, bool annotations,
                              const std::string &hanjaGloss) {
+  // Engine 候选来源 12 是 AI 座位上的占位行（「…」或「—」）：Fcitx5 的文本格式没有颜色，用斜体表示它是次要的，并标明不上屏（#6888）。
+  if (msime::linux_host::strict_json_value(candidate, "source", uint64_t{}) == 12)
+    return fcitx::Text(candidate.at("text").get<std::string>(),
+                       fcitx::TextFormatFlags{fcitx::TextFormatFlag::Italic,
+                                              fcitx::TextFormatFlag::DontCommit});
   fcitx::Text row((traditional ? msime_linux_simplified_to_traditional(candidate.at("text").get<std::string>())
                                : candidate.at("text").get<std::string>()) +
       // Engine-corrected spellings carry the same light marker Windows and the IBus host draw. Only the displayed row gets it: selection goes by session/generation/index, and text_ below, which the candidate actions (dictionary removal) read, stays the Engine's text.
