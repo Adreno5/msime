@@ -12,7 +12,7 @@ Status: implemented
 
 - 主题目录里带 `appearance` 的主题只在对应的明暗下提供：浅色模式只列 `light`、`paper`，深色模式只列 `shuishan`、`night`、`ink`。`system` 和 `custom` 的 `appearance` 为空，两种模式都列。
 - 已选的主题属于另一种明暗时，按 `system` 画，面板和网格里也是「跟随系统」显示为选中。所选的值不改写：切回原来的明暗，原来的主题照旧生效。
-- 设置页皮肤网格里的外部皮肤包按 `skinDrawsIn(base, dark)` 同样过滤。
+- 只过滤目录里的内置主题。社区和本机的皮肤包是用户自己装的，两种明暗下都列出：最初也按 `skinDrawsIn(base, dark)` 过滤过，结果浅色模式下 base 是深色主题的社区皮肤全不见了，用户以为皮肤丢了，所以撤掉。
 - 鸿蒙键盘侧由 `GlobalTheme.fitsMode` / `GlobalTheme.effectiveId` 决定，`KeyboardSession.resolveTheme`、`keyboardSkin`、`themeSkins` 都经过它；设置页侧在 `skinGridCards` 里做同样的判断。
 - Android 由 `KeyboardSkin.fitsMode` / `KeyboardSkin.effectiveTheme` 决定：键盘的 `MSIMEInputService.surfaceSkin`（键盘、候选条、表情和手写面板都经过它，各按自己那块面板的明暗）、键盘里的皮肤面板 `ImePanels.renderSkinPicker`、设置侧的 `HostStore.keyboardSkin` 和皮肤页 `SkinsPage`。
 - iOS 由 `GlobalThemeCatalog.fits` / `ids(offeredIn:)` / `effectiveId` 决定。键盘把自己的明暗交给 `KeyboardTheme.reload(_:dark:)`，于是 `KeyboardTheme.current` 本身就是实际生效的主题，七十多处读它的地方不用改；明暗变化时（`traitCollectionDidChange`）重新解析。键盘的 `overrideUserInterfaceStyle` 只按「键盘明暗」偏好设置，不再按主题的固定明暗设置：否则选了「夜间」键盘先被拉成深色，再读到深色，「夜间」就永远合适，规则形同虚设。候选条配色 `CandidatePalette.resolveTheme` 和 App 的皮肤页 `SkinSettingsView` 也按同样规则过滤和选中；App 里没有键盘自己的明暗，「键盘明暗」跟随时取应用外观，与 `CandidatePreviewCard` 相同。
