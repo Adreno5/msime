@@ -292,6 +292,10 @@ import {
   strictAccountOk,
 } from "../entry/src/main/ets/account/AccountCloudBridge";
 import {
+  retryAccountRequest,
+  staleConnectionFailure,
+} from "../entry/src/main/ets/account/AccountRetryPolicy";
+import {
   CrashDestination,
   CrashReport,
   TelemetryPolicy,
@@ -13771,6 +13775,68 @@ group("a chat request that fails in transport reads as a network failure", () =>
         );
       });
     });
+});
+
+// 「我的」页的资料请求在传输层失败时同样是网络失败，页面写「网络连接失败」，不写「账号服务暂不可用」。
+group("an account request that fails in transport reads as a network failure", () => {
+  let stored: string | null = null;
+  const store: AccountSessionStore = {
+    load: () => stored,
+    save: (value) => {
+      stored = value;
+    },
+    clear: () => {
+      stored = null;
+    },
+  };
+  let offline = false;
+  const transport: AccountTransport = {
+    request: async (_method, path) => {
+      if (path === "/v1/auth/login")
+        return {
+          status: 200,
+          body: JSON.stringify({
+            access_token: "a".repeat(64),
+            refresh_token: "b".repeat(64),
+            token_type: "Bearer",
+            expires_in: 3600,
+            user: { id: "u1", display_name: "Test", created_at: "2026-01-01" },
+          }),
+        };
+      if (offline) throw { code: 2300056, message: "Failure when receiving data from the peer" };
+      return { status: 404, body: "{}" };
+    },
+  };
+  const bridge = new AccountCloudBridge(transport, store);
+  void bridge
+    .handle('{"operation":"login","challenge_id":"challenge","credential":"123456"}')
+    .then(() => {
+      offline = true;
+      void bridge.handle('{"operation":"profile"}').then((result) => {
+        check(
+          JSON.parse(result).error === "account_network",
+          "a dropped connection on the profile is a network failure",
+        );
+      });
+    });
+});
+
+// 复用的连接已被对端关掉时（curl 52、55、56），幂等的请求换新连接再发一次，只发一次；POST、PATCH 不重发，连不上和超时也不重发。
+group("only an idempotent request on a dead reused connection is sent again, once", () => {
+  const dead = { code: 2300056, message: "Failure when receiving data from the peer" };
+  check(staleConnectionFailure(dead), "a receive failure is a dead connection");
+  check(staleConnectionFailure({ code: 2300052 }), "so is an empty reply");
+  check(staleConnectionFailure({ code: 2300055 }), "and a send failure");
+  check(!staleConnectionFailure({ code: 2300028 }), "a timeout is not");
+  check(!staleConnectionFailure({ code: 2300007 }), "nor is a refused connection");
+  check(!staleConnectionFailure(new Error("account_invalid")), "nor an Error from the bridge");
+  check(!staleConnectionFailure(null), "nor nothing at all");
+  check(retryAccountRequest("GET", 0, dead), "a first GET is sent again");
+  check(retryAccountRequest("PUT", 0, dead), "so is a PUT");
+  check(retryAccountRequest("DELETE", 0, dead), "and a DELETE");
+  check(!retryAccountRequest("GET", 1, dead), "but only once");
+  check(!retryAccountRequest("POST", 0, dead), "a POST may already have been handled");
+  check(!retryAccountRequest("PATCH", 0, dead), "and so may a PATCH");
 });
 
 group("the account assistant answers with a model list and one reply", () => {
