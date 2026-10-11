@@ -206,6 +206,8 @@ private struct MainTabView: View {
     TabView(selection: Binding(get: { navigation.tab }, set: { navigation.select($0, router: router) })) {
       settingsTab.id(navigation.settingsRoot)
         .tabItem { Label("设置", systemImage: "gearshape.fill") }.tag(AppNavigation.Tab.settings)
+      NavigationStack { KeyboardTryoutView(title: "对话", focusRequest: navigation.chatFocusRequest) }
+        .tabItem { Label("对话", systemImage: "bubble.left.and.bubble.right.fill") }.tag(AppNavigation.Tab.chat)
       NavigationStack { TypingStatisticsView() }
         .tabItem { Label("统计", systemImage: "chart.bar.fill") }.tag(AppNavigation.Tab.statistics)
       NavigationStack { AccountSettingsView() }

@@ -116,7 +116,12 @@ final class KeyboardChatModel: ObservableObject {
 }
 
 struct KeyboardTryoutView: View {
+  /// 「对话」标签页上叫「对话」；引导页和皮肤试用里仍叫「试用键盘」。
+  var title = "试用键盘"
   var focusOnAppear = false
+  /// `AppNavigation.chatFocusRequest`：与上次出现时不同，说明是从「试用键盘」过来的，出现时把焦点放进输入框。
+  var focusRequest = 0
+  @State private var handledFocusRequest = 0
   @StateObject private var chat = KeyboardChatModel()
   @State private var draft = ""
   @State private var showAccount = false
@@ -197,14 +202,18 @@ struct KeyboardTryoutView: View {
           .accessibilityLabel("发送消息").accessibilityIdentifier("keyboardChatSend")
         }
       }.padding(12)
-    }.navigationTitle("试用键盘").navigationBarTitleDisplayMode(.inline)
+    }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .navigationBarTrailing) {
           if focused { Button("收起键盘") { focused = false }.accessibilityIdentifier("dismissKeyboardButton") }
           else { Button { clearConfirmation = true } label: { Image(systemName: "square.and.pencil") }.accessibilityLabel("新对话").disabled(chat.messages.isEmpty) }
         }
       }
-      .task { focused = focusOnAppear; await chat.loadModels() }
+      .task {
+        if focusOnAppear || focusRequest != handledFocusRequest { focused = true }
+        handledFocusRequest = focusRequest
+        await chat.loadModels()
+      }
       .onDisappear { chat.cancel(); focused = false }
       .sheet(isPresented: $showAccount, onDismiss: { Task { await chat.loadModels() } }) {
         AccountLoginSheet()

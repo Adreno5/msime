@@ -318,7 +318,9 @@ final class OnboardingUITests: XCTestCase {
     XCTAssertTrue(app.navigationBars["AI 设置"].waitForExistence(timeout: 5))
     reachSettingsLink("keyboardTryoutLink", in: app)
     settingsEntry("keyboardTryoutLink", in: app).tap()
-    XCTAssertTrue(app.navigationBars["试用键盘"].waitForExistence(timeout: 5))
+    // 试用键盘的页面就是「对话」标签页。
+    XCTAssertTrue(app.navigationBars["对话"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.tabBars.buttons["对话"].isSelected)
     XCTAssertTrue(app.textFields["keyboardTryoutField"].exists)
     reachSettingsLink("inputSettingsLink", in: app)
     settingsEntry("inputSettingsLink", in: app).tap()
@@ -360,6 +362,9 @@ final class OnboardingUITests: XCTestCase {
   /// 语音输入 has its own row on the home page again, in the 键盘 / 语音输入 / 手写输入 group of the mobile design, so every entry is reached the same way.
   @MainActor
   private func reachSettingsLink(_ identifier: String, in app: XCUIApplication) {
+    // 先回到设置标签页再弹出页面：「对话」标签页的根没有返回键，导航栏左边第一个按钮是它自己的「收起键盘」或「新对话」，不能当返回键点。
+    let settingsTab = app.tabBars.buttons["设置"]
+    if settingsTab.exists && !settingsTab.isSelected { settingsTab.tap() }
     // Pop whatever the caller pushed before looking: these entries live on the tab's root, and a
     // loop that visits one settings page per turn is still standing on the previous one. Tapping
     // the selected tab does not pop a SwiftUI navigation stack, so the back button does it.
@@ -368,8 +373,6 @@ final class OnboardingUITests: XCTestCase {
       guard back.exists, back.isHittable else { break }
       back.tap()
     }
-    let settingsTab = app.tabBars.buttons["设置"]
-    if settingsTab.exists && !settingsTab.isSelected { settingsTab.tap() }
 
     XCTAssertTrue(scrollIntoView({ settingsEntry(identifier, in: app) }, in: app),
                   "\(identifier) never became reachable: \(visible(app))")
@@ -469,9 +472,14 @@ final class OnboardingUITests: XCTestCase {
     app.launch()
     XCTAssertTrue(app.tabBars.buttons["设置"].isSelected)
     app.buttons["inputSettingsLink"].tap()
-    // 社区不再占一个标签页，它的作品列在各个功能页里。
-    XCTAssertEqual(app.tabBars.buttons.count, 3)
+    // 原来「社区」那一格换成了「对话」，社区作品列在各个功能页里。
+    XCTAssertEqual(app.tabBars.buttons.count, 4)
     XCTAssertFalse(app.tabBars.buttons["社区"].exists)
+    app.tabBars.buttons["对话"].tap()
+    XCTAssertTrue(app.navigationBars["对话"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.textFields["keyboardTryoutField"].exists)
+    // 直接点标签栏进来不弹键盘；只有设置里的「试用键盘」会把焦点放进输入框。
+    XCTAssertNotEqual(app.textFields["keyboardTryoutField"].value(forKey: "hasKeyboardFocus") as? Bool, true)
     app.tabBars.buttons["统计"].tap()
     XCTAssertTrue(app.navigationBars["统计"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["statisticsTab-0"].exists)
@@ -547,8 +555,8 @@ final class OnboardingUITests: XCTestCase {
     XCTAssertFalse(app.buttons["accountLocalDesigns"].exists)
     XCTAssertFalse(app.buttons["aboutSettingsLink"].exists)
     app.buttons["accountLoginClose"].tap()
-    XCTAssertTrue(app.navigationBars["试用键盘"].waitForExistence(timeout: 5))
-    app.navigationBars.buttons.firstMatch.tap()
+    XCTAssertTrue(app.navigationBars["对话"].waitForExistence(timeout: 5))
+    app.tabBars.buttons["设置"].tap()
     XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["keyboardTryoutLink"].exists)
   }
@@ -1779,7 +1787,7 @@ final class OnboardingUITests: XCTestCase {
       for: NSPredicate(format: "hasKeyboardFocus == false"), evaluatedWith: tryoutField)
     wait(for: [unfocused], timeout: 10)
     XCTAssertEqual(tryoutField.value as? String, "test")
-    app.navigationBars.buttons.element(boundBy: 0).tap()
+    app.tabBars.buttons["设置"].tap()
     XCTAssertFalse(app.buttons["keyboardGuideLink"].exists)
     // 去开启 在页面顶部的状态卡片里，遍历结束时页面已滚到它下方，所以要把它滚回视野内。
     reachSettingsLink("openKeyboardSettingsButton", in: app)

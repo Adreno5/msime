@@ -5,6 +5,7 @@ import UIKit
 struct SettingsView: View {
   @Environment(\.scenePhase) private var scenePhase
   @EnvironmentObject private var router: SettingsRouter
+  @EnvironmentObject private var navigation: AppNavigation
   @State private var scheme = InputSchemePreference.scheme
   @State private var skin = KeyboardTheme.current
   @State private var values: [SettingsPage: String] = [:]
@@ -29,7 +30,7 @@ struct SettingsView: View {
               Task.detached(priority: .utility) { AppNotices.dismiss(notice.id) }
             }
           }
-          KeyboardStatusCard(scheme: scheme, tryout: .push)
+          KeyboardStatusCard(scheme: scheme, tryout: navigation.openChat)
         }
         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
           DesignCard(radius: MetasequoiaTheme.cardRadius) {
