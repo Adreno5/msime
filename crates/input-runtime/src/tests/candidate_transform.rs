@@ -576,3 +576,29 @@ fn ending_the_composition_forgets_the_operations() {
     assert!(!harness.runtime.has_candidate_ops());
     assert_eq!(harness.runtime.visible_len(), 0);
 }
+
+/// 派发里的展开会重新运行插件，插件这次可以多藏几行：高亮不能留在被隐藏的末尾，否则空格和结束组字按高亮交给引擎的就是一行被隐藏的候选。
+#[test]
+fn expanding_with_more_rows_hidden_pulls_the_highlight_back_into_view() {
+    let words = ["甲", "乙", "丙", "丁", "戊", "己", "庚"];
+    let paths: [(&str, fn() -> Action); 3] = [
+        ("space", || Action::SelectHighlighted),
+        ("finish", || Action::Finish),
+        ("punctuation", || Action::Punctuation(b'.')),
+    ];
+    for (name, action) in paths {
+        let mut harness = Harness::new(TransformEngine::new(&words), Vec::new());
+        harness.key(b'a');
+        // 第二页（己 庚）是最后一页，还没满；引擎这时没有留着的候选。
+        harness.runtime.dispatch(Action::NextPage).unwrap();
+        assert_eq!(harness.shown(), ["己", "庚"]);
+        // 再翻页时引擎交出留着的候选，插件这次把引擎下标 0 以外的行都藏起来。
+        harness.runtime.engine.withheld = vec!["辛".into(), "壬".into()];
+        *harness.ops.borrow_mut() = vec![ops(&[], &[1, 2, 3, 4, 5, 6, 7, 8], &[])];
+        harness.runtime.dispatch(Action::NextPage).unwrap();
+        assert_eq!(harness.runtime.visible_len(), 1);
+        let committed = harness.runtime.dispatch(action()).unwrap();
+        assert!(committed.commit.unwrap().starts_with('甲'), "{name}");
+        assert_eq!(harness.runtime.engine.picks, [0], "{name}");
+    }
+}

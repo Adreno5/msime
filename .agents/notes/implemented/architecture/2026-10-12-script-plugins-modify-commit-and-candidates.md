@@ -22,7 +22,7 @@ Status: implemented
 
 **怎么排。** 先定隐藏的行：被点名隐藏、不是锁定座位、引擎下标不是 0。锁定座位是固定了位置的词（`candidate_positions > 0`）、来源 2、3、12（云、AI、AI 占位）的行，以及五笔四码唯一（`wubi_unique_four_code`）时的 0 号座位。引擎下标 0 的行永远可见，所以至少有一行可见。可见行里锁定的座位不动，其余座位先放插件点名的行（按合成后的优先次序，锁定的行不认点名），再放没点名的行（保持原来的相对顺序）；隐藏的行按原来的顺序排在最后。得到的排列同时作用于 7 个平行数组和 `engine_order`，缺一个或重一个下标时什么都不动。
 
-**可见前缀。** runtime 记下隐藏的行数，`view()`、`candidate_page_len()`、`translation_candidates()`、`all_candidates()`、翻页、移动高亮、展开的判断，以及 `Select`、`SelectAnyCandidate`、数字、空格、14 键原样上屏的座位检查，都只认可见前缀。`engine_order` 仍覆盖全部候选，`engine_index` 的透传规则不变。
+**可见前缀。** runtime 记下隐藏的行数，`view()`、`candidate_page_len()`、`translation_candidates()`、`all_candidates()`、翻页、移动高亮、展开的判断，以及 `Select`、`SelectAnyCandidate`、数字、空格、14 键原样上屏的座位检查，都只认可见前缀。空格、结束组字、两条标点路由和 14 键原样上屏直接按高亮的座位交给引擎，不再查座位，所以每次排好之后高亮都拉回可见前缀：派发里的展开会重新运行插件，插件那一次可以多藏几行，而翻页填满当前页时高亮原地不动，不拉回就会停在被隐藏的末尾。`engine_order` 仍覆盖全部候选，`engine_index` 的透传规则不变。
 
 **跳过**：没有候选、平行数组长度不一致（`normalize_online_slots` 用的同一条守卫）、整句改字中（`conversion` 非空）、方案的候选列表打开着（`candidate_list_open`）。本地模式的白名单（U6）是插件一侧的规则，由 host-api 判断。
 
@@ -65,7 +65,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 
 ## Testing
 
-- `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次；只改注释也推进 epoch；组字结束后记录清空。
+- `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次，展开时插件多藏了几行、翻页又让高亮原地不动时，空格、结束组字和标点仍只交给可见的行；只改注释也推进 epoch；组字结束后记录清空。
 - `crates/script-runtime/src/tests.rs`：改写只在可改写的 `before_commit` 里、授予了能力时可用；换行、U+202E、U+200B、U+2028、U+2029、空串、非 UTF-8 被拒，256 个码元的上限和 4096 字节的上限，前一个插件缩短或放大了 body 时上限仍按原文算；持久实例把这一轮的配额烧到连一次 `input` 都放不下之后，`before_commit` 仍能用掉比剩余更多的 fuel、不扣其余钩子的配额，新一轮两份都补满；返回负数、trap、越界之后不交出动作，下一次观察类投递清掉上一次的动作；三种候选修改的暂存结果、坏行号、重复、超长和带 Cf 或 U+2028 的注释、错的钩子、没授权、本地模式屏蔽；Cc、Cf 和行、段分隔符的判定；原生栈。
 - `crates/host-api/src/tests/script_plugins.rs`：两个插件依次改写、tail 原样接回、`commit` 观察者读到改写后的文本；第一个插件把 2 个码元的原文放大到 256 个，第二个插件的 600 个字母拿到 `LIMIT`，上屏停在第一个插件的结果；trap、返回负数、fuel 耗尽、改写成 `\n` 或 U+202E 都上屏原文；Windows 式在派发前后切换 `COMMIT_OBSERVE_ONLY` 时空格选词和回车原样上屏都只能看（`REWRITABLE == 0`，改写 `DENIED`），清掉后同样两条路径能改写，以词定字永远不能；SECURE、PRIVATE、ELEVATED 和未知字段不改写也不投递；经 C ABI 重排之后空格上屏显示的首行，`script_annotation` 跟着行走，读窗口的插件读不到别的插件的注释和顺序；隐藏的行不出现在视图里、数字选不到、引擎下标 0 隐藏不了；`apply_online_candidates` 和 `rerank_settled` 不运行脚本、重排按身份重放；本地模式不在白名单里时一个插件都不运行。
 

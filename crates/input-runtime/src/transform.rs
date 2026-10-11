@@ -193,6 +193,11 @@ mod desktop {
                 annotations_changed = previous != self.plugins.annotations;
             }
             self.arrange_candidates(ready);
+            // 高亮只能落在可见前缀里：派发里的展开会重新运行插件，插件这次可以多藏几行，而翻页填满当前页时高亮原地不动；落进被隐藏的末尾时，空格、结束组字和标点按高亮交给引擎的就是一行被隐藏的候选。
+            let visible = self.visible_len();
+            if self.highlighted >= visible {
+                self.highlighted = visible.saturating_sub(1);
+            }
             annotations_changed || self.plugins.hidden_rows != hidden_before
         }
 
