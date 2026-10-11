@@ -24,6 +24,7 @@ let package = Package(
         "clients/BackendSnapshotClient.swift",
         "clients/BackendSkinArtworkClient.swift",
         "storage/IOSPreferencePlan.swift",
+        "storage/BackendSyncPolicy.swift",
         "storage/BackendLocalStore.swift",
       ]
     ),
