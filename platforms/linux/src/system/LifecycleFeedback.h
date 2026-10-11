@@ -31,6 +31,13 @@ public:
     session_ = session;
     reported_ = traits;
   }
+  // 每次 msime_client_focus(true) 之前调用：不论属性变没变都报告一次。脚本运行时（#7253）在每次获得焦点之后，要等宿主确认过字段属性才把事件交给脚本，确认是 focus 之前的一次 set_field_traits（值相同也算）或之后的第一个键；sync 的去重会把同一个会话重新获得焦点时那次报告省掉，于是从获得焦点到第一个键之间脚本什么都收不到。
+  template <class Call> void confirm(std::uint64_t session, std::uint32_t traits, Call &&call) {
+    if (session == 0) return;
+    call(session, traits);
+    session_ = session;
+    reported_ = traits;
+  }
   // 会话销毁之前：下一个会话即使拿到同一个句柄，也要重新报告。
   void reset() {
     session_ = 0;

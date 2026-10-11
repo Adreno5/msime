@@ -654,7 +654,7 @@ public:
     cancelVoice();
     releaseFocusResources();
     if (composingOrCandidates()) {
-      auto result = response(msime_client_focus(session_, false));
+      auto result = response(focusSession(false));
       view_ = result.contains("view") ? result.at("view") : result;
     }
   }
@@ -714,12 +714,18 @@ public:
   }
   // 把输入框的属性报告给生命周期核心，变了才调用。逐个标志映射，不复用 privateInput() 的布尔值：Sensitive 按最严处理成 SECURE 加 PRIVATE，NoSpellCheck 只报 NO_SPELLCHECK，这样只带 NoSpellCheck 的普通字段照常出声（LifecycleFeedback.h）。restricted() 的字段根本不建会话。
   void syncFieldTraits() {
+    field_traits_.sync(session_, fieldTraits(), msime_client_set_field_traits);
+  }
+  std::uint32_t fieldTraits() const {
     const auto flags = ic_.capabilityFlags();
-    field_traits_.sync(session_,
-                       msime::linux_host::lifecycle_field_traits(
-                           flags.test(fcitx::CapabilityFlag::Sensitive),
-                           flags.test(fcitx::CapabilityFlag::NoSpellCheck)),
-                       msime_client_set_field_traits);
+    return msime::linux_host::lifecycle_field_traits(
+        flags.test(fcitx::CapabilityFlag::Sensitive),
+        flags.test(fcitx::CapabilityFlag::NoSpellCheck));
+  }
+  // 本插件对 msime_client_focus 的唯一调用。获得焦点（true）之前不论属性变没变都先报告一次（FieldTraitsReport::confirm）：切换方案、双拼方案或辅助码时 ensure() 刚为新会话报告过、也刚 focus(true) 过，syncFieldTraits 的去重会省掉紧接着这次 focus(true) 之前的报告，而脚本运行时要在每次获得焦点之后先看到属性确认才往脚本投递事件。
+  char *focusSession(bool focused) {
+    if (focused) field_traits_.confirm(session_, fieldTraits(), msime_client_set_field_traits);
+    return msime_client_focus(session_, focused);
   }
   // 指针点选和翻页同样先开启新的一轮（msime_client.h 的顺序契约）：MSIME_KEY_POINTER 不出声、不画。
   void pointerTurn() {
@@ -781,7 +787,7 @@ public:
     helpcode_schema_override_.reset();
     close();
     if (!ensure()) return false;
-    view_ = response(msime_client_focus(session_, true)).at("view");
+    view_ = response(focusSession(true)).at("view");
     render();
     return true;
   }
@@ -806,7 +812,7 @@ public:
     shuangpin_profile_unsaved_ = unsavedChoice("", "shuangpin_profile");
     close();
     if (!ensure()) return false;
-    view_ = response(msime_client_focus(session_, true)).at("view");
+    view_ = response(focusSession(true)).at("view");
     render();
     return true;
   }
@@ -845,7 +851,7 @@ public:
     helpcode_schema_unsaved_ = unsavedChoice(section, "schema");
     close();
     if (!ensure()) return false;
-    view_ = response(msime_client_focus(session_, true)).at("view");
+    view_ = response(focusSession(true)).at("view");
     render();
     return true;
   }
@@ -1868,7 +1874,7 @@ public:
     syncSessionCharacterWidth();
     // A mode the focus restores is a Chinese/English switch like any other; resolved here, once the lock is read and the session exists.
     if (restore_changed_mode) resyncPunctuationForMode();
-    view_ = response(msime_client_focus(session_, true)).at("view");
+    view_ = response(focusSession(true)).at("view");
     // 会话建立成功后处理尚未见过的存储选择；首次启动只建基线，已处理的选择不重复接管。
     const auto chosen = preferences_snapshot_.is_object() &&
         candidateThemeSelectionChanged(preferences_snapshot_.at("preferences"));
@@ -6279,7 +6285,7 @@ public:
           // 离开客户端时上屏打开的韩文音节、注音转换、越南文单词或藏文音节串。失焦时 Fcitx5 会自己上屏客户端预编辑（或由客户端用 ClientUnfocusCommit 上屏），所以这里只上屏画在面板里的组字，即不支持预编辑的客户端的组字。
           if (state->commitsOnBlur() && !state->view_.value("editing_text", std::string{}).empty()) {
             if (!ic->capabilityFlags().test(fcitx::CapabilityFlag::Preedit)) {
-              try { state->apply(msime_client_focus(state->session_, false)); } catch (...) {}
+              try { state->apply(state->focusSession(false)); } catch (...) {}
             } else {
               // The composition reaches the document through the preedit rather than through commitText, so it is counted here as typed text.
               state->recordTypingStatistics(state->view_.value("preedit", std::string{}), state->typingSource());

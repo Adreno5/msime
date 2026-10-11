@@ -67,6 +67,20 @@ int main() {
   traits.reset();
   traits.sync(8, secret, report);
   assert(reports.size() == 4 && reports.back() == std::make_pair(std::uint64_t{8}, secret));
+  // 获得焦点之前的确认不去重：属性没变也报告，脚本运行时据此在 focus(true) 之后放行事件；没有会话时同样什么都不报。确认过的值照样记下，之后的按键不重复报告。
+  traits.confirm(8, secret, report);
+  assert(reports.size() == 5 && reports.back() == std::make_pair(std::uint64_t{8}, secret));
+  traits.confirm(8, secret, report);
+  assert(reports.size() == 6);
+  traits.sync(8, secret, report);
+  assert(reports.size() == 6);
+  traits.confirm(0, secret, report);
+  assert(reports.size() == 6);
+  traits.reset();
+  traits.confirm(9, ordinary, report);
+  assert(reports.size() == 7 && reports.back() == std::make_pair(std::uint64_t{9}, ordinary));
+  traits.sync(9, ordinary, report);
+  assert(reports.size() == 7);
 
   // 派发回复里的 feedback：读出上屏之后的打字特效；没有这个键、不是对象或不是合法整数时为空，宿主保留原来的连击数。
   assert(reply_typing_effect(Json::parse(R"({"commit":"你好","feedback":{"typing_effect":0}})")) == 0u);

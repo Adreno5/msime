@@ -227,14 +227,24 @@ for key_down in (body(source, "void keyDown(const fcitx::KeyEvent &event)"), bod
     # 隐私字段不由宿主拦着：核心按字段属性决定静音，这样只带 NoSpellCheck 的字段才能照常出声。
     assert "privateInput()" not in key_down and "private_input" not in key_down
 # 字段属性逐个标志映射，不复用 privateInput() / private_input 那个把隐私和不做拼写检查并在一起的布尔值。
-fcitx_traits = body(source, "void syncFieldTraits()")
+fcitx_traits = body(source, "std::uint32_t fieldTraits() const")
 assert "flags.test(fcitx::CapabilityFlag::Sensitive)" in fcitx_traits
 assert "flags.test(fcitx::CapabilityFlag::NoSpellCheck)" in fcitx_traits
 assert "privateInput()" not in fcitx_traits
-ibus_traits = body(ibus_source, "void report_field_traits()")
+assert "field_traits_.sync(session_, fieldTraits(), msime_client_set_field_traits);" in body(source, "void syncFieldTraits()")
+ibus_traits = body(ibus_source, "uint32_t current_field_traits() const")
 assert "(content_hints & IBUS_INPUT_HINT_PRIVATE) != 0" in ibus_traits
 assert "(content_hints & IBUS_INPUT_HINT_NO_SPELLCHECK) != 0" in ibus_traits
 assert "private_input" not in ibus_traits
+assert "field_traits.sync(session, current_field_traits(), msime_client_set_field_traits);" in body(ibus_source, "void report_field_traits()")
+# 每次 msime_client_focus(true) 之前都不经去重报告一次字段属性：脚本运行时在每次获得焦点之后要先看到属性确认（focus 之前的一次 set_field_traits，值相同也算）才往脚本投递事件。两个宿主各只有一处调用 msime_client_focus，就在这个辅助函数里，排在 confirm 之后。
+for host, helper, confirm in (
+    (source, "char *focusSession(bool focused)", "if (focused) field_traits_.confirm(session_, fieldTraits(), msime_client_set_field_traits);"),
+    (ibus_source, "char *focus_session(bool focused)", "field_traits.confirm(session, current_field_traits(), msime_client_set_field_traits);"),
+):
+    assert host.count("msime_client_focus(") == 1
+    focus = body(host, helper)
+    assert focus.index(confirm) < focus.index("msime_client_focus(")
 lifecycle_header = (root / "src/system/LifecycleFeedback.h").read_text()
 assert "MSIME_TRAIT_KNOWN | (private_field ? MSIME_TRAIT_SECURE | MSIME_TRAIT_PRIVATE : 0u) |" in lifecycle_header
 assert "(no_spellcheck ? MSIME_TRAIT_NO_SPELLCHECK : 0u)" in lifecycle_header

@@ -703,11 +703,18 @@ struct State {
   }
   // 把输入框的属性报告给生命周期核心，变了才调用：IBUS_INPUT_HINT_PRIVATE 按最严处理成 SECURE 加 PRIVATE，IBUS_INPUT_HINT_NO_SPELLCHECK 只报 NO_SPELLCHECK（LifecycleFeedback.h）。密码、PIN、数字一类用途根本不建会话。
   void report_field_traits() {
-    field_traits.sync(session,
-                      msime::linux_host::lifecycle_field_traits(
-                          (content_hints & IBUS_INPUT_HINT_PRIVATE) != 0,
-                          (content_hints & IBUS_INPUT_HINT_NO_SPELLCHECK) != 0),
-                      msime_client_set_field_traits);
+    field_traits.sync(session, current_field_traits(), msime_client_set_field_traits);
+  }
+  uint32_t current_field_traits() const {
+    return msime::linux_host::lifecycle_field_traits(
+        (content_hints & IBUS_INPUT_HINT_PRIVATE) != 0,
+        (content_hints & IBUS_INPUT_HINT_NO_SPELLCHECK) != 0);
+  }
+  // 本宿主对 msime_client_focus 的唯一调用。获得焦点（true）之前不论属性变没变都先报告一次（FieldTraitsReport::confirm）：同一个会话重新获得焦点、切换方案或中英文时 report_field_traits 的去重会省掉这次报告，而脚本运行时要在每次获得焦点之后先看到属性确认才往脚本投递事件。
+  char *focus_session(bool focused) {
+    if (focused)
+      field_traits.confirm(session, current_field_traits(), msime_client_set_field_traits);
+    return msime_client_focus(session, focused);
   }
   void open() {
     auto options = configured;
@@ -3617,7 +3624,7 @@ void sync_global_input_mode(IBusEngine *engine) {
   s.open();
   resync_punctuation_for_mode(engine);
   if (s.session)
-    apply(engine, msime_client_focus(s.session, s.input_enabled));
+    apply(engine, s.focus_session(s.input_enabled));
   clear(engine);
   publish_mode(engine);
 }
@@ -4727,7 +4734,7 @@ void focus_in(IBusEngine *engine) {
     // IBus may replay focus after negotiating client identity. Re-focusing
     // the same runtime would cancel input already typed during negotiation.
     if (s.session && (!already_focused || s.session != previous_session))
-      apply(engine, msime_client_focus(s.session, s.input_enabled));
+      apply(engine, s.focus_session(s.input_enabled));
     if (!s.properties_registered &&
         g_getenv("MSIME_DISABLE_IBUS_PROPERTIES") == nullptr) {
       register_properties(engine);
@@ -4790,13 +4797,13 @@ void focus_out(IBusEngine *engine) {
     if (blur_composition) {
       // The source is read from the view the composition was typed under, before the focus result replaces it.
       const auto source = typing_source(s);
-      const auto left = response(msime_client_focus(s.session, false));
+      const auto left = response(s.focus_session(false));
       // IBus writes the syllable as the preedit, not through commit_text, so it is counted here as typed text.
       if (left.contains("commit") && left.at("commit").is_string())
         record_typing_statistics(engine, left.at("commit").get<std::string>(), source);
       s.view = left.at("view");
     } else if (s.session)
-      apply(engine, msime_client_focus(s.session, false));
+      apply(engine, s.focus_session(false));
     clear(engine);
     publish_mode(engine);
   });
@@ -5158,7 +5165,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.nine_key_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5198,7 +5205,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.local_mode_overrides[key] = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5247,7 +5254,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.helpcode_schema_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5272,7 +5279,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.frequency_mode_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5285,7 +5292,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       if (step) s.frequency_linear_step_override = *step;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
     };
     if (property_name.rfind("FrequencyTriggerCount/", 0) == 0) {
@@ -5335,7 +5342,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.learning_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5357,7 +5364,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.shuangpin_preedit_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5399,7 +5406,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.wubi_auto_commit_unique_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5452,7 +5459,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.shuangpin_profile_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5602,7 +5609,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.theme_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5648,7 +5655,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       }
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5670,7 +5677,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.preedit_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5694,7 +5701,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.layout_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5718,7 +5725,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       setting_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5738,7 +5745,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.english_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5776,7 +5783,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.helpcode_override = enabled;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5818,7 +5825,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.scheme_override = selected;
       s.open();
       if (s.session)
-        apply(engine, msime_client_focus(s.session, true));
+        apply(engine, s.focus_session(true));
       publish_mode(engine);
       return;
     }
@@ -5888,7 +5895,7 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       s.open();
       resync_punctuation_for_mode(engine);
       if (s.session)
-        apply(engine, msime_client_focus(s.session, enabled));
+        apply(engine, s.focus_session(enabled));
       clear(engine);
       if (s.voice_active)
         render(engine, s.view);
@@ -5942,7 +5949,7 @@ void content_type(IBusEngine *engine, guint purpose, guint hints) {
     s.private_input = private_input;
     s.open();
     if (s.session)
-      apply(engine, msime_client_focus(s.session, true));
+      apply(engine, s.focus_session(true));
     sync_music(engine);
     publish_mode(engine);
   });
@@ -6116,7 +6123,7 @@ void toggle_input_mode(IBusEngine *engine) {
   s.open();
   resync_punctuation_for_mode(engine);
   if (s.session)
-    apply(engine, msime_client_focus(s.session, s.input_enabled));
+    apply(engine, s.focus_session(s.input_enabled));
   clear(engine);
   if (s.voice_active)
     render(engine, s.view);
@@ -6691,7 +6698,7 @@ gboolean process_key(IBusEngine *engine, guint key, guint keycode, guint flags) 
     if (!s.input_enabled)
       return;
     if (!s.view.at("focused").get<bool>())
-      apply(engine, msime_client_focus(s.session, true));
+      apply(engine, s.focus_session(true));
     // A key the active local mode or scheme spells with is input before any binding below can claim it: a page key, a paired bracket, smart punctuation or a candidate digit (SpellingSymbols.h). Space is one of them only while a Zhuyin syllable composes, where it is the first tone.
     if ((modifiers & ~IBUS_SHIFT_MASK) == 0) {
       const gunichar spelled = ibus_keyval_to_unicode(key);

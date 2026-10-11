@@ -48,8 +48,9 @@ Status: proposed
 - **上屏音来自核心。** 上屏后连击数取自派发回复的 `feedback.typing_effect`；没有这个键的回复（focus、语音这些不是派发的调用）不动连击数。两个宿主的解析器只按键名取值，多出的 `feedback` 键原本就会被忽略，契约测试现在断言它被读取。
 - **字段属性逐个标志映射，不复用宿主那个把隐私和不做拼写检查并在一起的布尔值。** IBus 的 `IBUS_INPUT_HINT_NO_SPELLCHECK`、Fcitx5 的 `NoSpellCheck` 只报 `NO_SPELLCHECK`，这类字段（终端、代码编辑器常这样标）从此照常出声、照常放音乐。IBus 的 `IBUS_INPUT_HINT_PRIVATE` 和 Fcitx5 的 `Sensitive` 都报 `SECURE | PRIVATE`，总带 `KNOWN`。密码、PIN、数字一类字段两个宿主仍然不建会话。原来的布尔值 `private_input` / `privateInput()` 照旧管学习、联网、剪贴板这些隐私行为，不动。输入框属性变了而会话不重建时（隐私与不做拼写检查之间切换），IBus 的 `content_type` 和 Fcitx5 的 `InputContextCapabilityChanged` 当场报告，音乐不等下一个键。
 - **音乐只说激活与否。** `sync_music` / `syncMusic` 改调 `msime_client_set_active`，条件去掉了隐私判断，SECURE 交给核心。IBus 两个输入上下文先进后出时，后获得焦点的成为所有者，先失焦的那个再 `set_active(false)` 也关不掉它的音乐。设置里的 `plugins` 变了而本会话正激活着时，宿主再调一次 `set_active(true)`：进程里什么声音都没开时核心不起播放器，激活那一刻的音乐请求没人收到，而 `set_active` 对选择加入的会话总是返回 true，宿主原来那套"被拒就下次再说"的重试（`MusicActivity`）不再起作用；不重新声明，刚在设置里打开的背景音乐要等下一次换焦点才响。
-- **轮次只给打字键开。** `msime_client_key` 只在原来会出按键音的那些按下时调用：会话在、中文输入开着、不在录音、不是松开、不是单独的修饰键、不是带 Ctrl/Alt/Super/Hyper/Meta 的快捷键。其余按下不开新的一轮，它们触发的派发算在上一轮里。顺序契约要求每个交给输入法的物理按下都开一轮，而 `msime_client_key` 没有"开一轮但不出声"的位（`MSIME_KEY_POINTER` 有这个效果，但拿它标键盘键是误报来源）；轮次要到第 3 阶段按轮计 fuel 才有人读，到时在核心里加一个位或宿主改用别的办法，那时再定。这个例外写进了 `msime_client.h` 顺序契约下面的"过渡期的例外"，不只留在这里：头文件是公开契约，按轮计数的使用方读的是它。IBus 屏幕键盘面板经 `panel_input_deliver` 直接调 `process_key`，原来不出声，现在也不开轮次；Fcitx5 的面板键走 `keyEvent`，原来出声，现在照样出声。
+- **轮次只给打字键开。** `msime_client_key` 只在原来会出按键音的那些按下时调用：会话在、中文输入开着、不在录音、不是松开、不是单独的修饰键、不是带 Ctrl/Alt/Super/Hyper/Meta 的快捷键。其余按下不开新的一轮，它们触发的派发算在上一轮里。顺序契约要求每个交给输入法的物理按下都开一轮，而 `msime_client_key` 没有"开一轮但不出声"的位（`MSIME_KEY_POINTER` 有这个效果，但拿它标键盘键是误报来源）；第 3 阶段按轮计 fuel 的脚本运行时（#7253）不会因为这类没有先调 `msime_client_key` 的派发熔断，宿主因此维持现状；在核心里加一个位还是宿主改用别的办法，以后再定。这个例外写进了 `msime_client.h` 顺序契约下面的"过渡期的例外"，不只留在这里：头文件是公开契约，按轮计数的使用方读的是它。IBus 屏幕键盘面板经 `panel_input_deliver` 直接调 `process_key`，原来不出声，现在也不开轮次；Fcitx5 的面板键走 `keyEvent`，原来出声，现在照样出声。
 - **录音时不出声由宿主挡着。** 核心认得 `TRAIT_VOICE_ACTIVE`，但只按 `SECURE` 和 `FULLSCREEN` 静音。所以录音期间宿主不调 `msime_client_key`，并对音乐说"未激活"，保持原来的"录音时没有按键音和音乐"；这一阶段不报 `VOICE_ACTIVE`。按 Esc 取消录音的那个键因此也不出声：`key_down` / `keyDown` 在引擎之前运行，读到的是录音还在的状态；原来按键音在引擎处理之后才问，那时录音已经取消，这个键会响。不为它开例外：它是录音期间的键，取消录音的键不出声和录音期间不出声是同一条规则。
+- **每次获得焦点之前确认一次字段属性。** 脚本运行时（#7253）在每次 `msime_client_focus(true)` 之后，要等宿主确认过字段属性才往脚本投递事件：focus 之前的一次 `set_field_traits`（值相同也算），或之后的第一个键。宿主"变了才报告"的去重会把这次确认省掉：IBus 同一个会话重新获得焦点、切换方案或中英文时属性没变，Fcitx5 切换方案时 `ensure()` 刚为新会话报告过又紧接着再 `focus(true)`，于是从获得焦点到第一个键之间脚本什么都收不到。两个宿主因此各只留一处 `msime_client_focus` 调用（IBus 的 `focus_session`、Fcitx5 的 `focusSession`），传 true 时先经 `FieldTraitsReport::confirm` 不去重地报告一次；传 false 不报告。
 - **自动重复照旧出声**（设计待决问题 Q3），只是带上 `MSIME_KEY_REPEAT`，画出来不计连击。
 - **指针点选和翻页先开一轮。** IBus 的 `candidate_clicked`、`page_up`/`page_down`、滚轮的 `cursor_up`/`cursor_down` 和托盘菜单「候选翻页」里的上一页、下一页（`property_activate`），Fcitx5 候选的 `select()` 和候选列表的 `prev()`/`next()`，都先报告属性再 `msime_client_key(MSIME_KEY_POINTER)`，不出声不画。
 - **宿主写入译文后用命令 19。** 两个宿主各有两处先自己 `commit_text` 一条译文、再丢弃组字（`Ctrl+Enter` 只有一个义项时、从译文候选里选一个），这两处改发 `MSIME_CANCEL_AFTER_HOST_COMMIT`，核心把组字的结束记成 `HostCommit` 而不是取消。对会话的作用同 `MSIME_CANCEL`，用户听不出区别。
@@ -76,6 +77,6 @@ Status: proposed
 - 各桌面宿主的 JSON 解析器能否容忍新增的 `feedback` 键还没核实，每个宿主接入的 PR 都要先加契约测试。
 - 移动端目标（iOS、Android、OpenHarmony）本阶段没有交叉编译验证；新代码不带平台 cfg，播放器在这些平台上本来就是空实现，但要等 CI 的平台线确认。
 - IBus 两个输入上下文的焦点进出顺序未核实，它直接影响第 2 阶段音乐所有权的验收。第 2c 阶段已经让后激活的会话成为所有者，所以无论哪个顺序，音乐都跟着最后获得焦点的那个，但这仍要在真实桌面上确认。
-- Linux 宿主不为修饰键、快捷键、松开、录音时的键和 IBus 屏幕键盘的键开轮次（见第 2c 阶段一节），第 3 阶段按轮计 fuel 之前要补上。
+- Linux 宿主不为修饰键、快捷键、松开、录音时的键和 IBus 屏幕键盘的键开轮次（见第 2c 阶段一节）。脚本运行时不因此熔断，但这些按下引起的派发记在上一轮里、用上一轮的 fuel，补上"开一轮但不出声"的位之前一直如此。
 
 相关：[Windows 打字特效对齐 macOS](../../implemented/feature/2026-10-10-windows-typing-effects-caret-overlay.md) 是第 2 阶段 Windows 接入时要改的那套按键音、特效和 Aux 管道路径。
