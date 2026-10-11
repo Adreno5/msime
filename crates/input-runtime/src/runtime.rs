@@ -871,6 +871,11 @@ impl<E: InputEngine> Runtime<E> {
         self.cached.scheme
     }
 
+    /// 当前本地模式的名字（`View::local_mode`），不构造 [`View`]。生命周期核心在派发前读它，按键路径上不能为此克隆一份视图。
+    pub fn local_mode(&self) -> &str {
+        &self.cached.local_mode
+    }
+
     /// Whether punctuation may use the Engine's Chinese route for this applied state.
     /// This mirrors the host-facing mode checks without materializing a [`View`].
     pub fn punctuation_host_context_available(&self, english_mode: bool) -> bool {
