@@ -939,7 +939,8 @@ export function parseClipboardDriverStep(reply: string): ClipboardDriverStep | n
     const failure: unknown = value.error;
     if (failure === null || typeof failure !== "object" || Array.isArray(failure)) return null;
     const code: unknown = (failure as Action).code;
-    if (typeof code !== "string" || !/^[a-z0-9_]{1,64}$/.test(code)) return null;
+    // 与驱动认可的错误码同一个字符集（client-core 的 `is_bounded_ascii_identifier`），驱动给的码一个都不丢。
+    if (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code)) return null;
     return { keystore, error: code };
   }
   if (value.done === undefined || value.done === null) return null;

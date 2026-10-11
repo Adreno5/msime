@@ -478,6 +478,14 @@ async function main(): Promise<void> {
       ) === null,
       "an error code that is not an identifier is malformed",
     );
+    for (const code of ["http_500", "Rate-Limited", "clipboard_device_pending"]) {
+      check(
+        parseClipboardDriverStep(
+          JSON.stringify({ ok: true, value: { error: { status: 0, code }, keystore: "v1.x" } }),
+        )?.error === code,
+        `every identifier the driver accepts is kept: ${code}`,
+      );
+    }
   });
 
   await group("a page too large for the driver is refused before it is handed over", async () => {
