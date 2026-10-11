@@ -26,9 +26,9 @@ public final class DoubaoAsrPolicy {
         return PROVIDER.equals(provider);
     }
 
-    /** A streaming response carries text; reject non-string JSON values before display. */
+    /** Compatibility entry point; transcript validation is shared with HTTP ASR. */
     static String strictText(Object value) {
-        return AiProviderResponse.boundedText(value, HttpAsrPolicy.MAX_TRANSCRIPT);
+        return HttpAsrPolicy.strictText(value);
     }
 
     static boolean validEndpoint(String endpoint) {
