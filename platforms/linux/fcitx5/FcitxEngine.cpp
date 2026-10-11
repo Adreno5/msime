@@ -63,6 +63,7 @@
 #include "../src/core/SpellingSymbols.h"
 #include "../src/core/LocalModeSwitches.h"
 #include "../src/system/KeySound.h"
+#include "../src/system/LifecycleFeedback.h"
 #include "../src/system/DiagnosticLog.h"
 #include "../src/system/PanelInputChannel.h"
 #include "../src/core/HelpcodeDefaults.h"
@@ -525,7 +526,7 @@ public:
     key_presses_.forget_held();
     hideVoiceOverlay();
     wave_overlay_.reset();
-    music_.release(session_, msime_client_music_set_active);
+    music_.release(session_, msime_client_set_active);
     typing_combo_ = 0;
     key_repeat_.reset();
   }
@@ -536,6 +537,7 @@ public:
     if (session_) msime_linux_diagnostic_write("focus_out");
     if (session_) msime::host_api::discard_string(msime_client_destroy(session_));
     session_ = 0;
+    field_traits_.reset();
     view_ = Json::object();
     preferences_ = Json::object();
     navigation_ = Json::object();
@@ -709,6 +711,21 @@ public:
   bool privateInput() const {
     return ic_.capabilityFlags().testAny(fcitx::CapabilityFlags{
       fcitx::CapabilityFlag::Sensitive, fcitx::CapabilityFlag::NoSpellCheck});
+  }
+  // 把输入框的属性报告给生命周期核心，变了才调用。逐个标志映射，不复用 privateInput() 的布尔值：Sensitive 按最严处理成 SECURE 加 PRIVATE，NoSpellCheck 只报 NO_SPELLCHECK，这样只带 NoSpellCheck 的普通字段照常出声（LifecycleFeedback.h）。restricted() 的字段根本不建会话。
+  void syncFieldTraits() {
+    const auto flags = ic_.capabilityFlags();
+    field_traits_.sync(session_,
+                       msime::linux_host::lifecycle_field_traits(
+                           flags.test(fcitx::CapabilityFlag::Sensitive),
+                           flags.test(fcitx::CapabilityFlag::NoSpellCheck)),
+                       msime_client_set_field_traits);
+  }
+  // 指针点选和翻页同样先开启新的一轮（msime_client.h 的顺序契约）：MSIME_KEY_POINTER 不出声、不画。
+  void pointerTurn() {
+    if (!session_) return;
+    syncFieldTraits();
+    msime_client_key(session_, MSIME_KEY_POINTER);
   }
   bool toggleEnglish() {
     if (!session_) return false;
@@ -1839,6 +1856,9 @@ public:
     const auto document = options.dump();
     view_ = response(msime_client_create(reinterpret_cast<const uint8_t *>(document.data()), document.size()));
     session_ = msime::linux_host::strict_json_required_integer<uint64_t>(view_.at("session"));
+    // 按键音、上屏音、打字特效和背景音乐都交给生命周期核心（msime_client.h 的 MSIME_LIFECYCLE_FEEDBACK）；字段属性在第一个键之前就报告。
+    msime_client_set_lifecycle(session_, MSIME_LIFECYCLE_FEEDBACK);
+    syncFieldTraits();
     applied_preferences_revision_ = 0;
     msime_linux_diagnostic_write("focus_in");
     session_chinese_punctuation_ =
@@ -1896,6 +1916,10 @@ public:
             const auto encoded = effective.dump();
             view_ = response(msime_client_update_preferences(session_,
                 reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size())).at("view");
+            // 声音设置变了而本会话正激活着：再声明一次激活。进程里什么声音都没开时核心不起播放器，激活那一刻的音乐请求就没人收到；不重新声明，刚在设置里打开的背景音乐要等到下一次换焦点才响。
+            if (music_.told() && preferences_.value("plugins", Json(nullptr)) !=
+                                     effectivePreferences.value("plugins", Json(nullptr)))
+              msime_client_set_active(session_, true);
             // 与插件共用的已见选择比较，失焦窗口补读同一份存储不能再次接管。
             const auto chosen = candidateThemeSelectionChanged(snapshot.at("preferences"));
             preferences_ = std::move(effectivePreferences);
@@ -3046,13 +3070,9 @@ public:
       const auto context = result.value("commit_context", Json(nullptr));
       commitText(text, std::nullopt,
                  !context.is_object() || context.value("typing_statistics", true));
-      // The key sound played when the key went down; this is the commit's own sound, or the next note of a melody that advances on commits. Never for a secure field.
-      if (!text.empty() && !privateInput()) {
-        msime_client_commit_sound(session_);
-        // The commit counts nothing; it reports the combo as it stands, which is how one that lapsed while the user paused leaves the aux line drawn next.
-        typing_combo_ = msime::linux_host::typing_effect_combo(
-            msime_client_typing_effect(session_, msime::linux_host::kTypingEffectCommit));
-      }
+      // 上屏音（或随上屏前进的旋律音符）由生命周期核心在这次派发里出过了，排在按键音之后；隐私字段里核心什么都不出。回复的 feedback 带着上屏之后的打字特效：上屏不计数，只报告连击现在的样子，停顿后断掉的连击就这样让接着画出的辅助行跟着清掉。focus 等不是派发的调用没有它，连击照旧。
+      if (const auto effect = msime::linux_host::reply_typing_effect(result); effect && !text.empty())
+        typing_combo_ = msime::linux_host::typing_effect_combo(*effect);
       if (pair_inserted_) {
         if (const auto closing = msime::linux_host::paired_closing_from_text(text))
           paired_tracker_.push(*closing);
@@ -3418,7 +3438,8 @@ public:
     const auto text = translation_options_.at(index);
     exitTranslationCandidates();
     commitText(text, msime::linux_host::TypingSource::Reply);
-    command(MSIME_CANCEL);
+    // 译文是宿主自己写进文档的，丢弃组字时告诉生命周期核心组字是这样结束的，而不是被取消（对会话的作用同 MSIME_CANCEL）。
+    command(MSIME_CANCEL_AFTER_HOST_COMMIT);
   }
   void render();
   std::string candidateAux() const;
@@ -3523,39 +3544,41 @@ public:
                            input_enabled_ ? typingSource()
                                           : msime::linux_host::TypingSource::English);
   }
-  // Background music may play while this input method is active in a focused field that is not a secure one, and not while a recording would pick it up. The player serves the whole fcitx5 process, so this only tells it about a change (KeySound.h); close() tells it the music is over before the session goes away.
+  // 背景音乐只在本输入法获得焦点、没有录音时可以播放。这里只告诉生命周期核心本会话是否激活（msime_client_set_active），变了才说；核心记着哪个会话是音乐的所有者，再按字段属性决定：Sensitive 字段（报成 SECURE）里不放，只带 NoSpellCheck 的普通字段照常放。releaseFocusResources() 在离开输入框和会话销毁前告诉核心本会话停用。
   void syncMusic() {
-    music_.sync(session_, ic_.hasFocus() && !restricted() && !privateInput() && !voice_loading_,
-                msime_client_music_set_active);
+    music_.sync(session_, ic_.hasFocus() && !restricted() && !voice_loading_, msime_client_set_active);
   }
-  // The key sound of one press: every typing key while Chinese input is on in a field that is not a secure one, whether the Engine or the application takes the key, and none while a recording is running. This runs inside the fcitx5 daemon, so it only posts a request: the Host API opens no audio device and starts no thread until it finds a sound switched on, and an audio failure turns sound off for the process with one line on stderr instead of reaching this addon (msime_client.h).
-  void playKeySound(const fcitx::KeyEvent &event) {
-    syncMusic();
+  // 一次按下交给生命周期核心：每个打字键，只要中文输入开着、没有在录音，不论之后是引擎还是应用拿走这个键。先比较并报告字段属性，再调 msime_client_key，都在 key() 处理这个键之前，这是顺序契约（msime_client.h），按键音因此排在这个键带来的上屏音前面；Sensitive 字段里核心不出声也不画。松开、单独的修饰键和快捷键不算打字（key_press_sounds），不开新的一轮。录音中按 Esc 取消录音的那个键也不出声：这里读到的是 key() 处理前的状态，录音还在。这里跑在 fcitx5 守护进程里，所以只投递请求：Host API 在发现某个声音打开之前不开音频设备、不起线程，音频出错时只在 stderr 写一行并在本进程关掉声音，不会落到插件里。打字特效的连击数现在就记下，key() 里画出的辅助行用的就是它。
+  void keyDown(const fcitx::KeyEvent &event) {
     const auto sym = static_cast<std::uint32_t>(event.key().sym());
     if (event.isRelease()) key_repeat_.release(sym);
-    if (!session_ || !input_enabled_ || !ic_.hasFocus() || restricted() || privateInput() ||
-        voice_loading_)
+    if (!session_ || !input_enabled_ || !ic_.hasFocus() || restricted() || voice_loading_)
       return;
     const bool shortcut = event.rawKey().states().testAny(fcitx::KeyStates{
         fcitx::KeyState::Ctrl, fcitx::KeyState::Alt, fcitx::KeyState::Super,
         fcitx::KeyState::Hyper, fcitx::KeyState::Meta});
     if (!msime::linux_host::key_press_sounds(event.isRelease(), event.key().isModifier(), shortcut))
       return;
-    const auto keyClass = msime::linux_host::key_sound_class(sym);
-    msime_client_key_sound(session_, keyClass);
-    // The typing effect of the same press, from the same session: Linux shows only the combo count, in the candidate aux line (setAuxDown; the voice, emoji search and configuration notices own setAuxUp). The key was rendered before this point, so a count that moved redraws that line alone.
-    const auto combo = msime::linux_host::typing_effect_combo(msime_client_typing_effect(
-        session_, keyClass | (key_repeat_.press(sym) ? msime::linux_host::kTypingEffectRepeat : 0)));
-    if (combo == typing_combo_) return;
-    typing_combo_ = combo;
+    syncFieldTraits();
+    // Linux 只显示打字特效里的连击数，在候选下方的辅助行（setAuxDown；setAuxUp 归语音、表情搜索和配置提示）。
+    typing_combo_ = msime::linux_host::typing_effect_combo(msime_client_key(
+        session_, msime::linux_host::lifecycle_key(msime::linux_host::key_sound_class(sym),
+                                                   key_repeat_.press(sym))));
+  }
+  // key() 处理完这个键之后：焦点、录音这些状态已经定下来，同步背景音乐。连击数变了就单独重画辅助行，这个键交给了应用、没有经过 render() 时也一样。
+  void keySettled(std::uint32_t comboBefore) {
+    syncMusic();
+    if (typing_combo_ == comboBefore) return;
     if (view_.is_object() && view_.contains("candidates") && !view_.at("candidates").empty()) {
       ic_.inputPanel().setAuxDown(fcitx::Text(candidateAux()));
       ic_.updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
     }
   }
-  // What the process's sound player was last told about background music; see syncMusic.
+  // 背景音乐经 msime_client_set_active 最近一次告诉核心的激活状态，见 syncMusic。
   msime::linux_host::MusicActivity music_;
-  // The combo count the session last answered msime_client_typing_effect with, and the key held down, so an auto-repeat is drawn but not counted.
+  // 生命周期核心现在知道的字段属性，变了才重新报告，见 syncFieldTraits。
+  msime::linux_host::FieldTraitsReport field_traits_;
+  // 生命周期核心最近一次报告的连击数（msime_client_key 的返回值或派发回复的 feedback），以及按住的那个键，自动重复照画但不计连击。
   std::uint32_t typing_combo_ = 0;
   msime::linux_host::KeyRepeat key_repeat_;
   // Every key event MSIME receives passes through here before key() routes it, so the heatmap counts keys the IME consumes for a composition as well as keys it hands back to the application. Only key downs count, once per physical press; a raw code below 8 has no evdev key behind it (a synthetic event, such as a panel's typed key).
@@ -3857,7 +3880,11 @@ public:
         text_(candidate.at("text").get<std::string>()),
         fixed_position_(msime::linux_host::strict_json_value(candidate, "fixed_position", uint8_t{})) {}
   void select(fcitx::InputContext *ic) const override {
-    try { ic->propertyFor(factory_)->select(session_, generation_, index_); } catch (...) {}
+    try {
+      auto *state = ic->propertyFor(factory_);
+      state->pointerTurn();
+      state->select(session_, generation_, index_);
+    } catch (...) {}
   }
   uint64_t session() const { return session_; }
   uint64_t generation() const { return generation_; }
@@ -3988,6 +4015,7 @@ private:
   void move(uint32_t command) {
     // render() replaces this list. Do not access members after dispatch.
     auto *state = &state_;
+    state->pointerTurn();
     if (state->translationCandidatesActive()) {
       // A stale Fcitx candidate list must not page a newer translation overlay.
       // Rendering replaces this list, but Fcitx may still dispatch an already
@@ -6236,6 +6264,8 @@ public:
             state->close();
             state->clearPanel();
           } else {
+            // 会话照旧，但 Sensitive 和 NoSpellCheck 之间的切换也会改变字段属性；现在就报告，音乐不等下一个键。
+            state->syncFieldTraits();
             // Client-side preedit support may also change while composing.
             try { state->render(); } catch (...) { unavailable(*state); }
           }
@@ -6560,9 +6590,11 @@ public:
     try {
       if (state->ensure()) {
         state->countKeyPress(event);
+        const auto comboBefore = state->typing_combo_;
+        state->keyDown(event);
         if (state->key(event)) event.filterAndAccept();
         else state->countPassthroughKey(event);
-        state->playKeySound(event);
+        state->keySettled(comboBefore);
       }
     }
     catch (const OptionsNotConfigured &) { notConfigured(*state, false); }
@@ -7510,7 +7542,8 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
           const auto senses = msime::linux_host::split_translation_gloss(translation);
           if (!senses.empty()) {
             commitText(senses.front(), msime::linux_host::TypingSource::Reply);
-            command(MSIME_CANCEL);
+            // 同 commitTranslationCandidate：宿主写入的译文，组字按 HostCommit 结束。
+            command(MSIME_CANCEL_AFTER_HOST_COMMIT);
             return true;
           }
         }
