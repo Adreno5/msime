@@ -1204,6 +1204,33 @@ fn removing_a_stray_file_model_slot_succeeds_and_cleans_it() {
     assert!(root_entries(root.path()).is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn removing_while_a_different_process_installs_reports_busy() {
+    let state = tempfile::tempdir().unwrap();
+    let root = state.path().join("models");
+    fs::create_dir(&root).unwrap();
+    let held = acquire_model_lock(&root).unwrap();
+    let remove_root = root.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+    let removal = thread::spawn(move || {
+        result_tx
+            .send(remove(&remove_root, default_model_id()))
+            .unwrap();
+    });
+
+    // A lock held by another host process must make removal fail immediately. Waiting for the
+    // install and deleting the newly published model would violate the host API contract.
+    let first = result_rx.recv_timeout(Duration::from_millis(100));
+    drop(held);
+    let result = first.unwrap_or_else(|_| result_rx.recv().unwrap());
+    removal.join().unwrap();
+    assert!(
+        result.is_err(),
+        "removal unexpectedly waited and succeeded: {result:?}"
+    );
+}
+
 #[test]
 fn listing_reports_installed_models_and_removal_accepts_catalog_ids_only() {
     let root = tempfile::tempdir().unwrap();
@@ -1620,7 +1647,7 @@ fn installing_files_publishes_them_with_the_manifest_and_reports_progress() {
 }
 
 #[test]
-fn removal_waits_for_an_install_before_cleaning_its_staging_directory() {
+fn removal_refuses_while_an_install_holds_the_model_lock() {
     let root = tempfile::tempdir().unwrap();
     let files = pack_files();
     let id = default_model_id().to_owned();
@@ -1659,17 +1686,17 @@ fn removal_waits_for_an_install_before_cleaning_its_staging_directory() {
         removed_tx.send(result).unwrap();
     });
 
-    // Without serialization, remove_leftovers deletes the install's staging directory and
-    // returns while the installer is paused before publishing it.
-    assert!(removed_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    let remove_result = removed_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("removal should report the busy install without waiting")
+        .expect_err("removal must refuse an install in another process");
     release_tx.send(()).unwrap();
 
     let (install_result, _events) = install.join().unwrap();
     assert!(install_result.is_ok(), "install failed: {install_result:?}");
-    let remove_result = removed_rx.recv().unwrap();
     removal.join().unwrap();
-    assert!(remove_result.is_ok(), "remove failed: {remove_result:?}");
-    assert!(!root.path().join(id).exists());
+    assert!(matches!(remove_result, LocalModelError::InstallRunning));
+    assert!(root.path().join(id).exists());
 }
 
 /// 摘要不符的文件不留下，也不发布任何东西；同一包里已经校验过的文件留在续传目录，下次不用再下。

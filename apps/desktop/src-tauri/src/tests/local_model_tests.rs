@@ -122,6 +122,10 @@ fn install_failures_map_to_the_codes_the_settings_page_knows() {
     for (error, code) in [
         (LocalModelError::Cancelled, "local_model_cancelled"),
         (
+            LocalModelError::InstallRunning,
+            "local_model_install_running",
+        ),
+        (
             LocalModelError::Network("fixture".into()),
             "local_model_network",
         ),
