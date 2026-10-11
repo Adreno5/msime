@@ -10866,6 +10866,54 @@ fn command_tables_and_mentions_reach_the_engine_from_the_plugins_directory() {
     assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
+/// 设置页重新导入同 id 的指令表时整个包目录被换掉。新清单与旧清单长度相同、修改时间又落在同一个计时粒度里（秒级或两秒级时间戳的文件系统）时，只比修改时间和长度看不出变化；获得焦点时仍要换上新表。
+#[cfg(unix)]
+#[test]
+fn a_reimported_table_of_the_same_length_and_time_is_picked_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = dir.path().join("state/plugins");
+    let import = |name: &str, template: &str| {
+        let source = dir.path().join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("plugin.toml"),
+            format!("schema_version = 1\nkind = \"command_table\"\nid = \"work\"\nname = \"work\"\nversion = \"1\"\nlicense = \"CC0-1.0\"\n[[commands]]\ntrigger = \"sig\"\ntitle = \"签名\"\ntemplate = \"{template}\"\n"),
+        )
+        .unwrap();
+        msime_client_core::plugins::import(&source, &plugins).unwrap();
+    };
+    import("first", "张三敬上");
+    let mut preferences = chinese_preferences();
+    preferences.local_modes.command = true;
+    preferences.plugins.command_tables = vec!["work".into()];
+    let handle = plugin_host(dir.path(), preferences);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    assert!(local_mode_candidates(handle, b"/sig").contains(&"张三敬上".to_owned()));
+
+    let manifest = plugins.join("command_table/work/plugin.toml");
+    let before = std::fs::metadata(&manifest).unwrap();
+    import("second", "李四敬上");
+    let after = std::fs::metadata(&manifest).unwrap();
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the test needs a same-length table"
+    );
+    // 模拟粗粒度时间戳：把新清单的修改时间设成与旧清单相同。
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_modified(before.modified().unwrap())
+        .unwrap();
+    assert_eq!(read(msime_client_focus(handle, false))["ok"], true);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    let commands = local_mode_candidates(handle, b"/sig");
+    assert!(commands.contains(&"李四敬上".to_owned()), "{commands:?}");
+    assert!(!commands.contains(&"张三敬上".to_owned()), "{commands:?}");
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
 fn install_phrase_table(root: &std::path::Path, id: &str, phrases: &[(&str, &str)]) {
     let pack = root.join("state/plugins/phrase_table").join(id);
     std::fs::create_dir_all(&pack).unwrap();
