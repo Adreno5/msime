@@ -2157,8 +2157,12 @@ fn helpcode_lines(count: u32) -> Vec<u8> {
 #[test]
 fn helpcode_tables_are_bounded_and_load_as_codes() {
     let root = tempdir().unwrap();
-    installed_helpcode(root.path(), "full", &helpcode_lines(30_000));
+    let full_path = installed_helpcode(root.path(), "full", &helpcode_lines(30_000));
     installed_helpcode(root.path(), "over", &helpcode_lines(30_001));
+    let detail = helpcode_pack::read(&full_path, "table.txt").unwrap();
+    assert_eq!(detail.entries, 30_000);
+    assert_eq!(detail.preview.len(), helpcode_pack::PREVIEW_ENTRIES);
+    assert_eq!(detail.preview.capacity(), helpcode_pack::PREVIEW_ENTRIES);
     let full = load_package(root.path(), None, PluginKind::Helpcode, "full").unwrap();
     let json = serde_json::to_value(&full).unwrap();
     assert_eq!(json["kind"], "helpcode");
@@ -2191,11 +2195,14 @@ fn helpcode_tables_are_bounded_and_load_as_codes() {
         "table.txt 为空或太大"
     );
 
-    installed_helpcode(
+    let small_path = installed_helpcode(
         root.path(),
         "small",
         "\u{FEFF}# 注释\r\n你=ni\r\n好=h\r\n".as_bytes(),
     );
+    let small_detail = helpcode_pack::read(&small_path, "table.txt").unwrap();
+    assert_eq!(small_detail.entries, 2);
+    assert_eq!(small_detail.preview.capacity(), 2);
     let codes = helpcode_pack::load_codes(root.path(), "small").unwrap();
     assert_eq!(codes.len(), 2);
     assert_eq!(codes["你"], "ni");
