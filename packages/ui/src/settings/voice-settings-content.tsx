@@ -1,4 +1,9 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { ActionButton } from "../core/action-button";
+import { FluentIcon } from "../core/fluent-icons";
+import { fullScreenColumn, fullScreenSurface } from "../keyboard/touch-keyboard-skin-editor";
+import { pushMobileSettingsState } from "./mobile-navigation";
+import { useMobilePopState } from "./use-mobile-pop-state";
 import * as settings from "./settings-style";
 import { SettingsGroupBlock } from "./settings-group-block";
 import type {
@@ -37,7 +42,7 @@ import {
 } from "./voice-credential-test-config";
 import type { ProviderPresetControlFactory } from "./provider-preset-control";
 import type { useProviderCredentials } from "./use-provider-credentials";
-import { GroupList, MoreOptions } from "../core/platform-controls";
+import { GroupList, LinkRow, MoreOptions } from "../core/platform-controls";
 import { SettingsPageFieldset } from "./settings-page-fieldset";
 
 /** 分组及其下方的说明，二者间距与分组标题到其各行的间距相同。 */
@@ -145,6 +150,20 @@ export function VoiceSettingsContent({
   showVoiceCaptureDevices,
   captureBackendOptions,
 }: VoiceSettingsContentProps) {
+  // HarmonyOS 手机上「服务配置」子视图开着没有。和「浏览更多」图库一样压一条历史记录，系统返回手势先关它；离开语音页时它随之关上。
+  const [phoneServiceOpen, setPhoneServiceOpen] = useState(false);
+  useMobilePopState(mobilePlatform, (event) => {
+    const state = event.state as Record<string, unknown> | null;
+    setPhoneServiceOpen(state?.voiceService === true);
+  });
+  useEffect(() => {
+    if (hidden) setPhoneServiceOpen(false);
+  }, [hidden]);
+  const openPhoneService = () => {
+    pushMobileSettingsState({ voiceService: true });
+    setPhoneServiceOpen(true);
+  };
+  const closePhoneService = () => window.history.back();
   const polishEnabled = isVoicePolishEnabled(voiceInput);
   const asrProviderSettings = (
     <VoiceAsrProviderSettingsSection
@@ -326,7 +345,63 @@ export function VoiceSettingsContent({
   );
   if (harmonyPlatform && mobilePlatform) {
     const punctuationSupported = voiceInput.asr_provider === "doubao";
-    // HarmonyOS 手机与 Android 的 `VoicePage` 一样遵循设计稿：「识别」组放语言和标点，随后「识别服务」组放总开关、服务及其运行所需的条件，原先位于页首的介绍改作该组的脚注。设计稿中的「离线识别」「启动方式」「隐私」在 HarmonyOS 上没有对应功能（没有离线回退，没有上传管线，键盘工具栏也不再有可供 `touch_voice_shortcut` 显示的语音按钮），因此不绘制。
+    // 「服务配置」行右侧的状态：网络服务看有没有填密钥，本地识别看有没有选模型；系统识别不用配置，不画这一行。
+    const serviceStatus = serviceVoice
+      ? (voiceInput.asr_token ?? "").trim()
+        ? "已填写"
+        : "未填写"
+      : localVoice
+        ? voiceInput.asr_model_path
+          ? "已选模型"
+          : "未选模型"
+        : null;
+    const soundEnabled = voiceInput.sound_enabled !== false;
+    if (phoneServiceOpen)
+      // 服务配置子视图：密钥、接口、模型、测试这些只有配置服务的人才看，连同润色服务、提示音细分和录音设备，都收在这里，不摊在语音页上。
+      return (
+        <SettingsPageFieldset disabled={disabled} hidden={hidden} ariaLabel="语音输入">
+          <div className={fullScreenSurface} role="dialog" aria-modal="true" aria-label="服务配置">
+            <section className={fullScreenColumn}>
+              <header className={settings.pageHeader}>
+                <ActionButton
+                  action={closePhoneService}
+                  className={settings.pageBackButton}
+                  ariaLabel="返回"
+                  label={<FluentIcon name="arrow_left" size={22} />}
+                />
+                <h2 className={settings.pageTitle}>服务配置</h2>
+              </header>
+              <GroupList title="识别服务">
+                {asrProviderSettings}
+                {doubaoOptionsVisible && (
+                  <MoreOptions>
+                    <DoubaoOptionsRows {...doubaoOptionsProps} punctuation={false} />
+                  </MoreOptions>
+                )}
+                {localModelSettings}
+                {asrServiceTest}
+              </GroupList>
+              {polish}
+              <GroupList title="提示音">
+                <SwitchRow
+                  title="开始录音提示音"
+                  disabled={!soundEnabled}
+                  checked={voiceInput.start_sound !== false}
+                  onChange={(start_sound) => updateVoice({ start_sound })}
+                />
+                <SwitchRow
+                  title="结束录音提示音"
+                  disabled={!soundEnabled}
+                  checked={voiceInput.end_sound !== false}
+                  onChange={(end_sound) => updateVoice({ end_sound })}
+                />
+              </GroupList>
+              {captureDevices}
+            </section>
+          </div>
+        </SettingsPageFieldset>
+      );
+    // HarmonyOS 手机与 Android 的 `VoicePage` 一样遵循设计稿：「识别」组放语言、标点和边说边显示，「识别服务」组放总开关、服务和它的配置入口，「录音」组只留两个常用开关。密钥、接口、模型、润色服务、提示音细分和录音设备都在「服务配置」子视图里。设计稿中的「离线识别」「启动方式」「隐私」在 HarmonyOS 上没有对应功能（没有离线回退，没有上传管线，键盘工具栏也不再有可供 `touch_voice_shortcut` 显示的语音按钮），因此不绘制。不画「语音快捷键」：Ctrl+F9、长按右 Alt 这些要连实体键盘才用得上，2in1 照旧显示。
     return (
       <SettingsPageFieldset disabled={disabled} hidden={hidden} ariaLabel="语音输入">
         <GroupList title="识别">
@@ -344,6 +419,13 @@ export function VoiceSettingsContent({
             checked={voiceInput.doubao_enable_punc !== false}
             onChange={(doubao_enable_punc) => updateVoice({ doubao_enable_punc })}
           />
+          {showVoiceStreamPreedit && (
+            <SwitchRow
+              title="边说边显示"
+              checked={voiceInput.stream_inline_preedit === true}
+              onChange={(stream_inline_preedit) => updateVoice({ stream_inline_preedit })}
+            />
+          )}
         </GroupList>
         <div className={groupWithFooter}>
           <GroupList title="识别服务">
@@ -366,14 +448,9 @@ export function VoiceSettingsContent({
                 })
               }
             />
-            {asrProviderSettings}
-            {doubaoOptionsVisible && (
-              <MoreOptions>
-                <DoubaoOptionsRows {...doubaoOptionsProps} punctuation={false} />
-              </MoreOptions>
+            {serviceStatus && (
+              <LinkRow title="服务配置" value={serviceStatus} onClick={openPhoneService} />
             )}
-            {localModelSettings}
-            {asrServiceTest}
           </GroupList>
           <p className={groupFooter}>
             {harmonyPhoneVoiceFooter({
@@ -383,11 +460,18 @@ export function VoiceSettingsContent({
             })}
           </p>
         </div>
-        {/* 不画「语音快捷键」：Ctrl+F9、长按右 Alt 这些要连实体键盘才用得上，手机上列出来只是一堆用不到的开关。2in1 照旧显示。 */}
-        {recordingBehavior}
-        {recognitionResult}
-        {polish}
-        {captureDevices}
+        <GroupList title="录音">
+          <SwitchRow
+            title="提示音"
+            checked={soundEnabled}
+            onChange={(sound_enabled) => updateVoice({ sound_enabled })}
+          />
+          <SwitchRow
+            title="录音时静音其他声音"
+            checked={voiceInput.mute_system_audio === true}
+            onChange={(mute_system_audio) => updateVoice({ mute_system_audio })}
+          />
+        </GroupList>
       </SettingsPageFieldset>
     );
   }

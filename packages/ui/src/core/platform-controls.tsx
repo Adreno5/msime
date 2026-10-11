@@ -101,25 +101,30 @@ export function Row({
   );
 }
 
-/** 跳转行：没有控件，点击后去别处。`external` 为假时打开另一个设置页，行尾画 ›；为真时打开应用外的链接，行尾画 ↗。按钮以标题命名，以说明描述。 */
+/** 跳转行：没有控件，点击后去别处。`external` 为假时打开另一个设置页，行尾画 ›；为真时打开应用外的链接，行尾画 ↗。`value` 是画在箭头前的当前状态（例如「已填写」）。按钮以标题命名，以说明和状态描述。 */
 export function LinkRow({
   title,
   description,
+  value,
   external,
   onClick,
 }: {
   title: string;
   description?: ReactNode;
+  value?: string;
   external?: boolean;
   onClick: () => void;
 }) {
   const descriptionId = useId();
+  const valueId = useId();
+  const describedBy =
+    [value ? valueId : "", description ? descriptionId : ""].filter(Boolean).join(" ") || undefined;
   return (
     <button
       type="button"
       className={style.linkRow}
       aria-label={title}
-      aria-describedby={description ? descriptionId : undefined}
+      aria-describedby={describedBy}
       onClick={onClick}
     >
       <span className={style.rowText}>
@@ -130,8 +135,13 @@ export function LinkRow({
           </span>
         )}
       </span>
-      <span className={style.rowDescription} aria-hidden="true">
-        {external ? "↗" : "›"}
+      <span className={style.rowDescription}>
+        {value && (
+          <span id={valueId} className="mr-1.5">
+            {value}
+          </span>
+        )}
+        <span aria-hidden="true">{external ? "↗" : "›"}</span>
       </span>
     </button>
   );

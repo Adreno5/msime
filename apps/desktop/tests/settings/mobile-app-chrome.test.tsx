@@ -501,14 +501,15 @@ test("a phone is not offered the desktop's modifier-chord voice shortcuts", asyn
 });
 
 // A HarmonyOS phone routes an attached keyboard's voice chords (VoiceHotkeyPolicy has no desktop check), so it declares `voice_hotkeys` and its owner can reach the switches that decide what Right Alt and Ctrl+F9 do there.
-test("a phone that routes an attached keyboard's voice chords offers their switches", async () => {
+// 宿主处理外接键盘的语音组合键，手机也不列这些开关：Ctrl+F9、长按右 Alt 要连实体键盘才用得上，在手机的语音页上只是一堆用不到的开关。2in1 照旧列出。
+test("a phone does not list the attached keyboard's voice chords", async () => {
   renderSettings("harmony", { mobile_settings: true, panel_windows: false, voice_hotkeys: true });
   await settingsFormReady();
   fireEvent.click(
     within(screen.getByRole("region", { name: "首页" })).getByRole("button", { name: "语音输入" }),
   );
-  expect(screen.getByText("语音快捷键")).toBeTruthy();
-  expect(screen.getByText(/连接实体键盘后/)).toBeTruthy();
+  expect(screen.queryByText("语音快捷键")).toBeNull();
+  expect(screen.queryByText(/连接实体键盘后/)).toBeNull();
   expect(screen.queryByText("语音输入弹出条主题")).toBeNull();
 });
 
