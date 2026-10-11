@@ -6,9 +6,7 @@ final class CloudSyncMarkingTests: XCTestCase {
   private var stateFile: URL!
 
   override func setUpWithError() throws {
-    let container = try XCTUnwrap(FileManager.default.containerURL(
-      forSecurityApplicationGroupIdentifier: MSIMEAppEdition.appGroupIdentifier))
-    stateFile = container.appendingPathComponent("CloudSync/state.json")
+    stateFile = CloudSyncState.defaultRoot.appendingPathComponent("CloudSync/state.json")
     savedState = try? Data(contentsOf: stateFile)
     let state = CloudSyncState.shared
     try state.bind(accountID: "cloud-sync-marking-test", sessionID: UUID())
@@ -16,6 +14,8 @@ final class CloudSyncMarkingTests: XCTestCase {
   }
 
   override func tearDownWithError() throws {
+    // A setUp that failed before assigning stateFile must not crash the whole test bundle here.
+    guard let stateFile else { return }
     if let savedState { try savedState.write(to: stateFile) } else { try? FileManager.default.removeItem(at: stateFile) }
   }
 
