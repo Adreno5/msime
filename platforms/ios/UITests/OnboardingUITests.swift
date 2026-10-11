@@ -362,7 +362,9 @@ final class OnboardingUITests: XCTestCase {
   /// 语音输入 has its own row on the home page again, in the 键盘 / 语音输入 / 手写输入 group of the mobile design, so every entry is reached the same way.
   @MainActor
   private func reachSettingsLink(_ identifier: String, in app: XCUIApplication) {
-    // 先回到设置标签页再弹出页面：「对话」标签页的根没有返回键，导航栏左边第一个按钮是它自己的「收起键盘」或「新对话」，不能当返回键点。
+    // 先回到设置标签页再弹出页面：「对话」标签页的根没有返回键，导航栏左边第一个按钮是它自己的「收起键盘」或「新对话」，不能当返回键点。从「试用键盘」过来时它的键盘还盖着标签栏，所以先收起键盘。
+    let dismissKeyboard = app.buttons["dismissKeyboardButton"]
+    if dismissKeyboard.exists && dismissKeyboard.isHittable { dismissKeyboard.tap() }
     let settingsTab = app.tabBars.buttons["设置"]
     if settingsTab.exists && !settingsTab.isSelected { settingsTab.tap() }
     // Pop whatever the caller pushed before looking: these entries live on the tab's root, and a
@@ -556,6 +558,9 @@ final class OnboardingUITests: XCTestCase {
     XCTAssertFalse(app.buttons["aboutSettingsLink"].exists)
     app.buttons["accountLoginClose"].tap()
     XCTAssertTrue(app.navigationBars["对话"].waitForExistence(timeout: 5))
+    // 「试用键盘」把焦点放进了输入框，弹出的键盘盖住标签栏，先收起它再点「设置」。
+    let dismissKeyboard = app.buttons["dismissKeyboardButton"]
+    if dismissKeyboard.waitForExistence(timeout: 2) { dismissKeyboard.tap() }
     app.tabBars.buttons["设置"].tap()
     XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["keyboardTryoutLink"].exists)
