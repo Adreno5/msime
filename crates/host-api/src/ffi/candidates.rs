@@ -143,7 +143,7 @@ pub unsafe extern "C" fn msime_client_apply_online_candidates(
 /// AI 回答为空、失败，或 `msime_client_apply_online_candidates` 返回 `applied:false` 时调用：这次查询在 AI 座位上的占位行换成暗色的「—」，留到组字变化为止，后面的候选不挪位（#6888）。只认来源 1（AI）；过期查询、AI 已关或座位上已经是 AI 候选时 `applied` 为 false，视图不变。
 ///
 /// # Safety
-/// `query` must reference `query_length` readable bytes; it is read for the duration of this call and never retained.
+/// `query` 必须指向 `query_length` 个可读字节；只在本次调用期间读取，不保留。
 #[no_mangle]
 pub unsafe extern "C" fn msime_client_resolve_online_candidates(
     handle: u64,

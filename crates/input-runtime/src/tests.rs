@@ -1284,8 +1284,7 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
             .collect::<Vec<_>>(),
         vec!["本地", "云一", "云二", "AI"]
     );
-    // With a cloud candidate present English sits after AI, and a second English candidate waits
-    // behind the seated ones rather than displacing anything. AI 的座位只坐第一条，第二条排在整个列表最后（#6888）。
+    // 有云候选时英文排在 AI 后面，第二条英文候选排在已入座的候选之后，不挤占任何位置。AI 的座位只坐第一条，第二条排在整个列表最后（#6888）。
     assert_eq!(
         seated(
             &["AI 一", "AI 二", "英一", "英二", "云", "本地"],

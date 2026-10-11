@@ -697,7 +697,7 @@ fn online_rows_land_in_the_series_slot_the_query_used() {
         &ai,
         CandidateSource::AiSuggestion
     ));
-    // A second cloud answer replaces the first and keeps the AI seat at index 2; the second AI row stays last (#6888).
+    // 第二次云回答替换掉第一次，AI 座位仍在下标 2；第二条 AI 候选排在最后（#6888）。
     assert!(dictionary.insert_online_words(
         "nihao",
         "ni'hao",
