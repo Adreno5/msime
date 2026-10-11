@@ -1,24 +1,24 @@
 # 水杉 IME（Metasequoia IME）
 
-[简体中文](README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [繁體中文](README.zh-Hant.md)
+[简体中文](../../README.md) · [English](README.en.md) · **日本語** · [한국어](README.ko.md) · [繁體中文](README.zh-Hant.md)
 
-> これは[簡体字中国語版 README](README.md) の翻訳です。内容は簡体字中国語版が正です。リンク先の文書は主に中国語です。
+> これは[簡体字中国語版 README](../../README.md) の翻訳です。内容は簡体字中国語版が正です。リンク先の文書は主に中国語です。
 
 [![Core CI](https://img.shields.io/github/actions/workflow/status/metasequoiaime/msime/ci.yml?branch=develop&label=Core%20CI&logo=githubactions&logoColor=white)](https://github.com/metasequoiaime/msime/actions/workflows/ci.yml?query=branch%3Adevelop)
 [![Native Platform CI](https://img.shields.io/github/actions/workflow/status/metasequoiaime/msime/ci-platforms.yml?branch=develop&label=Platform%20CI&logo=githubactions&logoColor=white)](https://github.com/metasequoiaime/msime/actions/workflows/ci-platforms.yml?query=branch%3Adevelop)
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/metasequoiaime/msime/codeql.yml?branch=develop&event=schedule&label=CodeQL&logo=github)](https://github.com/metasequoiaime/msime/actions/workflows/codeql.yml)
 [![Cargo audit](https://img.shields.io/github/actions/workflow/status/metasequoiaime/msime/cargo-audit.yml?branch=develop&event=schedule&label=cargo%20audit&logo=rust)](https://github.com/metasequoiaime/msime/actions/workflows/cargo-audit.yml)
 
-[![Android version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fandroid%2Fversion.txt&query=%24&prefix=v&label=Android&logo=android&logoColor=white&color=34A853)](platforms/android/README.md)
-[![iOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fios%2Fversion.txt&query=%24&prefix=v&label=iOS&logo=apple&logoColor=white&color=147EFB)](platforms/ios/README.md)
-[![macOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fmacos%2Fversion.txt&query=%24&prefix=v&label=macOS&logo=apple&logoColor=white&color=000000)](platforms/macos/README.md)
-[![Linux version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Flinux%2Fversion.txt&query=%24&prefix=v&label=Linux&logo=linux&logoColor=white&color=D97706)](platforms/linux/README.md)
-[![Windows version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fwindows%2Fversion.txt&query=%24&prefix=v&label=Windows&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDBoMTEuMzc3djExLjM3Mkgwem0xMi42MjMgMEgyNHYxMS4zNzJIMTIuNjIzek0wIDEyLjYyM2gxMS4zNzdWMjRIMHptMTIuNjIzIDBIMjRWMjRIMTIuNjIzeiIvPjwvc3ZnPg%3D%3D&logoColor=white&color=0078D4)](platforms/windows/README.md)
-[![HarmonyOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fharmony%2Fversion.txt&query=%24&prefix=v&label=HarmonyOS&logo=harmonyos&logoColor=white&color=CF0A2C)](platforms/harmony/README.md)
+[![Android version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fandroid%2Fversion.txt&query=%24&prefix=v&label=Android&logo=android&logoColor=white&color=34A853)](../../platforms/android/README.md)
+[![iOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fios%2Fversion.txt&query=%24&prefix=v&label=iOS&logo=apple&logoColor=white&color=147EFB)](../../platforms/ios/README.md)
+[![macOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fmacos%2Fversion.txt&query=%24&prefix=v&label=macOS&logo=apple&logoColor=white&color=000000)](../../platforms/macos/README.md)
+[![Linux version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Flinux%2Fversion.txt&query=%24&prefix=v&label=Linux&logo=linux&logoColor=white&color=D97706)](../../platforms/linux/README.md)
+[![Windows version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fwindows%2Fversion.txt&query=%24&prefix=v&label=Windows&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDBoMTEuMzc3djExLjM3Mkgwem0xMi42MjMgMEgyNHYxMS4zNzJIMTIuNjIzek0wIDEyLjYyM2gxMS4zNzdWMjRIMHptMTIuNjIzIDBIMjRWMjRIMTIuNjIzeiIvPjwvc3ZnPg%3D%3D&logoColor=white&color=0078D4)](../../platforms/windows/README.md)
+[![HarmonyOS version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmetasequoiaime%2Fmsime%2Fdevelop%2Fplatforms%2Fharmony%2Fversion.txt&query=%24&prefix=v&label=HarmonyOS&logo=harmonyos&logoColor=white&color=CF0A2C)](../../platforms/harmony/README.md)
 [![npm @msime/web-engine](https://img.shields.io/npm/v/@msime/web-engine?label=%40msime%2Fweb-engine&logo=npm)](https://www.npmjs.com/package/@msime/web-engine)
 
-[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
-[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](Cargo.toml)
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](../../LICENSE)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](../../Cargo.toml)
 [![Website](https://img.shields.io/badge/website-msime.app-2E7D32)](https://msime.app/)
 [![GitHub stars](https://img.shields.io/github/stars/metasequoiaime/msime?style=flat&logo=github)](https://github.com/metasequoiaime/msime/stargazers)
 [![Contributors](https://img.shields.io/github/contributors/metasequoiaime/msime)](https://github.com/metasequoiaime/msime/graphs/contributors)
@@ -35,7 +35,7 @@
 
 > **名称について**：MSIME は Metasequoia IME（水杉 IME）の略称です。Microsoft IME（日本では Windows 標準の日本語入力としておなじみの IME）とは別のソフトウェアであり、Microsoft 社とも一切関係ありません。コード、パッケージ名、リポジトリ名に含まれる `msime` はすべてこの意味です。設定にある `shuangpin_profile: microsoft` は「微軟双拼（Microsoft 双拼）」方式を指し、小鶴、自然碼、首道と並ぶ 4 つのキー配列方式の一つです。このキー配列に慣れたユーザーが選べるように用意しているもので、これも何らかの関係を示すものではありません。
 
-**入力メソッドはあなたが入力するものをすべて見ることができます。だからこの問いには、一つずつ照合できる答えがあるべきです：[どのデータがデバイスの外に出るのか](PRIVACY.md)。**要点だけ言うと、新規インストール時の既定設定では、入力した内容をデバイスの外に送信する機能はありません。クラウド予測（入力中のピンインを Google 入力ツールに送信する機能）は、初回の確認時か設定でユーザーが有効にする必要があり、その他のネットワーク機能は、ユーザー自身が認証情報を入力するかサービスを選択しない限り動作しません。これとは別に、入力内容を含まない独自の匿名利用統計があります。6 つのプラットフォームすべてが `api.msime.app` に日次アクティブ、セッション、クラッシュ（エラーの概要と、ディレクトリを除去したコールスタック）の記録を送信します。これは既定で有効で、設定の「匿名利用統計」でオフにできます。フィールド、プラットフォームごとの違い、ディスク上の保存場所は [PRIVACY.md](PRIVACY.md#使用统计与崩溃上报默认开启可关闭) に一つずつ記載しています。リポジトリにはサードパーティの統計 SDK やクラッシュレポート SDK を一切組み込んでいません。
+**入力メソッドはあなたが入力するものをすべて見ることができます。だからこの問いには、一つずつ照合できる答えがあるべきです：[どのデータがデバイスの外に出るのか](../../PRIVACY.md)。**要点だけ言うと、新規インストール時の既定設定では、入力した内容をデバイスの外に送信する機能はありません。クラウド予測（入力中のピンインを Google 入力ツールに送信する機能）は、初回の確認時か設定でユーザーが有効にする必要があり、その他のネットワーク機能は、ユーザー自身が認証情報を入力するかサービスを選択しない限り動作しません。これとは別に、入力内容を含まない独自の匿名利用統計があります。6 つのプラットフォームすべてが `api.msime.app` に日次アクティブ、セッション、クラッシュ（エラーの概要と、ディレクトリを除去したコールスタック）の記録を送信します。これは既定で有効で、設定の「匿名利用統計」でオフにできます。フィールド、プラットフォームごとの違い、ディスク上の保存場所は [PRIVACY.md](../../PRIVACY.md#使用统计与崩溃上报默认开启可关闭) に一つずつ記載しています。リポジトリにはサードパーティの統計 SDK やクラッシュレポート SDK を一切組み込んでいません。
 
 ## モジュール境界
 
@@ -51,12 +51,12 @@
 
 | プラットフォーム | エントリディレクトリ | ホスト形態と統合方法 |
 | --- | --- | --- |
-| [Android](platforms/android/README.md) | `platforms/android/` | 入力メソッドサービス `app.msime.android.MSIMEInputService` は `:ime` 独立プロセスで動作し、Java ホストは `platforms/android/native/client_jni.cpp` 経由で host-api を呼び出します。Tauri/React の設定は入力メソッドと同じパッケージの別プロセスで、プライベートな files/bootstrap/state を共有します。手書き入力は ML Kit Digital Ink を使用します |
-| [iOS](platforms/ios/README.md) | `platforms/ios/` | XcodeGen が `project.yml` から生成するネイティブ App にキーボード拡張 `MSIMEKeyboardExtension` を埋め込み、両者は App Group `group.app.msime.ios` を通じて状態を共有します。Swift のキーボードは host-api を直接呼び出し、手書き入力は ML Kit Digital Ink を使用します |
-| [macOS](platforms/macos/README.md) | `platforms/macos/` | InputMethodKit bundle（成果物名 `水杉输入法.app`、bundle id `app.msime.inputmethod.MetasequoiaIME`）。Swift バックエンドは `MSIMEBackend.dylib` としてビルドされ bundle とともに配布されます。自動更新は Sparkle が担当します |
-| [Linux](platforms/linux/README.md) | `platforms/linux/` | IBus と Fcitx5 は並列する 2 つのシステムエントリで、同じ host-api ABI をリンクします。オンライン予測、音声、クリップボードなどの機能は、独立した provider プロセスと systemd ユーザーユニットが担います。CPack で TGZ と DEB を出力します |
-| [Windows](platforms/windows/README.md) | `platforms/windows/`、`platforms/windows/tsf/` | インプロセスの TSF DLL（`MetasequoiaImeTsf`）とアウトオブプロセスの `MetasequoiaImeServer` が名前付きパイプで通信し、ほかに watchdog と実行設定の準備ツールがあります。候補ウィンドウ、フローティングツールバー、トレイメニューは Direct2D/DirectWrite ベースの `msimeui` が描画します。Inno Setup のインストーラーが TIP を登録し、辞書を同梱します |
-| [HarmonyOS](platforms/harmony/README.md) | `platforms/harmony/` | ArkTS の `KeyboardExtensionAbility`（`module.json5` で `type: "inputMethod"` を宣言）がキーボードを担い、NAPI モジュール `libmsimeclient.so` 経由で host-api を呼び出します。設定画面は `entry/src/main/resources/rawfile/settings/index.html` にインラインでパッケージされた、同じ共有 React ページです |
+| [Android](../../platforms/android/README.md) | `platforms/android/` | 入力メソッドサービス `app.msime.android.MSIMEInputService` は `:ime` 独立プロセスで動作し、Java ホストは `platforms/android/native/client_jni.cpp` 経由で host-api を呼び出します。Tauri/React の設定は入力メソッドと同じパッケージの別プロセスで、プライベートな files/bootstrap/state を共有します。手書き入力は ML Kit Digital Ink を使用します |
+| [iOS](../../platforms/ios/README.md) | `platforms/ios/` | XcodeGen が `project.yml` から生成するネイティブ App にキーボード拡張 `MSIMEKeyboardExtension` を埋め込み、両者は App Group `group.app.msime.ios` を通じて状態を共有します。Swift のキーボードは host-api を直接呼び出し、手書き入力は ML Kit Digital Ink を使用します |
+| [macOS](../../platforms/macos/README.md) | `platforms/macos/` | InputMethodKit bundle（成果物名 `水杉输入法.app`、bundle id `app.msime.inputmethod.MetasequoiaIME`）。Swift バックエンドは `MSIMEBackend.dylib` としてビルドされ bundle とともに配布されます。自動更新は Sparkle が担当します |
+| [Linux](../../platforms/linux/README.md) | `platforms/linux/` | IBus と Fcitx5 は並列する 2 つのシステムエントリで、同じ host-api ABI をリンクします。オンライン予測、音声、クリップボードなどの機能は、独立した provider プロセスと systemd ユーザーユニットが担います。CPack で TGZ と DEB を出力します |
+| [Windows](../../platforms/windows/README.md) | `platforms/windows/`、`platforms/windows/tsf/` | インプロセスの TSF DLL（`MetasequoiaImeTsf`）とアウトオブプロセスの `MetasequoiaImeServer` が名前付きパイプで通信し、ほかに watchdog と実行設定の準備ツールがあります。候補ウィンドウ、フローティングツールバー、トレイメニューは Direct2D/DirectWrite ベースの `msimeui` が描画します。Inno Setup のインストーラーが TIP を登録し、辞書を同梱します |
+| [HarmonyOS](../../platforms/harmony/README.md) | `platforms/harmony/` | ArkTS の `KeyboardExtensionAbility`（`module.json5` で `type: "inputMethod"` を宣言）がキーボードを担い、NAPI モジュール `libmsimeclient.so` 経由で host-api を呼び出します。設定画面は `entry/src/main/resources/rawfile/settings/index.html` にインラインでパッケージされた、同じ共有 React ページです |
 
 共有ライブラリは異なるホストプロセスに読み込むことができ、入力するために Tauri を起動する必要はありません。6 つのプラットフォームで共通して、製品形態は `platforms/<os>` のネイティブホストであり、Tauri はクロスプラットフォームで共有する機能と画面を提供するだけで、単独の製品として起動することはありません。プロセスをまたぐ設定変更は明示的な永続化と通知の仕組みを通じて行い、プロセス内の共有メモリには依存しません。
 
@@ -77,7 +77,7 @@
 
 ## 開発
 
-コードを貢献する前に、[アーキテクチャ説明](ARCHITECTURE.md)、[貢献ガイド](CONTRIBUTING.md)、[セキュリティポリシー](SECURITY.md)、[ネットワークリクエストとデータの流れ](PRIVACY.md)、[行動規範](CODE_OF_CONDUCT.md) をお読みください。ソースコードやプラットフォームのビルド成果物を公開する準備をする際は、さらに [オープンソース公開チェックリスト](docs/open-source-release.md) と[サードパーティコンポーネント一覧](docs/third-party.md)をお読みください。これらにはサードパーティの通知、リソースのライセンス、機密ファイルのチェック、検証の範囲が記載されています。各プラットフォームホストのビルド、テスト、インストールの詳細は、対応する `platforms/<os>/README.md` の記載が正です。効果音パック、音楽パック、コマンド表、エフェクトパック、フレーズ表、補助コード表、単語帳、記号セットの作成については[プラグイン作者ガイド](docs/plugins.md)を参照してください。
+コードを貢献する前に、[アーキテクチャ説明](../ARCHITECTURE.md)、[貢献ガイド](../../.github/CONTRIBUTING.md)、[セキュリティポリシー](../../.github/SECURITY.md)、[ネットワークリクエストとデータの流れ](../../PRIVACY.md)、[行動規範](../../.github/CODE_OF_CONDUCT.md) をお読みください。ソースコードやプラットフォームのビルド成果物を公開する準備をする際は、さらに [オープンソース公開チェックリスト](../open-source-release.md) と[サードパーティコンポーネント一覧](../third-party.md)をお読みください。これらにはサードパーティの通知、リソースのライセンス、機密ファイルのチェック、検証の範囲が記載されています。各プラットフォームホストのビルド、テスト、インストールの詳細は、対応する `platforms/<os>/README.md` の記載が正です。効果音パック、音楽パック、コマンド表、エフェクトパック、フレーズ表、補助コード表、単語帳、記号セットの作成については[プラグイン作者ガイド](../plugins.md)を参照してください。
 
 クロスプラットフォームのローカル検証の入口は `bash scripts/verify-local.sh` です：`--quick` はビルド段階のみを実行し、マージ前のゲートとなります。引数なしでは全項目を実行し、Rust テスト、fmt、clippy、依存関係の監査、フロントエンドの lint と型チェック、各ネイティブホストの ctest、そして文変換と 1 キーごとのレイテンシの評価を含みます。各段階では失敗したテスト名を `scripts/known-failures.txt` と照合し、リストにない名前の場合にのみ失敗とします。`git config core.hooksPath .githooks` で `--quick` を pre-push に組み込めます。
 
@@ -95,11 +95,11 @@ pnpm tauri dev
 
 デスクトップ設定のアプリ識別子と既定のアプリデータディレクトリは、プラットフォームごとに命名されています：macOS は `app.msime.macos`、Windows は `app.msime.windows`、Linux は `app.msime.linux` です。設定はその中の `preferences.json` に保存されます。絶対パスを指定する環境変数 `MSIME_CLIENT_STATE_DIR` で、隔離された開発用ディレクトリを指すこともできます。macOS のネイティブホストは同じ設定を読み込み、現在の変換が終わった後に更新を適用します。複数の設定ウィンドウが同時に保存した場合は revision によって競合を検出し、ユーザーが明示的に再読み込みしたうえで上書きするかどうかを決める必要があります。
 
-Android の統合パッケージのビルドとデバイステストについては [Android ホスト](platforms/android/README.md#tauri--react-共享设置合包)を参照してください。Tauri の設定とネイティブの `:ime` サービスは同じパッケージの別プロセスで、プライベートな files/bootstrap/state を共有します。設定ウィンドウを閉じても入力メソッドのプロセスは終了しません。iOS の製品ホストは `platforms/ios` のネイティブ App で、ネイティブのキーボード拡張を埋め込み、App Group を通じて状態を共有します。iOS 上の Tauri/React は共有の機能と画面を提供する共通コンポーネントにすぎず、独立した App としては起動しません。署名とデバイスへのインストール手順は [iOS ホスト](platforms/ios/README.md)を参照してください。
+Android の統合パッケージのビルドとデバイステストについては [Android ホスト](../../platforms/android/README.md#tauri--react-共享设置合包)を参照してください。Tauri の設定とネイティブの `:ime` サービスは同じパッケージの別プロセスで、プライベートな files/bootstrap/state を共有します。設定ウィンドウを閉じても入力メソッドのプロセスは終了しません。iOS の製品ホストは `platforms/ios` のネイティブ App で、ネイティブのキーボード拡張を埋め込み、App Group を通じて状態を共有します。iOS 上の Tauri/React は共有の機能と画面を提供する共通コンポーネントにすぎず、独立した App としては起動しません。署名とデバイスへのインストール手順は [iOS ホスト](../../platforms/ios/README.md)を参照してください。
 
 共有設定は shuangpin_profile として xiaohe（小鶴）、ziranma（自然碼）、shoudao（首道）、microsoft（微軟）をサポートします。省略時は小鶴として読み込み、不明な値は拒否します。設定画面では、双拼以外の方式ではこの選択を無効にしますが、選択済みの値は保持します。方式の変更は、変換が終わってから Engine を差し替えるという規則に従います。
 
-Linux のローカルビルド、隔離した D-Bus / IBus テスト、インストール後の初回設定については [Linux ホスト](platforms/linux/README.md)を参照してください。ホストは設定ファイルの自動再読み込みに対応しており、インストール後は同梱の `msime-linux-setup` が辞書を揃えて実行設定を準備します。`msime-linux-setup --download` は `resources/desktop-dictionary.lock.json` に従って不足している辞書を取得し、グラフィカルなエントリは `runtime-options.json` がない場合に同じ初回設定画面を開きます。
+Linux のローカルビルド、隔離した D-Bus / IBus テスト、インストール後の初回設定については [Linux ホスト](../../platforms/linux/README.md)を参照してください。ホストは設定ファイルの自動再読み込みに対応しており、インストール後は同梱の `msime-linux-setup` が辞書を揃えて実行設定を準備します。`msime-linux-setup --download` は `resources/desktop-dictionary.lock.json` に従って不足している辞書を取得し、グラフィカルなエントリは `runtime-options.json` がない場合に同じ初回設定画面を開きます。
 
 機能の揃え込みは、MSIME-Windows の全機能を動作のベースラインとします：共通の業務ロジックと画面は一項目ずつ共有層と Tauri に組み込みます。Windows は TSF DLL と Server を別プロセスに分ける構造を踏襲しますが、両者間のプロトコルは本リポジトリの同一バージョンのビルド間でのみ使用し、MSIME-Windows の旧設定、共有メモリ、バージョンなしのハンドシェイク、旧音声パイプとの互換性はもう維持しません。Android、iOS、macOS、Linux、HarmonyOS はそれぞれのシステムの機能に合わせて適応します。`scripts/test-reference-*.py` はこのベースラインを再実行可能なゲートとして固定しています——参照実装の出荷時設定キー、4 つの画面の機械可読な機能一覧、changelog の各機能項目、そして `windows/`、`server/`、`ui/src` 配下のすべてのソースファイルは、本リポジトリの実装か、理由を明記した欠落記録のいずれかに対応していなければなりません。
 
@@ -121,7 +121,7 @@ cargo test -p msime-engine --locked
 
 ## 固定辞書リソース
 
-`resources/desktop-dictionary.lock.json` は、`metasequoiaime/msime-dictionary` の公開済み `dict-v2.0.14` のソース、長さ、SHA-256 を固定します。そのうち `msime-mozc_dictionary_oss_README.txt` と `msime-mozc_LICENSE.txt` は日本語辞書のライセンス全文（前者は IPAdic と ICOT の条項、後者は Mozc の 3 条項 BSD）で、`msime-scowl_Copyright.txt` は `msime-english.db` に含まれる SCOWL 単語リストの著作権とライセンスの表示です。これらの条項はいずれもデータと一緒に配布することを求めているため、再パッケージ時に省略してはいけません。詳しくは[サードパーティコンポーネント一覧](docs/third-party.md#日文词库的分发义务)を参照してください。初回のダウンロードは約 189 MB です。辞書ロックの `source_commit` は、この辞書一式が本リポジトリのどのコミットで `msime-dict-build` によって生成されたかを記録しており、そのうち `msime-bigram.bin` と `msime-trigram.bin` は文全体の単語ラティスの調停に使う言語モデルの表です。表がない場合でも engine はエラーにならず、文全体の経路で重み付けを行わないだけです——候補は出ますが、順序は悪くなります。そのため辞書のバージョンを変更する際は、`crates/engine` が新しい表を読めることを確認し、文変換の評価を再実行してください。開発準備用のコマンド：
+`resources/desktop-dictionary.lock.json` は、`metasequoiaime/msime-dictionary` の公開済み `dict-v2.0.14` のソース、長さ、SHA-256 を固定します。そのうち `msime-mozc_dictionary_oss_README.txt` と `msime-mozc_LICENSE.txt` は日本語辞書のライセンス全文（前者は IPAdic と ICOT の条項、後者は Mozc の 3 条項 BSD）で、`msime-scowl_Copyright.txt` は `msime-english.db` に含まれる SCOWL 単語リストの著作権とライセンスの表示です。これらの条項はいずれもデータと一緒に配布することを求めているため、再パッケージ時に省略してはいけません。詳しくは[サードパーティコンポーネント一覧](../third-party.md#日文词库的分发义务)を参照してください。初回のダウンロードは約 189 MB です。辞書ロックの `source_commit` は、この辞書一式が本リポジトリのどのコミットで `msime-dict-build` によって生成されたかを記録しており、そのうち `msime-bigram.bin` と `msime-trigram.bin` は文全体の単語ラティスの調停に使う言語モデルの表です。表がない場合でも engine はエラーにならず、文全体の経路で重み付けを行わないだけです——候補は出ますが、順序は悪くなります。そのため辞書のバージョンを変更する際は、`crates/engine` が新しい表を読めることを確認し、文変換の評価を再実行してください。開発準備用のコマンド：
 
 ```sh
 cargo run -p msime-client-core --example install_resources -- target/resources
@@ -143,18 +143,18 @@ python3 scripts/fetch_neural_model.py --out target/neural-model
 
 ダウンロードは HTTPS のみを受け付け、まず一時ファイルに書き込んでから、ロックされた長さと SHA-256 を 1 つずつ照合したうえでリネームして公開します。ダイジェストが一致する既存のファイルはスキップします。公開されるインストールパッケージにはいずれもデスクトップモデルは含まれず、ユーザーが「デスクトップニューラル予測」をオンにしたときに、設定アプリが必要に応じてダウンロードします（リソースパック `settled-model`）。ローカルビルドやディストリビューションのパッケージングでは引き続き同梱することもでき、その場合のリソースのパッケージングは従来の `target/settled-model` ディレクトリを優先し、ない場合はこの `target/neural-model` ディレクトリ内のデスクトップモデルを自動的に使用します。同梱されたものはダウンロードされたものより優先されます。キーボードモデルは引き続き `desktop-dictionary.lock.json` の辞書リソースインストーラーが検証して EngineResources にコピーし、2 つのロックはどちらも出所の記録として保持します。
 
-粤拼、注音、筆画の言語辞書は `resources/language-dictionaries.lock.json` で個別に固定されており、3 つの辞書とそれぞれのライセンス文書は同じリソースパック `language-dictionaries` にまとめられています。macOS のリリースパッケージと、Android の full 版・ピンイン版のリリース APK には、中国語入力に必要なコア辞書のみが内蔵されています：日本語辞書のグループ（`msime-japanese.dat` と 2 つの Mozc ライセンス文書）と言語辞書は同梱されず、ユーザーが日本語、粤拼、注音、筆画の方式を選んだとき（Android では「言語を追加」でこれらの言語を追加したとき。ピンイン版は粤拼、注音、筆画を提供せず、一時的な日本語入力のために日本語辞書をダウンロードするだけです）に初めて、ロックファイルに従って設定ディレクトリの `resource-packs/` にダウンロードされます。ダウンロードしたファイルは同梱ファイルと同様に、ロックされた長さと SHA-256 で検証されます。Android のこの 2 つの版は、英語以外のオフライン語釈（`resources/offline-glosses.lock.json`、オフライン語釈をオンにしたときにダウンロード）とローカル音声ランタイム（`resources/voice-runtime-android.lock.json`、「オフライン認識」をオンにしたときにダウンロード）もオンデマンドのダウンロードに回しており、起動時にリソースパックを自動でダウンロードすることはありません。これらのファイルを内蔵していた旧バージョンからアップグレードした場合、端末上に展開済みのファイルは検証に通ればそのままリソースパックに変換されます。Windows、Linux、iOS、HarmonyOS、Android のその他の版、Tauri の開発用統合パッケージは従来どおり同梱します。ダウンロード先、ミラー、プライバシーに関する説明は [PRIVACY.md](PRIVACY.md#资源与更新下载) を参照してください。
+粤拼、注音、筆画の言語辞書は `resources/language-dictionaries.lock.json` で個別に固定されており、3 つの辞書とそれぞれのライセンス文書は同じリソースパック `language-dictionaries` にまとめられています。macOS のリリースパッケージと、Android の full 版・ピンイン版のリリース APK には、中国語入力に必要なコア辞書のみが内蔵されています：日本語辞書のグループ（`msime-japanese.dat` と 2 つの Mozc ライセンス文書）と言語辞書は同梱されず、ユーザーが日本語、粤拼、注音、筆画の方式を選んだとき（Android では「言語を追加」でこれらの言語を追加したとき。ピンイン版は粤拼、注音、筆画を提供せず、一時的な日本語入力のために日本語辞書をダウンロードするだけです）に初めて、ロックファイルに従って設定ディレクトリの `resource-packs/` にダウンロードされます。ダウンロードしたファイルは同梱ファイルと同様に、ロックされた長さと SHA-256 で検証されます。Android のこの 2 つの版は、英語以外のオフライン語釈（`resources/offline-glosses.lock.json`、オフライン語釈をオンにしたときにダウンロード）とローカル音声ランタイム（`resources/voice-runtime-android.lock.json`、「オフライン認識」をオンにしたときにダウンロード）もオンデマンドのダウンロードに回しており、起動時にリソースパックを自動でダウンロードすることはありません。これらのファイルを内蔵していた旧バージョンからアップグレードした場合、端末上に展開済みのファイルは検証に通ればそのままリソースパックに変換されます。Windows、Linux、iOS、HarmonyOS、Android のその他の版、Tauri の開発用統合パッケージは従来どおり同梱します。ダウンロード先、ミラー、プライバシーに関する説明は [PRIVACY.md](../../PRIVACY.md#资源与更新下载) を参照してください。
 
-macOS ネイティブの IMK bundle のビルド、隔離された状態ディレクトリ、インストールについては [macOS ホスト](platforms/macos/README.md)を参照してください。`platforms/macos/scripts/install.sh` は Developer ID で再署名して `~/Library/Input Methods` にアトミックに置き換え、失敗時はロールバックします。`platforms/macos/scripts/check_input_source.swift` は入力ソースの登録結果を確認します。
+macOS ネイティブの IMK bundle のビルド、隔離された状態ディレクトリ、インストールについては [macOS ホスト](../../platforms/macos/README.md)を参照してください。`platforms/macos/scripts/install.sh` は Developer ID で再署名して `~/Library/Input Methods` にアトミックに置き換え、失敗時はロールバックします。`platforms/macos/scripts/check_input_source.swift` は入力ソースの登録結果を確認します。
 
 ## コード署名ポリシー / Code signing policy
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
-Windows の正式版は現在 [msime-windows](https://github.com/metasequoiaime/msime-windows) でビルド、署名、リリースされており、署名にはそちらの [Code signing policy](https://github.com/metasequoiaime/msime-windows/blob/develop/docs/code-signing-policy.md) が適用されます。本リポジトリの Windows インストーラーは `release-windows.yml` でビルドされますが、SignPath による署名はまだ有効になっていません（SignPath Foundation が本リポジトリを同じプロジェクトに追加するのを待っている状態です）。有効になるまでは未署名のインストーラーを公開します。有効化後の署名の範囲、役割、手順は本リポジトリの [Code signing policy](docs/code-signing-policy.md) を参照してください。その他のプラットフォームはそれぞれのプラットフォームの仕組みで署名し、SignPath は経由しません。プライバシーに関する説明は [PRIVACY.md](PRIVACY.md) を参照してください。
+Windows の正式版は現在 [msime-windows](https://github.com/metasequoiaime/msime-windows) でビルド、署名、リリースされており、署名にはそちらの [Code signing policy](https://github.com/metasequoiaime/msime-windows/blob/develop/docs/code-signing-policy.md) が適用されます。本リポジトリの Windows インストーラーは `release-windows.yml` でビルドされますが、SignPath による署名はまだ有効になっていません（SignPath Foundation が本リポジトリを同じプロジェクトに追加するのを待っている状態です）。有効になるまでは未署名のインストーラーを公開します。有効化後の署名の範囲、役割、手順は本リポジトリの [Code signing policy](../code-signing-policy.md) を参照してください。その他のプラットフォームはそれぞれのプラットフォームの仕組みで署名し、SignPath は経由しません。プライバシーに関する説明は [PRIVACY.md](../../PRIVACY.md) を参照してください。
 
 ## ライセンス
 
-ソースコードは **GPL-3.0-only** で、全文は [LICENSE](LICENSE) を参照してください。
+ソースコードは **GPL-3.0-only** で、全文は [LICENSE](../../LICENSE) を参照してください。
 
-上流のコード、辞書、モデル、各プラットフォームの SDK は、それぞれのライセンスと通知に従います。そのうち Android と iOS の手書き認識は Google ML Kit を使用しており、オープンソースライセンスではなく、その利用規約に基づいてライセンスされています。完全な対応表は[サードパーティコンポーネント一覧](docs/third-party.md)を参照してください。
+上流のコード、辞書、モデル、各プラットフォームの SDK は、それぞれのライセンスと通知に従います。そのうち Android と iOS の手書き認識は Google ML Kit を使用しており、オープンソースライセンスではなく、その利用規約に基づいてライセンスされています。完全な対応表は[サードパーティコンポーネント一覧](../third-party.md)を参照してください。

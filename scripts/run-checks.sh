@@ -16,7 +16,7 @@ else
   run_checks_standalone=0
 fi
 
-# Every scripts/test-*.py is a contract check, and the loop at the end of this section runs each one without it being named anywhere: a check is wired the moment its file exists. The hand-kept list this replaced had already forgotten one (test-clipboard-capture-bounds.py sat in scripts/ unrun). A check that cannot run bare - it needs arguments, a lock, or is run by another gate - is named in special_checks instead, paired with the script that runs it (or, for the Playwright pair no gate runs, the document that says how to), and the registry phase fails when that script does not invoke it or the document does not mention it. Because nothing opts a check in, a new one has to skip cleanly and exit 0 when its toolchain or input is missing; CONTRIBUTING.md says so for contributors.
+# Every scripts/test-*.py is a contract check, and the loop at the end of this section runs each one without it being named anywhere: a check is wired the moment its file exists. The hand-kept list this replaced had already forgotten one (test-clipboard-capture-bounds.py sat in scripts/ unrun). A check that cannot run bare - it needs arguments, a lock, or is run by another gate - is named in special_checks instead, paired with the script that runs it (or, for the Playwright pair no gate runs, the document that says how to), and the registry phase fails when that script does not invoke it or the document does not mention it. Because nothing opts a check in, a new one has to skip cleanly and exit 0 when its toolchain or input is missing; .github/CONTRIBUTING.md says so for contributors.
 #
 # Why the discovered checks exist, keyed by the part of the file name after test-:
 #
