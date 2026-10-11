@@ -3035,6 +3035,8 @@ public final class MSIMEInputService extends InputMethodService {
         String signature = OnlineCandidatePolicy.signature(querySession,
             query.optString("cache_key", ""), query.optString("identity", ""),
             InputViewValuePolicy.booleanValue(query, "cloud_candidates", false),
+            InputViewValuePolicy.booleanValue(query, "cloud_eligible", false),
+            InputViewValuePolicy.booleanValue(query, "ai_eligible", false),
             InputViewValuePolicy.booleanValue(assistant, "enabled", false) ? assistant.toString() : "");
         if (signature.equals(onlineSignature)) return;
         onlineSignature = signature;
