@@ -138,6 +138,7 @@ pub(crate) fn local_model_error_code(error: &LocalModelError) -> &'static str {
         LocalModelError::InvalidRoot => "local_model_invalid_root",
         LocalModelError::InvalidMirror => "local_model_invalid_mirror",
         LocalModelError::Cancelled => "local_model_cancelled",
+        LocalModelError::InstallRunning => "local_model_install_running",
         LocalModelError::Network(_) => "local_model_network",
         LocalModelError::HttpStatus(_) => "local_model_http_status",
         LocalModelError::SizeMismatch(_) | LocalModelError::ChecksumMismatch(_) => {

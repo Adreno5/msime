@@ -227,6 +227,8 @@ pub enum LocalModelError {
     InvalidMirror,
     #[error("local_model_cancelled")]
     Cancelled,
+    #[error("local_model_install_running")]
+    InstallRunning,
     #[error("local_model_network: {0}")]
     Network(String),
     #[error("local_model_http_status: {0}")]
@@ -543,7 +545,11 @@ pub fn remove(root: &Path, id: &str) -> Result<(), LocalModelError> {
     ) {
         return Ok(());
     }
-    let _lock = acquire_model_lock(root)?;
+    let lock = crate::file_lock::open_private_lock_file(root.join(MODEL_LOCK_FILE))?;
+    if !crate::file_lock::try_exclusive_with_grace(&lock)? {
+        return Err(LocalModelError::InstallRunning);
+    }
+    let _lock = lock;
     let target = root.join(&model.id);
     remove_leftovers(root, &model.id);
     #[cfg(not(unix))]
