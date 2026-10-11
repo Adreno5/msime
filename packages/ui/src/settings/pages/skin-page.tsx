@@ -35,7 +35,7 @@ import {
 } from "../../keyboard/touch-keyboard-skin-editor";
 import type { SavedTouchKeyboardSkin } from "../../keyboard/touch-keyboard-skin-design";
 import { communitySkinMessage } from "../../community/community-helpers";
-import { GroupList } from "../../core/platform-controls";
+import { GroupList, NavRow } from "../../core/platform-controls";
 import { CandidateColorsSection } from "../candidate-colors-section";
 import { ThemeSettingsSection } from "../theme-settings-section";
 import { ScreenKeyboardSkinsSection } from "../screen-keyboard-skins-section";
@@ -61,7 +61,7 @@ const themeModeOptions = [
   { value: "dark", label: "深色" },
 ] as const satisfies readonly { value: ThemeMode; label: string }[];
 
-/** 设置表单的「主题」页（路由 id `skin`，手机上叫「皮肤」）：全局主题、自定义主题的组成，以及各界面的单独设置。`hidden` 让它在桌面外壳以「社区皮肤」标签页顶替时保持挂载。鸿蒙手机上主题是一组键盘缩略图网格，点按即应用，设置项收在下方的「更多选项」里。 */
+/** 设置表单的「主题」页（路由 id `skin`，手机上叫「皮肤」）：全局主题、自定义主题的组成，以及各界面的单独设置。`hidden` 让它在桌面外壳以「社区皮肤」标签页顶替时保持挂载。鸿蒙手机上主题是一组键盘缩略图网格，点按即应用，网格下方「浏览更多皮肤」打开完整的社区皮肤图库。 */
 export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
   const {
     client,
@@ -97,6 +97,8 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
     setShowTouchSkinEditor,
     openCommunity,
     openAccountLogin,
+    communityGallery,
+    openCommunityGallery,
   } = useSettingsForm();
   const { onCustomThemeChange, onPreferencesChange } = createSettingsDraftActions({ setDraft });
   // The package offered to the candidate-skin community from its card; the dialog is drawn outside the fieldset so a settings save in flight does not disable it.
@@ -160,9 +162,10 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
   // 从网格的 AI 图块打开的「AI 皮肤抽卡」是 WebView 返回栈上单独的一个视图，所以系统返回手势能关掉它。
   const { aiSkins, customSkinLibrary } = client;
   const [aiOpen, setAiOpen] = useState(false);
-  // 网格里列出皮肤库的设计（在「社区」获取的皮肤也存在这里）。每次回到网格都重读：从别的标签页回来，或从编辑器、AI 抽卡这两个子视图返回，刚获取或刚保存的皮肤就能出现。
+  // 网格里列出皮肤库的设计（在社区图库获取的皮肤也存在这里）。每次回到网格都重读：从别的标签页回来，或从编辑器、AI 抽卡、社区图库这几个子视图返回，刚获取或刚保存的皮肤就能出现。
   const [savedDesigns, setSavedDesigns] = useState<SavedTouchKeyboardSkin[]>([]);
-  const gridVisible = phoneGrid && shown && !showTouchSkinEditor && !aiOpen;
+  const galleryOpen = communityGallery?.category === "skin";
+  const gridVisible = phoneGrid && shown && !showTouchSkinEditor && !aiOpen && !galleryOpen;
   useEffect(() => {
     if (!gridVisible || !customSkinLibrary) return;
     let current = true;
@@ -179,7 +182,7 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
       current = false;
     };
   }, [gridVisible, customSkinLibrary]);
-  // 社区的第一页也列在网格里，不用先去「社区」获取，与 Android 键盘皮肤面板一致。离线或服务不可用时只是没有这几张卡片。
+  // 社区的第一页也列在网格里，点一下就获取并换上，与 Android 键盘皮肤面板一致；更多的在网格下方「浏览更多皮肤」打开的完整图库里。离线或服务不可用时只是没有这几张卡片。
   const { communitySkins } = client;
   const [communityList, setCommunityList] = useState<SavedTouchKeyboardSkin[]>([]);
   const [communityNotice, setCommunityNotice] = useState("");
@@ -263,13 +266,13 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
           importsSkin={importsSkin}
         />
       )}
-      {/* 桌面宿主在本页顶部的「社区皮肤」标签里浏览候选窗口皮肤，并从上面各自的卡片发布；这一行是手机进入「社区」标签里键盘皮肤图库的入口。 */}
+      {/* 桌面宿主在本页顶部的「社区皮肤」标签里浏览候选窗口皮肤，并从上面各自的卡片发布；这一行在手机上打开本页的完整键盘皮肤图库（触屏宿主的 `openCommunity` 不去「社区」页）。 */}
       {mobilePlatform && client.communitySkins && (
         <ActionRow
           title="在线皮肤"
           description="看看别人做的键盘皮肤，可以直接试用或保存"
           action={() => openCommunity("all")}
-          label="去社区找皮肤"
+          label="浏览更多皮肤"
         />
       )}
     </GroupList>
@@ -387,7 +390,19 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
             {communityNotice && (
               <SettingsExternalMeta role="status">{communityNotice}</SettingsExternalMeta>
             )}
-            {/* 设计里这页没有设置行，只有网格。颜色模式和各界面的明暗覆盖不提供；社区第一页的皮肤直接列在网格里，更多在「社区」标签页；我的皮肤是网格里的卡片，选中后再点一次打开编辑器（`onEdit`），「我的 → 我的设计」也能进入。 */}
+            {/* 设计里这页没有设置行，只有网格。颜色模式和各界面的明暗覆盖不提供；社区第一页的皮肤直接列在网格里，网格下方的「浏览更多皮肤」打开完整的社区皮肤图库（搜索、分类、详情、发布和我的作品都在里面）；我的皮肤是网格里的卡片，选中后再点一次打开编辑器（`onEdit`），「我的 → 我的设计」也能进入。 */}
+            {client.communitySkins && (
+              <GroupList>
+                <NavRow
+                  variant="me"
+                  title="浏览更多皮肤"
+                  description="搜索、分类浏览社区皮肤，也可以发布自己的设计"
+                  onClick={() =>
+                    openCommunityGallery({ category: "skin", scope: "", initialMine: false })
+                  }
+                />
+              </GroupList>
+            )}
           </>
         ) : (
           <>

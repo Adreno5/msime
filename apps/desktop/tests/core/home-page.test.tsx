@@ -71,6 +71,7 @@ function renderTouchHome(
   options: {
     actions?: Parameters<typeof HomePage>[0]["actions"];
     onOpenPage?: (page: string) => void;
+    onOpenChat?: () => void;
     pages?: RootPage[];
   } = {},
 ) {
@@ -81,6 +82,7 @@ function renderTouchHome(
         preferences={preferences}
         actions={options.actions}
         onOpenPage={onOpenPage}
+        onOpenChat={options.onOpenChat}
         touchLayout
         rootPages={options.pages ?? rootPages}
       />
@@ -386,7 +388,26 @@ test("试用键盘 keeps a host's own keyboard window, and falls back to the sub
   await waitFor(() => expect(onOpenPage.mock.calls).toEqual([["try-keyboard"]]));
 });
 
-test("the HarmonyOS phone shell pushes 试用键盘 as a sub-page of 设置 and goes back to it", async () => {
+// 有对话的宿主在「对话」标签里试键盘，与 Android 和 iOS 一样；宿主自己的键盘窗口打不开时也落到那里。
+test("试用键盘 goes to the chat when the host has one, also when its keyboard window fails", async () => {
+  const onOpenPage = vi.fn();
+  const onOpenChat = vi.fn();
+  renderTouchHome({ actions: {}, onOpenPage, onOpenChat });
+  fireEvent.click(within(statusCard()).getByRole("button", { name: "试用键盘" }));
+  expect(onOpenChat).toHaveBeenCalledOnce();
+
+  cleanup();
+  renderTouchHome({
+    actions: { openKeyboard: vi.fn().mockRejectedValue(new Error("no window")) },
+    onOpenPage,
+    onOpenChat,
+  });
+  fireEvent.click(within(statusCard()).getByRole("button", { name: "试用键盘" }));
+  await waitFor(() => expect(onOpenChat).toHaveBeenCalledTimes(2));
+  expect(onOpenPage).not.toHaveBeenCalled();
+});
+
+test("a HarmonyOS phone shell without chat pushes 试用键盘 as a sub-page of 设置 and goes back to it", async () => {
   render(
     <SettingsPage
       client={{

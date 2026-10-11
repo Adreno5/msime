@@ -296,7 +296,8 @@ test("the mobile login sheet exposes its caller's cancel action", async () => {
   expect(onCancelLogin).toHaveBeenCalledOnce();
 });
 
-test("Harmony chat login focuses the tryout and cancel returns to it", async () => {
+// 对话是常驻标签，打开时不自动聚焦输入框（不弹键盘）；登录面板关掉后回到对话。
+test("Harmony chat login leaves the composer unfocused and cancel returns to it", async () => {
   window.history.replaceState({ msimeSettings: true, page: "chat" }, "");
   render(
     <SettingsPage
@@ -316,8 +317,8 @@ test("Harmony chat login focuses the tryout and cancel returns to it", async () 
   );
 
   const composer = await screen.findByRole("textbox", { name: "聊天消息" });
-  await waitFor(() => expect(document.activeElement).toBe(composer));
   fireEvent.click(await screen.findByRole("button", { name: "登录使用 AI" }));
+  expect(document.activeElement).not.toBe(composer);
   expect(await screen.findByRole("heading", { name: "登录水杉" })).not.toBeNull();
   expect(screen.queryByText("账号操作")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "关闭" }));

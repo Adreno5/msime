@@ -42,12 +42,21 @@ const MAX_COLLECTION_IMPORT_BYTES = 16 * 1024 * 1024;
 const BUILTIN = "builtin:pinyin";
 
 /**
- * HarmonyOS 手机的「词库」页，按 Android 的 `LexiconPage` 布局：「已安装」列出拼音词库和用户自己的词库，点进去启用、停用和编辑；「管理」里新建、导入、导出和刷新；「发现词库」是社区词库，「添加」后成为一个可以停用或删除的词库；然后是学习开关和「更多」。
+ * HarmonyOS 手机的「词库」页，按 Android 的 `LexiconPage` 布局：「已安装」列出拼音词库和用户自己的词库，点进去启用、停用和编辑；「管理」里新建、导入、导出和刷新；「发现词库」是社区词库，「添加」后成为一个可以停用或删除的词库，末尾的「浏览更多词库」打开完整的社区词库图库；然后是学习开关和「更多」。
  *
  * 词库详情在本页内打开，推入一条历史记录，系统返回键和左上角的返回都回到列表。
  */
 export function HarmonyPhoneDictionary() {
-  const { client, draft, setDraft, openPanel, pageEntry, selectPage } = useSettingsForm();
+  const {
+    client,
+    draft,
+    setDraft,
+    openPanel,
+    pageEntry,
+    selectPage,
+    communityGallery,
+    openCommunityGallery,
+  } = useSettingsForm();
   const collections = client.dictionaryCollections;
   const dictionary = client.dictionary;
   const toast = useToast();
@@ -90,9 +99,12 @@ export function HarmonyPhoneDictionary() {
         setLoadFailure(collectionFailureMessage(error));
     }
   };
+  // 社区词库图库盖在这页上面，在里面添加的词库关掉图库时才读进来，「已安装」和「发现词库」的「已添加」随之更新。
+  const galleryOpen = communityGallery?.category === "dictionary";
   useEffect(() => {
+    if (galleryOpen) return;
     void reload(true);
-  }, [collections, dictionary]);
+  }, [collections, dictionary, galleryOpen]);
 
   const run = async (action: () => Promise<DictionaryCollectionsView>, done?: string) => {
     if (busy) return undefined;
@@ -223,6 +235,9 @@ export function HarmonyPhoneDictionary() {
               () => collections.installCommunity(resource),
               `已添加「${resource.name}」，可以在已安装里停用或删除`,
             )
+          }
+          onBrowseMore={() =>
+            openCommunityGallery({ category: "dictionary", scope: "", initialMine: false })
           }
         />
       )}
@@ -443,17 +458,19 @@ function AddDictionarySheet({
   );
 }
 
-/** 「发现词库」：社区词库的前几个，「添加」后成为一个独立的词库；已经装过的显示「已添加」。 */
+/** 「发现词库」：社区词库的前几个，「添加」后成为一个独立的词库；已经装过的显示「已添加」。最后一行「浏览更多词库」打开完整的社区词库图库，搜索、详情、发布、我的作品和收藏都在里面。 */
 function DiscoverDictionaries({
   community,
   view,
   busy,
   onInstall,
+  onBrowseMore,
 }: {
   community: CommunityResourceClient;
   view: DictionaryCollectionsView | null;
   busy: boolean;
   onInstall: (resource: CommunityResource) => Promise<DictionaryCollectionsView | undefined>;
+  onBrowseMore: () => void;
 }) {
   const [items, setItems] = useState<CommunityResource[] | null>(null);
   const [failure, setFailure] = useState("");
@@ -512,6 +529,7 @@ function DiscoverDictionaries({
           );
         })
       )}
+      <NavRow variant="me" title="浏览更多词库" onClick={onBrowseMore} />
     </GroupList>
   );
 }

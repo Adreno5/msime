@@ -106,7 +106,7 @@ function Splash({ onDone }: { onDone: () => void }) {
   );
 }
 
-/** HarmonyOS 启动页（dc.html L2692-2698）：白色圆盘落到强调色底上并泛起波纹，标志旋转入场并描出自身线条，底部一条进度条在启动页停留期间填满。点一下仍可跳过；设计里没有提示这一点。 */
+/** HarmonyOS 首次启动的开屏（dc.html L2692-2698）：第一帧和系统启动窗相同（启动窗底色上的圆盘和水杉标志，跟随系统深浅色），随后淡入当季颜色、泛起波纹、出字，底部一条进度条在开屏停留期间填满。只在首次启动的欢迎流程里播，平时冷启动不播。点一下仍可跳过；设计里没有提示这一点。 */
 function HarmonySplash({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const timer = window.setTimeout(onDone, SPLASH_MS);
@@ -118,16 +118,16 @@ function HarmonySplash({ onDone }: { onDone: () => void }) {
       <span className={onboarding.hSplashDiscBox} aria-hidden="true">
         <span className={onboarding.hSplashRipple} />
         <span className={onboarding.hSplashDisc} />
+        <span className={onboarding.hSplashDiscVeil} />
         <svg className={onboarding.hSplashLogo} viewBox="0 0 116 132">
           <path className={onboarding.hSplashFrame} d={msimeFramePath} />
-          <path className={onboarding.hSplashStroke} d={msimeStrokePath} pathLength={1} />
+          <path className={onboarding.hSplashFrameVeil} d={msimeFramePath} />
+          <path className={onboarding.hSplashStroke} d={msimeStrokePath} />
         </svg>
       </span>
-      <span className={onboarding.splashName} aria-hidden="true">
-        水杉输入法
-      </span>
-      <span className={onboarding.splashTagline} aria-hidden="true">
-        METASEQUOIA IME
+      <span className={onboarding.hSplashCaption} aria-hidden="true">
+        <span className={onboarding.splashName}>水杉输入法</span>
+        <span className={onboarding.hSplashTagline}>METASEQUOIA IME</span>
       </span>
       <span className={onboarding.hSplashTrack} aria-hidden="true">
         <span className={onboarding.hSplashFill} />

@@ -102,11 +102,11 @@ App「词库」里的个人词典对应 Windows 的用户词编辑：编辑器�
 
 全拼九键组字时，候选栏的读音行显示 Engine 给的拼音读音（View 的 `nine_key_reading`，例如 `ning'bai`），不再是数字串；没有读音时才显示数字。键区旁的拼音栏依次列出完整音节、下一个数字键上能起头一个音节的大写字母（选它限定下一个音节的首字母）和数字本身（选它直接上屏这个数字），VoiceOver 分别读作「选择拼音」「选择字母」「输入数字」。点候选栏的展开按钮打开的是三栏的九键面板：它只盖住键区，候选栏和读音留在上面，被盖住的键藏起来、皮肤背景照常透出；左栏是同一组拼音（点了锁定音节），中间是可以上下滚动的全部候选，右栏是「返回」「⌫」「重输」「笔画/拼音」「单字/全部」。在面板里选拼音、退格都会换一代候选，面板按新的一代重建而不关；数字全部锁定后退格先撤销最后一次锁定。「单字」只留单字，「笔画」把左栏换成五个笔画键（横 竖 撇 点 折），按下的笔画以 一丨丿丶乛 显示在笔画栏顶上，候选按首字的笔顺前缀筛选（`msime_client_set_nine_key_filter`），笔画模式下 ⌫ 先删笔画；没带 `msime-stroke.db` 的版本不显示「笔画」。面板在组字结束、点「返回」或再点一下展开按钮、或选了候选时收起，组字还在的话同时清掉两种筛选。其他方案、本地模式仍是盖住整个键盘、带标题行的候选面板。
 
-全拼 14 键（`ChineseInputScheme.fourteenKey`，共享文档写 `fourteen_key`，引擎方案是全拼，默认不启用；「中文键盘」设置是 26 键 / 14 键 / 9 键三档，普通话方案列表也按这个顺序排）把 QWERTY 上相邻两个字母合成一键：`QW ER TY UI OP` / `AS DF GH JK L`（不缩进）/ `[符/分词] ZX CV BN M [⌫]`，键表在 `KeyboardExtension/Sources/input/FourteenKeyLayout.swift`，与 Android、HarmonyOS 和引擎 `KeyGrid::FourteenKey` 是同一张表，`scripts/test-fourteen-key-table.py` 核对。键用 `makeKey` 建，不进 `letterButtons` 和滑行的 `glideLetterKeys`，所以没有 Shift、滑行、双拼键位提示、角标和按键气泡；第三排两端键宽同 26 键的 ⇧（手机 44pt，iPad 按 ⇧ 占一排的比例），底行在 iPhone 和 iPad 上都是手机 26 键底行，不画数字行、不分体。点一下经 `gridKey`（`msime_client_grid_key`）送这一组的首字母，桥接层的网格是 `KeyGrid`（none / 九键 / 14 键），重建会话时重放、换方案时复位；切到 14 键之前按下、之后才到的 26 键字母被丢掉。组码不论「行内预编辑」怎么设都不写进输入框，读音行显示 `nine_key_reading`；拼音选择条（`readingSpellingStrip`）挂在读音行右侧横向滚动，显示时至少占半行，不盖住候选栏，内容同九键拼音栏但没有数字那一项；展开候选是九键的三栏面板。第三排左端键组字时是「分词」（送 `'`），空闲时是「符」（打开符号面板），两种状态都记作 `SoftSymbol`。两个字母的键长按弹出这两个字母，选中后先结束组字再上屏，L、M 不弹。英文模式和本地输入画 26 键，切回中文恢复 14 键；123 是 26 键的符号层并跟随「26 键数字键盘」。账号同步上传 `input.schema=quanpin`、`platform.ios.keyboard_layout=fourteen_key`，同时照旧上传 `platform.ios.nine_key=false`：还不认识 `keyboard_layout` 的旧版本只读后者，在那里落成全拼 26 键。服务端字段表（`/v1/users/me/preferences/schema`，backend v0.54.0 起有这个键）里没有的键不上传，其余照常（`BackendAccountClient.mergedPreferences`）。「应用云端设置」时有 `keyboard_layout` 就按它切换，没有时退回 `nine_key`，并在云端是全拼、不是九键时保留本机的 14 键（`IOSPreferencePlan.scheme(keeping:)`）。打字统计的来源是「全拼 14 键」，键位 id 是 `FourteenQW` 到 `FourteenM`。用例在 `KeyboardTests/settings/FourteenKeyKeyboardTests.swift`，设置三档在 `OnboardingUITests.testChineseKeyboardOffersTwentySixFourteenAndNineKeys`。
+全拼 14 键（`ChineseInputScheme.fourteenKey`，共享文档写 `fourteen_key`，引擎方案是全拼，默认不启用；「中文键盘」设置是 26 键 / 14 键 / 9 键三档，普通话方案列表也按这个顺序排）把 QWERTY 上相邻两个字母合成一键：`QW ER TY UI OP` / `AS DF GH JK L`（不缩进）/ `[符/分词] ZX CV BN M [⌫]`，键表在 `KeyboardExtension/Sources/input/FourteenKeyLayout.swift`，与 Android、HarmonyOS 和引擎 `KeyGrid::FourteenKey` 是同一张表，`scripts/test-fourteen-key-table.py` 核对。键用 `makeKey` 建，不进 `letterButtons` 和滑行的 `glideLetterKeys`，所以没有 Shift、滑行、双拼键位提示、角标和按键气泡；第三排两端键宽同 26 键的 ⇧（手机 44pt，iPad 按 ⇧ 占一排的比例），底行在 iPhone 和 iPad 上都是手机 26 键底行，不画数字行、不分体。点一下经 `gridKey`（`msime_client_grid_key`）送这一组的首字母，桥接层的网格是 `KeyGrid`（none / 九键 / 14 键），重建会话时重放、换方案时复位；切到 14 键之前按下、之后才到的 26 键字母被丢掉。组码不论「行内预编辑」怎么设都不写进输入框，读音行显示 `nine_key_reading`；拼音选择条（`readingSpellingStrip`）挂在读音行右侧横向滚动，显示时至少占半行，不盖住候选栏，内容同九键拼音栏但没有数字那一项；展开候选是九键的三栏面板。第三排左端键组字时是「分词」（送 `'`），空闲时是「符」（打开符号面板），两种状态都记作 `SoftSymbol`。两个字母的键长按弹出这两个字母，选中后先结束组字再上屏，L、M 不弹。英文模式和本地输入画 26 键，切回中文恢复 14 键；123 是 26 键的符号层并跟随「26 键按 123」。账号同步上传 `input.schema=quanpin`、`platform.ios.keyboard_layout=fourteen_key`，同时照旧上传 `platform.ios.nine_key=false`：还不认识 `keyboard_layout` 的旧版本只读后者，在那里落成全拼 26 键。服务端字段表（`/v1/users/me/preferences/schema`，backend v0.54.0 起有这个键）里没有的键不上传，其余照常（`BackendAccountClient.mergedPreferences`）。「应用云端设置」时有 `keyboard_layout` 就按它切换，没有时退回 `nine_key`，并在云端是全拼、不是九键时保留本机的 14 键（`IOSPreferencePlan.scheme(keeping:)`）。打字统计的来源是「全拼 14 键」，键位 id 是 `FourteenQW` 到 `FourteenM`。用例在 `KeyboardTests/settings/FourteenKeyKeyboardTests.swift`，设置三档在 `OnboardingUITests.testChineseKeyboardOffersTwentySixFourteenAndNineKeys`。
 
-「键盘 → 布局」里的「数字键盘顺序」对应共享文档的 `touch_number_keypad_order`：「电话（123 在上）」是 `phone`（默认），「计算器（789 在上）」是 `calculator`。它只改九键切到数字层时的排列，7 8 9 换到第一排、1 2 3 换到最后一排，按键输入的和 VoiceOver 读的都是显示的数字；字母层仍是 1-2-3 的电话键位。键盘每次出现时把文档里的值抄进 App Group（`keyboard.numberKeypad.order`），按键时不再读。
+「键盘 → 布局」里的「九宫格数字顺序」对应共享文档的 `touch_number_keypad_order`：「123 在上」是 `phone`（默认），「789 在上」是 `calculator`。它只改九键切到数字层时的排列，7 8 9 换到第一排、1 2 3 换到最后一排，按键输入的和 VoiceOver 读的都是显示的数字；字母层仍是 1-2-3 的电话键位。键盘每次出现时把文档里的值抄进 App Group（`keyboard.numberKeypad.order`），按键时不再读。
 
-同一组里的「26 键数字键盘」对应共享文档的 `touch_twenty_six_key_number_layout`：「一行」是 `row`（默认，1 到 0 排在符号上面的 123 页），「九宫格」是 `nine_key`。选了九宫格，手机 26 键（全拼、双拼、五笔、英文、日文罗马字、韩文、粤拼、越南语、藏文，以及本地输入模式下的字母键）按 123 时出九键那样的数字层：左边 ，。？ 标点栏、按「数字键盘顺序」排的 3×3 数字、右列 ⌫ . ！，底行 拼音/ABC、空格、0、中/英、回车；数字和九键数字层一样走符号键的路径，组字时 1–9 选候选。英文、本地输入和写 ASCII 标点的方案（韩语、越南语、藏文）下标点栏与 123 页一样换成 , . ? !。返回键回到 26 键字母，切层不动组字，长按 123 仍打开符号面板；这一层的 2–9 不弹九键的字母菜单，打字统计按输入的数字记作 `Digit*`，与一行的 123 页相同，不算进九宫格。九键、笔画、手写、假名和大千不受影响。iPad 全尺寸键盘有自己的数字行，3×3 拉满整个键盘宽也不顺手，所以始终是一行，分离式键盘随之不受影响；浮动键盘和窄窗口按手机处理，跟随这个设置。键盘每次出现时把它抄进 App Group（`keyboard.twentySixKey.numberLayout`），停在数字层时改了这一项或数字键盘顺序，下次出现即重画。
+同一组里的「26 键按 123」对应共享文档的 `touch_twenty_six_key_number_layout`：「数字一行」是 `row`（默认，1 到 0 排在符号上面的 123 页），「九宫格」是 `nine_key`。选了九宫格，手机 26 键（全拼、双拼、五笔、英文、日文罗马字、韩文、粤拼、越南语、藏文，以及本地输入模式下的字母键）按 123 时出九键那样的数字层：左边 ，。？ 标点栏、按「九宫格数字顺序」排的 3×3 数字、右列 ⌫ . ！，底行 拼音/ABC、空格、0、中/英、回车；数字和九键数字层一样走符号键的路径，组字时 1–9 选候选。英文、本地输入和写 ASCII 标点的方案（韩语、越南语、藏文）下标点栏与 123 页一样换成 , . ? !。返回键回到 26 键字母，切层不动组字，长按 123 仍打开符号面板；这一层的 2–9 不弹九键的字母菜单，打字统计按输入的数字记作 `Digit*`，与一行的 123 页相同，不算进九宫格。九键、笔画、手写、假名和大千不受影响。iPad 全尺寸键盘有自己的数字行，3×3 拉满整个键盘宽也不顺手，所以始终是一行，分离式键盘随之不受影响；浮动键盘和窄窗口按手机处理，跟随这个设置。键盘每次出现时把它抄进 App Group（`keyboard.twentySixKey.numberLayout`），停在数字层时改了这一项或九宫格数字顺序，下次出现即重画。
 
 同一组的「双拼键位提示」对应共享文档的 `touch_shuangpin_key_hints`，缺省为开。关掉后双拼 26 键的字母键不画底部的声母/韵母提示，字母回到键面正中，VoiceOver 也不再读提示；全拼、英文和本地模式本来就不画。键盘每次出现时把文档里的值抄进 App Group（`keyboard.shuangpin.keyHints`）并重画键面。
 
@@ -120,7 +120,7 @@ App「词库」里的个人词典对应 Windows 的用户词编辑：编辑器�
 
 键盘高度、键距、行距和语音入口以共享文档的 `touch_*` 字段为准，App Group 只是镜像。键盘每次出现、App 的「键盘」页每次回到前台都按文档对齐 App Group（`KeyboardLayoutPreference.mirrorGeometry`），设置页每次只写用户刚动的那一项。原先设置页只在出现时读一次、保存时四项一起写：在键盘里调过高度后回到停在后台的设置页，动一下别的控件，旧高度就随之写回文档，键盘下次出现又变回设置页的值。键盘自己调的值在组字中也写进文档（会话把偏好推迟到空闲时应用，这不算失败）；文档没写成时记 `touch_geometry_not_persisted` 日志，并按文档把 App Group 和键盘对齐，用户当场看到实际留下的值。
 
-App 有设置、对话、统计、我的四个标签页。「对话」在原来「社区」那一格，打开 App 里与 AI 对话、同时试用键盘的页面（`KeyboardTryoutView`，经水杉后端交给 EveryAPI）；设置状态卡上的「试用键盘」切到这个标签页并把焦点放进输入框，不再在设置里另外推入一份，直接点标签栏进来则不弹键盘。引导流程和皮肤试用里仍各自嵌着同一个页面，那时还没有标签栏或者试用要在原地撤销。社区没有自己的标签页，而是和皮肤一样融进各个功能页（见 `.agents/notes/implemented/feature/2026-10-11-ios-community-in-feature-pages.md`）：「皮肤」页在主题网格之后直接列出几款社区皮肤，点一下就领取进「我的设计」并换上；「词库」页的「发现词库」列出社区词库，每份带「添加」；「键盘 → AI 润色与回复」页列出社区回复模板（只给高情商回复用）。每一处都以「浏览更多皮肤」「浏览更多词库」「浏览更多回复模板」结尾，在本页的导航栈里推入该类作品的完整列表（`SkinCommunityView`、`CommunityResourcesView`），搜索、分类、详情、评分、举报和发布都在那里；「我的 → 我的发布与收藏」直接推入按作品类型和范围（我发布的 / 收藏的）分开的同一组列表。iOS 没有社区短语包，表达页也就没有社区内容。「设置」标签页分形态：iPad 在 regular 宽度下是侧栏加详情的分栏（`TabletSettingsView`），侧栏是状态卡、搜索和与手机相同的分组（`SettingsPage`），切换栏目时详情重建一条新的导航栈；iPhone（包括横屏时同为 regular 宽度的 Max 机型）与 iPad 的窄窗口是分组列表加单栈推入。
+App 有设置、对话、统计、我的四个标签页。「对话」在原来「社区」那一格，打开 App 里与 AI 对话、同时试用键盘的页面（`KeyboardTryoutView`，经水杉后端交给 EveryAPI；请求不带 `model`，用哪个模型由后端决定，页面上没有模型选择）；设置状态卡上的「试用键盘」切到这个标签页并把焦点放进输入框，不再在设置里另外推入一份，直接点标签栏进来则不弹键盘。引导流程和皮肤试用里仍各自嵌着同一个页面，那时还没有标签栏或者试用要在原地撤销。社区没有自己的标签页，而是和皮肤一样融进各个功能页（见 `.agents/notes/implemented/feature/2026-10-11-ios-community-in-feature-pages.md`）：「皮肤」页在主题网格之后直接列出几款社区皮肤，点一下就领取进「我的设计」并换上；「词库」页的「发现词库」列出社区词库，每份带「添加」；「键盘 → AI 润色与回复」页列出社区回复模板（只给高情商回复用）。每一处都以「浏览更多皮肤」「浏览更多词库」「浏览更多回复模板」结尾，在本页的导航栈里推入该类作品的完整列表（`SkinCommunityView`、`CommunityResourcesView`），搜索、分类、详情、评分、举报和发布都在那里；「我的 → 我的发布与收藏」直接推入按作品类型和范围（我发布的 / 收藏的）分开的同一组列表。iOS 没有社区短语包，表达页也就没有社区内容。「设置」标签页分形态：iPad 在 regular 宽度下是侧栏加详情的分栏（`TabletSettingsView`），侧栏是状态卡、搜索和与手机相同的分组（`SettingsPage`），切换栏目时详情重建一条新的导航栈；iPhone（包括横屏时同为 regular 宽度的 Max 机型）与 iPad 的窄窗口是分组列表加单栈推入。
 
 「皮肤」页下面「明暗与候选颜色」里的明暗设置对应共享的 `screen_keyboard_theme`，以及手写、表情、语音面板各自的 `handwriting_theme`、`emoji_theme`、`voice_theme`，与电脑版同步。键盘皮肤的颜色都是动态色，所以键盘只需按这些设置覆盖 `overrideUserInterfaceStyle`，就能不管宿主 App 是浅色还是深色，都画出皮肤的浅色或深色形态。选“跟随系统”时先看共享的 `theme`，它也是 `system` 时不覆盖，保持原来跟随宿主外观的行为。面板与 Android 有一处按 iOS 调整：面板留在“跟随”且全局主题是 `system` 时跟随键盘而不是宿主，因为面板画在键盘里面，否则会在深色键盘里出现一块浅色面板，所以 App 里把它写作“跟随键盘”。iPad 上这一页把三个面板和键盘并列显示；iPhone 把面板收进“面板明暗”折叠项，多数人只会设置键盘本身。键盘下次出现时应用，不重建 Engine 会话。同一节顶部还有电脑版外观页的「颜色模式」（共享的 `theme`，各处选“跟随”时的默认值）和「设置界面」（`settings_theme`）。iOS 上的设置界面就是这个 App，所以它决定 App 窗口的浅色或深色：选“跟随颜色模式”时看颜色模式，颜色模式是“跟随系统”时不覆盖，跟随设备外观。改动立即生效，从别的设备同步过来的值在 App 回到前台时应用。
 
@@ -142,12 +142,12 @@ iOS 26 会默认在滚动视图边缘叠加渐隐和模糊。键盘内的候选�
 
 真机实测（iPhone 17，Release，释义按出厂默认开着）：
 
-| | 2026-09-21 之前 | 现在 |
-| --- | --- | --- |
-| 普通词字母键 p50 / p95 / max | 6.78 / 16.21 / 26.89 ms | 2.91 / 5.48 / 6.59 ms |
+|                                 | 2026-09-21 之前          | 现在                   |
+| ------------------------------- | ------------------------ | ---------------------- |
+| 普通词字母键 p50 / p95 / max    | 6.78 / 16.21 / 26.89 ms  | 2.91 / 5.48 / 6.59 ms  |
 | 高频音节（`yi`）p50 / p95 / max | 21.46 / 30.73 / 51.97 ms | 5.23 / 5.52 / 10.76 ms |
-| 空格 p50 | 2.38 ms | 1.50 ms |
-| 一次 ABI 往返连同解析 p50 | 0.67 ms | 0.62 ms |
+| 空格 p50                        | 2.38 ms                  | 1.50 ms                |
+| 一次 ABI 往返连同解析 p50       | 0.67 ms                  | 0.62 ms                |
 
 共享运行时不在这条预算里：走真实 ABI 的探针是 p50 0.47ms、p95 1.06ms，并且按组合长度看是平的。
 
@@ -290,6 +290,7 @@ xcrun simctl boot "$device"
 # …在上面的 xcodebuild 命令里用 -destination "platform=iOS Simulator,id=$device"…
 xcrun simctl delete "$device"
 ```
+
 这个数字要跟着改动更新：该套件不接入 `verify-local.sh`，没有自动基线，所以这一行是它唯一的基线，写错了就没有别的东西会发现。`CandidateTranslationTests.testCandidateLongPressOffersGlossInsertion` 的「开启释义」分支在固定词库发布里没有该候选的英文释义来源（`translation-glosses.db` 是用户编辑后的覆盖层），取不到释义时跳过而不是报成产品失败，一旦有释义就自动恢复断言。
 
 该套件不接入 `scripts/verify-local.sh`：它需要模拟器和已暂存的词库资源，单次运行约十分钟。

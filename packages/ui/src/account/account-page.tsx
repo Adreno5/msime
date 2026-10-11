@@ -7,29 +7,21 @@ import { FluentIcon, type FluentIconName } from "../core/fluent-icons";
 import type { AppThemeClient } from "../core/host-contracts";
 import { GroupList, NavGroup, NavRow, Row } from "../core/platform-controls";
 import { useToast } from "../core/toast";
+import { useTemporaryFlag } from "../core/use-temporary-flag";
 import { privacyUrl } from "../settings/app-resources";
 import type { SettingsPageId } from "../settings/settings-page-registry";
 import { themeEntry } from "../theme/global-theme";
 import * as doc from "../settings/document-style";
 import * as account from "./account-style";
 import { AccountAvatar } from "./account-avatar";
-import {
-  accountProviderName,
-  isValidAccountName,
-  normalizeAccountName,
-  preferredAccountName,
-} from "./account-labels";
+import { accountProviderName, preferredAccountName } from "./account-labels";
 import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
-import { AccountNicknameField } from "./account-nickname-field";
-import { AccountInputField } from "./account-input-field";
+import { AccountProfileActions, type HarmonyProfileAction } from "./account-profile-actions";
+import { AccountNicknameEditor, accountNicknameHelpText } from "./account-nickname-editor";
 import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
-import {
-  AccountIdentityDetails,
-  AccountIdentityRows,
-  ProfileGroup,
-} from "./account-identity-details";
+import { AccountIdentityDetails, AccountIdentityRows } from "./account-identity-details";
 import { AppThemeRow } from "./app-theme-row";
 import { BottomSheet, LoginSheet } from "./login-sheet";
 import { MeSubpageHeader, MobileDownloadPage, otherPlatformCount } from "./mobile-download-page";
@@ -38,6 +30,8 @@ import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
 import { useAccountRecoveryActions } from "./use-account-recovery-actions";
+import { runAccountSessionAction, useAccountSessionActions } from "./use-account-session-actions";
+import { useAccountRename } from "./use-account-rename";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
@@ -178,12 +172,20 @@ function MobileAccountProfilePage({
   const [confirmation, setConfirmation] = useState<
     "logout" | "logout-all" | "relogin" | "delete" | null
   >(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, showCopied] = useTemporaryFlag(1800);
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
     setError,
     setNotice,
   );
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut,
+    onDeleted: onSignedOut,
+  });
   const { clearExpired } = useAccountRecoveryActions({
     client,
     mounted,
@@ -191,46 +193,29 @@ function MobileAccountProfilePage({
     perform,
     onClearedExpired: onSignedOut,
   });
-  const normalizedName = normalizeAccountName(name);
-  const validName = isValidAccountName(name);
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!validName) throw { code: "account_invalid" };
-      const updated = await client.rename(normalizedName);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+  const { normalizedName, validName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
       onProfileUpdated(updated);
       setName(updated.user.displayName);
       setNotice("昵称已更新。");
-    });
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut();
-    });
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut();
-    });
+    },
+  });
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
-    if (action === "logout") signOut(false);
-    else if (action === "logout-all") signOut(true);
-    else if (action === "relogin") clearExpired();
-    else if (action === "delete") deleteAccount();
+    if (action === "relogin") clearExpired();
+    else if (action) runAccountSessionAction(action, { signOut, deleteAccount });
   };
   const copyId = () => {
     copyAccountIdToClipboard({
       id: user.id,
       isMounted: () => mounted.current,
-      setCopied,
+      onCopied: showCopied,
       setError,
     });
   };
@@ -254,20 +239,14 @@ function MobileAccountProfilePage({
       </section>
       <section className={`${account.section} ${account.stack}`}>
         <h2 className={account.heading}>社区昵称</h2>
-        <AccountNicknameField
+        <AccountNicknameEditor
+          variant="mobile"
           value={name}
           disabled={busy}
-          ariaLabel="编辑社区昵称"
+          normalizedName={normalizedName}
+          validName={validName}
           onChange={setName}
         />
-        <p className={`account-muted${!validName && normalizedName ? " error" : ""}`}>
-          {normalizedName
-            ? validName
-              ? "昵称会显示在社区作品中，已发布的作品也会同步更新。"
-              : "昵称最多 64 个字符，请勿使用换行或控制字符。"
-            : "取一个喜欢的名字，让大家记住你。"}
-        </p>
-        <p className={account.muted}>{[...normalizedName].length}/64</p>
         <div className={account.actionRow}>
           <ActionButton
             action={rename}
@@ -286,35 +265,7 @@ function MobileAccountProfilePage({
           onCopy={copyId}
         />
       </section>
-      <section className={`${account.section} ${account.stack}`}>
-        <h2 className={account.heading}>账号操作</h2>
-        <div className={account.actionRow}>
-          <ActionButton
-            action={() => setConfirmation("logout")}
-            className="secondary"
-            disabled={busy}
-            label="退出登录"
-          />
-          <ActionButton
-            action={() => setConfirmation("logout-all")}
-            className="secondary"
-            disabled={busy}
-            label="退出所有设备"
-          />
-          <ActionButton
-            action={() => setConfirmation("relogin")}
-            className="secondary"
-            disabled={busy}
-            label="重新登录"
-          />
-          <ActionButton
-            action={() => setConfirmation("delete")}
-            className="danger-text"
-            disabled={busy}
-            label="注销账号"
-          />
-        </div>
-      </section>
+      <AccountProfileActions variant="mobile" busy={busy} onSelect={setConfirmation} />
       {confirmation && (
         <AccountConfirmation
           action={confirmation}
@@ -327,8 +278,6 @@ function MobileAccountProfilePage({
     </div>
   );
 }
-
-type ProfileConfirmation = "logout" | "logout-all" | "delete";
 
 /**
  * 鸿蒙手机上的「个人资料」，从「我的」卡片推入：头像、名字、邮箱和账号登录用的提供方，然后是「账号」和「登录方式」两组，会话操作是居中的红色行。「昵称」打开一个面板，校验与其他地方相同；「水杉 ID」点按即复制自身。结果按设计用 toast 报告；失败则作为错误留在页面上。
@@ -354,7 +303,7 @@ function HarmonyProfilePage({
   const [name, setName] = useState(user.displayName);
   const [renaming, setRenaming] = useState(false);
   const [error, setError] = useState("");
-  const [confirmation, setConfirmation] = useState<ProfileConfirmation | null>(null);
+  const [confirmation, setConfirmation] = useState<HarmonyProfileAction | null>(null);
   const showToast = useToast();
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
@@ -363,50 +312,39 @@ function HarmonyProfilePage({
       if (message) showToast(toastText(message));
     },
   );
-  const normalizedName = normalizeAccountName(name);
-  const validName = isValidAccountName(name);
-  const shownName = preferredAccountName(user);
-  const provider = profile?.providers[0];
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!validName) throw { code: "account_invalid" };
-      const updated = await client.rename(normalizedName);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut: (all) => onSignedOut(all ? "已退出所有设备" : "已退出登录"),
+    onDeleted: () => onSignedOut("账号已注销"),
+  });
+  const { normalizedName, validName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
       onProfileUpdated(updated);
       setName(updated.user.displayName);
       setRenaming(false);
       showToast("昵称已更新");
-    });
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut(all ? "已退出所有设备" : "已退出登录");
-    });
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut("账号已注销");
-    });
+    },
+  });
+  const shownName = preferredAccountName(user);
+  const provider = profile?.providers[0];
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
-    if (action === "logout") signOut(false);
-    else if (action === "logout-all") signOut(true);
-    else if (action === "delete") deleteAccount();
+    if (action) runAccountSessionAction(action, { signOut, deleteAccount });
   };
   const copyId = () =>
     copyAccountIdToClipboard({
       id: user.id,
       isMounted: () => mounted.current,
-      setCopied: (copied) => {
-        if (copied) showToast("已复制");
-      },
+      onCopied: () => showToast("已复制"),
       setError,
     });
 
@@ -433,34 +371,7 @@ function HarmonyProfilePage({
         }}
         onCopyId={copyId}
       />
-      <ProfileGroup>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("logout")}
-        >
-          退出登录
-        </button>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("logout-all")}
-        >
-          退出所有设备
-        </button>
-      </ProfileGroup>
-      <ProfileGroup>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("delete")}
-        >
-          注销账号
-        </button>
-      </ProfileGroup>
+      <AccountProfileActions variant="harmony" busy={busy} onSelect={setConfirmation} />
       {confirmation && (
         <div className={account.profileConfirmation}>
           <AccountConfirmation
@@ -474,30 +385,19 @@ function HarmonyProfilePage({
       {renaming && (
         <BottomSheet
           title="昵称"
-          subtitle="昵称会显示在社区作品中，已发布的作品也会同步更新。"
+          subtitle={accountNicknameHelpText}
           closeDisabled={busy}
           onClose={() => setRenaming(false)}
         >
           <div className={account.sheetField}>
-            <AccountInputField
-              label={<span className="sr-only">社区昵称</span>}
-              ariaLabel="编辑社区昵称"
-              className={account.sheetInput}
-              maxLength={64}
+            <AccountNicknameEditor
+              variant="sheet"
               value={name}
               disabled={busy}
-              data-sheet-autofocus=""
+              normalizedName={normalizedName}
+              validName={validName}
               onChange={setName}
             />
-            <p
-              className={!validName && normalizedName ? account.sheetHintError : account.sheetHint}
-            >
-              {normalizedName
-                ? validName
-                  ? `${[...normalizedName].length}/64`
-                  : "昵称最多 64 个字符，请勿使用换行或控制字符。"
-                : "取一个喜欢的名字，让大家记住你。"}
-            </p>
           </div>
           <button
             type="button"
@@ -1030,12 +930,33 @@ function AccountDetailsPage({
   const [editingProfile, setEditingProfile] = useState(false);
   const [mobileSubpage, setMobileSubpage] = useState<AccountSubpage | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [copiedAccountId, setCopiedAccountId] = useState(false);
+  const [copiedAccountId, showCopiedAccountId] = useTemporaryFlag(1800);
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
     setError,
     setNotice,
   );
+  const clearSession = () => {
+    setUser(null);
+    setProfile(null);
+    setName("");
+  };
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut: (all) => {
+      clearSession();
+      setConfirmation(null);
+      setNotice(all ? "已退出所有设备。" : "已退出登录。");
+    },
+    onDeleted: () => {
+      clearSession();
+      setConfirmation(null);
+      setNotice("账号已注销。");
+    },
+  });
   const { refreshProviders, clearExpired } = useAccountRecoveryActions({
     client,
     mounted,
@@ -1043,9 +964,7 @@ function AccountDetailsPage({
     perform,
     onProvidersChange: setProviders,
     onClearedExpired: () => {
-      setUser(null);
-      setProfile(null);
-      setName("");
+      clearSession();
       setNotice("已清除失效登录状态。");
     },
   });
@@ -1095,6 +1014,17 @@ function AccountDetailsPage({
     setUser(value.user);
     setName(value.user.displayName);
   };
+  const { normalizedName, validName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
+      applyProfile(updated);
+      setNotice("昵称已更新。");
+    },
+  });
 
   const loadProfile = async (generation = clientGeneration.current) => {
     const value = await client.profile();
@@ -1155,41 +1085,6 @@ function AccountDetailsPage({
       onLoginComplete?.();
     });
 
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      setUser(null);
-      setProfile(null);
-      setName("");
-      setConfirmation(null);
-      setNotice(all ? "已退出所有设备。" : "已退出登录。");
-    });
-
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      setUser(null);
-      setProfile(null);
-      setName("");
-      setConfirmation(null);
-      setNotice("账号已注销。");
-    });
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      const normalized = normalizeAccountName(name);
-      if (!isValidAccountName(name)) throw { code: "account_invalid" };
-      const updated = await client.rename(normalized);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      applyProfile(updated);
-      setNotice("昵称已更新。");
-    });
-
   // Only the user and profile change: the nickname field keeps whatever is being typed in the dialog.
   const applyAvatar = (updated: AccountProfile) => {
     setProfile(updated);
@@ -1226,7 +1121,7 @@ function AccountDetailsPage({
     copyAccountIdToClipboard({
       id: user?.id,
       isMounted: () => mounted.current,
-      setCopied: setCopiedAccountId,
+      onCopied: showCopiedAccountId,
       setError,
     });
   };
@@ -1772,13 +1667,14 @@ function AccountDetailsPage({
             {client.chooseAvatar && (
               <p className={account.muted}>点头像可更换，支持 1 MiB 以内的 PNG 或 JPEG。</p>
             )}
-            <AccountNicknameField
+            <AccountNicknameEditor
+              variant="desktop"
               value={name}
               disabled={busy}
-              ariaLabel="编辑社区昵称"
+              normalizedName={normalizedName}
+              validName={validName}
               onChange={setName}
             />
-            <p className={account.muted}>昵称会显示在社区作品中，已发布的作品也会同步更新。</p>
             <AccountIdentityDetails
               user={user}
               providers={profile?.providers ?? []}
@@ -1792,7 +1688,7 @@ function AccountDetailsPage({
                   setEditingProfile(false);
                 }}
                 className={account.primary}
-                disabled={busy || normalizeAccountName(name) === user.displayName}
+                disabled={busy || normalizedName === user.displayName}
                 label="保存修改"
               />
               <ActionButton
@@ -1893,7 +1789,10 @@ function AccountDetailsPage({
               <AccountConfirmation
                 action={confirmation}
                 busy={busy}
-                onConfirm={() => (confirmation === "delete" ? deleteAccount() : signOut(true))}
+                onConfirm={() => {
+                  if (confirmation)
+                    runAccountSessionAction(confirmation, { signOut, deleteAccount });
+                }}
                 onCancel={() => setConfirmation(null)}
               />
             </div>

@@ -3,6 +3,11 @@ import XCTest
 @testable import MSIMEBackend
 
 private final class ChatProtocol: URLProtocol {
+  private static let lock = NSLock()
+  private static var models: [String?] = []
+  /// 每次 `/v1/chat/completions` 请求体里的 `model`：键不存在记 nil，存在记它的值。
+  static var sentModels: [String?] { lock.lock(); defer { lock.unlock() }; return models }
+  static func reset() { lock.lock(); defer { lock.unlock() }; models = [] }
   override class func canInit(with request: URLRequest) -> Bool { true }
   override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
   override func startLoading() {
@@ -19,7 +24,8 @@ private final class ChatProtocol: URLProtocol {
         while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; data.append(contentsOf: buffer.prefix(count)) }
       }
       let requestBody = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-      XCTAssertEqual(requestBody?["model"] as? String, "sol")
+      let model = requestBody?["model"].map { $0 as? String ?? "\($0)" }
+      Self.lock.lock(); Self.models.append(model); Self.lock.unlock()
       XCTAssertEqual(requestBody?["stream"] as? Bool, false)
       let messages = requestBody?["messages"] as? [[String: String]]
       XCTAssertEqual(messages?.last?["content"], "你好")
@@ -281,14 +287,25 @@ final class BackendChatClientTests: XCTestCase {
   }
 
   func testModelsAndSelectedModelReachBackend() async throws {
+    ChatProtocol.reset()
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ChatProtocol.self]
     let api = BackendAccountClient(configuration: config)
     let models = try await api.chatModels(token: "session")
     XCTAssertEqual(models.data.map(\.id), ["luna", "sol"])
     let reply = try await api.chat(messages: [.init(role: "user", content: "你好")], model: "sol", token: "session")
     XCTAssertEqual(reply, "你好，收到消息。")
+    XCTAssertEqual(ChatProtocol.sentModels, ["sol"])
     do { _ = try await api.chatModels(token: "expired"); XCTFail("Accepted expired account") }
     catch let failure as BackendAccountClient.Failure { XCTAssertEqual(failure.status, 401) }
+  }
+  func testChatWithoutModelLeavesChoiceToBackend() async throws {
+    ChatProtocol.reset()
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ChatProtocol.self]
+    let reply = try await BackendAccountClient(configuration: config).chat(
+      messages: [.init(role: "user", content: "你好")], token: "session")
+    XCTAssertEqual(reply, "你好，收到消息。")
+    // 请求体里没有 `model` 键（不是空字符串或 null），由后端用它配置的默认模型。
+    XCTAssertEqual(ChatProtocol.sentModels, [nil])
   }
   func testRejectsOverlongMessagesBeforeSending() async throws {
     let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ChatProtocol.self]

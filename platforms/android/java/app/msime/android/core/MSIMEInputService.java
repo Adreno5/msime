@@ -2383,7 +2383,7 @@ public final class MSIMEInputService extends InputMethodService {
         touchKeyboardHeightAdjustment = nextHeightAdjustment;
         if (inlineHeightActive) inlineHeightOriginal = savedHeightAdjustment;
         touchVoiceShortcutEnabled = nextVoiceShortcut;
-        // 数字键盘顺序和 26 键数字键盘都只影响数字层；正画着它时要重建键行。
+        // 九宫格数字顺序和 26 键按 123 都只影响数字层；正画着它时要重建键行。
         boolean numberKeypadRebuild = (numberKeypadCalculator != nextNumberKeypadCalculator
                 || twentySixKeyNineKeyDigits != nextTwentySixKeyNineKeyDigits)
             && keyboardLayer == KeyboardLayout.Layer.SYMBOLS;
@@ -2784,6 +2784,7 @@ public final class MSIMEInputService extends InputMethodService {
             translations = mergedCandidateGlosses(token.generation(), false).toString();
         }
         try {
+            if (new JSONArray(translations).length() == 0) return;
             JSONObject applied = value(NativeClient.applyTranslations(
                 token.session(), token.generation(), translations));
             if (!CandidateGlossPolicy.isApplied(applied.opt("applied"))) return;
@@ -6514,7 +6515,10 @@ public final class MSIMEInputService extends InputMethodService {
 
     String candidateAnnotation(JSONObject candidate, String typed) {
         String hint = wubiCodeHint(candidate, view, typed);
-        return hint.isEmpty() ? candidateAnnotation(candidate) : hint;
+        if (hint.isEmpty()) return candidateAnnotation(candidate);
+        // 五笔剩余编码和双拼辅助码一样占提示位，释义跟在同一行后面，不再被它挤掉（#6997）。
+        return CandidateGlossPolicy.annotation(hint, InputViewValuePolicy.textOr(candidate, "translation", ""),
+            candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
     String candidateAccessibilitySuffix(JSONObject candidate) {
@@ -6529,7 +6533,10 @@ public final class MSIMEInputService extends InputMethodService {
 
     String candidateAccessibilitySuffix(JSONObject candidate, String typed) {
         String hint = wubiCodeHint(candidate, view, typed);
-        return hint.isEmpty() ? candidateAccessibilitySuffix(candidate) : "，还需输入 " + hint;
+        return hint.isEmpty() ? candidateAccessibilitySuffix(candidate)
+            : "，还需输入 " + hint + CandidateGlossPolicy.glossAccessibilitySuffix(
+                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
     /** The shared `navigation` switches, with the shared defaults for anything absent. */

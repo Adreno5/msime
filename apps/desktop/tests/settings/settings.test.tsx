@@ -3599,6 +3599,10 @@ test("mobile hosts use Apple-style primary navigation and retain secondary setti
           deleteAccount: vi.fn(),
           clearExpired: vi.fn(),
         },
+        chat: {
+          models: vi.fn().mockResolvedValue({ data: [], defaultModel: "" }),
+          complete: vi.fn(),
+        },
         communitySkins: {
           list: vi.fn(),
           detail: vi.fn(),
@@ -3625,18 +3629,21 @@ test("mobile hosts use Apple-style primary navigation and retain secondary setti
   );
   await settingsFormReady();
   const primary = screen.getByRole("navigation", { name: "主要功能" });
-  expect(within(primary).getByRole("button", { name: "设置" })).toBeTruthy();
-  expect(within(primary).getByRole("button", { name: "社区" })).toBeTruthy();
-  expect(within(primary).getByRole("button", { name: "统计" })).toBeTruthy();
-  // The source names this tab 我的, which is also the page's own title; the bar said 账号 against it.
-  expect(within(primary).getByRole("button", { name: "我的" })).toBeTruthy();
-  // 标签栏只有这四项。其余页面都是「设置」标签根页上的一行。
+  // 有社区客户端也没有「社区」标签页：社区内容并进了皮肤、词库、AI 辅助这些功能页，第二格换成了 AI 对话。源应用把最后一格叫「我的」，也是这一页自己的标题；标签栏原先写的是「账号」，和它对不上。
+  expect(
+    within(primary)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["设置", "对话", "统计", "我的"]);
+  // 标签栏只有这四项。其余页面都是「设置」标签根页上的一行，「社区」和「AI 对话」不在其中。
   const home = screen.getByRole("region", { name: "首页" });
   const secondaryLabels = [...home.querySelectorAll("[data-row-title]")].map(
     (row) => row.textContent ?? "",
   );
   expect(secondaryLabels).toContain("输入");
   expect(secondaryLabels).toContain("剪贴板");
+  expect(secondaryLabels).not.toContain("社区");
+  expect(secondaryLabels).not.toContain("AI 对话");
   expect(secondaryLabels).not.toContain("辅助码");
   // A touch host calls the shortcut page 外接键盘快捷键, and this one routes no hardware chords.
   expect(secondaryLabels).not.toContain("外接键盘快捷键");

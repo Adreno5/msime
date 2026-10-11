@@ -232,30 +232,39 @@ export const hDeskBack = (dark: boolean) =>
 export const hDeskNext =
   "min-w-18 rounded-[18px] bg-[var(--accent-color)] px-[18px] font-medium text-[var(--p-on-accent)]";
 
-// ---- HarmonyOS 启动页（dc.html L2692-2698）：圆盘落在带强调色调的底色上，标志旋转入场并描画出来，底部一条进度条逐渐填满 ----
+// ---- HarmonyOS 首次启动的开屏（dc.html L2692-2698）：圆盘在启动窗底色上，底部一条进度条逐渐填满。第一帧和系统启动窗一样，见 styles.css 的 `splash-veil` ----
 
-/** 底色：强调色混入近黑色，所以随平台和季节强调色变化。 */
-export const hSplashShell =
-  "flex min-h-full w-full bg-[color-mix(in_srgb,var(--accent-color)_20%,#0A0B0A)]";
+/** 底色是系统启动窗的颜色（`start_window_background`）：深色是近黑，浅色是 #F1F3F5，跟随文档的深浅色，不随季节变。启动窗只能用一种颜色，开屏接着它往下播；季节色由光晕、圆盘、标志和进度条带出来。 */
+export const hSplashShell = "flex min-h-full w-full bg-[#0A0B0A] light-theme:bg-[#F1F3F5]";
 export const hSplash =
-  "relative flex min-h-full w-full cursor-pointer flex-col items-center justify-center gap-[18px] overflow-hidden border-0 bg-[color-mix(in_srgb,var(--accent-color)_20%,#0A0B0A)] p-0 text-white";
+  "relative flex min-h-full w-full cursor-pointer flex-col items-center justify-center overflow-hidden border-0 bg-[#0A0B0A] p-0 text-white light-theme:bg-[#F1F3F5] light-theme:text-[#191C1E]";
 export const hSplashGlow =
   "absolute size-80 rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--accent-color)_34%,transparent)_0%,transparent_65%)] animate-splash-glow motion-reduce:animate-none";
-/** 180px 圆盘、它的涟漪圆环和标志共用一个盒子，作为整体落下。 */
-export const hSplashDiscBox =
-  "relative size-[180px] flex-none animate-splash-circ-in motion-reduce:animate-none";
-/** 圆盘后的白色光晕，放大到 1.2 倍并淡出，共两次（dc.html `msRipple`）；动画前后都保持不可见。 */
+/** 180px 圆盘、它的涟漪圆环和标志共用一个盒子。它绝对定位、不设偏移，所以落在页面正中，与宿主盖在网页上的启动画面重合；文字不参与居中。 */
+export const hSplashDiscBox = "absolute size-[180px]";
+/** 圆盘后的光晕，放大到 1.2 倍并淡出，共两次（dc.html `msRipple`）；动画前后都保持不可见。深色底上是白色，浅色底上白色看不见，换成淡强调色。 */
 export const hSplashRipple =
-  "absolute inset-0 rounded-full bg-white/70 opacity-0 animate-splash-ripple motion-reduce:hidden";
+  "absolute inset-0 rounded-full bg-white/70 opacity-0 animate-splash-ripple motion-reduce:hidden light-theme:bg-[color-mix(in_srgb,var(--accent-color)_30%,transparent)]";
 export const hSplashDisc =
-  "absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--accent-color)_12%,#FFFFFF)] shadow-[0_12px_40px_rgba(0,0,0,0.35)]";
-export const hSplashLogo =
-  "absolute top-10 left-10 size-[100px] animate-splash-logo-in motion-reduce:animate-none";
+  "absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--accent-color)_12%,#FFFFFF)] shadow-[0_12px_40px_rgba(0,0,0,0.35)] light-theme:shadow-[0_8px_28px_rgba(0,0,0,0.10)]";
+/**
+ * 圆盘和标志方块上各盖一层启动窗的颜色（`start_window_icon.png`、`Settings.ets` 的 `launchCoverView`），开屏开始后淡出，露出下面的当季颜色。
+ */
+export const hSplashDiscVeil =
+  "absolute inset-0 rounded-full bg-[#EDF0F0] animate-splash-veil motion-reduce:hidden light-theme:bg-[#FFFFFF]";
+export const hSplashLogo = "absolute top-10 left-10 size-[100px]";
 export const hSplashFrame = "fill-[color-mix(in_srgb,var(--accent-color)_82%,#000)]";
+export const hSplashFrameVeil = "fill-[#2E3A40] animate-splash-veil motion-reduce:hidden";
+/** 英文名在深色底上是半透明白，浅色底上换成半透明黑；其余与其他平台的开屏相同。 */
+export const hSplashTagline = `${splashTagline} light-theme:text-black/55`;
+/** 名字和英文名排在圆盘正下方，与圆盘相隔 18px。 */
+export const hSplashCaption =
+  "absolute inset-x-0 top-[calc(50%+108px)] flex flex-col items-center gap-[18px]";
+/** 笔画一开始就画好：系统启动窗和盖板上的标志已经带着它，开屏再从零描一遍就是先擦掉再画。 */
 export const hSplashStroke =
-  "fill-none stroke-white [stroke-dasharray:1] [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:9] animate-splash-logo-draw motion-reduce:animate-none";
+  "fill-none stroke-white [stroke-linecap:round] [stroke-linejoin:round] [stroke-width:9]";
 /** 加载条：距两侧和底部 48 的 3px 轨道，在启动页停留的时间内逐渐填满（dc.html `msLoad`）。 */
 export const hSplashTrack =
-  "absolute right-12 bottom-12 left-12 h-[3px] overflow-hidden rounded-[2px] bg-white/8";
+  "absolute right-12 bottom-12 left-12 h-[3px] overflow-hidden rounded-[2px] bg-white/8 light-theme:bg-black/8";
 export const hSplashFill =
   "block h-full w-full origin-left bg-[color-mix(in_srgb,var(--accent-color)_70%,#FFFFFF)] animate-splash-load motion-reduce:animate-none";

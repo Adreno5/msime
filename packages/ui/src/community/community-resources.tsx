@@ -155,6 +155,18 @@ async function installCommunityDictionaryLocally(
   return `已添加「${item.name}」，本机词库应用 ${applied} 个词条`;
 }
 
+/** 回复模板的「添加」：收藏它，再把重新读到的最新一版存进本机「高情商回复」键盘，返回要提示的话。没有这个键盘的宿主只收藏。社区图库行上的「添加」和「AI 辅助」页「回复模板」一组的「添加」都走这里。 */
+export async function addCommunityReply(
+  client: CommunityResourceClient,
+  item: CommunityResource,
+): Promise<string> {
+  await client.save(item.id, true);
+  const latest = await client.detail(item.id);
+  if (!client.storeReply) return `已收藏「${item.name}」`;
+  await client.storeReply(latest);
+  return `已添加「${item.name}」到高情商回复键盘`;
+}
+
 /** 把共享词库的词条导入本机词库，每种词条类型发一次请求，返回实际应用的词条数。 */
 async function importCommunityDictionary(
   dictionary: Required<Pick<CommunityLocalDictionaryClient, "import">>,
@@ -713,14 +725,17 @@ export function CommunityResourcesPage({
   localDictionary,
   mobile = false,
   look,
+  historyPage = "community",
 }: {
   client: CommunityResourceClient;
   kind: CommunityResourceKind;
   initialScope?: CommunityResourceScope;
   localDictionary?: CommunityLocalDictionaryClient;
   mobile?: boolean;
-  /** HarmonyOS 手机的「社区」页：胶囊搜索框、范围筛选 chip，以及一张由多行组成、每行带「添加」胶囊按钮的分组卡片。其他宿主不设置。 */
+  /** HarmonyOS 手机上的图库：胶囊搜索框、范围筛选 chip，以及一张由多行组成、每行带「添加」胶囊按钮的分组卡片。其他宿主不设置。 */
   look?: "harmony";
+  /** 手机上打开详情时压入的历史记录所属的设置页。触屏宿主在「词库」或「AI 辅助」页里打开这个图库，记录要留在那一页，返回手势才会先关详情、再关图库；缺省是桌面的「社区」页。 */
+  historyPage?: string;
 }) {
   const [scope, setScope] = useState<CommunityResourceScope>(initialScope);
   const [search, setSearch] = useState("");
@@ -759,7 +774,7 @@ export function CommunityResourcesPage({
   }, [client, kind, scope]);
   const openDetail = (item: CommunityResource) => {
     if (mobile && typeof window !== "undefined") {
-      pushMobileSettingsState({ page: "community", communityDetail: { kind, id: item.id } });
+      pushMobileSettingsState({ page: historyPage, communityDetail: { kind, id: item.id } });
     }
     setSelected(item);
   };
@@ -801,15 +816,7 @@ export function CommunityResourcesPage({
           toast(`已添加「${item.name}」，云端词库新增或更新 ${result.imported} 个词条`);
         }
       } else {
-        await client.save(item.id, true);
-        const latest = await client.detail(item.id);
-        // 没有「高情商回复」键盘的宿主只收藏。
-        if (client.storeReply) {
-          await client.storeReply(latest);
-          toast(`已添加「${item.name}」到高情商回复键盘`);
-        } else {
-          toast(`已收藏「${item.name}」`);
-        }
+        toast(await addCommunityReply(client, item));
       }
       setAdded((current) => new Set(current).add(item.id));
     } catch (failure) {

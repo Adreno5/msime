@@ -154,6 +154,8 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Fetch the locked offline candidate glosses
         run: python3 scripts/fetch_offline_glosses.py
+      - name: Fetch the locked English gloss tables
+        run: python3 scripts/fetch_gloss_tables.py
       # 不签名、不公证：没有 MACOS_SIGNING_IDENTITY 时 package-release.sh 用 ad-hoc 签名，其余步骤和发布完全相同，包括编译前的资源包可下载检查和 check_app 的缺席与体积检查。
       - name: Build the macOS package
         run: bash platforms/macos/package-release.sh "$(tr -d '[:space:]' < platforms/macos/version.txt)" "$RUNNER_TEMP/dist"

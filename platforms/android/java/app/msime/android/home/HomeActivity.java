@@ -37,7 +37,7 @@ import app.msime.android.ViewPolicy;
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 /**
- * 宿主主界面：底部三个 tab（设置、统计、我的）共用一个 Fragment 容器，详情页压在同一个容器里。原先还有一个「社区」tab，已经撤掉，社区内容并进了皮肤、词库、表达和 AI 几个功能页，各页末尾的「浏览更多…」压入 {@link CommunityFragment} 的完整列表。
+ * 宿主主界面：底部四个 tab（设置、对话、统计、我的）共用一个 Fragment 容器，详情页压在同一个容器里。第二格原先是「社区」，社区内容并进了皮肤、词库、表达和 AI 几个功能页（各页末尾的「浏览更多…」压入 {@link CommunityFragment} 的完整列表），这一格换成了 AI 对话（{@link ChatFragment}）。
  *
  * First-run dictionary preparation is started from here, because this is the launcher and there is
  * nowhere else the user reliably arrives. It never enables or selects the input method on their
@@ -61,9 +61,9 @@ public final class HomeActivity extends AppCompatActivity {
     /** 底部进度条走满的时长。 */
     private static final long INTRO_PROGRESS_MILLIS = 2400;
     private static final long INTRO_FADE_MILLIS = 260;
-    /** 按 `HostDeepLink.TAB_*` 下标排的底部导航项。下标 1 是撤掉的「社区」tab，没有对应的项，记为 0。 */
+    /** 按 `HostDeepLink.TAB_*` 下标排的底部导航项，顺序与 `res/menu/bottom_tabs.xml` 相同（`tests/home/BottomTabsSmoke.java` 核对）。 */
     private static final int[] TAB_IDS = {
-        R.id.tab_settings, 0, R.id.tab_statistics, R.id.tab_account,
+        R.id.tab_settings, R.id.tab_chat, R.id.tab_statistics, R.id.tab_account,
     };
 
     private BottomNavigationView tabs;
@@ -135,7 +135,7 @@ public final class HomeActivity extends AppCompatActivity {
         }
 
         if (state != null) selected = state.getInt(STATE_TAB, FIRST_TAB);
-        // 保存下来的 tab 不在现在的底部导航里（例如撤掉的社区 tab）时回到第一个 tab。
+        // 保存下来的 tab 不在现在的底部导航里时回到第一个 tab。
         if (tabIndex(selected) == HostDeepLink.NO_TAB) selected = FIRST_TAB;
         // 先在没有监听器时标出选中项，再装监听器：否则这一下会被当成「再点一次当前 tab」而清掉恢复回来的回退栈。
         tabs.setSelectedItemId(selected);
@@ -213,8 +213,6 @@ public final class HomeActivity extends AppCompatActivity {
             return;
         }
         PageId page = PageId.fromName(request.page);
-        // 指向撤掉的社区 tab 的深链打开社区皮肤的完整列表，它最接近那个 tab 的首屏。
-        if (page == null && request.tab == HostDeepLink.TAB_COMMUNITY) page = PageId.COMMUNITY;
         int tab = page != null ? page.tab() : request.tab;
         if (tab == HostDeepLink.NO_TAB) return;
         selectTabIndex(tab);
@@ -406,15 +404,15 @@ public final class HomeActivity extends AppCompatActivity {
     /** 底部导航项对应的 `HostDeepLink.TAB_*` 下标；不是现在的底部导航项时为 `HostDeepLink.NO_TAB`。 */
     private static int tabIndex(int itemId) {
         for (int i = 0; i < TAB_IDS.length; i++) {
-            if (TAB_IDS[i] != 0 && TAB_IDS[i] == itemId) return i;
+            if (TAB_IDS[i] == itemId) return i;
         }
         return HostDeepLink.NO_TAB;
     }
 
-    /** 按下标切 tab（`HostDeepLink.TAB_*`）；切换时清空回退栈。撤掉的社区 tab 的下标落到设置 tab。 */
+    /** 按下标切 tab（`HostDeepLink.TAB_*`）；切换时清空回退栈。 */
     void selectTabIndex(int index) {
         if (!HostDeepLink.isTab(index)) return;
-        openTab(TAB_IDS[index] != 0 ? TAB_IDS[index] : FIRST_TAB);
+        openTab(TAB_IDS[index]);
     }
 
     /** 底部导航的选中项变了：换 tab 之前先把详情页全部弹出。 */
@@ -438,6 +436,14 @@ public final class HomeActivity extends AppCompatActivity {
         back.setEnabled(getSupportFragmentManager().getBackStackEntryCount() > 0 || selected != FIRST_TAB);
     }
 
+    /**
+     * 切到「对话」tab 并弹出键盘，设置首页状态卡上的「试用键盘」用它：试用键盘就是在对话页的输入框里打字。直接点底部那一格进来不弹键盘。
+     */
+    void openChat() {
+        openTab(R.id.tab_chat);
+        if (getSupportFragmentManager().findFragmentByTag(tag(R.id.tab_chat)) instanceof ChatFragment chat) chat.focusInput();
+    }
+
     /** 打开某一类社区作品的完整列表。社区 tab 撤掉以后，它是压在设置 tab 上的一页（见 {@link CommunityFragment#browse}）。 */
     public void openCommunity(CommunityRequest.Kind kind) {
         CommunityFragment.browse(this, kind);
@@ -452,7 +458,6 @@ public final class HomeActivity extends AppCompatActivity {
         // Fade-through between tabs: the page arriving fades in from 94 % scale while the one leaving is hidden at once, as the M3 navigation bar pattern prescribes. The first show on create and a rebuild of the tab already on screen are not arrivals, so they appear without it.
         if (switching) transaction.setCustomAnimations(R.anim.fade_through_in, 0);
         for (int id : TAB_IDS) {
-            if (id == 0) continue;
             Fragment page = manager.findFragmentByTag(tag(id));
             if (id != itemId) {
                 if (page != null && !page.isHidden()) transaction.hide(page);
@@ -476,6 +481,7 @@ public final class HomeActivity extends AppCompatActivity {
     }
 
     private Fragment create(int itemId) {
+        if (itemId == R.id.tab_chat) return new ChatFragment();
         if (itemId == R.id.tab_statistics) return new StatisticsFragment();
         if (itemId == R.id.tab_account) return new AccountFragment();
         return new KeyboardFragment();

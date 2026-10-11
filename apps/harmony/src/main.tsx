@@ -175,6 +175,8 @@ interface NativeBridge {
   onboardingFinished(): void;
   /** `{"ok":true,"value":string|null}`：键盘要求本窗口打开的页面，只交出一次，第二次读取回复 null。 */
   pendingPage(): string;
+  /** 页面的第一帧已经上屏：宿主撤掉页面加载期间盖在网页上的启动画面。 */
+  launchPainted(): void;
 }
 
 declare global {
@@ -1240,11 +1242,7 @@ function makeClient(
   // 只读一次：能力记录在应用运行期间不会变化，下面的反馈报告据此写明版本。
   const host = unwrap<HostCapabilities>(native.hostCapabilities());
   const setup = imeSetupClient(native);
-  // 状态栏和导航栏属于窗口，只有宿主够得着。
-  const chrome: HostChromeClient | undefined =
-    typeof native.setSystemBars === "function"
-      ? { setSystemBars: (bars) => native.setSystemBars(JSON.stringify(bars)) }
-      : undefined;
+  const chrome = hostChrome(native);
   // 「反馈」经账号桥接提交：有人登录时桥接附上已登录的会话，无人登录时附上设备的匿名账号会话（宿主在原生层持有，与 Android 一致）。只有两者都没有时（例如匿名注册还没成功）提交才会以 `account_unauthorized` 被拒绝，页面会如实提示。
   const feedback: FeedbackClient = {
     submit: async (report) => {
@@ -1686,18 +1684,56 @@ function HarmonySettings({
   );
 }
 
+/** 告诉宿主页面已经画出来了。只在页面加载时调用：桥接对象在页面加载前就已注册，等它只是以防万一；等不到时宿主几秒后自己撤掉启动画面。 */
+function reportLaunchPainted(): void {
+  whenBridgeReady()
+    .then((native) => {
+      if (typeof native.launchPainted === "function") native.launchPainted();
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * 子树第一次提交后再等两帧（第一帧回调时这一帧还没上屏）调用 `onPainted`。
+ *
+ * 冷启动时宿主在网页上盖着和系统启动窗一模一样的启动画面，页面加载期间不露出空白的网页。设置页第一次提交时还在读设置（「正在读取设置」），但读取是同步的桥接调用，下一个微任务就带着设置重画，所以两帧之后上屏的已经是设置本身；欢迎流程的第一帧则是和启动窗一样的开屏。撤掉盖板时看到的就是画好的页面。
+ */
+function AfterFirstPaint({ onPainted, children }: { onPainted: () => void; children: ReactNode }) {
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(onPainted);
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [onPainted]);
+  return children;
+}
+
+/** 状态栏和导航栏属于窗口，只有宿主够得着。 */
+function hostChrome(native: NativeBridge): HostChromeClient | undefined {
+  return typeof native.setSystemBars === "function"
+    ? { setSystemBars: (bars) => native.setSystemBars(JSON.stringify(bars)) }
+    : undefined;
+}
+
 const root = document.getElementById("root");
 if (root) {
   const app = createRoot(root);
   // 启动页是第一帧，所以必须在它渲染前设好主题。它跟随系统，直到知道用户自选外观的欢迎流程或设置页接管文档。
   const stopFollowingSystemTheme = followSystemTheme();
-  // Waiting for the bridge took up to five seconds against a blank white window. Every other host
-  // shows the shared startup page while it opens; there was never a reason for this one not to.
-  app.render(
-    <StrictMode>
-      <SettingsStartupPage />
-    </StrictMode>,
-  );
+  // 等桥接最多要五秒。手机上这段时间什么都不画：宿主盖着和系统启动窗一样的画面（跟随系统深浅色），等设置页或首次启动的欢迎流程画出来才撤掉，中间不露出启动页、空白网页或「正在读取设置」。二合一是桌面形态，照旧显示共享的启动页。此时还不知道宿主报告的形态，按与样式表 max-phone 相同的宽度判断。
+  const phoneLaunch = window.matchMedia("(max-width: 600px)").matches;
+  if (!phoneLaunch)
+    app.render(
+      <StrictMode>
+        <AfterFirstPaint onPainted={reportLaunchPainted}>
+          <SettingsStartupPage />
+        </AfterFirstPaint>
+      </StrictMode>,
+    );
   whenBridgeReady()
     .then(async (native) => {
       // A refused query answers "no onboarding": someone who has been using the keyboard for weeks
@@ -1706,18 +1742,21 @@ if (root) {
       // 在页面表明欢迎流程不会挡路之前，宿主会暂缓显示通知卡片。页面直接打开设置时（包括等首次读取等太久而放弃之后），不会再有别的地方告诉它。
       if (!onboarding && typeof native.onboardingFinished === "function")
         native.onboardingFinished();
-      // 两者都在这里、在 React 之外读取，因为都是一次性的宿主读取：链接的页面只交出一次，而闪屏标记马上就要写入。
+      // 两者都在这里、在 React 之外读取，因为都是一次性的宿主读取：链接的页面只交出一次，而闪屏标记会在欢迎流程播完开屏时写入。
       const linkedPage = pendingLinkedPage(native);
       const splashUnseen = !splashSeen(native);
       stopFollowingSystemTheme();
+      // 开屏只属于首次启动：欢迎流程在闪屏标记未写入时播它，平时冷启动直接进设置。
       app.render(
         <StrictMode>
-          <HarmonySettings
-            native={native}
-            onboarding={onboarding}
-            splashUnseen={splashUnseen}
-            linkedPage={linkedPage}
-          />
+          <AfterFirstPaint onPainted={reportLaunchPainted}>
+            <HarmonySettings
+              native={native}
+              onboarding={onboarding}
+              splashUnseen={splashUnseen}
+              linkedPage={linkedPage}
+            />
+          </AfterFirstPaint>
         </StrictMode>,
       );
     })

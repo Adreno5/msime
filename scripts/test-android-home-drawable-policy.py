@@ -11,7 +11,7 @@ UI = HOME / "Ui.java"
 EXPECTED_CALLERS = (
     "AiSkinPage.java",
     "InputDialog.java",
-    "KeyboardTryoutActivity.java",
+    "ChatFragment.java",
     "LoginSheet.java",
     "OnboardingActivity.java",
     "SegmentedControl.java",

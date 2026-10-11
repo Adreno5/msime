@@ -174,7 +174,7 @@ function validCommunityText(
   multiline = false,
 ): value is string {
   if (typeof value !== "string") return false;
-  const characters = [...value];
+  const characters = TextPolicy.characters(value);
   if (characters.length < minimum || characters.length > maximum) return false;
   return (
     TextPolicy.validUnicode(value) &&
@@ -307,7 +307,7 @@ function validResponseText(
   if (!validCommunityText(value, 0, maximum, multiline)) return false;
   const text = value as string;
   if (trim && text.trim() !== text) return false;
-  return [...text.trim()].length >= minimum;
+  return TextPolicy.characters(text.trim()).length >= minimum;
 }
 
 function validSkinDesign(value: unknown): boolean {
@@ -678,7 +678,7 @@ function validChatText(value: unknown, maximumBytes: number): value is string {
     !TextPolicy.validUnicode(value)
   )
     return false;
-  return ![...value].some(
+  return !TextPolicy.characters(value).some(
     (character) =>
       character !== "\t" &&
       character !== "\n" &&
@@ -691,7 +691,7 @@ function validChatText(value: unknown, maximumBytes: number): value is string {
 function validFeedbackText(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    Array.from(value).length <= MAX_FEEDBACK_TEXT &&
+    TextPolicy.characters(value).length <= MAX_FEEDBACK_TEXT &&
     TextPolicy.validMultiline(value, MAX_FEEDBACK_TEXT * 4, true)
   );
 }
@@ -700,7 +700,7 @@ function validFeedbackText(value: unknown): value is string {
 function clipUtf8(value: string, maximumBytes: number): string {
   let clipped = "";
   let bytes = 0;
-  for (const character of Array.from(value)) {
+  for (const character of TextPolicy.characters(value)) {
     const size = utf8Length(character);
     if (bytes + size > maximumBytes) break;
     clipped += character;
@@ -729,7 +729,7 @@ function feedbackDiagnostics(value: unknown): Record<string, string> | null | un
   const clean: Record<string, string> = {};
   for (const key of FEEDBACK_DIAGNOSTIC_KEYS) {
     if (!keys.includes(key)) continue;
-    const spaced: string = Array.from(raw[key] as string)
+    const spaced: string = TextPolicy.characters(raw[key] as string)
       .map((character: string): string => (TextPolicy.hasControl(character) ? " " : character))
       .join("");
     const trimmed: string = clipUtf8(spaced.trim(), MAX_FEEDBACK_DIAGNOSTIC_VALUE_BYTES).trim();
@@ -882,7 +882,7 @@ function validateUser(value: unknown): value is Session["user"] {
   return (
     validString(user.id, 256) &&
     validString(user.display_name, 256, true) &&
-    [...user.display_name].length <= 64 &&
+    TextPolicy.characters(user.display_name).length <= 64 &&
     validString(user.created_at, 128, true)
   );
 }
@@ -1015,7 +1015,9 @@ export class AccountCloudBridge {
       if (operation === "community_skin" || operation === "community_resource") {
         return error("community_unavailable");
       }
-      return error(cause instanceof Error ? cause.message : "account_unavailable");
+      // 请求在传输层就失败了（断网、连接被重置）：鸿蒙抛出的是 BusinessError 而不是 Error，原来落到 account_unavailable，页面写「账号服务暂不可用」「聊天服务暂不可用」，让人以为是服务坏了。改报 account_network，账号页写「网络连接失败」，对话页按默认文案写「连接失败，请检查网络后重试」。对话请求连 Error 也这样报：它的 Error 都来自传输层。
+      if (operation === "chat" || !(cause instanceof Error)) return error("account_network");
+      return error(cause.message);
     }
   }
 
@@ -1282,7 +1284,7 @@ export class AccountCloudBridge {
   private async rename(action: Action): Promise<string> {
     if (
       !validString(action.display_name, 256) ||
-      [...action.display_name].length > 64 ||
+      TextPolicy.characters(action.display_name).length > 64 ||
       action.display_name.trim() !== action.display_name
     ) {
       return error("account_invalid");

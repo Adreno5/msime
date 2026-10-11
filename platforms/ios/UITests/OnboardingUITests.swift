@@ -1520,15 +1520,18 @@ final class OnboardingUITests: XCTestCase {
       app.swipeUp()
     }
     app.buttons["keyboardTryoutLink"].tap()
-    XCTAssertTrue(app.buttons["keyboardChatModelPicker"].waitForExistence(timeout: 5))
     let input = app.textFields["keyboardTryoutField"]
+    XCTAssertTrue(input.waitForExistence(timeout: 5))
+    // 模型由后端决定：账号就绪后顶栏既没有模型选择，也没有登录或重新连接按钮。
+    XCTAssertTrue(wait(app.buttons["keyboardChatAccountButton"], until: "exists == false"))
+    XCTAssertFalse(app.buttons["keyboardChatModelPicker"].exists)
     input.tap(); input.typeText("hello")
     app.buttons["keyboardChatSend"].tap()
     XCTAssertTrue(app.staticTexts["已收到：hello"].waitForExistence(timeout: 5))
     XCTAssertEqual(input.value as? String, input.placeholderValue)
     app.buttons["dismissKeyboardButton"].tap()
     let image = XCTAttachment(screenshot: app.screenshot())
-    image.name = "Keyboard chat with model selection"
+    image.name = "Keyboard chat without model selection"
     image.lifetime = .deleteOnSuccess
     add(image)
   }
