@@ -110,7 +110,7 @@ import { KeyboardIconPaths } from './KeyboardIconPaths';
 import { BrandTile } from './faces/BrandTile';
 import { HeightBar } from './faces/HeightBar';
 import { KeyboardLineIcon } from './faces/KeyboardLineIcon';
-import { MiniKeyboardPreview } from './faces/MiniKeyboardPreview';
+import { MiniKeyboardPreview, MoreSkinsTile } from './faces/MiniKeyboardPreview';
 import { PagedTiles } from './faces/PagedTiles';
 import { PanelTile } from './faces/PanelTile';
 import { OneHandRail } from './faces/OneHandRail';
@@ -6583,8 +6583,12 @@ struct KeyboardView {
   }
 
   private skinPageCount(): number {
-    return Math.max(1, Math.ceil(KeyboardSession.shared.themeSkins(this.settings.dark).length
-      / FunctionPanelPolicy.PAGE_SIZE));
+    return Math.max(1, Math.ceil(this.skinTileCount() / FunctionPanelPolicy.PAGE_SIZE));
+  }
+
+  /** 皮肤选择器的格子数：各个皮肤，再加最后一格「更多皮肤」。 */
+  private skinTileCount(): number {
+    return KeyboardSession.shared.themeSkins(this.settings.dark).length + 1;
   }
 
   /**
@@ -6611,7 +6615,7 @@ struct KeyboardView {
       } else {
         // 每个皮肤显示为按其配色绘制的键盘缩略图：配色就是全部的选择，直接展示比在色块旁写个名字更能说明问题。
         PagedTiles({
-          count: KeyboardSession.shared.themeSkins(this.settings.dark).length,
+          count: this.skinTileCount(),
           pageSize: FunctionPanelPolicy.PAGE_SIZE,
           rowHeight: this.skinRowHeight(this.skinPageCount()),
           rowsGap: SKIN_ROWS_GAP_VP,
@@ -6620,7 +6624,11 @@ struct KeyboardView {
           accent: this.skin.toggleForeground,
           hair: this.skin.hair,
           tile: (index: number): void => {
-            this.skinTile(KeyboardSession.shared.themeSkins(this.settings.dark)[index])
+            if (index < this.skinTileCount() - 1) {
+              this.skinTile(KeyboardSession.shared.themeSkins(this.settings.dark)[index])
+            } else {
+              this.moreSkinsTile()
+            }
           }
         })
       }
@@ -6688,6 +6696,21 @@ struct KeyboardView {
       accessibilityState: KeyAccessibilityPolicy.current(this.isCurrentScheme(candidate)),
       onTap: (): void => {
         this.selectScheme(candidate);
+      }
+    })
+  }
+
+  /** 选择器最后一格：键盘读不到设置应用里下载的社区皮肤和保存的设计，这一格收起面板、打开设置应用的「皮肤」页，在那里能用全部皮肤。 */
+  @Builder
+  moreSkinsTile() {
+    MoreSkinsTile({
+      hair: this.skin.hair,
+      foreground: this.skin.keyForeground,
+      nameColor: this.skin.keyForeground,
+      name: '更多皮肤',
+      onTap: (): void => {
+        this.show(SURFACE_NONE);
+        KeyboardSession.shared.openSettings('skin');
       }
     })
   }

@@ -559,9 +559,9 @@ function splashSeen(native: NativeBridge): boolean {
 }
 
 /**
- * 键盘功能面板直接打开的页面：「词库」「反馈」和「关于」。与 `EntryAbility` 从 Want 中接受的列表相同；其他值都不是本页承诺过的链接，而改为打开「输入」（未知页面 id 就会解析到它）比停在原处更让人摸不着头脑。
+ * 键盘直接打开的页面：功能面板的「词库」「反馈」「关于」和皮肤选择器的「更多皮肤」。与 `EntryAbility` 从 Want 中接受的列表（`SettingsPageLink.PAGES`）相同，scripts/test-harmony-settings-links.py 核对两份一致；其他值都不是本页承诺过的链接，而改为打开「输入」（未知页面 id 就会解析到它）比停在原处更让人摸不着头脑。
  */
-const LINKED_PAGES: readonly string[] = ["dictionary", "feedback", "about"];
+const LINKED_PAGES: readonly string[] = ["dictionary", "feedback", "about", "skin"];
 
 function linkedPage(value: unknown): string | undefined {
   return typeof value === "string" && LINKED_PAGES.includes(value) ? value : undefined;
