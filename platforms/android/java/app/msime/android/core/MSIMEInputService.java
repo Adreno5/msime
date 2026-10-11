@@ -8023,6 +8023,7 @@ public final class MSIMEInputService extends InputMethodService {
      */
     private void restartSessionForPrivacy() {
         if (session == 0 || runtimeOptionsBase.isEmpty()) return;
+        long startGeneration = ++engineStartGeneration;
         if (connection != null && view != null && !InputViewValuePolicy.editingText(view).isEmpty())
             command(FINISH_COMPOSITION_COMMAND);
         boolean panelOpen = ViewPolicy.isVisible(moreToolsScroll);
@@ -8034,11 +8035,13 @@ public final class MSIMEInputService extends InputMethodService {
             if (learningSuppressed()) options.getJSONObject("preferences").put("learning", false);
             runtimeOptionsForSnapshot = options.toString();
             message = "共享运行时准备中";
-            scheduleEngineStartup(runtimeOptionsForSnapshot, ++engineStartGeneration);
+            scheduleEngineStartup(runtimeOptionsForSnapshot, startGeneration);
         } catch (JSONException error) {
             message = "共享运行时未就绪：仅直接输入";
         }
     }
+
+    long inputLifecycleGeneration() { return engineStartGeneration; }
 
     /** 功能面板的手写：切到手写方案；已经是手写时切回上一个中文方案。 */
     void toggleHandwritingScheme() {
