@@ -3330,6 +3330,8 @@ function SettingsShell(props: SettingsPageProps) {
   } = model;
   // 对话页第一次打开后就一直挂着（见下方渲染处），切走只隐藏。
   const [chatMounted, setChatMounted] = useState(page === "chat");
+  // 对话页的输入框正在打字：底部标签栏让开，键盘上方只留输入栏，和常见的聊天应用一样。
+  const [chatTyping, setChatTyping] = useState(false);
   useEffect(() => {
     if (page === "chat") setChatMounted(true);
   }, [page]);
@@ -3504,7 +3506,7 @@ function SettingsShell(props: SettingsPageProps) {
         )}
         <div className={settings.body} data-settings-body="">
           {/* A bottom tab bar. `order-2` seats it below the content while the DOM keeps it ahead, so assistive technology and keyboard focus still reach the navigation first, and the bottom padding clears the gesture inset. Hidden above phone width, where the sidebar serves. */}
-          {mobilePlatform && !fillsContent && (
+          {mobilePlatform && !fillsContent && !(page === "chat" && chatTyping) && (
             <MobileSettingsTabs
               tabs={mobilePrimaryPages}
               activeTab={mobileActiveTab}
@@ -3759,6 +3761,7 @@ function SettingsShell(props: SettingsPageProps) {
                     client={client.chat}
                     touch={mobilePlatform}
                     active={page === "chat"}
+                    onComposerFocusChange={setChatTyping}
                     onLogin={openAccountLogin}
                   />
                 </div>
