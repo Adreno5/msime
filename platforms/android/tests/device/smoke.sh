@@ -91,7 +91,8 @@ for entry in \
     "ChineseHelpcodeDeviceSmoke|Chinese helpcode acceptance failed" \
     "MicrosoftShuangpinDeviceSmoke|Microsoft double-pinyin acceptance failed" \
     "EmailSuffixDeviceSmoke|Email suffix acceptance failed" \
-    "NumberRowDeviceSmoke|Number row acceptance failed"
+    "NumberRowDeviceSmoke|Number row acceptance failed" \
+    "CaretCandidatesDeviceSmoke|Caret candidates acceptance failed"
 do
   suite=${entry%%|*}
   if [[ " ${MSIME_DEVICE_SMOKE_SKIP:-} " == *" $suite "* ]]; then

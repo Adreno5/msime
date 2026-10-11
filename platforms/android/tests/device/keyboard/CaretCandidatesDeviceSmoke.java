@@ -1,0 +1,226 @@
+package app.msime.android.test;
+
+import android.graphics.Rect;
+import android.os.Build;
+import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
+import android.util.AtomicFile;
+import android.view.InputDevice;
+import android.view.KeyEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.function.Predicate;
+import org.json.JSONObject;
+
+/**
+ * 「物理键盘时候选栏跟随光标」（#6792）的设备验收：打开本地设置后，用实体键盘打字时候选栏出现在输入框旁边而不是屏幕底部；空闲时什么也不显示，点输入框落到应用上；不报告光标位置的输入框退回停在底部的候选条。
+ *
+ * <p>宿主只把来自非虚拟、字母型键盘设备的按下当成实体键盘打字（`HardwareKeyboardModePolicy.physicalTyping`），`adb shell input` 的虚拟设备不算，而专用 AVD 自带的 `qwerty2` 在 `hw.keyboard=no` 时不是字母型。所以安卓 12（API 31）起用系统的 `uinput` 命令接上一块 USB 键盘：它是真的 evdev 设备，系统像对待蓝牙、USB 键盘一样报告「接着实体键盘」，测试结束关掉 `uinput` 就是拔掉。更早的系统只能用 `hw.keyboard=yes` 的 AVD 自带键盘，没有就失败并说明原因。按键以这块键盘的设备号注入。
+ */
+public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
+    /** {@code AndroidLocalSettings.FILE_NAME} 与 {@code HARDWARE_CARET_CANDIDATES}；设备套件不编译宿主的设置类，这里写同样的字面值。 */
+    private static final String LOCAL_SETTINGS_FILE = "android-settings.json";
+    private static final String CARET_CANDIDATES_SETTING = "platform.android.hardware_caret_candidates";
+    /** `uinput` 接上的键盘的标准输入，往里写注入命令就是在那块键盘上按键；没有接时为空。 */
+    private FileOutputStream uinputInput;
+
+    @Override protected String successDescription() {
+        return "candidate strip beside the caret for physical typing, nothing drawn while idle, and the bottom strip for an editor without cursor anchors";
+    }
+
+    @Override protected void runChecks() throws Exception {
+        ParcelFileDescriptor[] uinput = null;
+        File root = getTargetContext().getFilesDir();
+        File localSettings = new File(new File(new File(root, "bootstrap"), "state"), LOCAL_SETTINGS_FILE);
+        byte[] originalLocal = localSettings.exists() ? Files.readAllBytes(localSettings.toPath()) : null;
+        try {
+            stage = "physical keyboard device";
+            if (Build.VERSION.SDK_INT >= 31) uinput = plugKeyboard();
+            int keyboard = physicalKeyboard();
+
+            stage = "enable caret candidates";
+            if (!localSettings.getParentFile().isDirectory() && !localSettings.getParentFile().mkdirs())
+                throw new AssertionError("Local settings directory unavailable");
+            publish(localSettings, new JSONObject().put("version", 1)
+                .put("settings", new JSONObject().put(CARET_CANDIDATES_SETTING, true))
+                .toString().getBytes(StandardCharsets.UTF_8));
+            rebindInputMethod();
+            shell("am start -W -f 0x10008000 -n app.msime.android.test/app.msime.android.test.EditorActivity");
+            tap(field("msime-test-plain"));
+            await(field("msime-test-plain").and(AccessibilityNodeInfo::isFocused));
+
+            // 接着实体键盘时，输入框一获得焦点宿主就要了光标位置，第一次按键的组字直接出现在光标旁。
+            stage = "caret strip while composing";
+            type(keyboard, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_I, KeyEvent.KEYCODE_H, KeyEvent.KEYCODE_A,
+                KeyEvent.KEYCODE_O);
+            Rect plain = bounds(field("msime-test-plain"));
+            Rect candidate = bounds(imeCandidate("你好"));
+            int screenHeight = getTargetContext().getResources().getDisplayMetrics().heightPixels;
+            float density = getTargetContext().getResources().getDisplayMetrics().density;
+            // 候选栏放在光标所在行下方：顶边落在输入框里或紧挨着它下面，不在屏幕下半。
+            if (candidate.top < plain.top || candidate.top > plain.bottom + Math.round(160 * density)
+                    || candidate.bottom > screenHeight / 2)
+                throw new AssertionError("Candidate strip is not beside the caret: candidate " + candidate
+                    + ", editor " + plain + ", screen height " + screenHeight);
+
+            stage = "caret strip commit";
+            type(keyboard, KeyEvent.KEYCODE_SPACE);
+            await(field("msime-test-plain").and(node -> equalsText("你好", node.getText())));
+
+            // 空闲时候选栏和工具栏都不画：没有展开键，也没有候选。
+            stage = "idle draws nothing";
+            SystemClock.sleep(500);
+            if (findVisible(described("显示软键盘")) != null || findVisible(imeCandidate("你好")) != null)
+                throw new AssertionError("Idle caret mode still draws the strip; IME showed " + imeTexts());
+
+            // 点另一个输入框：触摸穿过透明的输入法窗口落到应用上。这个输入框不报告光标位置，候选栏退回底部。
+            stage = "no cursor anchor focus";
+            tap(field("msime-test-no-cursor-anchor"));
+            await(field("msime-test-no-cursor-anchor").and(AccessibilityNodeInfo::isFocused));
+            stage = "bottom strip without cursor anchors";
+            type(keyboard, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_I, KeyEvent.KEYCODE_H, KeyEvent.KEYCODE_A,
+                KeyEvent.KEYCODE_O);
+            candidate = bounds(imeCandidate("你好"));
+            if (candidate.top < screenHeight / 2)
+                throw new AssertionError("Editor without cursor anchors did not get the bottom strip: candidate "
+                    + candidate + ", screen height " + screenHeight);
+            type(keyboard, KeyEvent.KEYCODE_SPACE);
+            await(field("msime-test-no-cursor-anchor").and(node -> equalsText("你好", node.getText())));
+        } finally {
+            if (uinput != null) unplugKeyboard(uinput);
+            shell("am start -W -n app.msime.android/app.msime.android.home.HomeActivity");
+            if (originalLocal == null) Files.deleteIfExists(localSettings.toPath());
+            else publish(localSettings, originalLocal);
+            rebindInputMethod();
+        }
+    }
+
+    /** 一块非虚拟、字母型的键盘：`uinput` 接上的那块，或 `hw.keyboard=yes` 的 AVD 自带的那块。设备接上后要过一会儿才出现在列表里。 */
+    private static int physicalKeyboard() {
+        long deadline = SystemClock.uptimeMillis() + 10000;
+        do {
+            for (int id : InputDevice.getDeviceIds()) {
+                InputDevice device = InputDevice.getDevice(id);
+                if (device != null && !device.isVirtual()
+                        && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) return id;
+            }
+            SystemClock.sleep(200);
+        } while (SystemClock.uptimeMillis() < deadline);
+        throw new AssertionError("No physical alphabetic keyboard: API " + Build.VERSION.SDK_INT
+            + " before 31 needs an AVD with hw.keyboard=yes");
+    }
+
+    /**
+     * 用 `uinput` 接上一块 USB 键盘（26 个字母键和空格），返回命令的标准输出、标准输入和标准错误；标准输入一直开着，键盘就一直接着。
+     */
+    private ParcelFileDescriptor[] plugKeyboard() throws Exception {
+        ParcelFileDescriptor[] streams = automation.executeShellCommandRwe("uinput -");
+        StringBuilder keys = new StringBuilder();
+        // Linux 键码：KEY_Q..KEY_P 是 16..25，KEY_A..KEY_L 是 30..38，KEY_Z..KEY_M 是 44..50，空格 57。
+        for (int[] range : new int[][] {{16, 25}, {30, 38}, {44, 50}, {57, 57}}) {
+            for (int code = range[0]; code <= range[1]; code++) keys.append(keys.length() == 0 ? "" : ",").append(code);
+        }
+        String register = "{\"id\":1,\"command\":\"register\",\"name\":\"MSIME test keyboard\",\"vid\":6353,"
+            + "\"pid\":26514,\"bus\":\"usb\",\"configuration\":[{\"type\":\"UI_SET_EVBIT\",\"data\":[1]},"
+            + "{\"type\":\"UI_SET_KEYBIT\",\"data\":[" + keys + "]}]}\n";
+        uinputInput = new FileOutputStream(streams[1].getFileDescriptor());
+        uinputInput.write(register.getBytes(StandardCharsets.UTF_8));
+        uinputInput.flush();
+        return streams;
+    }
+
+    /** 本套件用到的键对应的 Linux 键码。 */
+    private static int linuxKey(int keyCode) {
+        return switch (keyCode) {
+            case KeyEvent.KEYCODE_N -> 49;
+            case KeyEvent.KEYCODE_I -> 23;
+            case KeyEvent.KEYCODE_H -> 35;
+            case KeyEvent.KEYCODE_A -> 30;
+            case KeyEvent.KEYCODE_O -> 24;
+            case KeyEvent.KEYCODE_SPACE -> 57;
+            default -> throw new AssertionError("No Linux key code for " + KeyEvent.keyCodeToString(keyCode));
+        };
+    }
+
+    /** 关掉 `uinput` 的标准输入：命令退出，键盘拔掉。 */
+    private void unplugKeyboard(ParcelFileDescriptor[] streams) throws Exception {
+        uinputInput = null;
+        for (ParcelFileDescriptor stream : streams) stream.close();
+    }
+
+    /** 逐个按下、松开这些键：接了 `uinput` 键盘时从那块键盘的 evdev 打进去，走真实的输入读取链路；否则以 AVD 自带键盘的设备号注入。 */
+    private void type(int device, int... keyCodes) throws Exception {
+        for (int keyCode : keyCodes) {
+            if (uinputInput != null) {
+                int code = linuxKey(keyCode);
+                String inject = "{\"id\":1,\"command\":\"inject\",\"events\":[1," + code + ",1,0,0,0,1," + code
+                    + ",0,0,0,0]}\n";
+                uinputInput.write(inject.getBytes(StandardCharsets.UTF_8));
+                uinputInput.flush();
+                SystemClock.sleep(120);
+                continue;
+            }
+            long now = SystemClock.uptimeMillis();
+            KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0, device, 0, 0,
+                InputDevice.SOURCE_KEYBOARD);
+            KeyEvent up = new KeyEvent(now, now + 30, KeyEvent.ACTION_UP, keyCode, 0, 0, device, 0, 0,
+                InputDevice.SOURCE_KEYBOARD);
+            if (!automation.injectInputEvent(down, true) || !automation.injectInputEvent(up, true))
+                throw new AssertionError("Key injection failed");
+            SystemClock.sleep(80);
+        }
+    }
+
+    /** 候选条上的候选：只认输入法的按钮。 */
+    private Predicate<AccessibilityNodeInfo> imeCandidate(String text) {
+        return node -> equalsText("app.msime.android", node.getPackageName())
+            && node.getText() != null && node.getText().toString().contains(text)
+            && equalsText("android.widget.Button", node.getClassName());
+    }
+
+    private AccessibilityNodeInfo findVisible(Predicate<AccessibilityNodeInfo> match) {
+        for (AccessibilityWindowInfo window : automation.getWindows()) {
+            AccessibilityNodeInfo found = find(window.getRoot(), match);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    /** 候选栏挪到光标旁、键盘收起都有一次重新布局，量到的可能是过渡位置；等位置连续两次读到一样再量。 */
+    private Rect bounds(Predicate<AccessibilityNodeInfo> match) {
+        Rect bounds = new Rect();
+        awaitStableBounds(match).getBoundsInScreen(bounds);
+        return bounds;
+    }
+
+    private void rebindInputMethod() throws Exception {
+        shell("ime disable app.msime.android/.MSIMEInputService");
+        shell("ime enable app.msime.android/.MSIMEInputService");
+        shell("ime set app.msime.android/.MSIMEInputService");
+        SystemClock.sleep(1000);
+    }
+
+    private void shell(String command) throws Exception {
+        try (var input = new ParcelFileDescriptor.AutoCloseInputStream(
+                automation.executeShellCommand(command))) {
+            byte[] buffer = new byte[1024];
+            while (input.read(buffer) != -1) { }
+        }
+    }
+
+    private void publish(File file, byte[] contents) throws Exception {
+        AtomicFile target = new AtomicFile(file);
+        FileOutputStream output = target.startWrite();
+        try {
+            output.write(contents);
+            target.finishWrite(output);
+        } catch (Exception error) {
+            target.failWrite(output);
+            throw error;
+        }
+    }
+}

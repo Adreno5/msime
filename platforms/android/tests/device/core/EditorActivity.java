@@ -56,6 +56,12 @@ public final class EditorActivity extends Activity {
         cursorAtEnd.setHint("Editor that ignores newCursorPosition");
         showImeOnFocus(cursorAtEnd);
         layout.addView(cursorAtEnd);
+        EditText noCursorAnchor = new NoCursorAnchorEditText(this);
+        noCursorAnchor.setInputType(InputType.TYPE_CLASS_TEXT);
+        noCursorAnchor.setContentDescription("msime-test-no-cursor-anchor");
+        noCursorAnchor.setHint("Editor that reports no cursor position");
+        showImeOnFocus(noCursorAnchor);
+        layout.addView(noCursorAnchor);
         setContentView(layout);
     }
 
@@ -71,6 +77,28 @@ public final class EditorActivity extends Activity {
             return new InputConnectionWrapper(connection, false) {
                 @Override public boolean commitText(CharSequence text, int newCursorPosition) {
                     return super.commitText(text, 1);
+                }
+            };
+        }
+    }
+
+    /**
+     * 不报告光标位置的编辑器：`requestCursorUpdates` 一律返回假，与自绘编辑器、部分 WebView 和游戏一样（#6792）。「物理键盘时候选栏跟随光标」在这种输入框里要退回停在底部的候选条。
+     */
+    private static final class NoCursorAnchorEditText extends EditText {
+        NoCursorAnchorEditText(Context context) { super(context); }
+
+        @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            InputConnection connection = super.onCreateInputConnection(outAttrs);
+            if (connection == null) return null;
+            return new InputConnectionWrapper(connection, false) {
+                @Override public boolean requestCursorUpdates(int cursorUpdateMode) {
+                    return false;
+                }
+
+                // 安卓 13 起框架转给编辑器的是带过滤参数的这一个，包装类会直接交给被包装的连接，不经过上面那个。
+                @Override public boolean requestCursorUpdates(int cursorUpdateMode, int cursorUpdateFilter) {
+                    return false;
                 }
             };
         }
