@@ -6311,10 +6311,10 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         if (MSIMECommitCountsAsTyping(transition[@"commit_context"]))
             MSIMERecordTypingStatistics(_preferencesDirectory ?: MSIMEStatisticsHostOptions(_session)[@"preferences_directory"],
                                         displayTransition[@"commit"], source);
-        // 上屏音由生命周期核心在派发里出，上屏特效随派发回复的 feedback 回来。只有派发类调用的回复带它：失焦上屏、语音转写和宿主自己合成的上屏都没有，所以既不出声也不画。安全输入时核心答 0。
+        // 上屏音由生命周期核心在派发里出，上屏特效随派发回复的 feedback 回来。只有派发类调用的回复带它：失焦上屏、语音转写和宿主自己合成的上屏都没有，所以既不出声也不画。安全输入时核心答 0。核心答 0 的上屏（失焦上屏、安全输入、特效关闭）不画：画一个 0 会把还在屏幕上的连击徽标撤掉。
         uint64_t effect = 0;
         NSDictionary *feedback = [transition[@"feedback"] isKindOfClass:NSDictionary.class] ? transition[@"feedback"] : nil;
-        if (feedback && MSIMEStrictUnsignedInteger(feedback[@"typing_effect"], &effect) && effect <= UINT32_MAX)
+        if (feedback && MSIMEStrictUnsignedInteger(feedback[@"typing_effect"], &effect) && effect != 0 && effect <= UINT32_MAX)
             [self drawTypingEffect:static_cast<uint32_t>(effect) commit:YES];
     }
     // A key handled while this transition's text was being written has already put the newer view on screen; this one is older and must not replace it.
