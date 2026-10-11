@@ -2707,6 +2707,7 @@ fn google_loopback_reply_answers_the_browser_with_the_same_page_as_the_desktop_l
             "GET /callback?state={state}&code=4%2F0Afixture HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )),
         state,
+        None,
     );
     assert_eq!(code.outcome, GoogleCallback::Code("4/0Afixture".into()));
     assert!(code.response.starts_with("HTTP/1.1 200 OK\r\n"));
@@ -2720,6 +2721,7 @@ fn google_loopback_reply_answers_the_browser_with_the_same_page_as_the_desktop_l
             "GET /callback?state={state}&error=access_denied HTTP/1.1\r\n\r\n"
         )),
         state,
+        None,
     );
     assert_eq!(
         denied.outcome,
@@ -2733,10 +2735,58 @@ fn google_loopback_reply_answers_the_browser_with_the_same_page_as_the_desktop_l
         Some("GET /callback?state=other&code=x HTTP/1.1\r\n\r\n".to_owned()),
         None,
     ] {
-        let reply = google_loopback_reply(head.as_deref(), state);
+        let reply = google_loopback_reply(head.as_deref(), state, None);
         assert_eq!(reply.outcome, GoogleCallback::Ignored);
         assert!(reply.response.starts_with("HTTP/1.1 404 Not Found\r\n"));
     }
+    // 桌面不传返回链接，页面上没有回到应用的按钮。
+    assert!(!code.response.contains("class=\"return\""));
+}
+
+// 手机上浏览器占满屏幕：宿主给了能拉回应用的链接时，回跳页多一个「回到水杉输入法」按钮；链接不合格时不画按钮，回跳照常完成。
+#[test]
+fn google_loopback_reply_offers_a_way_back_to_the_app_when_the_host_has_one() {
+    let state = GOOGLE_FIXTURE_STATE;
+    let head = format!("GET /callback?state={state}&code=4%2F0Afixture HTTP/1.1\r\n\r\n");
+    let reply = google_loopback_reply(Some(&head), state, Some("msime://auth/google"));
+    assert_eq!(reply.outcome, GoogleCallback::Code("4/0Afixture".into()));
+    assert!(reply
+        .response
+        .contains("<a class=\"return\" href=\"msime://auth/google\">回到水杉输入法</a>"));
+    let (head_part, body) = reply.response.split_once("\r\n\r\n").unwrap();
+    assert!(head_part.contains(&format!("Content-Length: {}\r\n", body.len())));
+
+    let denied = format!("GET /callback?state={state}&error=access_denied HTTP/1.1\r\n\r\n");
+    let reply = google_loopback_reply(Some(&denied), state, Some("msime://auth/google"));
+    assert!(reply.response.contains("回到水杉输入法"));
+
+    // 一个不是回跳的请求回 404，不给按钮。
+    let stray = google_loopback_reply(
+        Some("GET /favicon.ico HTTP/1.1\r\n\r\n"),
+        state,
+        Some("msime://auth/google"),
+    );
+    assert!(!stray.response.contains("class=\"return\""));
+
+    for link in [
+        "https://example.com/",
+        "http://127.0.0.1/",
+        "javascript:alert(1)",
+        "data://text/html",
+        "msime://auth/\"><script>",
+        "msime://auth google",
+        "Msime://auth",
+        "://auth",
+        "msime:auth",
+    ] {
+        let reply = google_loopback_reply(Some(&head), state, Some(link));
+        assert!(!reply.response.contains("class=\"return\""), "{link}");
+        assert_eq!(reply.outcome, GoogleCallback::Code("4/0Afixture".into()));
+    }
+    let long = format!("msime://{}", "a".repeat(130));
+    assert!(!google_loopback_reply(Some(&head), state, Some(&long))
+        .response
+        .contains("class=\"return\""));
 }
 
 #[test]
