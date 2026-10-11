@@ -497,7 +497,7 @@ target/debug/msime-pack run path/to/pack --events events.jsonl --grant all
 - `init_fuel` 只在这个事件之前实例化或尝试实例化时出现，是初始化用掉的 fuel。在 `init:<原因>` 和 `deferred` 行上，它是失败或被截断的那次尝试用掉的 fuel，同样从本轮的初始化预算里扣除，不要把它算成一次完成的实例化。
 - `actions` 是这次调用修改类函数的记录和输入法给的结果，目前都是 `denied`；失败时这些动作在输入法里全部丢弃。
 - `log` 是插件经 `log` 写的每一行，`msime_init` 里写的跟在实例化的那个事件上。
-- `status`：`ok`；`not_subscribed`（清单没声明这个钩子）；失败原因 `out_of_fuel`、`stack_overflow`、`memory_limit`、`memory_out_of_bounds`、`unreachable`、`trap`、`negative_return`；初始化失败 `init:<原因>`（如 `init:init_failed`、`init:abi_mismatch`），之后的事件是 `disabled`；实例因失败丢弃之后（见[失败](#失败)）、下一次 `focus_in` 之前是 `suspended`；初始化预算被本轮用完时是 `deferred`。
+- `status`：`ok`；`not_subscribed`（清单没声明这个钩子）；本次钩子自己的 fuel 上限耗尽时是失败原因 `out_of_fuel`，其他失败原因有 `stack_overflow`、`memory_limit`、`memory_out_of_bounds`、`unreachable`、`trap`、`negative_return`；本轮共享 fuel 配额先用完时是 `turn_exhausted`，它不算失败，若执行被截断导致实例不可用，下一次事件是 `suspended`；初始化失败 `init:<原因>`（如 `init:init_failed`、`init:abi_mismatch`），之后的事件是 `disabled`；实例因失败丢弃之后（见[失败](#失败)）、下一次 `focus_in` 之前是 `suspended`；初始化预算被本轮用完时是 `deferred`。
 
 实例的生命周期按输入法的规则：第一次需要投递时才实例化，`focus_in` 之前和 `focus_out` 之后丢弃实例，同一轮里重建的实例接着用这一轮剩下的配额。和输入法不同的地方：
 
