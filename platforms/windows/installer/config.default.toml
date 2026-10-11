@@ -66,8 +66,8 @@ region = "ap-guangzhou"
 target_language = "en"
 
 #
-# 自定义 DeepLX 兼容翻译服务。endpoint 必须填写完整的 POST 接口地址。
-# api_key 留空时不发送 Authorization 请求头。
+# 自定义翻译服务：自建的 DeepLX 兼容服务，或 DeepL 官方 API（endpoint 填 https://api-free.deepl.com/v2/translate 或 https://api.deepl.com/v2/translate，api_key 填 DeepL 的 Auth Key，候选词会发送到 DeepL）。endpoint 必须填写完整的 POST 接口地址。
+# api_key 留空时不发送 Authorization 请求头；DeepL 官方地址必须填写 api_key。
 #
 [custom_translation]
 enabled = false

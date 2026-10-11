@@ -94,6 +94,19 @@ final class TranslationProviderTests: XCTestCase {
     XCTAssertEqual(TranslationProviderPreference.route(in: ["custom_translation": ["enabled": true, "endpoint": "  "]]), .none)
   }
 
+  /// 自定义服务是否可用由共享请求构造决定：DeepL 官方地址没有密钥时不构造请求，所以不算可用，设置页显示「凭据不完整」；DeepLX 地址不需要密钥。
+  func testACustomEndpointIsUsableOnlyWhenTheSharedBuilderAcceptsIt() {
+    func route(_ endpoint: String, _ apiKey: String) -> TranslationRoute {
+      TranslationProviderPreference.route(in: ["custom_translation": ["enabled": true, "endpoint": endpoint, "api_key": apiKey]])
+    }
+    XCTAssertEqual(route("https://api-free.deepl.com/v2/translate", ""), .none)
+    XCTAssertEqual(route("https://api.deepl.com/v2/translate", "  "), .none)
+    XCTAssertEqual(route("https://api-free.deepl.com/v2/translate", "synthetic-key:fx"),
+                   .custom(endpoint: "https://api-free.deepl.com/v2/translate", apiKey: "synthetic-key:fx"))
+    XCTAssertEqual(route("https://deeplx.example/translate", ""), .custom(endpoint: "https://deeplx.example/translate", apiKey: ""))
+    XCTAssertEqual(route("http://example.com/t", ""), .none, "the shared builder refuses remote cleartext, so the keyboard would send nothing")
+  }
+
   func testSelectKeepsOnlyOneProviderEnabledAndRoundTrips() {
     var document: [String: Any] = ["tencent_tmt": ["enabled": true, "secret_id": "old", "secret_key": "old"]]
     TranslationProviderPreference.select(.custom, niutrans: (" app ", "key"), tencent: ("AKID1", "key", ""),

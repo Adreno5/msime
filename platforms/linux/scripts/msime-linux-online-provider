@@ -564,9 +564,47 @@ def anonymous_translation(texts, source, target, server):
             for index in range(len(texts))]
 
 
+# DeepL 官方 API 的两个主机，与 crates/client-core/src/translation.rs 的 custom_translation_request 一致：Free 密钥（以 :fx 结尾）走 api-free.deepl.com，其余走 api.deepl.com。
+DEEPL_PRO_HOST = "api.deepl.com"
+DEEPL_FREE_HOST = "api-free.deepl.com"
+# DeepL 的 target_lang 中英文要写变体，ZH、EN 只为兼容旧调用保留。
+DEEPL_TARGET_LANGUAGES = {"zh": "ZH-HANS", "en": "EN-US"}
+
+
+def is_deepl_api_endpoint(endpoint):
+    """https、默认端口、主机名恰好是 DeepL 官方 API 主机；只看主机名不看路径，自建 DeepLX 的 /v2/translate 不受影响。"""
+    try:
+        url = urllib.parse.urlsplit(endpoint)
+        return (url.scheme == "https" and url.hostname in (DEEPL_PRO_HOST, DEEPL_FREE_HOST) and
+                url.port in (None, 443))
+    except ValueError:
+        return False
+
+
+def custom_translation_request(config, text, source, target):
+    """返回 (url, headers, body)，DeepL 地址没有密钥时返回 None。用例在 shared/contracts/custom-translation/cases.json，与共享 Rust 实现逐条核对。"""
+    endpoint = config["endpoint"]
+    key = config.get("api_key") or ""
+    headers = {"Content-Type": "application/json"}
+    if is_deepl_api_endpoint(endpoint):
+        if not key:
+            return None
+        headers["Authorization"] = "DeepL-Auth-Key " + key
+        host = DEEPL_FREE_HOST if key.endswith(":fx") else DEEPL_PRO_HOST
+        return ("https://" + host + "/v2/translate", headers,
+                {"text": [text], "source_lang": source.upper(),
+                 "target_lang": DEEPL_TARGET_LANGUAGES.get(target.lower(), target.upper())})
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    return endpoint, headers, {"text": text, "source_lang": source.upper(), "target_lang": target.upper()}
+
+
 def custom_translation(config, text, source, target, timeout):
-    result = fetch(config["endpoint"], timeout, {
-        "text": text, "source_lang": source.upper(), "target_lang": target.upper()}, config.get("api_key"))
+    request = custom_translation_request(config, text, source, target)
+    if request is None:
+        return None
+    url, headers, body = request
+    result = fetch(url, timeout, body, None, headers)
     if not isinstance(result, dict) or ("code" in result and result["code"] not in (200, "200")):
         return None
     for key in ("data", "translation", "result", "translations"):

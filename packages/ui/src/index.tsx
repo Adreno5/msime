@@ -2317,6 +2317,8 @@ export interface PreferencesRecovery {
  * Its page icon is the app logo, which the design does not put in the bar either — its first tab is the `settings` glyph. Three of the four tabs would otherwise be a subject and the fourth a brand.
  */
 export {
+  customTranslationKeyIssue,
+  isDeepLApiEndpoint,
   tencentCredentialIssue,
   translationEndpointIssue,
 } from "./settings/translation-validation";
