@@ -59,6 +59,16 @@ def main() -> None:
         "public static TextView styledLabel(Context context, CharSequence text, int sizeSp,",
         "public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,",
         "public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,",
+        "public static TextView trailingValue(Context context, CharSequence text, int sizeSp, int color)",
+        "public static void hideFromAccessibility(View view)",
+        "public static void setSymmetricPaddingDp(Context context, View view, float horizontalDp,",
+        "public static void setHorizontalPaddingDp(Context context, View view, float horizontalDp)",
+        "public static void setPaddingDp(Context context, View view, float leftDp, float topDp,",
+        "public static void setRowPadding(Context context, View view)",
+        "public static void setRowMinimumHeight(Context context, View view)",
+        "public static void setMinimumHeightDp(Context context, View view, float heightDp)",
+        "public static void setTextMinHeightDp(Context context, TextView view, float heightDp)",
+        "public static void setButtonPadding(Context context, View view)",
         "public static TextView label(Context context, CharSequence text, float sizeSp, int color)",
         "public static void afterTextChanged(TextView view, Consumer<Editable> listener)",
     )
@@ -87,8 +97,8 @@ def main() -> None:
         raise AssertionError("ImeBottomBar 没有调用共享条件可见性策略")
     if "view.setMinHeight(dp(context, heightDp));" in ui:
         raise AssertionError("Ui 仍直接实现文本最小高度策略")
-    if "ViewPolicy.setTextMinHeight(view, DimensionPolicy.pixels(context, heightDp));" not in ui:
-        raise AssertionError("Ui 没有调用共享文本最小高度策略")
+    if "public static void setTextMinHeightDp(Context context, TextView view, float heightDp)" not in view_policy:
+        raise AssertionError("ViewPolicy 没有调用共享文本最小高度策略")
     if "public static void setTextMinWidthDp(" in ui:
         raise AssertionError("Ui 仍保留文本最小宽度转发方法")
     if "setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));" not in view_policy:
@@ -106,7 +116,7 @@ def main() -> None:
         raise AssertionError("Ui 仍保留文本样式转发方法")
     if re.search(r"(?<![.\w])style\(", ui):
         raise AssertionError("Ui 仍调用已移除的文本样式方法")
-    if ui.count("ViewPolicy.style(") != 1:
+    if ui.count("ViewPolicy.style(") != 0:
         raise AssertionError("Ui 文本工厂没有直接调用共享样式方法")
     if "public static TextView styledLabel(" in ui:
         raise AssertionError("Ui 仍保留 styledLabel 转发方法")
@@ -123,6 +133,61 @@ def main() -> None:
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.pillButton(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享胶囊按钮工厂")
+    if "public static TextView trailingValue(" in ui:
+        raise AssertionError("Ui 仍保留 trailingValue 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.trailingValue(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享尾值工厂")
+    if "public static void hideFromAccessibility(" in ui:
+        raise AssertionError("Ui 仍保留无障碍隐藏转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.hideFromAccessibility(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享无障碍隐藏策略")
+    if "public static void setSymmetricPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留对称 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setSymmetricPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享对称 dp 内边距策略")
+    if "public static void setSymmetricPaddingPx(" in ui:
+        raise AssertionError("Ui 仍保留对称像素内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setSymmetricPaddingPx(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享对称像素内边距策略")
+    if "public static void setHorizontalPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留水平 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setHorizontalPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享水平 dp 内边距策略")
+    if "public static void setPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留四边 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享四边 dp 内边距策略")
+    if "public static void setRowPadding(" in ui:
+        raise AssertionError("Ui 仍保留标准行内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setRowPadding(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享行内边距策略")
+    if "public static void setRowMinimumHeight(" in ui:
+        raise AssertionError("Ui 仍保留标准行最小高度转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setRowMinimumHeight(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享行最小高度策略")
+    if "public static void setMinimumHeightDp(" in ui:
+        raise AssertionError("Ui 仍保留最小高度 dp 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setMinimumHeightDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享最小高度 dp 策略")
+    if "public static void setTextMinHeightDp(" in ui:
+        raise AssertionError("Ui 仍保留文本最小高度 dp 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setTextMinHeightDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享文本最小高度 dp 策略")
+    if "public static void setButtonPadding(" in ui:
+        raise AssertionError("Ui 仍保留按钮内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setButtonPadding(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享按钮内边距策略")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.style(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文本样式策略")
@@ -176,11 +241,12 @@ def main() -> None:
             raise AssertionError(f"{path} 没有直接调用共享底部内边距策略")
     if "public static void makeClickable(View view, Context context, Runnable action)" not in view_policy:
         raise AssertionError("ViewPolicy 缺少共享点击策略")
-    if "ViewPolicy.setBottomPadding(target, bottom);" not in ui:
-        raise AssertionError("Ui 页面避让监听没有调用共享底部内边距策略")
+    page_insets = (HOME / "PageInsetsPolicy.java").read_text(encoding="utf-8")
+    if "ViewPolicy.setBottomPadding(target, bottom);" not in page_insets:
+        raise AssertionError("PageInsetsPolicy 没有调用共享底部内边距策略")
     for name in ("DetailPage.java", "KeyboardFragment.java"):
         source = (HOME / name).read_text(encoding="utf-8")
-        if "Ui.bindPageBottomInsets(scroll);" not in source:
+        if "PageInsetsPolicy.bind(scroll);" not in source:
             raise AssertionError(f"{name} 没有复用页面底部避让监听")
         if "ViewPolicy.setBottomPadding(target, bottom);" in source:
             raise AssertionError(f"{name} 仍重复应用底部内边距")
@@ -233,6 +299,18 @@ def main() -> None:
     image_policy = (ANDROID_JAVA / "app/msime/android/ImageViewPolicy.java").read_text(encoding="utf-8")
     if "ViewPolicy.newSquareParamsPx(" not in image_policy:
         raise AssertionError("ImageViewPolicy 没有调用共享正方形布局参数工厂")
+    # isGone(null) 为假，`!isGone(x)` 不能代替判空；同一行接着改 x 的可见性却没判空，视图还没建好时就会空指针（6862a33265 在 ImeNineKeyPanel.dismiss 引入过）。
+    unguarded = re.compile(
+        r"!\s*ViewPolicy\.isGone\(([\w.]+)\)\)\s*\{?\s*ViewPolicy\."
+        r"(?:hide|show|setVisible|setVisibleIfChanged|setInvisible|setVisibilityForText)\(\1[,)]")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            match = unguarded.search(line)
+            if match and f"{match.group(1)} != null" not in line:
+                raise AssertionError(f"{path}:{number} 用 !ViewPolicy.isGone 代替了判空：{line.strip()}")
+    nine_key_panel = (ANDROID_JAVA / "app/msime/android/core/ImeNineKeyPanel.java").read_text(encoding="utf-8")
+    if "if (root != null && !ViewPolicy.isGone(root)) ViewPolicy.hide(root);" not in nine_key_panel:
+        raise AssertionError("ImeNineKeyPanel.dismiss 没有在 root 建好前判空")
     print("android view policy: recursive enabled state is shared")
 
 

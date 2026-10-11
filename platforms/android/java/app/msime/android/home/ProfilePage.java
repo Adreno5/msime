@@ -194,13 +194,13 @@ public final class ProfilePage extends DetailPage {
             picture.setScaleType(ImageView.ScaleType.CENTER_CROP);
             ViewPolicy.setBackground(picture, circle);
             picture.setClipToOutline(true);
-            Ui.hideFromAccessibility(picture);
+            ViewPolicy.hideFromAccessibility(picture);
             frame.addView(picture, LayoutPolicy.squareFrameParams(context, sizeDp));
         } else {
             TextView letter = ViewPolicy.centeredLabel(context, TextPolicy.trimmedInitial(name, "?"),
                 Math.round(sizeDp * 0.4f), 600, ThemeColorPolicy.onAccent(context));
             ViewPolicy.setBackground(letter, circle);
-            Ui.hideFromAccessibility(letter);
+            ViewPolicy.hideFromAccessibility(letter);
             frame.addView(letter, LayoutPolicy.squareFrameParams(context, sizeDp));
         }
         return frame;
@@ -263,7 +263,7 @@ public final class ProfilePage extends DetailPage {
     private View header(Context context, DeviceDataApi.Profile profile, @Nullable Bitmap image) {
         LinearLayout header = LayoutPolicy.column(context);
         ViewPolicy.setCenteredHorizontally(header);
-        Ui.setPaddingDp(header, context, 0, 8, 0, 4);
+        ViewPolicy.setPaddingDp(context, header, 0, 8, 0, 4);
 
         FrameLayout avatar = new FrameLayout(context);
         avatar.addView(avatarView(context, 88, profile.displayName(), image));
@@ -272,8 +272,8 @@ public final class ProfilePage extends DetailPage {
         GradientDrawable badge = DrawablePolicy.circle(ThemeColorPolicy.card(context));
         ViewPolicy.setBackground(camera, badge);
         int pad = DimensionPolicy.pixels(context, 6);
-        Ui.setSymmetricPaddingPx(camera, pad);
-        Ui.hideFromAccessibility(camera);
+        ViewPolicy.setSymmetricPadding(camera, pad);
+        ViewPolicy.hideFromAccessibility(camera);
         FrameLayout.LayoutParams cameraParams = LayoutPolicy.squareFrameParams(context, 28);
         cameraParams.gravity = Gravity.BOTTOM | Gravity.END;
         avatar.addView(camera, cameraParams);
@@ -301,7 +301,7 @@ public final class ProfilePage extends DetailPage {
             TextView chip = ViewPolicy.styledLabel(context, "通过 " + providerName(kind) + " 登录", 12, 500,
                 ThemeColorPolicy.accent(context));
             ViewPolicy.setBackground(chip, DrawablePolicy.pill(ThemeColorPolicy.accentSoft(context)));
-            Ui.setSymmetricPaddingDp(chip, context, 10, 3);
+            ViewPolicy.setSymmetricPaddingDp(context, chip, 10, 3);
             LinearLayout.LayoutParams chipParams = LayoutPolicy.wrapParams();
             chipParams.topMargin = DimensionPolicy.pixels(context, 8);
             header.addView(chip, chipParams);

@@ -24,6 +24,7 @@ import android.widget.PopupWindow;
 
 /** Shared view configuration for host controls whose widget defaults need resetting. */
 public final class ViewPolicy {
+    private static final float TRAILING_VALUE_MAX_SHARE = 0.5f;
     private ViewPolicy() {}
 
     /** Remove both legacy and platform minimum-height constraints from a view. */
@@ -161,6 +162,23 @@ public final class ViewPolicy {
         return button;
     }
 
+    /** Create a single-line trailing value capped to half of its available row width. */
+    public static TextView trailingValue(Context context, CharSequence text, int sizeSp, int color) {
+        TextView view = new TextView(context) {
+            @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                if (MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                    int limit = Math.round(MeasureSpec.getSize(widthMeasureSpec) * TRAILING_VALUE_MAX_SHARE);
+                    widthMeasureSpec = MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST);
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            }
+        };
+        view.setText(text);
+        style(view, sizeSp, 400, color);
+        setSingleLineEllipsized(view);
+        return view;
+    }
+
     /** Apply a minimum height to a generic view. */
     public static void setMinimumHeight(View view, int height) {
         view.setMinimumHeight(height);
@@ -221,9 +239,58 @@ public final class ViewPolicy {
         view.setPadding(horizontal, vertical, horizontal, vertical);
     }
 
+    /** Apply the same pixel inset on all four sides. */
+    public static void setSymmetricPadding(View view, int padding) {
+        setSymmetricPadding(view, padding, padding);
+    }
+
+    /** Apply equal padding expressed in density-independent pixels. */
+    public static void setSymmetricPaddingDp(Context context, View view, float horizontalDp,
+                                             float verticalDp) {
+        setSymmetricPadding(view, DimensionPolicy.pixels(context, horizontalDp),
+            DimensionPolicy.pixels(context, verticalDp));
+    }
+
     /** Apply equal horizontal pixel padding while leaving vertical padding unset. */
     public static void setHorizontalPadding(View view, int horizontal) {
         view.setPadding(horizontal, 0, horizontal, 0);
+    }
+
+    /** Apply equal horizontal padding expressed in density-independent pixels. */
+    public static void setHorizontalPaddingDp(Context context, View view, float horizontalDp) {
+        setHorizontalPadding(view, DimensionPolicy.pixels(context, horizontalDp));
+    }
+
+    /** Apply four-sided padding expressed in density-independent pixels. */
+    public static void setPaddingDp(Context context, View view, float leftDp, float topDp,
+                                    float rightDp, float bottomDp) {
+        setPadding(view, DimensionPolicy.pixels(context, leftDp), DimensionPolicy.pixels(context, topDp),
+            DimensionPolicy.pixels(context, rightDp), DimensionPolicy.pixels(context, bottomDp));
+    }
+
+    /** Apply the standard detail-row horizontal and vertical insets. */
+    public static void setRowPadding(Context context, View view) {
+        setSymmetricPaddingDp(context, view, 16, 8);
+    }
+
+    /** Apply the standard detail-row minimum height. */
+    public static void setRowMinimumHeight(Context context, View view) {
+        setMinimumHeight(view, DimensionPolicy.pixels(context, 64));
+    }
+
+    /** Apply a caller-selected minimum height expressed in density-independent pixels. */
+    public static void setMinimumHeightDp(Context context, View view, float heightDp) {
+        setMinimumHeight(view, DimensionPolicy.pixels(context, heightDp));
+    }
+
+    /** Apply a line-aware minimum height expressed in density-independent pixels. */
+    public static void setTextMinHeightDp(Context context, TextView view, float heightDp) {
+        setTextMinHeight(view, DimensionPolicy.pixels(context, heightDp));
+    }
+
+    /** Apply the standard compact action-button insets. */
+    public static void setButtonPadding(Context context, View view) {
+        setSymmetricPaddingDp(context, view, 14, 5);
     }
 
     /** Clear all view padding. */
@@ -427,7 +494,7 @@ public final class ViewPolicy {
         return view != null && view.getVisibility() == View.VISIBLE;
     }
 
-    /** 判断视图是否已从布局中隐藏。 */
+    /** 判断视图是否非空且已从布局中隐藏。null 返回 false，所以 {@code !isGone(view)} 不代表视图非空；hide、show 等改可见性的方法不接受 null，接着调用前调用方要自己判空。 */
     public static boolean isGone(View view) {
         return view != null && view.getVisibility() == View.GONE;
     }

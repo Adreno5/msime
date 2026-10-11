@@ -608,7 +608,7 @@ public final class CloudSync {
                 .put("options", new JSONObject(hostOptions()))
                 .put("action", new JSONObject().put("operation", "list").put("offset", 0).put("limit", 1)
                     .put("user_only", true)).toString()));
-            Integer pending = DictionaryCollectionsStore.nonNegativeInteger(value.opt("pending_count"));
+            Integer pending = JsonPolicy.nonNegativeInteger(value.opt("pending_count"));
             return pending == null ? 0 : pending;
         }
 
@@ -696,7 +696,7 @@ public final class CloudSync {
         JSONObject value = nativeValue(NativeClient.dictionary(new JSONObject()
             .put("options", new JSONObject(hostOptions(context)))
             .put("action", new JSONObject().put("operation", "count").put("user_only", true)).toString()));
-        Integer count = DictionaryCollectionsStore.nonNegativeInteger(value.opt("count"));
+        Integer count = JsonPolicy.nonNegativeInteger(value.opt("count"));
         return count == null ? 0 : count;
     }
 

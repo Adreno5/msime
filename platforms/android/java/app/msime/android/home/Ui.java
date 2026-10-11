@@ -88,7 +88,6 @@ public final class Ui {
     /** 行标题块与行尾控件之间的间距。 */
     public static final int ROW_GAP = 14;
     /** 行尾值文字最多占行内可用宽度的比例，剩下的始终留给左侧标题块。 */
-    public static final float TRAILING_VALUE_MAX_SHARE = 0.5f;
     /** 操作按钮的水平内边距。 */
     public static final int BUTTON_PADDING_H = 14;
     /** 操作按钮的垂直内边距。 */
@@ -167,101 +166,5 @@ public final class Ui {
 
     // ---- 读取 ----
 
-    /** Apply the standard detail-row horizontal and vertical insets to a view. */
-    public static void setRowPadding(View view, Context context) {
-        int horizontal = DimensionPolicy.pixels(context, ROW_PADDING_H);
-        int vertical = DimensionPolicy.pixels(context, ROW_PADDING_V);
-        ViewPolicy.setPadding(view, horizontal, vertical, horizontal, vertical);
-    }
-
-    /** Apply the standard minimum height for a detail row. */
-    public static void setRowMinimumHeight(View view, Context context) {
-        setMinimumHeightDp(view, context, ROW_MIN_HEIGHT);
-    }
-
-    /** Set a view's minimum height from a density-independent value. */
-    public static void setMinimumHeightDp(View view, Context context, float heightDp) {
-        ViewPolicy.setMinimumHeight(view, DimensionPolicy.pixels(context, heightDp));
-    }
-
-    /** Set a text view's line-aware minimum height from a density-independent value. */
-    public static void setTextMinHeightDp(TextView view, Context context, float heightDp) {
-        ViewPolicy.setTextMinHeight(view, DimensionPolicy.pixels(context, heightDp));
-    }
-
-    /** Apply the standard compact action-button insets to a view. */
-    public static void setButtonPadding(View view, Context context) {
-        int horizontal = DimensionPolicy.pixels(context, BUTTON_PADDING_H);
-        int vertical = DimensionPolicy.pixels(context, BUTTON_PADDING_V);
-        ViewPolicy.setPadding(view, horizontal, vertical, horizontal, vertical);
-    }
-
-    /** Apply symmetric padding expressed in density-independent pixels. */
-    public static void setSymmetricPaddingDp(View view, Context context,
-                                             float horizontalDp, float verticalDp) {
-        int horizontal = DimensionPolicy.pixels(context, horizontalDp);
-        int vertical = DimensionPolicy.pixels(context, verticalDp);
-        ViewPolicy.setPadding(view, horizontal, vertical, horizontal, vertical);
-    }
-
-    /** Apply equal padding on all sides when the value is already in pixels. */
-    public static void setSymmetricPaddingPx(View view, int padding) {
-        ViewPolicy.setPadding(view, padding, padding, padding, padding);
-    }
-
-    /** Apply equal horizontal dp padding with no vertical padding. */
-    public static void setHorizontalPaddingDp(View view, Context context, float horizontalDp) {
-        int horizontal = DimensionPolicy.pixels(context, horizontalDp);
-        ViewPolicy.setPadding(view, horizontal, 0, horizontal, 0);
-    }
-
-    /** Apply four-sided padding expressed in density-independent pixels. */
-    public static void setPaddingDp(View view, Context context, float leftDp, float topDp,
-                                    float rightDp, float bottomDp) {
-        ViewPolicy.setPadding(view, DimensionPolicy.pixels(context, leftDp), DimensionPolicy.pixels(context, topDp),
-            DimensionPolicy.pixels(context, rightDp), DimensionPolicy.pixels(context, bottomDp));
-    }
-
-    /** 让页面底部避开导航栏、底部标签栏和输入法，并保留标准内容留白。 */
-    public static void bindPageBottomInsets(View view) {
-        Context context = view.getContext();
-        int base = DimensionPolicy.pixels(context, PAGE_PADDING_BOTTOM);
-        int tabs = DimensionPolicy.pixels(context, TAB_BAR_HEIGHT);
-        ViewCompat.setOnApplyWindowInsetsListener(view, (target, insets) -> {
-            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
-            int bottom = WindowInsetsPolicy.bottomContentInset(bars.bottom, tabs, ime.bottom, base);
-            ViewPolicy.setBottomPadding(target, bottom);
-            return insets;
-        });
-        ViewCompat.requestApplyInsets(view);
-    }
-
-    /** Exclude a decorative view from the accessibility tree. */
-    public static void hideFromAccessibility(View view) {
-        ViewPolicy.hideFromAccessibility(view);
-    }
-
-    /**
-     * 行尾的值文字：单行，最宽只占行内可用宽度的 {@link #TRAILING_VALUE_MAX_SHARE}，再长就在末尾省略。
-     *
-     * <p>设置行是横向 LinearLayout，左侧标题块按权重分剩余宽度，而不带权重的行尾值先量、要多宽给多宽：值一长（例如完整的端点 URL），标题块就被挤得只剩一两个字宽，竖着折成很多行（#5790）。宽度在这里按父布局给的上限封顶，不靠各页面自己先把值截短。
-     */
-    public static TextView trailingValue(Context context, @androidx.annotation.Nullable CharSequence text,
-                                         int sizeSp, @ColorInt int color) {
-        TextView view = new TextView(context) {
-            @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-                if (View.MeasureSpec.getMode(widthMeasureSpec) != View.MeasureSpec.UNSPECIFIED) {
-                    int limit = Math.round(View.MeasureSpec.getSize(widthMeasureSpec) * TRAILING_VALUE_MAX_SHARE);
-                    widthMeasureSpec = View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST);
-                }
-                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-            }
-        };
-        view.setText(text);
-        ViewPolicy.style(view, sizeSp, 400, color);
-        ViewPolicy.setSingleLineEllipsized(view);
-        return view;
-    }
 
 }
