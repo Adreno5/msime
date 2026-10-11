@@ -18,7 +18,8 @@ Status: implemented
 
 - `abi`：`ABI_VERSION = 1`；返回码 `DENIED -1`、`ABSENT -2`、`INVALID -3`、`LIMIT -4`；`Capability`（7 项，`parse`/`as_str`/`requires`/`reads_text`）和按位存放的 `CapabilitySet::check_rules()`（依赖缺失、`rewrite_commit` 与 `read_composition` 互斥）；`Hook`（13 个，编号沿用 host-api `LifecycleEvent` 的判别值，`candidates` 取 17）和 `HookSet`；各 import 的字段编号；`local_mode_allows_text`（U6 白名单）。
 - `compile(wasm, Declaration) -> Result<ScriptModule, ModuleError>` 与 `validate`。`Declaration` 是清单里和模块有关的三项（能力、钩子、`memory_pages`），由解析清单的一方填好交进来。`ModuleError::reason()` 是封闭错误码，`Display` 给作者看。
-- `ScriptInstance::new(&ScriptModule, grants, init_fuel)`、`deliver(turn, &Event) -> Outcome`、`is_usable`、`turn_fuel_left`、`resume_turn`（宿主在同一轮里重建实例时交还这一轮剩下的配额）、`init_fuel`、`grants`、`set_log_sink`。`Event` 借用宿主的文本，按授权复制进插件自己的上下文。
+- `ScriptInstance::new(&ScriptModule, grants, init_fuel)`、`deliver(turn, &Event) -> Outcome`、`is_usable`、`turn_fuel_left`、`resume_turn`（宿主在同一轮里重建实例时交还这一轮剩下的配额）、`init_fuel`、`grants`、`set_log_sink`；`with_debug` 在实例化之前接上 `DebugSinks`（`log` 和修改类 import 的 `ActionSink`），只给作者工具用。`Event` 借用宿主的文本，按授权复制进插件自己的上下文。
+- `abi::scalar_values`（`event_scalar` 各枚举字段的名字和数值）和 `abi::imports()`（import 白名单的名字和能力），给作者工具的夹具和 SDK 的一致性测试用。
 
 **每个模块一个 Engine。** wasmi 的 Engine 只追加不回收：翻译后的代码只在 Engine 本身释放时才还回去，Engine 还留着复用的翻译缓冲（大小取决于见过的最大函数）。所有模块共用一个进程级 Engine 时，插件更新后淘汰的旧版本、设置应用每次刷新目录时校验过的模块，都会一直留在里面。所以 `compile` 给每个模块新建一个 Engine，链接表绑在它上面、随模块建一次（`before_commit` 的每次复位直接用它）；`validate` 的 Engine 随结果释放。最后一个 `ScriptModule` 克隆释放时，代码和缓冲随 Engine 一起还回去。代价是每个模块多约 10.6 KiB 的固定开销，每个 Engine 各留一份值栈。
 
@@ -62,8 +63,8 @@ Status: implemented
 
 - `cargo test -p msime-script-runtime` 和 `cargo clippy -p msime-script-runtime --all-targets -- -D warnings` 通过，覆盖：死循环按钩子上限耗尽 fuel、`unreachable`、越界访问、内存越过预留、深递归撞上栈限制、被拒的提案（multi-memory、tail-call、extended-const、SIMD、memory64、threads）和 start 函数、允许的提案能编译、双向的静态最小权限、import 白名单和签名、能力的依赖与互斥、每轮配额跨多次投递并在新一轮补满、一个插件烧满配额不影响另一个、import 计 fuel、`before_commit` 读不到观察类钩子和上一次 `before_commit` 留下的内存与 global、快照上的 trap 不影响持久实例、授权与本地模式门控、文本复制的 `LIMIT` 和越界 trap、修改类 import 在本阶段返回 `DENIED`、初始化看不到任何事件、`log` 没有调试输出时是空操作。
 - 移动端不编译解释器：`cargo tree -p msime-script-runtime -e normal` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 和 `wasm32-wasip2` 上只有本 crate 自己，在 `x86_64-unknown-linux-gnu` 上是 wasmi 及其 6 个依赖；前三个目标上 `cargo check -p msime-script-runtime` 通过（已跑过）。
-- client-core 一侧（`script_pack`、`script_grants`、`PluginKind::Script`）见 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)，那篇就是取代 `plugins.rs:3` 原则的笔记；host-api 一侧（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。pack-tool 只经 client-core 的 `validate` 用到本 crate，`msime-pack run` 是第 6 阶段的事，直接依赖到那时再加。
-- `test-support` 特性只给依赖本 crate 的测试用：它打开 wasmi 的 `wat` 特性并导出 `compile_text`，让 host-api 的测试用 WAT 写模块。dev-dependencies 打开的特性不并进普通构建，产品里没有它。依赖批准时写明 `wat` 只在本 crate 的 dev-dependencies 里；这个特性是批准范围之外的另一条路线（任何 crate 都能在普通构建里打开它），需要单独确认，不批准就把 host-api 的测试模块改成手写二进制。
+- client-core 一侧（`script_pack`、`script_grants`、`PluginKind::Script`）见 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)，那篇就是取代 `plugins.rs:3` 原则的笔记；host-api 一侧（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。pack-tool 的 `msime-pack run` 直接依赖本 crate，用 `ScriptInstance::with_debug` 接上 `log` 和修改类 import 的调试输出，见 [脚本插件的作者工具](../feature/2026-10-12-script-plugin-author-tools.md)。
+- `test-support` 特性只给依赖本 crate 的测试用：它打开 wasmi 的 `wat` 特性并导出 `compile_text`，让 host-api 和 pack-tool 的测试用 WAT 写模块。dev-dependencies 打开的特性不并进普通构建，产品里没有它。依赖批准时写明 `wat` 只在本 crate 的 dev-dependencies 里；这个特性是批准范围之外的另一条路线（任何 crate 都能在普通构建里打开它），需要单独确认，不批准就把 host-api 的测试模块改成手写二进制。
 
 ## Alternatives considered
 
