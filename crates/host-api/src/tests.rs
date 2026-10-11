@@ -193,6 +193,7 @@ fn local_mode_resource_gates_preserve_unrelated_modes() {
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),

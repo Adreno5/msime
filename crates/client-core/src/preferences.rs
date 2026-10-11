@@ -1520,6 +1520,9 @@ pub struct LocalModePreferences {
     /// The `@` mode also offers China's provinces, cities and counties from the Engine's built-in table, after the user's own names. Off by default, and only meaningful while `mention` is on.
     #[serde(default)]
     pub mention_places: bool,
+    /// 「Shift+字母进入快捷模式」总开关：关掉后没有组字时 Shift+U/T/K/E/M/J/Y/R/V 不进入快捷模式，照常打出大写字母，上面各模式自己的开关保留原值。默认开，和以前的行为一样；缺这个键的旧文档读作开。
+    #[serde(default = "enabled_by_default")]
+    pub shift_letter_entry: bool,
 }
 
 impl Default for LocalModePreferences {
@@ -1537,6 +1540,7 @@ impl Default for LocalModePreferences {
             command: false,
             mention: false,
             mention_places: false,
+            shift_letter_entry: true,
         }
     }
 }

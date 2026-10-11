@@ -46,6 +46,7 @@ fn import_engine_options() -> msime_engine::host::EngineOptions {
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),

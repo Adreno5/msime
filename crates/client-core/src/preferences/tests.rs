@@ -984,6 +984,42 @@ fn generated_local_modes_are_off_by_default_and_when_absent() {
 }
 
 #[test]
+fn shift_letter_entry_defaults_on_and_survives_a_save() {
+    assert!(LocalModePreferences::default().shift_letter_entry);
+
+    // 早于总开关的文档没有这个键，读出来仍是开，其余模式开关照原样。
+    let dir = tempfile::tempdir().unwrap();
+    let store = PreferencesStore::new(dir.path());
+    let mut sparse = serde_json::to_value(PreferencesSnapshot::default()).unwrap();
+    let local_modes = sparse["preferences"]["local_modes"]
+        .as_object_mut()
+        .unwrap();
+    assert_eq!(local_modes.remove("shift_letter_entry"), Some(true.into()));
+    local_modes.insert("date_time".into(), false.into());
+    fs::write(store.path(), serde_json::to_vec(&sparse).unwrap()).unwrap();
+    let loaded = store.load().unwrap().preferences.local_modes;
+    assert!(loaded.shift_letter_entry && !loaded.date_time && loaded.unicode);
+
+    // 关掉总开关只改它自己，各模式开关保留。
+    let mut value = serde_json::to_value(Preferences::default()).unwrap();
+    value["local_modes"]["shift_letter_entry"] = false.into();
+    let saved = store
+        .save(0, serde_json::from_value(value).unwrap())
+        .unwrap();
+    let modes = store.load().unwrap();
+    assert_eq!(modes, saved);
+    let modes = modes.preferences.local_modes;
+    assert!(!modes.shift_letter_entry);
+    assert_eq!(
+        modes,
+        LocalModePreferences {
+            shift_letter_entry: false,
+            ..LocalModePreferences::default()
+        }
+    );
+}
+
+#[test]
 fn plugin_preferences_are_off_by_default_and_absent_from_older_documents() {
     let defaults = PluginPreferences::default();
     assert!(!defaults.key_sound.enabled);
