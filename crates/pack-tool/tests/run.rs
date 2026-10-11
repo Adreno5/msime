@@ -212,6 +212,113 @@ fn an_initialisation_failure_disables_the_plugin() {
     );
 }
 
+/// 同一轮里重建的实例接着用这一轮剩下的配额：六次 `composition_update` 用掉 108 114，`focus_in` 丢掉实例再重建，第七次只剩一万六千多，耗尽；带 `key` 的 `focus_in` 开始新的一轮，重建的实例拿到满额。
+#[test]
+fn an_instance_rebuilt_in_the_same_turn_resumes_its_fuel() {
+    let declared = declaration(&[], &[Hook::FocusIn, Hook::CompositionUpdate]);
+    let fixture = r#"{"event":"composition_update","key":true,"preedit":"n"}
+{"event":"composition_update","preedit":"ni"}
+{"event":"composition_update","preedit":"nih"}
+{"event":"composition_update","preedit":"niha"}
+{"event":"composition_update","preedit":"nihao"}
+{"event":"composition_update","preedit":"nihao"}
+{"event":"focus_in"}
+{"event":"composition_update","preedit":"nihao"}
+{"event":"focus_in","key":true}
+{"event":"composition_update","preedit":"n"}
+"#;
+    let (status, out) = run_wat(FAILING, declared, CapabilitySet::EMPTY, fixture);
+    assert_eq!(status, EXIT_INVALID);
+    assert_golden(
+        &out,
+        r#"{"seq":1,"event":"composition_update","status":"ok","fuel":18019,"init_fuel":2,"actions":[],"log":[]}
+{"seq":2,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+{"seq":3,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+{"seq":4,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+{"seq":5,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+{"seq":6,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+{"seq":7,"event":"focus_in","status":"ok","fuel":18,"init_fuel":2,"actions":[],"log":[]}
+{"seq":8,"event":"composition_update","status":"out_of_fuel","fuel":16867,"actions":[],"log":[]}
+{"seq":9,"event":"focus_in","status":"ok","fuel":18,"init_fuel":2,"actions":[],"log":[]}
+{"seq":10,"event":"composition_update","status":"ok","fuel":18019,"actions":[],"log":[]}
+"#,
+    );
+}
+
+/// `msime_init` 转 `ITERATIONS` 圈，每圈 9 fuel，加上 4 的固定开销。单次调用故意压在六万以内：dev 构建里 wasmi 的 tail-call 分派不成立，每条指令都占栈，测试线程的 2 MiB 栈在八万左右就溢出。
+const SLOW_INIT: &str = r#"(module
+  (memory (export "memory") 1)
+  (func (export "msime_abi") (result i32) (i32.const 1))
+  (func (export "msime_init") (result i32) (local $i i32)
+    (loop $spin
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $spin (i32.lt_u (local.get $i) (i32.const ITERATIONS))))
+    (i32.const 0))
+  (func (export "msime_on_event") (param $kind i32) (result i32) (i32.const 0)))"#;
+
+/// 同一轮里反复 `focus_out` 再投递，每次都重建实例，初始化合计逐次扣减。剩下的预算不够一次初始化时是 `deferred`，正好用完时不再尝试，也是 `deferred`；两者都不算失败，也不停用；下一轮给满预算，照常实例化。
+#[test]
+fn an_exhausted_initialisation_budget_defers_until_the_next_turn() {
+    // (圈数, 每次初始化的 fuel, focus_out 再投递的次数, 最后四行)
+    let cases = [
+        // 45 004 × 111 之后剩 4 556，第 112 次初始化做到一半没了预算；剩下的 7 在下一次只够调 `msime_abi`。
+        (
+            5000,
+            45_004,
+            111,
+            r#"{"seq":222,"event":"focus_out","status":"not_subscribed","fuel":0,"actions":[],"log":[]}
+{"seq":223,"event":"commit","status":"deferred","fuel":0,"init_fuel":4549,"actions":[],"log":[]}
+{"seq":224,"event":"commit","status":"deferred","fuel":0,"init_fuel":4,"actions":[],"log":[]}
+{"seq":225,"event":"commit","status":"ok","fuel":2,"init_fuel":45004,"actions":[],"log":[]}"#,
+        ),
+        // 40 000 × 125 正好用完五百万，之后连实例化都不尝试。
+        (
+            4444,
+            40_000,
+            125,
+            r#"{"seq":250,"event":"focus_out","status":"not_subscribed","fuel":0,"actions":[],"log":[]}
+{"seq":251,"event":"commit","status":"deferred","fuel":0,"actions":[],"log":[]}
+{"seq":252,"event":"commit","status":"deferred","fuel":0,"actions":[],"log":[]}
+{"seq":253,"event":"commit","status":"ok","fuel":2,"init_fuel":40000,"actions":[],"log":[]}"#,
+        ),
+    ];
+    for (iterations, init_fuel, rebuilds, tail) in cases {
+        let declared = declaration(&[], &[Hook::Commit]);
+        let wat = SLOW_INIT.replace("ITERATIONS", &iterations.to_string());
+        let mut fixture = String::from(
+            "{\"event\":\"commit\",\"key\":true,\"origin\":\"selection\",\"body\":\"x\"}\n",
+        );
+        for _ in 0..rebuilds {
+            fixture.push_str("{\"event\":\"focus_out\"}\n");
+            fixture.push_str("{\"event\":\"commit\",\"origin\":\"selection\",\"body\":\"y\"}\n");
+        }
+        fixture.push_str("{\"event\":\"commit\",\"origin\":\"selection\",\"body\":\"z\"}\n");
+        fixture.push_str(
+            "{\"event\":\"commit\",\"key\":true,\"origin\":\"selection\",\"body\":\"w\"}\n",
+        );
+        let (status, out) = run_wat(&wat, declared, CapabilitySet::EMPTY, &fixture);
+        assert_eq!(status, EXIT_OK);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1 + 2 * rebuilds + 2);
+        // 前面每次实例化都成功，用的初始化 fuel 一样。
+        for (index, line) in lines[..lines.len() - 4].iter().enumerate() {
+            let expected = if index % 2 == 0 {
+                format!(
+                    r#"{{"seq":{},"event":"commit","status":"ok","fuel":2,"init_fuel":{init_fuel},"actions":[],"log":[]}}"#,
+                    index + 1
+                )
+            } else {
+                format!(
+                    r#"{{"seq":{},"event":"focus_out","status":"not_subscribed","fuel":0,"actions":[],"log":[]}}"#,
+                    index + 1
+                )
+            };
+            assert_eq!(*line, expected);
+        }
+        assert_golden(&lines[lines.len() - 4..].join("\n"), tail);
+    }
+}
+
 #[test]
 fn fixture_mistakes_name_the_line() {
     for (fixture, expected) in [
