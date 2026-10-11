@@ -58,6 +58,11 @@ def main() -> None:
         "public static EditText styledInput(Context context, int sizeSp, int weight, int color)",
         "public static TextView styledLabel(Context context, CharSequence text, int sizeSp,",
         "public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,",
+        "public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,",
+        "public static TextView trailingValue(Context context, CharSequence text, int sizeSp, int color)",
+        "public static void hideFromAccessibility(View view)",
+        "public static void setSymmetricPaddingDp(Context context, View view, float horizontalDp,",
+        "public static void setHorizontalPaddingDp(Context context, View view, float horizontalDp)",
         "public static TextView label(Context context, CharSequence text, float sizeSp, int color)",
         "public static void afterTextChanged(TextView view, Consumer<Editable> listener)",
     )
@@ -90,8 +95,8 @@ def main() -> None:
         raise AssertionError("Ui 没有调用共享文本最小高度策略")
     if "public static void setTextMinWidthDp(" in ui:
         raise AssertionError("Ui 仍保留文本最小宽度转发方法")
-    if "ViewPolicy.setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));" not in ui:
-        raise AssertionError("Ui 按钮没有直接调用共享文本最小宽度策略")
+    if "setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));" not in view_policy:
+        raise AssertionError("ViewPolicy 胶囊按钮没有调用共享文本最小宽度策略")
     if "public static void setEnabledLook(" in ui:
         raise AssertionError("Ui 仍保留无调用方的启用状态转发方法")
     if "public static void afterTextChanged(TextView view, Consumer<Editable> listener)" in ui:
@@ -105,7 +110,7 @@ def main() -> None:
         raise AssertionError("Ui 仍保留文本样式转发方法")
     if re.search(r"(?<![.\w])style\(", ui):
         raise AssertionError("Ui 仍调用已移除的文本样式方法")
-    if ui.count("ViewPolicy.style(") != 1:
+    if ui.count("ViewPolicy.style(") != 0:
         raise AssertionError("Ui 文本工厂没有直接调用共享样式方法")
     if "public static TextView styledLabel(" in ui:
         raise AssertionError("Ui 仍保留 styledLabel 转发方法")
@@ -117,6 +122,36 @@ def main() -> None:
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.textButton(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文本按钮工厂")
+    if "public static TextView pillButton(" in ui:
+        raise AssertionError("Ui 仍保留 pillButton 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.pillButton(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享胶囊按钮工厂")
+    if "public static TextView trailingValue(" in ui:
+        raise AssertionError("Ui 仍保留 trailingValue 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.trailingValue(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享尾值工厂")
+    if "public static void hideFromAccessibility(" in ui:
+        raise AssertionError("Ui 仍保留无障碍隐藏转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.hideFromAccessibility(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享无障碍隐藏策略")
+    if "public static void setSymmetricPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留对称 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setSymmetricPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享对称 dp 内边距策略")
+    if "public static void setSymmetricPaddingPx(" in ui:
+        raise AssertionError("Ui 仍保留对称像素内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setSymmetricPaddingPx(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享对称像素内边距策略")
+    if "public static void setHorizontalPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留水平 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setHorizontalPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享水平 dp 内边距策略")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.style(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文本样式策略")
@@ -187,8 +222,8 @@ def main() -> None:
         raise AssertionError("Ui 仍保留主题 ripple 转发方法")
     if re.search(r"(?<![.\w])pillRipple\(", ui):
         raise AssertionError("Ui 仍调用已移除的胶囊 ripple 方法")
-    if "ViewPolicy.pillRipple(context, fill)" not in ui:
-        raise AssertionError("Ui 胶囊按钮没有调用共享 ripple 工厂")
+    if "setBackground(button, pillRipple(context, fill));" not in view_policy:
+        raise AssertionError("ViewPolicy 胶囊按钮没有调用共享 ripple 工厂")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.pillRipple(" in path.read_text(encoding="utf-8") or "Ui.rippleOn(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享主题 ripple 工厂")

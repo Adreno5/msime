@@ -88,7 +88,6 @@ public final class Ui {
     /** 行标题块与行尾控件之间的间距。 */
     public static final int ROW_GAP = 14;
     /** 行尾值文字最多占行内可用宽度的比例，剩下的始终留给左侧标题块。 */
-    public static final float TRAILING_VALUE_MAX_SHARE = 0.5f;
     /** 操作按钮的水平内边距。 */
     public static final int BUTTON_PADDING_H = 14;
     /** 操作按钮的垂直内边距。 */
@@ -196,25 +195,6 @@ public final class Ui {
         ViewPolicy.setPadding(view, horizontal, vertical, horizontal, vertical);
     }
 
-    /** Apply symmetric padding expressed in density-independent pixels. */
-    public static void setSymmetricPaddingDp(View view, Context context,
-                                             float horizontalDp, float verticalDp) {
-        int horizontal = DimensionPolicy.pixels(context, horizontalDp);
-        int vertical = DimensionPolicy.pixels(context, verticalDp);
-        ViewPolicy.setPadding(view, horizontal, vertical, horizontal, vertical);
-    }
-
-    /** Apply equal padding on all sides when the value is already in pixels. */
-    public static void setSymmetricPaddingPx(View view, int padding) {
-        ViewPolicy.setPadding(view, padding, padding, padding, padding);
-    }
-
-    /** Apply equal horizontal dp padding with no vertical padding. */
-    public static void setHorizontalPaddingDp(View view, Context context, float horizontalDp) {
-        int horizontal = DimensionPolicy.pixels(context, horizontalDp);
-        ViewPolicy.setPadding(view, horizontal, 0, horizontal, 0);
-    }
-
     /** Apply four-sided padding expressed in density-independent pixels. */
     public static void setPaddingDp(View view, Context context, float leftDp, float topDp,
                                     float rightDp, float bottomDp) {
@@ -236,77 +216,5 @@ public final class Ui {
         });
         ViewCompat.requestApplyInsets(view);
     }
-
-    /** Exclude a decorative view from the accessibility tree. */
-    public static void hideFromAccessibility(View view) {
-        ViewPolicy.hideFromAccessibility(view);
-    }
-
-    /**
-     * 行尾的值文字：单行，最宽只占行内可用宽度的 {@link #TRAILING_VALUE_MAX_SHARE}，再长就在末尾省略。
-     *
-     * <p>设置行是横向 LinearLayout，左侧标题块按权重分剩余宽度，而不带权重的行尾值先量、要多宽给多宽：值一长（例如完整的端点 URL），标题块就被挤得只剩一两个字宽，竖着折成很多行（#5790）。宽度在这里按父布局给的上限封顶，不靠各页面自己先把值截短。
-     */
-    public static TextView trailingValue(Context context, @androidx.annotation.Nullable CharSequence text,
-                                         int sizeSp, @ColorInt int color) {
-        TextView view = new TextView(context) {
-            @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-                if (View.MeasureSpec.getMode(widthMeasureSpec) != View.MeasureSpec.UNSPECIFIED) {
-                    int limit = Math.round(View.MeasureSpec.getSize(widthMeasureSpec) * TRAILING_VALUE_MAX_SHARE);
-                    widthMeasureSpec = View.MeasureSpec.makeMeasureSpec(limit, View.MeasureSpec.AT_MOST);
-                }
-                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-            }
-        };
-        view.setText(text);
-        ViewPolicy.style(view, sizeSp, 400, color);
-        ViewPolicy.setSingleLineEllipsized(view);
-        return view;
-    }
-
-    /** Create a filled accent pill button; callers add their content description and action. */
-    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
-                                      @ColorInt int ink, float horizontalPaddingDp, float verticalPaddingDp,
-                                      float minHeightDp, float minWidthDp) {
-        return pillButton(context, label, sizeSp, weight, ThemeColorPolicy.accent(context), ink,
-            horizontalPaddingDp, verticalPaddingDp, minHeightDp, minWidthDp, null);
-    }
-
-    /** Create a filled accent pill button and bind its action. */
-    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
-                                      @ColorInt int ink, float horizontalPaddingDp, float verticalPaddingDp,
-                                      float minHeightDp, float minWidthDp, Runnable action) {
-        return pillButton(context, label, sizeSp, weight, ThemeColorPolicy.accent(context), ink,
-            horizontalPaddingDp, verticalPaddingDp, minHeightDp, minWidthDp, action);
-    }
-
-    /** Create a filled accent pill button with an explicit fill colour. */
-    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
-                                      @ColorInt int fill, @ColorInt int ink,
-                                      float horizontalPaddingDp, float verticalPaddingDp,
-                                      float minHeightDp, float minWidthDp) {
-        return pillButton(context, label, sizeSp, weight, fill, ink, horizontalPaddingDp, verticalPaddingDp,
-            minHeightDp, minWidthDp, null);
-    }
-
-    /** Create a pill button with an explicit fill colour and bind its action. */
-    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
-                                      @ColorInt int fill, @ColorInt int ink,
-                                      float horizontalPaddingDp, float verticalPaddingDp,
-                                      float minHeightDp, float minWidthDp, Runnable action) {
-        TextView button = ViewPolicy.centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);
-        ViewPolicy.setBackground(button, ViewPolicy.pillRipple(context, fill));
-        setSymmetricPaddingDp(button, context, horizontalPaddingDp, verticalPaddingDp);
-        setTextMinHeightDp(button, context, minHeightDp);
-        if (minWidthDp > 0) ViewPolicy.setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));
-        bindClick(button, action);
-        return button;
-    }
-
-    private static void bindClick(View view, Runnable action) {
-        ViewPolicy.setInteractive(view, true);
-        ViewPolicy.bindOptionalClick(view, action);
-    }
-
 
 }

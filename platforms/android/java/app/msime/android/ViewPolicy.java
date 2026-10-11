@@ -24,6 +24,7 @@ import android.widget.PopupWindow;
 
 /** Shared view configuration for host controls whose widget defaults need resetting. */
 public final class ViewPolicy {
+    private static final float TRAILING_VALUE_MAX_SHARE = 0.5f;
     private ViewPolicy() {}
 
     /** Remove both legacy and platform minimum-height constraints from a view. */
@@ -136,6 +137,48 @@ public final class ViewPolicy {
         return button;
     }
 
+    /** Create a filled accent pill button with caller-selected dimensions. */
+    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
+                                      int fill, int ink, float horizontalPaddingDp,
+                                      float verticalPaddingDp, float minHeightDp, float minWidthDp) {
+        return pillButton(context, label, sizeSp, weight, fill, ink, horizontalPaddingDp,
+            verticalPaddingDp, minHeightDp, minWidthDp, null);
+    }
+
+    /** Create a filled pill button and bind its optional action. */
+    public static TextView pillButton(Context context, CharSequence label, float sizeSp, int weight,
+                                      int fill, int ink, float horizontalPaddingDp,
+                                      float verticalPaddingDp, float minHeightDp, float minWidthDp,
+                                      Runnable action) {
+        TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);
+        setBackground(button, pillRipple(context, fill));
+        int horizontal = DimensionPolicy.pixels(context, horizontalPaddingDp);
+        int vertical = DimensionPolicy.pixels(context, verticalPaddingDp);
+        setPadding(button, horizontal, vertical, horizontal, vertical);
+        setTextMinHeight(button, DimensionPolicy.pixels(context, minHeightDp));
+        if (minWidthDp > 0) setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));
+        setInteractive(button, true);
+        bindOptionalClick(button, action);
+        return button;
+    }
+
+    /** Create a single-line trailing value capped to half of its available row width. */
+    public static TextView trailingValue(Context context, CharSequence text, int sizeSp, int color) {
+        TextView view = new TextView(context) {
+            @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                if (MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                    int limit = Math.round(MeasureSpec.getSize(widthMeasureSpec) * TRAILING_VALUE_MAX_SHARE);
+                    widthMeasureSpec = MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST);
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            }
+        };
+        view.setText(text);
+        style(view, sizeSp, 400, color);
+        setSingleLineEllipsized(view);
+        return view;
+    }
+
     /** Apply a minimum height to a generic view. */
     public static void setMinimumHeight(View view, int height) {
         view.setMinimumHeight(height);
@@ -196,9 +239,26 @@ public final class ViewPolicy {
         view.setPadding(horizontal, vertical, horizontal, vertical);
     }
 
+    /** Apply the same pixel inset on all four sides. */
+    public static void setSymmetricPadding(View view, int padding) {
+        setSymmetricPadding(view, padding, padding);
+    }
+
+    /** Apply equal padding expressed in density-independent pixels. */
+    public static void setSymmetricPaddingDp(Context context, View view, float horizontalDp,
+                                             float verticalDp) {
+        setSymmetricPadding(view, DimensionPolicy.pixels(context, horizontalDp),
+            DimensionPolicy.pixels(context, verticalDp));
+    }
+
     /** Apply equal horizontal pixel padding while leaving vertical padding unset. */
     public static void setHorizontalPadding(View view, int horizontal) {
         view.setPadding(horizontal, 0, horizontal, 0);
+    }
+
+    /** Apply equal horizontal padding expressed in density-independent pixels. */
+    public static void setHorizontalPaddingDp(Context context, View view, float horizontalDp) {
+        setHorizontalPadding(view, DimensionPolicy.pixels(context, horizontalDp));
     }
 
     /** Clear all view padding. */

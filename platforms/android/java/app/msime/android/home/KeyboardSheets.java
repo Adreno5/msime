@@ -193,7 +193,7 @@ final class KeyboardSheets {
         row.addView(texts(context, title, subtitle, ThemeColorPolicy.text(context)),
             LayoutPolicy.weightedWrapParams(1f));
         if (value != null && !value.isEmpty()) {
-            TextView state = Ui.trailingValue(context, value, Ui.TEXT_ROW_TITLE, valueColor);
+            TextView state = ViewPolicy.trailingValue(context, value, Ui.TEXT_ROW_TITLE, valueColor);
             LinearLayout.LayoutParams params = LayoutPolicy.rowGapParams(context, Ui.ROW_GAP);
             row.addView(state, params);
         }
@@ -229,7 +229,7 @@ final class KeyboardSheets {
         if (glyph != null) {
             TextView icon = ViewPolicy.styledLabel(context, glyph, 22, 400, ThemeColorPolicy.accent(context));
             ViewPolicy.setCentered(icon);
-            Ui.hideFromAccessibility(icon);
+            ViewPolicy.hideFromAccessibility(icon);
             LinearLayout.LayoutParams iconParams = LayoutPolicy.squareParams(context, iconSize);
             iconParams.setMarginEnd(DimensionPolicy.pixels(context, iconMarginEnd));
             row.addView(icon, iconParams);
@@ -257,7 +257,7 @@ final class KeyboardSheets {
         boolean enabled = action != null;
         TextView button;
         if (enabled) {
-            button = Ui.pillButton(context, label, Ui.TEXT_BUTTON_SMALL, 500,
+            button = ViewPolicy.pillButton(context, label, Ui.TEXT_BUTTON_SMALL, 500,
                 ThemeColorPolicy.accentSoft(context), ThemeColorPolicy.accent(context), Ui.BUTTON_PADDING_H, Ui.BUTTON_PADDING_V,
                 Ui.COMPACT_BUTTON_MIN_HEIGHT, 0, action);
         } else {
@@ -280,7 +280,7 @@ final class KeyboardSheets {
             primary ? ThemeColorPolicy.onAccent(context) : ThemeColorPolicy.text(context),
             ViewPolicy.ripple(context, primary ? ThemeColorPolicy.accent(context) : ThemeColorPolicy.card(context), DimensionPolicy.pixels(context, 16)),
             Ui.ACTION_BUTTON_MIN_HEIGHT, action);
-        Ui.setHorizontalPaddingDp(button, context, 16);
+        ViewPolicy.setHorizontalPaddingDp(context, button, 16);
         button.setAccessibilityDelegate(buttonDelegate(label));
         return button;
     }
@@ -298,7 +298,7 @@ final class KeyboardSheets {
         TextView badge = ViewPolicy.styledLabel(context, text, 15, 600, ThemeColorPolicy.accent(context));
         ViewPolicy.setCentered(badge);
         ViewPolicy.setBackground(badge, DrawablePolicy.rounded(ThemeColorPolicy.accentSoft(context), DimensionPolicy.pixels(context, 8)));
-            Ui.hideFromAccessibility(badge);
+            ViewPolicy.hideFromAccessibility(badge);
         LinearLayout.LayoutParams params = LayoutPolicy.squareParams(context, 32);
         params.setMarginEnd(DimensionPolicy.pixels(context, Ui.ROW_GAP));
         badge.setLayoutParams(params);
@@ -353,7 +353,7 @@ final class KeyboardSheets {
         row.addView(texts, LayoutPolicy.weightedWrapParams(1f));
 
         if (value != null && value.length() > 0) {
-            TextView trailing = Ui.trailingValue(context, value, Ui.TEXT_ROW_SUBTITLE, ThemeColorPolicy.subText(context));
+            TextView trailing = ViewPolicy.trailingValue(context, value, Ui.TEXT_ROW_SUBTITLE, ThemeColorPolicy.subText(context));
             LinearLayout.LayoutParams valueParams = LayoutPolicy.rowGapParams(context, Ui.ROW_GAP);
             row.addView(trailing, valueParams);
         }
@@ -369,7 +369,7 @@ final class KeyboardSheets {
 
     /** 构造详情卡片行尾的 tonal 胶囊按钮；调用方只需绑定业务点击行为。 */
     static TextView tonalButton(Context context, CharSequence label, CharSequence description, int weight) {
-        TextView button = Ui.pillButton(context, label, Ui.TEXT_BUTTON_SMALL, weight,
+        TextView button = ViewPolicy.pillButton(context, label, Ui.TEXT_BUTTON_SMALL, weight,
             ThemeColorPolicy.accentSoft(context), ThemeColorPolicy.accent(context), Ui.BUTTON_PADDING_H, Ui.BUTTON_PADDING_V,
             Ui.COMPACT_BUTTON_MIN_HEIGHT, 0);
         button.setAccessibilityDelegate(buttonDelegate(description));

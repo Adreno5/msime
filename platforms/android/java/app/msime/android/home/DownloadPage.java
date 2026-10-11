@@ -67,7 +67,7 @@ public final class DownloadPage extends DetailPage {
         ViewPolicy.setCenteredVertically(card);
         ViewPolicy.setBackground(card, DrawablePolicy.rounded(ThemeColorPolicy.accentSoft(context), DimensionPolicy.pixels(context, 20)));
         int pad = DimensionPolicy.pixels(context, 16);
-        Ui.setSymmetricPaddingPx(card, pad);
+        ViewPolicy.setSymmetricPadding(card, pad);
 
         FrameLayout tile = new FrameLayout(context);
         ViewPolicy.setBackground(tile, DrawablePolicy.rounded(ThemeColorPolicy.accent(context), DimensionPolicy.pixels(context, 12)));
@@ -86,7 +86,8 @@ public final class DownloadPage extends DetailPage {
         textParams.setMarginStart(DimensionPolicy.pixels(context, 14));
         card.addView(texts, textParams);
 
-        TextView copy = Ui.pillButton(context, "复制链接", Ui.TEXT_BUTTON_SMALL, 600, ThemeColorPolicy.onAccent(context),
+        TextView copy = ViewPolicy.pillButton(context, "复制链接", Ui.TEXT_BUTTON_SMALL, 600, ThemeColorPolicy.accent(context),
+            ThemeColorPolicy.onAccent(context),
             14, 6, Ui.COMPACT_BUTTON_MIN_HEIGHT, 0, () -> copyLink(context));
         copy.setContentDescription("复制下载页链接");
         LinearLayout.LayoutParams copyParams = LayoutPolicy.wrapParams();

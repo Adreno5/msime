@@ -104,7 +104,7 @@ public final class GroupCard {
         MsSwitch control = new MsSwitch(context);
         control.setChecked(checked);
         ViewPolicy.setInteractive(control, false);
-        Ui.hideFromAccessibility(control);
+        ViewPolicy.hideFromAccessibility(control);
         LinearLayout.LayoutParams params = LayoutPolicy.rowGapParams(context, Ui.ROW_GAP);
         row.view.addView(control, params);
         row.toggle = control;
@@ -146,7 +146,7 @@ public final class GroupCard {
         TextView text = ViewPolicy.styledLabel(context, label.apply(control.value()), 13, 400, ThemeColorPolicy.subText(context));
         ViewPolicy.setEndCenteredVertically(text);
         ViewPolicy.setSingleLine(text);
-            Ui.hideFromAccessibility(text);
+            ViewPolicy.hideFromAccessibility(text);
         row.view.addView(text, new LinearLayout.LayoutParams(DimensionPolicy.pixels(context, Ui.SLIDER_LABEL_WIDTH),
             ViewGroup.LayoutParams.WRAP_CONTENT));
         control.setOnValueChange(current -> {
@@ -174,7 +174,7 @@ public final class GroupCard {
     /** 卡片里的一段说明文字，14sp 次要文字色。 */
     public TextView note(CharSequence text) {
         TextView note = ViewPolicy.styledLabel(context, text, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
-        Ui.setSymmetricPaddingDp(note, context, Ui.ROW_PADDING_H, 12);
+        ViewPolicy.setSymmetricPaddingDp(context, note, Ui.ROW_PADDING_H, 12);
         addDivider();
         card.addView(note, LayoutPolicy.matchWidthWrapParams());
         return note;
@@ -211,7 +211,7 @@ public final class GroupCard {
     }
 
     private TextView trailingValue(Row row, @Nullable CharSequence value) {
-        TextView text = Ui.trailingValue(context, "", Ui.TEXT_ROW_TITLE, ThemeColorPolicy.subText(context));
+        TextView text = ViewPolicy.trailingValue(context, "", Ui.TEXT_ROW_TITLE, ThemeColorPolicy.subText(context));
         LinearLayout.LayoutParams params = LayoutPolicy.rowGapParams(context, Ui.ROW_GAP);
         row.view.addView(text, params);
         setText(text, value);

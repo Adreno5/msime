@@ -419,7 +419,7 @@ public final class StatisticsFragment extends HomeTabFragment {
     private static LinearLayout card(Context context, LinearLayout parent, int padding) {
         LinearLayout card = LayoutPolicy.roundedColumn(context, ThemeColorPolicy.card(context), 20);
         int pad = DimensionPolicy.pixels(context, padding);
-        Ui.setSymmetricPaddingPx(card, pad);
+        ViewPolicy.setSymmetricPadding(card, pad);
         LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
         params.topMargin = DimensionPolicy.pixels(context, parent.getChildCount() == 0 ? 16 : 10);
         parent.addView(card, params);
@@ -431,7 +431,7 @@ public final class StatisticsFragment extends HomeTabFragment {
             @Nullable String trailing) {
         LinearLayout row = LayoutPolicy.row(context);
         ViewPolicy.setCenteredVertically(row);
-        Ui.setHorizontalPaddingDp(row, context, 4);
+        ViewPolicy.setHorizontalPaddingDp(context, row, 4);
         TextView heading = ViewPolicy.headingLabel(context, title, 13, ThemeColorPolicy.subText(context));
         row.addView(heading, LayoutPolicy.weightedWrapParams(1f));
         if (trailing != null) row.addView(ViewPolicy.label(context, trailing, 13, ThemeColorPolicy.subText(context)));
@@ -461,7 +461,7 @@ public final class StatisticsFragment extends HomeTabFragment {
             boolean highlight) {
         LinearLayout tile = LayoutPolicy.column(context);
         int pad = DimensionPolicy.pixels(context, 14);
-        Ui.setSymmetricPaddingPx(tile, pad);
+        ViewPolicy.setSymmetricPadding(tile, pad);
         ViewPolicy.setBackground(tile, DrawablePolicy.rounded(ThemeColorPolicy.card(context), DimensionPolicy.pixels(context, 20)));
         tile.addView(ViewPolicy.label(context, title, 13, ThemeColorPolicy.text(context)));
         TextView number = ViewPolicy.label(context, figure(context, value, 24,
