@@ -1188,13 +1188,14 @@ final class ImePanels {
                     if (session.token().isEmpty()) {
                         status = CloudClipboardPanelPolicy.Status.SIGNED_OUT;
                     } else {
-                        BackendAccount.ClipboardPage page = account.clipboard("", session.sessionId());
-                        status = CloudClipboardPanelPolicy.loaded(page.enabled(), page.items().size());
+                        BackendAccount.ClipboardPage page = account.clipboard("", session.sessionId(),
+                            CloudClipboardNativeDriver.local(s));
+                        status = CloudClipboardPanelPolicy.loaded(page.enabled(), page.pending(), page.items().size());
                         if (CloudClipboardPanelPolicy.showsItems(status)) items = page.items();
                         sessionId = session.sessionId();
                     }
                 } catch (BackendAccount.RequestException error) {
-                    status = CloudClipboardPanelPolicy.failed(error.status);
+                    status = CloudClipboardPanelPolicy.failed(error.status, error.code);
                 } catch (Exception | LinkageError error) {
                     status = CloudClipboardPanelPolicy.Status.FAILED;
                 }
@@ -1238,6 +1239,7 @@ final class ImePanels {
         if (!CloudClipboardPanelPolicy.canUpload(cloudAllowed, s.cloudClipboardStatus, text)) {
             s.notice(s.cloudClipboardStatus == CloudClipboardPanelPolicy.Status.SIGNED_OUT
                     || s.cloudClipboardStatus == CloudClipboardPanelPolicy.Status.DISABLED
+                    || s.cloudClipboardStatus == CloudClipboardPanelPolicy.Status.PENDING
                     ? CloudClipboardPanelPolicy.message(s.cloudClipboardStatus, 0)
                     : "这条记录无法发到云剪贴板");
             return;
@@ -1248,9 +1250,9 @@ final class ImePanels {
             s.cloudClipboardWorker.execute(() -> {
                 CloudClipboardPanelPolicy.Status failure = null;
                 try {
-                    new BackendAccount(s).addClipboard(text, sessionId);
+                    new BackendAccount(s).addClipboard(text, sessionId, CloudClipboardNativeDriver.local(s));
                 } catch (BackendAccount.RequestException error) {
-                    failure = CloudClipboardPanelPolicy.failed(error.status);
+                    failure = CloudClipboardPanelPolicy.failed(error.status, error.code);
                 } catch (Exception | LinkageError error) {
                     failure = CloudClipboardPanelPolicy.Status.FAILED;
                 }
@@ -1265,7 +1267,9 @@ final class ImePanels {
                     }
                     s.notice(result == null ? "已发到云剪贴板"
                         : result == CloudClipboardPanelPolicy.Status.SIGNED_OUT
-                            ? CloudClipboardPanelPolicy.SIGNED_OUT_MESSAGE
+                            || result == CloudClipboardPanelPolicy.Status.DISABLED
+                            || result == CloudClipboardPanelPolicy.Status.PENDING
+                            ? CloudClipboardPanelPolicy.message(result, 0)
                             : "未能发到云剪贴板，请稍后重试");
                     // Re-read rather than splice the entry in: the service deduplicates and orders the list.
                     refreshCloudClipboard();

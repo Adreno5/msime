@@ -6,19 +6,25 @@ import app.msime.android.clipboard.CloudClipboardTextPolicy;
  * What the keyboard's clipboard panel may do with the account's cloud clipboard, decided without touching a view or the network.
  *
  * <p>The cloud list is fetched when the panel opens and when the user asks for a refresh; nothing here reads the system clipboard or uploads on its own. Uploading is the user's explicit 「发到云剪贴板」 on a local entry, and only once the service has said, in this panel's own fetch, that this account is signed in and has the cloud clipboard turned on.
+ *
+ * <p>条目端到端加密，读取和上传都经共享驱动在本机解密、加密（{@link CloudClipboardE2e}）。这台设备还没被已有设备允许时（{@link Status#PENDING}），键盘只显示一句提示，不列条目，也不上传。
  */
 public final class CloudClipboardPanelPolicy {
     /** The two halves of the panel: this device's history and the account's cloud list. */
     public enum Tab { LOCAL, CLOUD }
 
     /** Where the cloud half stands after the latest fetch for the current field. */
-    public enum Status { LOADING, SIGNED_OUT, DISABLED, FAILED, EMPTY, READY }
+    public enum Status { LOADING, SIGNED_OUT, DISABLED, PENDING, FAILED, EMPTY, READY }
 
     public static final String TAB_LOCAL = "本机";
     public static final String TAB_CLOUD = "云端";
     public static final String UPLOAD_ACTION = "发到云剪贴板";
     public static final String SIGNED_OUT_MESSAGE = "登录水杉账号后可在设备间同步剪贴板";
     public static final String DISABLED_MESSAGE = "云剪贴板未开启";
+    public static final String PENDING_MESSAGE = "这台设备等待允许，请在已同步的设备上打开云剪贴板设置允许";
+    /** 驱动的错误码：云剪贴板关着，或本机还在等批准。 */
+    private static final String CODE_DISABLED = "clipboard_sync_disabled";
+    private static final String CODE_PENDING = "clipboard_device_pending";
 
     private static final int HTTP_UNAUTHORIZED = 401;
     private static final int HTTP_FORBIDDEN = 403;
@@ -52,7 +58,13 @@ public final class CloudClipboardPanelPolicy {
 
     /** The answer of one successful fetch. Items from a disabled account are not shown. */
     public static Status loaded(boolean enabled, int itemCount) {
+        return loaded(enabled, false, itemCount);
+    }
+
+    /** 同上；`pending` 为真表示这台设备还在等已有设备允许，这时没有条目可列。 */
+    public static Status loaded(boolean enabled, boolean pending, int itemCount) {
         if (!enabled) return Status.DISABLED;
+        if (pending) return Status.PENDING;
         return itemCount == 0 ? Status.EMPTY : Status.READY;
     }
 
@@ -60,6 +72,13 @@ public final class CloudClipboardPanelPolicy {
     public static Status failed(int httpStatus) {
         return httpStatus == HTTP_UNAUTHORIZED || httpStatus == HTTP_FORBIDDEN
             ? Status.SIGNED_OUT : Status.FAILED;
+    }
+
+    /** 同上，先看驱动给的错误码：云剪贴板关着（服务端回 403）不是登录没了，本机待批准也不是失败。 */
+    public static Status failed(int httpStatus, String code) {
+        if (CODE_DISABLED.equals(code)) return Status.DISABLED;
+        if (CODE_PENDING.equals(code)) return Status.PENDING;
+        return failed(httpStatus);
     }
 
     /** Whether a fetch started for one field may still be drawn: the field and the panel opening it served are unchanged. */
@@ -149,6 +168,7 @@ public final class CloudClipboardPanelPolicy {
             case LOADING -> "正在读取云剪贴板…";
             case SIGNED_OUT -> SIGNED_OUT_MESSAGE;
             case DISABLED -> DISABLED_MESSAGE;
+            case PENDING -> PENDING_MESSAGE;
             case FAILED -> "云剪贴板读取失败，请刷新重试";
             case EMPTY -> "云剪贴板还没有内容 · 本机记录可通过管理发到云剪贴板";
             case READY -> itemCount + " 条 · 点按插入";

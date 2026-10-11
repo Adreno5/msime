@@ -58,6 +58,24 @@ export interface AccountSessionStore {
   exclusive?<T>(body: () => Promise<T>): Promise<T>;
 }
 
+/**
+ * 云剪贴板端到端加密里宿主负责的那一半：原生驱动、本机密钥串和设备名。
+ *
+ * 流程逻辑只在 Rust 驱动里（`msime_client_cloud_clipboard_e2e`，协议见 `docs/cloud-clipboard-e2e.md`）；本桥接只负责带着账号凭据把驱动要的请求发出去、把响应交回，并在每一步保存驱动交回的密钥串。设置应用和键盘读写同一份密钥串，否则同一台设备会在服务端登记成几台。
+ */
+export interface CloudClipboardE2eHost {
+  /** 调用原生驱动：传入驱动的输入文档，返回 `{ok:true,value}` 或 `{ok:false,error}`。 */
+  drive(request: string): string;
+  /** 本机保存的密钥串，没有时为 null。 */
+  loadKeystore(): string | null;
+  /** 原子替换已保存的密钥串；写不进去时抛出。 */
+  saveKeystore(value: string): void;
+  /** 删除密钥串；退出登录时与会话一起删除。 */
+  clearKeystore(): void;
+  /** 登记到服务端、在其他设备的批准列表里显示的设备名。 */
+  deviceName(): string;
+}
+
 type Session = {
   access_token: string;
   refresh_token: string;
@@ -91,6 +109,12 @@ const MAX_SESSION_MILLISECONDS = MAX_SESSION_SECONDS * 1000;
 const MAX_SESSION_BYTES = 64 * 1024;
 /** Clipboard searches use the shared account client's 1,024-byte query bound. */
 const MAX_SEARCH = 1024;
+/**
+ * 交回驱动的一个云剪贴板响应正文的上限。一页最多 50 条密文，每条不超过 16,384 个字符，加上字段约 830 KB；驱动的输入整体限 2 MiB，还要装下驱动状态和 JSON 转义，所以取 1.5 MiB。
+ */
+const MAX_CLIPBOARD_RESPONSE_BYTES = 1536 * 1024;
+/** 一次云剪贴板操作最多往返几次。驱动自己把取密钥状态限在 4 次，正常操作不超过 10 步；这里兜住驱动出错时的死循环。 */
+const MAX_CLIPBOARD_E2E_STEPS = 24;
 /** Quick phrase values use the shared dictionary import limit (UTF-16 code units). */
 const MAX_QUICK_PHRASE_UTF16 = 199;
 
@@ -852,6 +876,77 @@ function parseJson(body: string, maximumBytes: number = MAX_JSON_RESPONSE_BYTES)
   }
 }
 
+/** 驱动要宿主发出的一个请求；驱动给的 `body` 是 JSON 文本，这里已解析成对象交给传输层。 */
+type ClipboardDriverRequest = {
+  method: string;
+  path: string;
+  body: Record<string, unknown> | undefined;
+};
+
+/** 驱动的一步：要发请求（带不透明的 `state`）、完成或失败，三种都带最新的密钥串。 */
+type ClipboardDriverStep = {
+  keystore: string;
+  request?: ClipboardDriverRequest;
+  state?: unknown;
+  done?: unknown;
+  error?: string;
+};
+
+const CLIPBOARD_DRIVER_METHODS: readonly string[] = ["GET", "POST", "PUT", "DELETE"];
+
+/** 这些 403 说的是账号或功能的状态，不是令牌失效：原样交给调用方，不刷新令牌重试。 */
+const FORBIDDEN_NOT_CREDENTIAL: readonly string[] = ["account_banned", "clipboard_sync_disabled"];
+
+/**
+ * 读原生驱动的应答 `{ok:true,value}`。形状不对（包括原生拒绝了输入的 `{ok:false}`）时返回 null，调用方按服务不可用处理。
+ *
+ * 失败一步的 `code` 原样保留：设置页和键盘按 `clipboard_device_pending`、`clipboard_sync_disabled` 这些码说话。
+ */
+export function parseClipboardDriverStep(reply: string): ClipboardDriverStep | null {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(reply);
+  } catch {
+    return null;
+  }
+  const value: Action | null = accountReplyValue<Action>(envelope);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const keystore: unknown = value.keystore;
+  if (typeof keystore !== "string" || keystore.length === 0) return null;
+  const request: unknown = value.request;
+  if (request !== undefined) {
+    if (request === null || typeof request !== "object" || Array.isArray(request)) return null;
+    const raw = request as Action;
+    if (
+      typeof raw.method !== "string" ||
+      !CLIPBOARD_DRIVER_METHODS.includes(raw.method) ||
+      typeof raw.path !== "string" ||
+      !raw.path.startsWith("/v1/users/me/clipboard") ||
+      value.state === undefined
+    )
+      return null;
+    let body: Record<string, unknown> | undefined = undefined;
+    if (typeof raw.body === "string") {
+      const parsed: Action | null = parseBody(raw.body);
+      if (parsed === null) return null;
+      body = parsed;
+    } else if (raw.body !== null && raw.body !== undefined) {
+      return null;
+    }
+    return { keystore, request: { method: raw.method, path: raw.path, body }, state: value.state };
+  }
+  if (value.error !== undefined) {
+    const failure: unknown = value.error;
+    if (failure === null || typeof failure !== "object" || Array.isArray(failure)) return null;
+    const code: unknown = (failure as Action).code;
+    // 与驱动认可的错误码同一个字符集（client-core 的 `is_bounded_ascii_identifier`），驱动给的码一个都不丢。
+    if (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code)) return null;
+    return { keystore, error: code };
+  }
+  if (value.done === undefined || value.done === null) return null;
+  return { keystore, done: value.done };
+}
+
 /**
  * Validate the one-record change page used to guard a native snapshot apply.
  *
@@ -941,29 +1036,34 @@ export class AccountCloudBridge {
   private adoptedStoredSession = false;
   private readonly anonymousStore: AccountSessionStore | undefined;
   private anonymous: AccountCloudBridge | null = null;
+  private readonly clipboardE2eHost: CloudClipboardE2eHost | undefined;
 
   /**
    * `anonymousStore` 是设备的匿名账号，供无人登录时可以用它发出的请求使用（应用内反馈，对应 Android 的 `ACCOUNT_OR_ANONYMOUS`）。没有匿名账号的宿主不传它，这些请求就需要已登录的账号。
+   *
+   * `clipboardE2e` 是云剪贴板端到端加密的原生驱动和本机密钥串。不传它的桥接不提供云剪贴板的列表、上传和设备管理（服务端只接受密文），它清除会话时也就没有密钥串要一起删。
    */
   constructor(
     transport: AccountTransport,
     store: AccountSessionStore,
     anonymousStore?: AccountSessionStore,
+    clipboardE2e?: CloudClipboardE2eHost,
   ) {
     this.transport = transport;
     this.store = store;
     this.anonymousStore = anonymousStore;
+    this.clipboardE2eHost = clipboardE2e;
     const saved = store.load();
     if (saved !== null && utf8Length(saved) <= MAX_SESSION_BYTES) {
       try {
         const value: unknown = JSON.parse(saved);
         if (validateSession(value)) this.session = value;
-        else store.clear();
+        else this.discardStoredSession();
       } catch {
-        store.clear();
+        this.discardStoredSession();
       }
     } else if (saved !== null) {
-      store.clear();
+      this.discardStoredSession();
     }
   }
 
@@ -1046,22 +1146,20 @@ export class AccountCloudBridge {
     );
   }
 
-  /** A keyboard send may refresh its own token, but must not follow a different process's login or rotation. */
+  /**
+   * A keyboard send may refresh its own token, but must not follow a different process's login or rotation.
+   *
+   * 上传经端到端加密驱动：文字在本机加密后才发出。本机还在等待批准时驱动以 `clipboard_device_pending` 拒绝，不上传。
+   */
   async addClipboardForCurrentSession(text: string): Promise<string> {
     if (!CloudClipboardPolicy.validText(text) || !this.matchesStoredSession())
       return error("account_cancelled");
     const guard = (): boolean => !this.adoptedStoredSession && this.matchesStoredSession();
-    const result = await this.authorizedResponse(
-      "POST",
-      "/v1/users/me/clipboard",
-      { text },
-      undefined,
-      undefined,
-      guard,
-    );
-    return result.response === undefined
-      ? error(result.error ?? "account_unavailable")
-      : this.response(result.response);
+    try {
+      return await this.clipboardE2e({ op: "add", text }, guard);
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : "account_unavailable");
+    }
   }
 
   /** A marker for native operations that may write after several asynchronous account calls. */
@@ -1272,6 +1370,9 @@ export class AccountCloudBridge {
       // Under the lock, so a refresh the keyboard is in the middle of cannot write the previous session over this one.
       return await this.locked(async (): Promise<string> => {
         if (generation !== this.generation) return error("account_cancelled");
+        // 换了一个账号登录时，上一个账号的云剪贴板密钥串不留给它：设备身份按账号重新生成，在新账号下重新登记。
+        if (this.storedSession()?.user.id !== session.user.id)
+          this.clipboardE2eHost?.clearKeystore();
         this.store.save(JSON.stringify(session));
         this.session = session;
         return success({ user: session.user });
@@ -1364,20 +1465,30 @@ export class AccountCloudBridge {
     return result;
   }
 
+  /**
+   * 云剪贴板的动作。列表、上传和设备管理经端到端加密驱动（服务端只存密文，搜索也在解密后由驱动在本机做）；删除和开关直接调用原来的接口。
+   *
+   * `devices` 是驱动的 `status`；`approve`、`reject`、`remove` 带 `device_id`，`reset` 不带参数，这五个动作的结果都是驱动 `status` 的形状。
+   */
   private async clipboard(action: Action): Promise<string> {
     const operation = action.clipboard_operation;
     if (operation === "list") {
       if (!validString(action.search, MAX_SEARCH, true)) return error("account_invalid");
-      return this.authenticated(
-        "GET",
-        `/v1/users/me/clipboard?q=${encodeURIComponent(action.search)}`,
-      );
+      return this.clipboardE2e({ op: "list", search: action.search });
     }
     if (operation === "add") {
       // Clipboard text keeps its line breaks and tabs, as the shared client allows; the generic string check here would refuse every multi-line copy.
       if (!CloudClipboardPolicy.validText(action.text)) return error("account_invalid");
-      return this.authenticated("POST", "/v1/users/me/clipboard", { text: action.text });
+      return this.clipboardE2e({ op: "add", text: action.text });
     }
+    if (operation === "devices") return this.clipboardE2e({ op: "status" });
+    if (operation === "approve" || operation === "reject" || operation === "remove") {
+      // 设备编号会进请求路径，先按协议的形状（32 位小写十六进制）挡住别的内容。
+      if (typeof action.device_id !== "string" || !/^[0-9a-f]{32}$/.test(action.device_id))
+        return error("account_invalid");
+      return this.clipboardE2e({ op: operation, device_id: action.device_id });
+    }
+    if (operation === "reset") return this.clipboardE2e({ op: "reset" });
     if (operation === "delete") {
       if (!validResourceId(action.id)) return error("account_invalid");
       return this.authenticated("DELETE", `/v1/users/me/clipboard/${action.id}`);
@@ -1393,6 +1504,56 @@ export class AccountCloudBridge {
         : result;
     }
     return error("account_invalid");
+  }
+
+  /**
+   * 跑一次端到端加密驱动：开始操作，按驱动的要求带着账号凭据发请求，把状态码和正文原样交回——非 2xx 也交回，由驱动按错误码判断——直到它给出结果或错误。
+   *
+   * 每一步交回的密钥串与已保存的不同，就先保存再发下一个请求：驱动刚生成的设备身份要是没存下就登记到了服务端，下次会再登记一台。会话在途中被登出（本进程或另一个进程）时立即停下且不再保存，免得把刚随会话删掉的密钥串写回去。传输失败和令牌被拒按原来的方式报错，不交回驱动。
+   */
+  private async clipboardE2e(start: Action, sessionGuard?: () => boolean): Promise<string> {
+    const host: CloudClipboardE2eHost | undefined = this.clipboardE2eHost;
+    if (host === undefined) return error("account_unavailable");
+    const session: Session | null = this.session;
+    if (session === null) return error("account_unauthorized");
+    const generation: number = this.generation;
+    const signedIn = (): boolean =>
+      generation === this.generation &&
+      this.session !== null &&
+      this.storedSession()?.user.id === session.user.id &&
+      (sessionGuard === undefined || sessionGuard());
+    let saved: string | null = host.loadKeystore();
+    let step: ClipboardDriverStep | null = parseClipboardDriverStep(
+      host.drive(JSON.stringify({ start, keystore: saved, device_name: host.deviceName() })),
+    );
+    for (let round = 0; step !== null && round < MAX_CLIPBOARD_E2E_STEPS; round++) {
+      if (!signedIn()) return error("account_cancelled");
+      if (step.keystore !== saved) {
+        host.saveKeystore(step.keystore);
+        saved = step.keystore;
+      }
+      const request: ClipboardDriverRequest | undefined = step.request;
+      if (request === undefined) {
+        return step.error !== undefined ? error(step.error) : success(step.done);
+      }
+      const reply: AuthorizedReply = await this.authorizedResponse(
+        request.method,
+        request.path,
+        request.body,
+        undefined,
+        undefined,
+        sessionGuard,
+      );
+      if (reply.response === undefined) return error(reply.error ?? "account_unavailable");
+      const body: string = reply.response.body;
+      if (utf8Length(body) > MAX_CLIPBOARD_RESPONSE_BYTES) return error("account_unavailable");
+      step = parseClipboardDriverStep(
+        host.drive(
+          JSON.stringify({ resume: step.state, response: { status: reply.response.status, body } }),
+        ),
+      );
+    }
+    return error("account_unavailable");
   }
 
   /**
@@ -2329,7 +2490,11 @@ export class AccountCloudBridge {
     if (generation !== this.generation) return { error: "account_cancelled" };
     if (response.status !== 401 && response.status !== 403) return { response, token };
     // A banned account is refused for what it is, not for a stale token: refreshing would only be refused again, and the caller needs the reason.
-    if (response.status === 403 && errorCode(response.body) === "account_banned") {
+    // 云剪贴板关闭时服务端以 403 `clipboard_sync_disabled` 拒绝写入，同样与令牌无关：当成令牌问题去刷新，第二次 403 会把用户登出。
+    if (
+      response.status === 403 &&
+      FORBIDDEN_NOT_CREDENTIAL.includes(errorCode(response.body) ?? "")
+    ) {
       return { response, token };
     }
     credential = await this.credential(token);
@@ -2513,7 +2678,13 @@ export class AccountCloudBridge {
 
   private clearStoredSession(stored: Session | null): void {
     if (stored !== null) this.store.beforeClear?.(stored.user.id);
+    this.discardStoredSession();
+  }
+
+  /** 删除保存的会话，云剪贴板的密钥串随它一起删：退出登录、令牌被拒和会话文件损坏都走这里。 */
+  private discardStoredSession(): void {
     this.store.clear();
+    this.clipboardE2eHost?.clearKeystore();
   }
 
   private forgetSession(): void {

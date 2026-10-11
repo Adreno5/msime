@@ -8,28 +8,64 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * 「我的 → 云剪贴板」页的接口：读列表、开关、保留时长、置顶、删除与清空。
+ * 「我的 → 云剪贴板」页的接口：列表、设备与批准、开关、保留时长、置顶、删除与清空。
  *
- * <p>条目在服务端是明文保存的（经 HTTPS 传输，关闭云剪贴板即全部删除），客户端不做加密，所以页面不写「端到端加密」。只有真实账号有云剪贴板。服务端最多保存 50 条，单条不超过 4000 个 UTF-16 单元；保留时长 0 表示一直保留。列表响应里的 `retention_days`、条目的 `pinned` 与 `device` 是新字段，旧服务端没有时分别按 0、false、空字符串处理。
+ * <p>条目端到端加密（`docs/cloud-clipboard-e2e.md`）：文字只在设备上加密和解密，服务端只保存密文，搜索也在解密之后于本机进行。读列表、读设备和「允许」「拒绝」「移除」「重置」都经共享驱动（{@link CloudClipboardE2e}）完成；置顶、保留时长、删除、清空和开关不涉及内容，仍直接调用原来的接口。只有真实账号有云剪贴板。服务端最多保存 50 条，单条不超过 4000 个 UTF-16 单元；保留时长 0 表示一直保留。
  *
  * <p>本类不 import `androidx`、`R` 或 `home/`，check-host 会编译它；请求阻塞在网络上，不要在主线程调用。
  */
 public final class CloudClipboardApi {
     public static final String PATH = "/v1/users/me/clipboard";
     public static final int MAX_ITEMS = 50;
+    /** 服务端每个账号最多登记的设备数。 */
+    public static final int MAX_DEVICES = 20;
     /** 保留时长的可选值（天），0 表示一直保留。 */
     public static final List<Integer> RETENTION_DAYS = List.of(1, 7, 30, 0);
+    /** 本机可以读写。 */
+    public static final String STATUS_READY = "ready";
+    /** 本机还在等已有设备批准，读不到也传不了。 */
+    public static final String STATUS_PENDING = "pending";
+    /** 账号没有开云剪贴板。 */
+    public static final String STATUS_DISABLED = "disabled";
 
     /** 一条记录。`device` 是写入时的设备名，未知时为空字符串。 */
     public record Item(String id, String text, String updatedAt, boolean pinned, String device) {}
 
-    /** 一次读取的结果。 */
-    public record Page(boolean enabled, int retentionDays, List<Item> items) {}
+    /** 本机的加密状态：`status` 见上面三个常量，`code` 是本机的核对码，`pendingDevices` 是等本机批准的设备数，`undecryptable` 是本机解不开而没有列出的条数。 */
+    public record E2e(String status, String code, int pendingDevices, int undecryptable) {}
+
+    /** 一次读取的结果。`retentionDays` 读不到时（本机待批准）为 -1。 */
+    public record Page(boolean enabled, int retentionDays, List<Item> items, E2e e2e) {}
+
+    /** 账号下登记的一台设备。`current` 标出本机，`code` 是它的核对码，`createdAt` 读不到时为空字符串。 */
+    public record Device(String deviceId, String name, String createdAt, boolean approved, boolean current, String code) {}
+
+    /** 设备列表与本机状态。 */
+    public record Devices(boolean enabled, String status, String deviceId, String code, List<Device> devices) {
+        /** 已登记、还没被批准的其他设备。 */
+        public List<Device> pending() {
+            List<Device> pending = new ArrayList<>(devices.size());
+            for (Device device : devices) if (!device.current() && !device.approved()) pending.add(device);
+            return pending;
+        }
+
+        /** 已批准的设备，本机在内。 */
+        public List<Device> approved() {
+            List<Device> approved = new ArrayList<>(devices.size());
+            for (Device device : devices) if (device.approved()) approved.add(device);
+            return approved;
+        }
+    }
+
+    /** 设置页一次读到的全部：设备与本机状态，以及（本机能读时）列表。 */
+    public record Overview(Devices devices, Page page) {}
 
     private final CloudApi api;
+    private final CloudClipboardE2e.Local local;
 
-    public CloudClipboardApi(CloudApi api) {
+    public CloudClipboardApi(CloudApi api, CloudClipboardE2e.Local local) {
         this.api = api;
+        this.local = local;
     }
 
     /** Recheck the page's login before copying one of its rows to the system clipboard. */
@@ -54,40 +90,47 @@ public final class CloudClipboardApi {
         return ordered;
     }
 
-    public Page load() throws CloudApi.Failure {
-        JSONObject response = api.json("GET", PATH + "?q=", null, CloudApi.Auth.ACCOUNT);
-        try {
-            JSONArray values = response.optJSONArray("items");
-            Object enabled = response.opt("enabled");
-            if (values == null || values.length() > MAX_ITEMS || !(enabled instanceof Boolean)) throw invalid();
-            Integer rawRetention = JsonPolicy.strictInteger(response.opt("retention_days"));
-            int retention = rawRetention == null ? 0 : rawRetention;
-            if (!validRetention(retention)) retention = 0;
-            List<Item> items = new ArrayList<>(values.length());
-            for (int index = 0; index < values.length(); index++) {
-                JSONObject value = values.getJSONObject(index);
-                String id = JsonPolicy.strictString(value.opt("id"));
-                String text = JsonPolicy.strictString(value.opt("text"));
-                String updated = JsonPolicy.strictString(value.opt("updated_at"));
-                Object rawDevice = value.opt("device");
-                String device = rawDevice == null || rawDevice == JSONObject.NULL
-                    ? "" : JsonPolicy.strictString(rawDevice);
-                Object rawPinned = value.opt("pinned");
-                Boolean pinned = rawPinned == null || rawPinned == JSONObject.NULL
-                    ? Boolean.FALSE : JsonPolicy.strictBoolean(rawPinned);
-                if (pinned == null || id == null || text == null || updated == null || device == null) {
-                    throw invalid();
-                }
-                if (!validId(id) || !CloudClipboardTextPolicy.valid(text)
-                        || !TextPolicy.boundedNonEmpty(updated, 128)) throw invalid();
-                if (TextPolicy.utf8Length(device) > 128 || TextPolicy.hasControl(device)
-                        || !TextPolicy.validUnicode(device)) device = "";
-                items.add(new Item(id, text, updated, pinned, device));
-            }
-            return new Page((Boolean) enabled, retention, ordered(items));
-        } catch (JSONException malformed) {
-            throw invalid();
+    /** 先读设备与本机状态（必要时登记本机、建立密钥），本机能读时再读列表。 */
+    public Overview load() throws CloudApi.Failure {
+        Devices devices = devices();
+        if (!devices.enabled()) {
+            return new Overview(devices, new Page(false, 0, List.of(), new E2e(STATUS_DISABLED, devices.code(), 0, 0)));
         }
+        if (!STATUS_READY.equals(devices.status())) {
+            return new Overview(devices, new Page(true, -1, List.of(),
+                new E2e(devices.status(), devices.code(), devices.pending().size(), 0)));
+        }
+        return new Overview(devices, list(""));
+    }
+
+    /** 解密后的列表；`search` 在本机过滤，服务端不再搜索。 */
+    public Page list(String search) throws CloudApi.Failure {
+        return parsePage(run(CloudClipboardE2e.Operation.list(search)));
+    }
+
+    /** 设备列表与本机状态（驱动的 `status`）。 */
+    public Devices devices() throws CloudApi.Failure {
+        return parseDevices(run(CloudClipboardE2e.Operation.status()));
+    }
+
+    /** 把剪贴板密钥封装给这台设备。调用前要让用户核对两台设备上的核对码。 */
+    public Devices approve(String deviceId) throws CloudApi.Failure {
+        return parseDevices(run(CloudClipboardE2e.Operation.approve(deviceId)));
+    }
+
+    /** 删掉一台待批准设备的登记。 */
+    public Devices reject(String deviceId) throws CloudApi.Failure {
+        return parseDevices(run(CloudClipboardE2e.Operation.reject(deviceId)));
+    }
+
+    /** 移除一台已批准的设备：换一把新密钥、删掉云端全部记录，其他设备都要重新批准。 */
+    public Devices remove(String deviceId) throws CloudApi.Failure {
+        return parseDevices(run(CloudClipboardE2e.Operation.remove(deviceId)));
+    }
+
+    /** 重置：换一把只封装给本机的新密钥、删掉云端全部记录，其他设备都要重新批准。 */
+    public Devices reset() throws CloudApi.Failure {
+        return parseDevices(run(CloudClipboardE2e.Operation.reset()));
     }
 
     public void setEnabled(boolean enabled) throws CloudApi.Failure {
@@ -112,6 +155,129 @@ public final class CloudClipboardApi {
     /** 清空全部记录（开关保持不变）。 */
     public void clear() throws CloudApi.Failure {
         api.send("DELETE", PATH, null, CloudApi.Auth.ACCOUNT);
+    }
+
+    /**
+     * 经驱动跑一个操作。请求走这一页绑定的登录（{@link CloudApi#forAccountSession}），密钥串只在这个登录还在时写入；驱动的错误码原样放进 {@link CloudApi.Failure#code}。
+     */
+    private String run(CloudClipboardE2e.Operation operation) throws CloudApi.Failure {
+        try {
+            return CloudClipboardE2e.run(local, operation, this::exchange, api::currentAccountSessionId);
+        } catch (CloudClipboardE2e.Failure failure) {
+            throw new CloudApi.Failure(failure.status, failure.code, failure.code, 0);
+        } catch (CloudApi.Failure failure) {
+            throw failure;
+        } catch (java.util.concurrent.CancellationException changed) {
+            throw new CloudApi.Failure(409, "session_changed", "account session changed", 0);
+        } catch (java.io.IOException storage) {
+            throw new CloudApi.Failure(0, "secure_storage", "cloud clipboard keystore unavailable", 0);
+        } catch (Exception | LinkageError unexpected) {
+            throw invalid();
+        }
+    }
+
+    private CloudClipboardE2e.Reply exchange(String method, String path, String body) throws CloudApi.Failure {
+        CloudApi.Exchange exchange = api.exchange(method, path,
+            body == null ? null : new CloudApi.Body("application/json", TextPolicy.utf8Bytes(body)),
+            CloudApi.Auth.ACCOUNT);
+        byte[] raw = exchange.body();
+        if (raw != null && raw.length > CloudClipboardE2e.MAX_RESPONSE_BYTES) throw invalid();
+        return new CloudClipboardE2e.Reply(exchange.status(), TextPolicy.utf8(raw));
+    }
+
+    /** 驱动 `list` 的结果：`{"enabled","retention_days","items":[…],"e2e":{…}}`。 */
+    static Page parsePage(String json) throws CloudApi.Failure {
+        try {
+            JSONObject response = new JSONObject(json);
+            JSONArray values = response.optJSONArray("items");
+            Object enabled = response.opt("enabled");
+            if (values == null || values.length() > MAX_ITEMS || !(enabled instanceof Boolean)) throw invalid();
+            Integer rawRetention = JsonPolicy.strictInteger(response.opt("retention_days"));
+            int retention = rawRetention == null ? 0 : rawRetention;
+            if (!validRetention(retention)) retention = 0;
+            List<Item> items = new ArrayList<>(values.length());
+            for (int index = 0; index < values.length(); index++) items.add(item(values.getJSONObject(index)));
+            JSONObject e2e = response.optJSONObject("e2e");
+            if (e2e == null) throw invalid();
+            String status = status(e2e.opt("status"));
+            String code = code(e2e.opt("code"));
+            Integer pending = JsonPolicy.nonNegativeInteger(e2e.opt("pending_devices"));
+            Integer undecryptable = JsonPolicy.nonNegativeInteger(e2e.opt("undecryptable"));
+            if (pending == null || undecryptable == null) throw invalid();
+            return new Page((Boolean) enabled, retention, ordered(items),
+                new E2e(status, code, Math.min(pending, MAX_DEVICES), Math.min(undecryptable, MAX_ITEMS)));
+        } catch (JSONException malformed) {
+            throw invalid();
+        }
+    }
+
+    /** 驱动 `status` 一类操作的结果：`{"enabled","status","device_id","code","devices":[…]}`。 */
+    static Devices parseDevices(String json) throws CloudApi.Failure {
+        try {
+            JSONObject response = new JSONObject(json);
+            Object enabled = response.opt("enabled");
+            JSONArray values = response.optJSONArray("devices");
+            String own = JsonPolicy.strictString(response.opt("device_id"));
+            if (!(enabled instanceof Boolean) || values == null || values.length() > MAX_DEVICES
+                    || !CloudClipboardE2e.validDeviceId(own)) throw invalid();
+            List<Device> devices = new ArrayList<>(values.length());
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.getJSONObject(index);
+                String id = JsonPolicy.strictString(value.opt("device_id"));
+                Boolean approved = JsonPolicy.strictBoolean(value.opt("approved"));
+                Boolean current = JsonPolicy.strictBoolean(value.opt("current"));
+                if (!CloudClipboardE2e.validDeviceId(id) || approved == null || current == null) throw invalid();
+                devices.add(new Device(id, label(value.opt("name")), label(value.opt("created_at")),
+                    approved, current, code(value.opt("code"))));
+            }
+            return new Devices((Boolean) enabled, status(response.opt("status")), own,
+                code(response.opt("code")), List.copyOf(devices));
+        } catch (JSONException malformed) {
+            throw invalid();
+        }
+    }
+
+    private static Item item(JSONObject value) throws CloudApi.Failure {
+        String id = JsonPolicy.strictString(value.opt("id"));
+        String text = JsonPolicy.strictString(value.opt("text"));
+        String updated = JsonPolicy.strictString(value.opt("updated_at"));
+        Object rawPinned = value.opt("pinned");
+        Boolean pinned = rawPinned == null || rawPinned == JSONObject.NULL
+            ? Boolean.FALSE : JsonPolicy.strictBoolean(rawPinned);
+        if (pinned == null || id == null || text == null || updated == null) throw invalid();
+        if (!validId(id) || !CloudClipboardTextPolicy.valid(text)
+                || !TextPolicy.boundedNonEmpty(updated, 128)) throw invalid();
+        return new Item(id, text, updated, pinned, label(value.opt("device")));
+    }
+
+    /** 一条元数据文字（设备名、登记时间）：不是字符串、过长、带控制字符时按空字符串处理，不让整页作废。 */
+    private static String label(Object raw) {
+        String value = raw == null || raw == JSONObject.NULL ? "" : JsonPolicy.strictString(raw);
+        if (value == null || TextPolicy.utf8Length(value) > 256 || TextPolicy.hasControl(value)
+                || !TextPolicy.validUnicode(value)) return "";
+        return value;
+    }
+
+    private static String status(Object raw) throws CloudApi.Failure {
+        String status = JsonPolicy.strictString(raw);
+        if (STATUS_READY.equals(status) || STATUS_PENDING.equals(status) || STATUS_DISABLED.equals(status)) return status;
+        throw invalid();
+    }
+
+    /** 核对码：16 位数字，每 4 位一组，组间一个空格。 */
+    static boolean validCode(String code) {
+        if (code == null || code.length() != 19) return false;
+        for (int index = 0; index < code.length(); index++) {
+            char c = code.charAt(index);
+            if (index % 5 == 4 ? c != ' ' : !TextPolicy.isAsciiDigit(c)) return false;
+        }
+        return true;
+    }
+
+    private static String code(Object raw) throws CloudApi.Failure {
+        String code = JsonPolicy.strictString(raw);
+        if (!validCode(code)) throw invalid();
+        return code;
     }
 
     private static JSONObject object(String key, Object value) {

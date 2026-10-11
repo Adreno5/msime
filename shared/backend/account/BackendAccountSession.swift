@@ -113,10 +113,82 @@ struct BackendKeychain: BackendSessionStorage {
     }
     guard status == errSecSuccess else { throw BackendAccountClient.Failure(status: 0) }
   }
+  /// 连同同一服务名下的云剪贴板密钥串一起删除：退出登录时密钥串必须随会话一起消失（`docs/cloud-clipboard-e2e.md`）。先删密钥串，它删不掉时会话也留着，退出登录整体失败，用户可以重试。
+  func clear() throws {
+    try BackendKeychainClipboardKeystore(accessGroup: accessGroup, service: service).clear()
+    let status = SecItemDelete(anyGroupQuery as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else { throw BackendAccountClient.Failure(status: 0) }
+  }
+}
+
+/// 云剪贴板端到端加密的本机密钥串（设备私钥和当前的剪贴板密钥）。每台设备（每个应用安装）只有一份，同一台设备上的输入法、设置和 Tauri 设置页读写同一份，退出登录时与账号会话一起删除。存放位置见 `docs/cloud-clipboard-e2e.md` 的「密钥串的存放位置」。
+protocol BackendClipboardKeystoreStorage: Sendable {
+  /// 没有保存过时为 nil；读不出来时抛错，不能当作没有，否则会生成新的设备身份，这台设备就得重新批准。
+  func load() throws -> String?
+  /// 原子替换旧值。
+  func save(_ value: String) throws
+  func clear() throws
+}
+
+/// 密钥串的长度上限。驱动给出的密钥串只有一两百字节，这个上限只用来拒绝明显不是它的内容。
+let backendClipboardKeystoreMaximumBytes = 4096
+
+/// iOS 的密钥串：钥匙串通用密码项，服务名与账号会话相同（`app.msime.backend.account`），账号名 `cloud-clipboard-keystore`，访问组与账号会话相同，所以 App、键盘扩展都能读到。
+struct BackendKeychainClipboardKeystore: BackendClipboardKeystoreStorage {
+  static let account = "cloud-clipboard-keystore"
+  private let accessGroup: String?
+  private let service: String
+
+  init(accessGroup: String? = BackendKeychain.defaultAccessGroup, service: String = "app.msime.backend.account") {
+    self.accessGroup = accessGroup
+    self.service = service
+  }
+  private var anyGroupQuery: [String: Any] {
+    [kSecClass as String: kSecClassGenericPassword,
+     kSecAttrService as String: service,
+     kSecAttrAccount as String: Self.account]
+  }
+  private var query: [String: Any] {
+    var query = anyGroupQuery
+    if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+    return query
+  }
+  func load() throws -> String? {
+    var query = query
+    query[kSecReturnData as String] = true
+    query[kSecMatchLimit as String] = kSecMatchLimitOne
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return nil }
+    // 和会话不同，读不出来（设备锁着、缺少权限）不能当作没有：那样会生成新的设备身份并覆盖旧的。
+    guard status == errSecSuccess, let data = result as? Data,
+          let value = backendClipboardKeystoreValue(data) else { throw BackendAccountClient.Failure(status: 0) }
+    return value
+  }
+  func save(_ value: String) throws {
+    let data = Data(value.utf8)
+    guard backendClipboardKeystoreValue(data) == value else { throw BackendAccountClient.Failure(status: 0) }
+    let attributes: [String: Any] = [kSecValueData as String: data,
+      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+    var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    if status == errSecItemNotFound {
+      status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+    }
+    guard status == errSecSuccess else { throw BackendAccountClient.Failure(status: 0) }
+  }
   func clear() throws {
     let status = SecItemDelete(anyGroupQuery as CFDictionary)
     guard status == errSecSuccess || status == errSecItemNotFound else { throw BackendAccountClient.Failure(status: 0) }
   }
+}
+
+/// 把保存的字节还原成密钥串：非空、不超过上限、UTF-8、只含可见 ASCII。别的进程（Tauri 设置页）写的文件末尾可能带换行，去掉后再判断。
+func backendClipboardKeystoreValue(_ data: Data) -> String? {
+  guard !data.isEmpty, data.count <= backendClipboardKeystoreMaximumBytes,
+        let text = String(data: data, encoding: .utf8) else { return nil }
+  let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !value.isEmpty, value.utf8.allSatisfy({ (33...126).contains($0) }) else { return nil }
+  return value
 }
 
 #if os(macOS)
@@ -140,7 +212,13 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
   private var url: URL? { directory?.appendingPathComponent(Self.fileName, isDirectory: false) }
 
   func load() throws -> BackendSavedSession? {
-    guard let url else { return nil }
+    guard let url, let data = try Self.readOwnerOnly(url, maximumBytes: Self.maximumBytes) else { return nil }
+    do { return try BackendSavedSession.validated(JSONDecoder().decode(BackendSavedSession.self, from: data)) }
+    catch { throw BackendAccountClient.Failure(status: 0) }
+  }
+
+  /// 读取本目录下一个仅本人可读写的文件，不存在时为 nil。会话文件和云剪贴板密钥串共用。
+  static func readOwnerOnly(_ url: URL, maximumBytes: Int) throws -> Data? {
     var status = stat()
     if lstat(url.path, &status) != 0 {
       if errno == ENOENT { return nil }
@@ -148,11 +226,8 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
     }
     // A symlink, a file another user can read, or one too large to be a session is not a store either process wrote.
     guard status.st_mode & S_IFMT == S_IFREG, status.st_mode & 0o077 == 0, status.st_uid == geteuid(),
-          status.st_size <= Self.maximumBytes else { throw BackendAccountClient.Failure(status: 0) }
-    let data: Data
-    do { data = try Self.readBounded(url, maximumBytes: Self.maximumBytes) }
-    catch { throw BackendAccountClient.Failure(status: 0) }
-    do { return try BackendSavedSession.validated(JSONDecoder().decode(BackendSavedSession.self, from: data)) }
+          status.st_size <= maximumBytes else { throw BackendAccountClient.Failure(status: 0) }
+    do { return try readBounded(url, maximumBytes: maximumBytes) }
     catch { throw BackendAccountClient.Failure(status: 0) }
   }
 
@@ -187,6 +262,11 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
   func save(_ session: BackendSavedSession) throws {
     guard let directory else { throw BackendAccountClient.Failure(status: 0) }
     let data = try JSONEncoder().encode(BackendSavedSession.validated(session))
+    try Self.writeOwnerOnly(data, named: Self.fileName, in: directory)
+  }
+
+  /// 把 `data` 原子地写成 `directory` 下仅本人可读写的 `name`，目录不存在时以 0700 创建。会话文件和云剪贴板密钥串共用。
+  static func writeOwnerOnly(_ data: Data, named name: String, in directory: URL) throws {
     guard backendDirectoryPathIsSafe(directory) else { throw BackendAccountClient.Failure(status: 0) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
@@ -202,7 +282,7 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
     let directoryDescriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     guard directoryDescriptor >= 0 else { throw BackendAccountClient.Failure(status: 0) }
     defer { close(directoryDescriptor) }
-    let temporaryName = ".\(Self.fileName).\(UUID().uuidString)"
+    let temporaryName = ".\(name).\(UUID().uuidString)"
     let descriptor = openat(directoryDescriptor, temporaryName,
       O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
     guard descriptor >= 0 else { throw BackendAccountClient.Failure(status: 0) }
@@ -222,7 +302,7 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
     }
     let synced = written && fsync(descriptor) == 0
     let closed = close(descriptor) == 0
-    guard written, synced, closed, renameat(directoryDescriptor, temporaryName, directoryDescriptor, Self.fileName) == 0 else {
+    guard written, synced, closed, renameat(directoryDescriptor, temporaryName, directoryDescriptor, name) == 0 else {
       unlinkat(directoryDescriptor, temporaryName, 0)
       throw BackendAccountClient.Failure(status: 0)
     }
@@ -239,7 +319,35 @@ struct BackendDesktopSessionFile: BackendSessionStorage {
       return
     }
     defer { close(directoryDescriptor) }
-    guard unlinkat(directoryDescriptor, Self.fileName, 0) == 0 || errno == ENOENT else {
+    // 云剪贴板密钥串随会话一起删除，先删它：删不掉时会话也留着，退出登录整体失败。
+    guard unlinkat(directoryDescriptor, BackendDesktopClipboardKeystoreFile.fileName, 0) == 0 || errno == ENOENT,
+          unlinkat(directoryDescriptor, Self.fileName, 0) == 0 || errno == ENOENT else {
+      throw BackendAccountClient.Failure(status: 0)
+    }
+  }
+}
+
+/// macOS 的密钥串：与 `account-session.json` 同一目录下的 `cloud-clipboard-keystore`，仅本人可读写、原子替换。输入法、独立设置窗口和 Tauri 设置页（`apps/desktop` 用同一个目录的 `FileAccountSessionStorage`）读写同一份。文件内容就是密钥串本身，不加引号；读取时容忍末尾的换行。
+struct BackendDesktopClipboardKeystoreFile: BackendClipboardKeystoreStorage {
+  static let fileName = "cloud-clipboard-keystore"
+  let directory: URL?
+  init(directory: URL? = BackendDesktopSessionFile.standardDirectory) { self.directory = directory }
+
+  func load() throws -> String? {
+    guard let directory,
+          let data = try BackendDesktopSessionFile.readOwnerOnly(directory.appendingPathComponent(Self.fileName, isDirectory: false),
+                                                                 maximumBytes: backendClipboardKeystoreMaximumBytes) else { return nil }
+    guard let value = backendClipboardKeystoreValue(data) else { throw BackendAccountClient.Failure(status: 0) }
+    return value
+  }
+  func save(_ value: String) throws {
+    guard let directory, backendClipboardKeystoreValue(Data(value.utf8)) == value else { throw BackendAccountClient.Failure(status: 0) }
+    try BackendDesktopSessionFile.writeOwnerOnly(Data(value.utf8), named: Self.fileName, in: directory)
+  }
+  func clear() throws {
+    guard let directory else { return }
+    guard backendDirectoryPathIsSafe(directory) else { throw BackendAccountClient.Failure(status: 0) }
+    guard unlink(directory.appendingPathComponent(Self.fileName, isDirectory: false).path) == 0 || errno == ENOENT else {
       throw BackendAccountClient.Failure(status: 0)
     }
   }

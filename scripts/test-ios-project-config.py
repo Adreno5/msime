@@ -381,6 +381,8 @@ class IOSProjectConfigTests(unittest.TestCase):
         self.assertIn(".set_clipboard_enabled(enabled)", dispatch)
         self.assertIn("session.add_clipboard(text)", dispatch)
         self.assertIn(".delete_clipboard(Some(id))", dispatch)
+        # 端到端加密的设备管理也走同一个分派。
+        self.assertIn("session.approve_clipboard_device(", dispatch)
         self.assertIn('run_mobile_plugin("copyText", CopyTextRequest { text })', plugin_rust)
         self.assertIn("@objc public func copyText", swift)
         self.assertIn("UIPasteboard.general.string = args.text", swift)

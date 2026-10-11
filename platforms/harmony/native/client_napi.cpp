@@ -277,6 +277,8 @@ TEXT_ENTRY(TelemetryEnd, msime_client_telemetry_end)
 TEXT_ENTRY(TelemetryRecordCrash, msime_client_telemetry_record_crash)
 TEXT_ENTRY(TelemetryClear, msime_client_telemetry_clear)
 TEXT_ENTRY(NoticeDismiss, msime_client_notice_dismiss)
+// 云剪贴板端到端加密的 sans-IO 驱动：每一步只做本机密码学运算、不碰网络和磁盘，五十条以内的解密在毫秒级，所以和其他文本入口一样同步调用。
+TEXT_ENTRY(CloudClipboardE2e, msime_client_cloud_clipboard_e2e)
 
 struct SnapshotRestoreWork {
     napi_async_work work = nullptr;
@@ -1523,6 +1525,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         ENTRY("notices", Notices),
         ENTRY("updateCheck", UpdateCheck),
         ENTRY("noticeDismiss", NoticeDismiss),
+        ENTRY("cloudClipboardE2e", CloudClipboardE2e),
         ENTRY("keySoundRenderNotes", KeySoundRenderNotes),
         ENTRY("aiRequestForQuery", AiRequestForQuery),
         ENTRY("aiHttpRequest", AiHttpRequest),

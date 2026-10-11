@@ -43,6 +43,18 @@ export const clipboardItem =
   "flex items-start gap-2 border-b border-white/[0.09] py-2.5 [&>button:first-child]:flex-1 [&>button:first-child]:border-0 [&>button:first-child]:bg-transparent [&>button:first-child]:p-0 [&>button:first-child]:text-left [&>button:first-child]:whitespace-pre-wrap [&>button:first-child]:break-anywhere [&>button:first-child]:text-[#f5f5f7]";
 export const clipboardDelete =
   "shrink-0 grow-0 basis-auto rounded-md border-0 bg-[#3a3945] px-2 py-1 text-[#e7b4bb]";
+/** 端到端加密的设备区块：本机待允许的说明、等待允许的设备和设备列表，与开关同一种底框。 */
+export const clipboardSection = `flex flex-col gap-2 p-3 text-xs ${clipField} ${clipText}`;
+/** 等待允许的设备是需要用户处理的提示，用绿色描边与普通区块区分开。 */
+export const clipboardAttention = `flex flex-col gap-2 rounded-[7px] border border-[#5fbf84] bg-[#2b2b33] p-3 text-xs ${clipText}`;
+export const clipboardSectionTitle = "m-0 text-[13px] font-semibold";
+/** 核对码：等宽、加大，两台设备上要逐位对照。 */
+export const clipboardCode =
+  "m-0 font-mono text-lg tracking-[0.08em] tabular-nums text-[#f5f5f7] select-all";
+export const clipboardDevice =
+  "flex flex-wrap items-center gap-2 border-t border-white/[0.09] pt-2 first-of-type:border-t-0 first-of-type:pt-0";
+export const clipboardDeviceInfo = "flex min-w-0 flex-1 flex-col gap-0.5 [&>small]:text-[#aeb0b7]";
+export const clipboardActions = "flex flex-wrap gap-2";
 
 // ---- cloud dictionary: the app's own palette, because it reads as a settings surface ----
 

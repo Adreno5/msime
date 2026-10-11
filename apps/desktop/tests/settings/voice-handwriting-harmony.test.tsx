@@ -340,7 +340,7 @@ test("the phone handwriting page offers the pad's delay, ink colour and width", 
   const { saveFeedback } = renderSettings({ page: "handwriting", feedback: padFeedback });
   await settingsFormReady();
   const page = screen.getByRole("group", { name: "手写输入" });
-  await waitFor(() => expect(groupTitles(page)).toEqual(["书写", "笔迹", "HarmonyOS 键盘手写"]));
+  await waitFor(() => expect(groupTitles(page)).toEqual(["书写", "笔迹"]));
   const delay = within(page).getByRole("slider", { name: "识别等待时间" }) as HTMLInputElement;
   expect([delay.min, delay.max, delay.step, delay.value]).toEqual(["200", "1500", "100", "600"]);
   expect(within(page).getByText("600ms")).toBeTruthy();
@@ -351,9 +351,9 @@ test("the phone handwriting page offers the pad's delay, ink colour and width", 
   // 隐私说明是「笔迹」的页脚，在该组的行之外。
   const privacy = within(page).getByText(/手写使用系统的文字识别能力/);
   expect(privacy.closest("section")).toBeNull();
-  // 启用说明和系统设置按钮仍然存在。
-  expect(within(page).getByText(/再从键盘的方案选择器切换到“手写”/)).toBeTruthy();
-  expect(within(page).getByRole("button", { name: "打开系统输入法设置" })).toBeTruthy();
+  // 与 Android 的手写页一样不附启用说明和系统设置按钮，那是首页状态卡片的事。
+  expect(within(page).queryByText(/方案选择器/)).toBeNull();
+  expect(within(page).queryByRole("button", { name: "打开系统输入法设置" })).toBeNull();
 
   fireEvent.click(within(openSheet("笔迹颜色")).getByRole("button", { name: "蓝色" }));
   await waitFor(() => expect(saveFeedback).toHaveBeenCalledTimes(1));

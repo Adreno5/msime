@@ -36,6 +36,21 @@ public final class CloudClipboardPanelPolicySmoke {
         check(CloudClipboardPanelPolicy.failed(403) == Status.SIGNED_OUT, "403 means signed out");
         check(CloudClipboardPanelPolicy.failed(500) == Status.FAILED, "a server error is retryable");
         check(CloudClipboardPanelPolicy.failed(0) == Status.FAILED, "a transport failure is retryable");
+        // 端到端加密：本机待批准时只显示一句提示，不列条目也不上传；驱动的错误码优先于状态码。
+        check(CloudClipboardPanelPolicy.loaded(true, true, 0) == Status.PENDING, "a device awaiting approval is pending");
+        check(CloudClipboardPanelPolicy.loaded(false, true, 0) == Status.DISABLED, "a disabled account wins over pending");
+        check(CloudClipboardPanelPolicy.loaded(true, false, 2) == Status.READY, "an approved device lists its items");
+        check(CloudClipboardPanelPolicy.failed(0, "clipboard_device_pending") == Status.PENDING,
+            "an upload refused while awaiting approval reads as pending, not a failure");
+        check(CloudClipboardPanelPolicy.failed(403, "clipboard_sync_disabled") == Status.DISABLED,
+            "a 403 from a disabled cloud clipboard is not a sign-out");
+        check(CloudClipboardPanelPolicy.failed(403, "forbidden") == Status.SIGNED_OUT, "any other 403 still means signed out");
+        check(CloudClipboardPanelPolicy.failed(409, "clipboard_key_conflict") == Status.FAILED, "a key conflict is retryable");
+        check(!CloudClipboardPanelPolicy.showsItems(Status.PENDING), "a pending device lists nothing");
+        check(!CloudClipboardPanelPolicy.canUpload(true, Status.PENDING, "synthetic note"), "a pending device uploads nothing");
+        check(CloudClipboardPanelPolicy.cloudCount(Status.PENDING, 0) == null, "a pending device shows no count");
+        check(CloudClipboardPanelPolicy.message(Status.PENDING, 0).equals(CloudClipboardPanelPolicy.PENDING_MESSAGE)
+            && !CloudClipboardPanelPolicy.PENDING_MESSAGE.contains("\n"), "the pending hint is one line");
 
         check(CloudClipboardPanelPolicy.accepts(4, 4), "a result for the same field is drawn");
         check(!CloudClipboardPanelPolicy.accepts(4, 5), "a result for a previous field is discarded");

@@ -277,6 +277,7 @@ import {
   AccountSessionStore,
   AccountTransport,
   AccountTransportResponse,
+  CloudClipboardE2eHost,
   MAX_DICTIONARY_EXPORT_BYTES,
   MAX_SNAPSHOT_DOWNLOAD_BYTES,
   COMMUNITY_REPORT_REASONS,
@@ -305,6 +306,7 @@ import {
   CLOUD_CLIPBOARD_EMPTY,
   CLOUD_CLIPBOARD_FAILED,
   CLOUD_CLIPBOARD_LOADING,
+  CLOUD_CLIPBOARD_PENDING,
   CLOUD_CLIPBOARD_SEND,
   CLOUD_CLIPBOARD_SEND_FAILED,
   CLOUD_CLIPBOARD_SENT,
@@ -11231,12 +11233,23 @@ group("cloud clipboard text follows the shared clipboard bounds", () => {
 
 group("cloud clipboard listings are read whole", () => {
   const id = (digit: string) => digit.repeat(64);
-  const page = (items: unknown[], enabled = true) =>
-    JSON.stringify({ ok: true, value: { enabled, items } });
+  // 端到端加密驱动 `list` 的结果形状，见 docs/cloud-clipboard-e2e.md 的「结果」。
+  const page = (items: unknown[], enabled = true, status = enabled ? "ready" : "disabled") =>
+    JSON.stringify({
+      ok: true,
+      value: {
+        enabled,
+        retention_days: 0,
+        items,
+        e2e: { status, code: "0421 9873 5530 1176", pending_devices: 0, undecryptable: 0 },
+      },
+    });
   const item = (digit: string, text: string) => ({
     id: id(digit),
     text,
     updated_at: "2026-10-01T08:00:00Z",
+    pinned: false,
+    device: "Synthetic Laptop",
   });
 
   const ready = CloudClipboardPolicy.parseList(
@@ -11249,6 +11262,25 @@ group("cloud clipboard listings are read whole", () => {
       ready.items[1].text === "两行\n文本" &&
       ready.items[0].updatedAt === "2026-10-01T08:00:00Z",
     "items keep their order, id, text and time",
+  );
+  check(
+    ready.items[0].pinned === false && ready.items[0].device === "Synthetic Laptop",
+    "and say whether they are pinned and which device wrote them",
+  );
+  const pending = CloudClipboardPolicy.parseList(page([], true, "pending"));
+  check(
+    pending.state === CloudClipboardState.PENDING && pending.items.length === 0,
+    "a device waiting for approval reads as pending with nothing to show",
+  );
+  check(
+    CloudClipboardPolicy.parseList(page([item("a", "hidden")], true, "disabled")).state ===
+      CloudClipboardState.DISABLED,
+    "the driver's disabled status hides items too",
+  );
+  check(
+    CloudClipboardPolicy.parseList(page([{ ...item("a", "无设备名"), device: "" }])).items[0]
+      .device === "",
+    "an item may come without a device name",
   );
   check(
     CloudClipboardPolicy.parseList(page([])).state === CloudClipboardState.READY &&
@@ -11283,6 +11315,13 @@ group("cloud clipboard listings are read whole", () => {
     page([{ id: id("a"), text: "long time", updated_at: "9".repeat(129) }]),
     page([item("a", "fine"), null]),
     page(Array.from({ length: 51 }, (_unused, index) => item("c", `item ${index}`))),
+    '{"ok":true,"value":{"enabled":true,"items":[]}}',
+    page([], true, "unknown"),
+    page([{ ...item("a", "no pinned"), pinned: undefined }]),
+    page([{ ...item("a", "string pinned"), pinned: "false" }]),
+    page([{ ...item("a", "no device"), device: undefined }]),
+    page([{ ...item("a", "control in device"), device: "Lap\ntop" }]),
+    page([{ ...item("a", "long device"), device: "设".repeat(65) }]),
   ]) {
     const listing = CloudClipboardPolicy.parseList(failure);
     check(
@@ -11351,6 +11390,15 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
     "an unreadable clipboard is not written to",
   );
   check(
+    CloudClipboardPolicy.sendBlock(CloudClipboardState.PENDING, "hello") ===
+      CLOUD_CLIPBOARD_PENDING,
+    "a device waiting for approval does not upload",
+  );
+  check(
+    !CLOUD_CLIPBOARD_PENDING.includes("\n") && CLOUD_CLIPBOARD_PENDING.includes("允许"),
+    "the pending hint is one line that says where to approve",
+  );
+  check(
     CloudClipboardPolicy.sendBlock(CloudClipboardState.READY, "hello") === null,
     "ready and valid may be sent",
   );
@@ -11372,8 +11420,17 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
   );
   check(
     CloudClipboardPolicy.parseSend('{"ok":false,"error":"account_invalid"}') ===
-      CloudClipboardSendOutcome.INVALID,
+      CloudClipboardSendOutcome.INVALID &&
+      CloudClipboardPolicy.parseSend('{"ok":false,"error":"invalid_clipboard_text"}') ===
+        CloudClipboardSendOutcome.INVALID,
     "refused text is named",
+  );
+  check(
+    CloudClipboardPolicy.parseSend('{"ok":false,"error":"clipboard_device_pending"}') ===
+      CloudClipboardSendOutcome.PENDING &&
+      CloudClipboardPolicy.sendNotice(CloudClipboardSendOutcome.PENDING) ===
+        CLOUD_CLIPBOARD_PENDING,
+    "a refusal while waiting for approval says so",
   );
   check(
     CloudClipboardPolicy.parseSend('{"ok":false,"error":"account_unavailable"}') ===
@@ -11404,7 +11461,31 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
       CloudClipboardPolicy.notice(CloudClipboardState.DISABLED, false, 0) === "云剪贴板未开启",
     "signed-out and disabled use the shared wording",
   );
+  check(
+    CloudClipboardPolicy.notice(CloudClipboardState.PENDING, false, 0) === CLOUD_CLIPBOARD_PENDING,
+    "a pending device shows the approval hint instead of an empty clipboard",
+  );
 });
+
+/** 记下每次开始的操作、对每次开始都直接给出结果的假驱动；只给那些只关心桥接怎样开始操作的测试用，完整的往返在 cloud-clipboard-e2e.test.ts。 */
+function startRecordingClipboardDriver(
+  starts: Record<string, unknown>[],
+  firstStep: Record<string, unknown> = { done: {}, keystore: "v1.synthetic" },
+): CloudClipboardE2eHost {
+  return {
+    drive: (document) => {
+      const input = JSON.parse(document) as { start?: Record<string, unknown> };
+      if (input.start !== undefined) starts.push(input.start);
+      return JSON.stringify(
+        input.start !== undefined ? { ok: true, value: firstStep } : { ok: false, error: "done" },
+      );
+    },
+    loadKeystore: () => "v1.synthetic",
+    saveKeystore: () => {},
+    clearKeystore: () => {},
+    deviceName: () => "Synthetic",
+  };
+}
 
 group("the account bridge sends multi-line clipboard text the shared client accepts", () => {
   let stored: string | null = JSON.stringify({
@@ -11414,17 +11495,9 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     expires_at: Date.now() + 600_000,
     user: { id: "synthetic-user", display_name: "Test", created_at: "2026-01-01" },
   });
-  const bodies: (Record<string, unknown> | undefined)[] = [];
+  const starts: Record<string, unknown>[] = [];
   const bridge = new AccountCloudBridge(
-    {
-      request: async (_method, _path, _token, body) => {
-        bodies.push(body);
-        return {
-          status: 200,
-          body: JSON.stringify({ id: "e".repeat(64), text: body?.text, updated_at: "2026-10-01" }),
-        };
-      },
-    },
+    { request: async () => ({ status: 200, body: "{}" }) },
     {
       load: () => stored,
       save: (value) => {
@@ -11434,6 +11507,8 @@ group("the account bridge sends multi-line clipboard text the shared client acce
         stored = null;
       },
     },
+    undefined,
+    startRecordingClipboardDriver(starts),
   );
   void bridge
     .handle(
@@ -11445,7 +11520,7 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     )
     .then((reply) => {
       check(JSON.parse(reply).ok === true, "a copied paragraph is accepted");
-      check(bodies[0]?.text === "第一行\n第二行", "and sent with its line break");
+      check(starts[0]?.text === "第一行\n第二行", "and handed to the driver with its line break");
     });
   void bridge
     .handle(
@@ -11453,6 +11528,7 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     )
     .then((reply) => {
       check(JSON.parse(reply).error === "account_invalid", "a C1 control is refused locally");
+      check(starts.length <= 1, "and never reaches the driver");
     });
 });
 
@@ -11519,6 +11595,16 @@ group("a keyboard send refuses a same-account login adopted during refresh", () 
         return await body();
       },
     },
+    undefined,
+    startRecordingClipboardDriver([], {
+      request: {
+        method: "GET",
+        path: `/v1/users/me/clipboard/keys?device_id=${"d".repeat(32)}`,
+        body: null,
+      },
+      state: {},
+      keystore: "v1.synthetic",
+    }),
   );
   void bridge.addClipboardForCurrentSession("synthetic clipboard text").then((reply) => {
     check(JSON.parse(reply).error === "account_cancelled", "the adopted login cancels the send");
@@ -11534,14 +11620,9 @@ group("the account bridge accepts the shared clipboard search bound", () => {
     expires_at: Date.now() + 600_000,
     user: { id: "synthetic-user", display_name: "Test", created_at: "2026-01-01" },
   });
-  const paths: string[] = [];
+  const starts: Record<string, unknown>[] = [];
   const bridge = new AccountCloudBridge(
-    {
-      request: async (_method, path) => {
-        paths.push(path);
-        return { status: 200, body: '{"enabled":true,"items":[]}' };
-      },
-    },
+    { request: async () => ({ status: 200, body: "{}" }) },
     {
       load: () => stored,
       save: (value) => {
@@ -11551,6 +11632,8 @@ group("the account bridge accepts the shared clipboard search bound", () => {
         stored = null;
       },
     },
+    undefined,
+    startRecordingClipboardDriver(starts),
   );
   const accepted = "你".repeat(341) + "a";
   void bridge
@@ -11559,7 +11642,11 @@ group("the account bridge accepts the shared clipboard search bound", () => {
     )
     .then((reply) => {
       check(JSON.parse(reply).ok === true, "a 1,024-byte UTF-8 clipboard search is accepted");
-      check(paths.length === 1, "the accepted search reaches the account service");
+      // 服务端不再搜索：搜索词交给驱动，在本机解密后匹配。
+      check(
+        starts.length === 1 && starts[0].search === accepted,
+        "the accepted search reaches the driver",
+      );
       return bridge.handle(
         JSON.stringify({
           operation: "clipboard",
@@ -11573,7 +11660,7 @@ group("the account bridge accepts the shared clipboard search bound", () => {
         JSON.parse(reply).error === "account_invalid",
         "a search over 1,024 UTF-8 bytes is refused",
       );
-      check(paths.length === 1, "the oversized search never reaches the account service");
+      check(starts.length === 1, "the oversized search never reaches the driver");
     });
 });
 
