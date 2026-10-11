@@ -187,6 +187,8 @@ final class ImeCandidates {
         s.configureCandidateTextLayout(button, labelLines);
         KeyboardTypographyPolicy.setKeyTextSize(button, 17);
         ViewPolicy.setSelected(button, highlighted);
+        // AI 座位上的占位行（Engine 候选来源 12，「…」或「—」）和候选条一样画淡，免得在完整候选列表里像真候选（#6888）。
+        button.setAlpha(InputViewValuePolicy.integer(candidate, "source", -1) == 12 ? 0.45f : 1f);
         expandedCells.add(button);
         ViewPolicy.setMinimumSize(button, s.pixels(64), s.pixels(44));
         LayoutPolicy.setHorizontalPaddingDp(button, s, 10);
