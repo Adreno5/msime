@@ -85,7 +85,7 @@ int main() {
     require(find_page("download") == nullptr);
     // MCP stays in this window's developer page and the core pages stay native.
     for (auto id : {"themes", "candidate", "typing", "expression", "shortcuts",
-                    "lexicon", "dev", "about"})
+                    "lexicon", "dev", "feedback", "about"})
       require(find_page(id)->host == PageHost::Native);
     for (const auto &target : shell_links::all)
       require(launchable(target));

@@ -32,6 +32,7 @@
 #include "GameProcessList.h"
 #include "PreferencePath.h"
 #include "AppInputModeRuleList.h"
+#include "FeedbackReport.h"
 #include "SettingsDocumentFile.h"
 #include "SettingsNavigation.h"
 #include "SettingsStateDirectory.h"
@@ -939,6 +940,21 @@ JsonObject update_check_request() {
                         JsonValue::CreateStringValue(hstring(app_version)));
   request.SetNamedValue(L"edition", JsonValue::CreateStringValue(text(MSIME_EDITION_ID)));
   return request;
+}
+
+// 系统版本「主.次.内部版本号」，写进反馈报告的诊断信息。取自 ntdll 的 `RtlGetVersion`：`GetVersionEx` 按应用清单声明的兼容系统作答，可能报低。Windows 11 的主版本号仍是 10，内部版本号从 22000 起。读不到时为空，报告改写「平台：windows」。
+std::wstring windows_os_version() {
+  using RtlGetVersion = LONG(WINAPI *)(PRTL_OSVERSIONINFOW);
+  const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+  const auto get = ntdll ? reinterpret_cast<RtlGetVersion>(reinterpret_cast<void *>(
+                               GetProcAddress(ntdll, "RtlGetVersion")))
+                         : nullptr;
+  RTL_OSVERSIONINFOW info{};
+  info.dwOSVersionInfoSize = sizeof(info);
+  if (!get || get(&info) != 0)
+    return {};
+  return std::to_wstring(info.dwMajorVersion) + L"." + std::to_wstring(info.dwMinorVersion) +
+         L"." + std::to_wstring(info.dwBuildNumber);
 }
 
 // 本版本发布的安装程序名，用于发布里没有给出安装程序时的警告：`MetasequoiaIME-<Id>_Setup_v<版本>.exe`，与 `update_check.rs` 和共享页面的推导方式相同。
@@ -4651,13 +4667,166 @@ private:
 
   // ---- 帮助与反馈、关于 ----
 
+  // 共享设置的「帮助与反馈」页（`packages/ui/src/settings/pages/feedback-page.tsx`）在 Windows 上的样子：页首一句说明，「帮助」，「提交可复现的问题」的报告，「反馈与交流」的三个渠道。共享页的「帮助」是一个子页入口，本窗口没有子页，直接把帮助内容画在这里（`build_help_section`）。报告的格式、诊断信息和 GitHub 地址的拼法在 `FeedbackReport.h`。
   void build_feedback_page(StackPanel const &page) {
-    auto group = add_group(page, L"");
-    shell_row(group, 0xED15, L"反馈", L"描述遇到的问题并提交给开发者", L"反馈",
-              nav::shell_links::feedback);
-    add_row(group, 0xEBE8, L"诊断日志", L"复现问题前在「维护与诊断」中开启日志，反馈时一起发送",
-            button_control(L"前往", [this] { navigate("dev", true); }));
+    auto intro = make_text(L"遇到问题或有功能建议时，可以通过以下渠道提交和交流。", 14, palette_.sub);
+    intro.Margin(Thickness{4, 0, 4, 4});
+    page.Children().Append(intro);
     build_help_section(page);
+
+    auto report = add_group(page, L"提交可复现的问题");
+    record(L"提交可复现的问题", L"反馈 问题报告 GitHub 复制报告");
+    report.Children().Append(group_note(L"报告只在你点击按钮时生成，不会读取或上传输入历史。"));
+    ComboBox kinds;
+    kinds.Width(156);
+    for (size_t i = 0; i < msime::settings::feedback_kinds.size(); ++i) {
+      kinds.Items().Append(box_value(hstring(msime::settings::feedback_kinds[i])));
+      if (msime::settings::feedback_kinds[i] == feedback_kind_)
+        kinds.SelectedIndex(static_cast<int32_t>(i));
+    }
+    A11y::SetName(kinds, L"反馈类型");
+    kinds.SelectionChanged([this](Inspectable const &sender, SelectionChangedEventArgs const &) {
+      const auto index = sender.as<ComboBox>().SelectedIndex();
+      if (index >= 0 && static_cast<size_t>(index) < msime::settings::feedback_kinds.size())
+        feedback_kind_ = msime::settings::feedback_kinds[static_cast<size_t>(index)];
+    });
+    add_row(report, 0xE8EC, L"类型", L"", kinds);
+
+    // 描述、会一起附上的信息、两个按钮和截断说明在同一张卡片里，对应共享页的 `SettingsManagerBlock`。
+    StackPanel block;
+    block.Spacing(10);
+    block.Padding(Thickness{25, 16, 25, 16});
+    TextBox detail;
+    detail.Header(box_value(L"描述"));
+    detail.PlaceholderText(L"发生了什么？如果和打字有关，写出输入方案、编码和期望结果。");
+    detail.AcceptsReturn(true);
+    detail.TextWrapping(TextWrapping::Wrap);
+    detail.MaxLength(static_cast<int32_t>(msime::settings::feedback_text_limit));
+    detail.MinHeight(140);
+    detail.Text(hstring(feedback_detail_));
+    A11y::SetName(detail, L"反馈描述");
+    detail.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      feedback_detail_ = std::wstring(sender.as<TextBox>().Text().c_str());
+    });
+    block.Children().Append(detail);
+    StackPanel attached;
+    attached.Spacing(2);
+    auto attached_title = make_text(L"会一起附上的信息", 12, palette_.sub);
+    attached_title.FontWeight(Windows::UI::Text::FontWeight{600});
+    attached.Children().Append(attached_title);
+    auto attached_text = make_text(feedback_diagnostics_text(), 12, palette_.sub);
+    attached_text.IsTextSelectionEnabled(true);
+    attached.Children().Append(attached_text);
+    block.Children().Append(attached);
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    auto copy_report =
+        button_control(feedback_report_copied_ ? L"已复制报告" : L"复制报告", [this] {
+          copy_text(current_feedback_report());
+          mark_copied(feedback_report_copied_, feedback_report_timer_);
+        });
+    actions.Children().Append(copy_report);
+    actions.Children().Append(button_control(L"在 GitHub 提交", [this] {
+      const auto url = msime::settings::feedback_issue_url(
+          msime::settings::feedback_issues_url, feedback_kind_, current_feedback_report());
+      open_url(url.c_str());
+    }));
+    block.Children().Append(actions);
+    block.Children().Append(make_text(
+        L"提交会打开 GitHub 并预填报告；网址长度有限，过长描述会被截断，完整内容请先复制。", 12,
+        palette_.sub));
+    auto card = make_card();
+    card.Child(block);
+    report.Children().Append(card);
+    mark_search_target(L"提交可复现的问题", card);
+    report.Children().Append(group_note(
+        L"提交问题时建议附上系统版本、输入方案、复现步骤、相关截图，以及诊断日志中的关键片段。"));
+    add_row(report, 0xEBE8, L"诊断日志", L"在维护与诊断页开启日志并打开日志目录",
+            button_control(L"前往", [this] { navigate("dev", true); }));
+
+    // 「反馈与交流」的三张渠道卡片（`feedback-channels.tsx`），每张下面是地址或群号。图标用 Segoe Fluent 的通用字形，本窗口不带品牌标志。
+    const std::wstring issues(msime::settings::feedback_issues_url);
+    const std::wstring group_number(msime::settings::feedback_qq_group);
+    auto channels = add_group(page, L"反馈与交流");
+    add_row(channels, 0xE943, L"GitHub Issues", L"适合提交可复现的问题、功能建议和开发讨论。",
+            button_control(L"查看 Issues", [this, issues] { open_url(issues.c_str()); }),
+            channel_code(issues.substr(std::wstring_view(L"https://").size())));
+    auto copy_group =
+        button_control(feedback_group_copied_ ? L"已复制" : L"复制群号", [this, group_number] {
+          copy_text(group_number);
+          mark_copied(feedback_group_copied_, feedback_group_timer_);
+        });
+    add_row(channels, 0xE8BD, L"QQ 交流群", L"适合中文用户进行日常交流、测试反馈和使用讨论。",
+            copy_group, channel_code(L"群号：" + group_number));
+    add_row(channels, 0xE724, L"Telegram 群组", L"面向国际用户和开发者的即时讨论频道。",
+            button_control(L"打开群组",
+                           [this] {
+                             open_url(std::wstring(msime::settings::feedback_telegram_url).c_str());
+                           }),
+            channel_code(L"t.me/msimegroup"));
+    if (!indexing_) {
+      feedback_report_button_ = copy_report.as<Button>();
+      feedback_group_button_ = copy_group.as<Button>();
+    }
+  }
+
+  // 分组里的一段说明文字，对应共享页的 `SettingsGroupNote`。
+  TextBlock group_note(std::wstring_view value) {
+    auto note = make_text(value, 12, palette_.sub);
+    note.Margin(Thickness{4, 0, 4, 4});
+    return note;
+  }
+
+  // 渠道卡片标题下的地址或群号，对应共享卡片里的 `<code>`，可以选中复制。
+  FrameworkElement channel_code(std::wstring const &value) {
+    auto code = make_text(value, 12, palette_.sub);
+    code.FontFamily(Media::FontFamily(L"Consolas"));
+    code.IsTextSelectionEnabled(true);
+    code.Padding(Thickness{61, 0, 25, 12});
+    return code;
+  }
+
+  // 附在报告里的诊断信息：本版本号、系统版本，偏好读到时再加当前的输入方案（共享页没有草稿时同样不写方案）。
+  std::wstring feedback_diagnostics_text() {
+    const std::wstring scheme =
+        loaded_ ? document_.String(L"scheme", MSIME_EDITION_DEFAULT_SCHEME_W) : std::wstring();
+    return msime::settings::feedback_diagnostics(
+        app_version, windows_os_version(),
+        scheme.empty() ? std::wstring_view() : msime::settings::feedback_scheme_title(scheme));
+  }
+
+  // 按当前的类型、描述和诊断信息生成报告；描述里 TextBox 的 CR 换成 LF。
+  std::wstring current_feedback_report() {
+    return msime::settings::feedback_report(
+        feedback_kind_, msime::settings::feedback_normalize_newlines(feedback_detail_),
+        feedback_diagnostics_text());
+  }
+
+  // 复制后按钮显示「已复制」1.6 秒再复原，与共享页相同；再点一次重新计时。标记跨页面重建保留，新画的按钮照样显示。
+  void mark_copied(bool &copied, Microsoft::UI::Dispatching::DispatcherQueueTimer &timer) {
+    copied = true;
+    relabel_feedback_buttons();
+    if (!timer) {
+      timer = DispatcherQueue().CreateTimer();
+      timer.Interval(std::chrono::milliseconds(1600));
+      timer.IsRepeating(false);
+      timer.Tick([this, &copied](Microsoft::UI::Dispatching::DispatcherQueueTimer const &,
+                                 Inspectable const &) {
+        copied = false;
+        relabel_feedback_buttons();
+      });
+    }
+    timer.Stop();
+    timer.Start();
+  }
+
+  void relabel_feedback_buttons() {
+    if (feedback_report_button_)
+      feedback_report_button_.Content(
+          box_value(feedback_report_copied_ ? L"已复制报告" : L"复制报告"));
+    if (feedback_group_button_)
+      feedback_group_button_.Content(box_value(feedback_group_copied_ ? L"已复制" : L"复制群号"));
   }
 
   // 共享设置的「帮助」页（`packages/ui/src/settings/help-settings-page.tsx`）在 Windows 上的样子：非 macOS、非移动端的那一支，文案取 `settings/platform-copy.ts` 的 Windows 分支。没有系统键盘设置按钮，也没有 iOS 和 Android 的分组。
@@ -5002,6 +5171,16 @@ private:
   StackPanel update_lines_{nullptr};
   TextBlock update_status_{nullptr};
   TextBlock update_detail_{nullptr};
+
+  // 「帮助与反馈」页的报告草稿和「已复制」标记：跨页面重建保留，关闭窗口即丢弃，与共享页的组件状态一样。按钮是该页当前的那一组。
+  std::wstring feedback_kind_{msime::settings::feedback_kinds[0]};
+  std::wstring feedback_detail_;
+  bool feedback_report_copied_ = false;
+  bool feedback_group_copied_ = false;
+  Button feedback_report_button_{nullptr};
+  Button feedback_group_button_{nullptr};
+  Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_report_timer_{nullptr};
+  Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_group_timer_{nullptr};
 
   Grid root_{nullptr};
   Grid titlebar_{nullptr};
