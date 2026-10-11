@@ -312,10 +312,22 @@ fn kinds(log: &[(i32, String)]) -> Vec<i32> {
 }
 
 #[test]
-fn scripts_enable_answers_false_in_release_builds() {
-    // 开发构建里开关照常；release 构建（`cargo test --release`）里恒为 false，这一条就是第 3 阶段的验收。
-    assert_eq!(msime_client_scripts_enable(true), cfg!(debug_assertions));
+fn the_real_process_switch_gates_delivery_and_stays_off_in_release_builds() {
+    // 这个测试线程不覆盖开关，投递走产品里的全局开关。别的测试都在自己的线程上覆盖它，这里改全局开关不影响它们；没覆盖开关、也没写授权的会话计划是空的，同样不受影响。
+    let fixture = fixture();
+    TEST_SWITCH.with(|switch| switch.set(None));
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
     assert!(!msime_client_scripts_enable(false));
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert!(take_log().is_empty());
+    // 开发构建里打开就投递；release 构建（`cargo test --release`）里恒为 false，打开了也什么都不投递，这一条就是第 3 阶段的验收。
+    assert_eq!(msime_client_scripts_enable(true), cfg!(debug_assertions));
+    commit_nihao(fixture.handle);
+    assert_eq!(!take_log().is_empty(), cfg!(debug_assertions));
+    assert!(!msime_client_scripts_enable(false));
+    commit_nihao(fixture.handle);
+    assert!(take_log().is_empty());
 }
 
 #[test]
@@ -938,7 +950,7 @@ fn a_grant_whose_hash_no_longer_matches_the_pack_never_runs() {
     assert_eq!(process_health(&fixture, "stale", &stale), (0, None));
 }
 
-/// 本地测量（默认忽略）：宿主一侧投递一个事件的全部开销，包括运行条件检查、构造事件、按授权复制文本、执行一个空的钩子和记账。整次按键的派发是几十到几百微秒，这点开销淹没在它的抖动里，所以直接对着会话的脚本集合量。`cargo test -p msime-host-api [--release] --lib -- --ignored --nocapture measure_delivery_cost`。
+/// 本地测量（默认忽略）：宿主一侧投递一个事件的全部开销，包括运行条件检查、构造事件、按授权复制文本、执行一个空的钩子和记账。整次按键的派发是几十到几百微秒，这点开销淹没在它的抖动里，所以直接对着会话的脚本集合量。这是测试构建：墙钟熔断的计时被换成了测试开关，进程开关和 panic 总开关读的是线程局部变量，比产品里少一次 `Instant::elapsed`。`cargo test -p msime-host-api [--release] --lib -- --ignored --nocapture measure_delivery_cost`。
 #[test]
 #[ignore]
 fn measure_delivery_cost() {
@@ -971,7 +983,12 @@ fn measure_delivery_cost() {
         SESSIONS.with(|sessions| {
             let mut sessions = sessions.borrow_mut();
             let session = sessions.get_mut(&fixture.handle).unwrap();
-            let view = session.runtime.view();
+            // 夹具的词库里 `ni` 只有一个候选；照着它补满一页 20 行，量复制整页的开销。
+            let mut view = session.runtime.view();
+            while view.candidates.len() < 20 {
+                let row = view.candidates[0].clone();
+                view.candidates.push(row);
+            }
             let state = session.lifecycle.as_deref_mut().unwrap();
             let context = state.context();
             let texts = crate::scripts::CallTexts {

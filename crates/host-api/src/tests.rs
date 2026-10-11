@@ -11787,6 +11787,15 @@ fn plugins_boundary_lists_imports_removes_and_keeps_the_name_list() {
         call(json!({"operation": "remove", "kind": "script", "id": "rain"}))["error"],
         "invalid"
     );
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    assert_eq!(
+        call(json!({"operation": "remove", "kind": "script", "id": "rain"})),
+        json!({"ok": true, "value": null})
+    );
     let removed = call(json!({"operation": "remove", "kind": "music", "id": "rain"}));
     assert_eq!(removed, json!({"ok": true, "value": null}));
     assert_eq!(ids(&call(json!({"operation": "catalog"}))), builtins(&[]));
