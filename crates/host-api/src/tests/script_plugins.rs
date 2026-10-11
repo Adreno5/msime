@@ -7,7 +7,8 @@ use crate::lifecycle::{
     LifecycleEvent, KEY_PASSTHROUGH, TRAIT_ELEVATED, TRAIT_KNOWN, TRAIT_PRIVATE, TRAIT_SECURE,
 };
 use crate::scripts::{
-    insert_ready, TEST_PANIC, TEST_PANICKED, TEST_SCRIPT_LOG, TEST_SLOW, TEST_SWITCH,
+    insert_ready, TEST_COMPILE_PANIC_ID, TEST_PANIC, TEST_PANICKED, TEST_SCRIPT_LOG, TEST_SLOW,
+    TEST_SWITCH,
 };
 use msime_client_core::plugins::{import, script_grants, MANIFEST_FILE};
 use msime_script_runtime::abi::commit_field;
@@ -885,6 +886,26 @@ fn an_installed_pack_compiles_on_the_background_thread_and_then_runs() {
         process_health(&fixture, "e2e", &pack.content_hash),
         (0, None)
     );
+}
+
+#[test]
+fn a_panic_while_compiling_settles_the_module_instead_of_leaving_it_pending() {
+    let fixture = fixture();
+    let hash = unique_hash(&fixture, TEST_COMPILE_PANIC_ID);
+    write_grants(
+        &fixture,
+        1,
+        vec![json!({"id": TEST_COMPILE_PANIC_ID, "hash": hash, "enabled": true, "granted": []})],
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 后台线程编译时 panic：模块记为不合规，会话下一次查缓存时停用这个插件，而不是永远等它编译完。（同时关掉本进程的全部脚本；测试里那个总开关是后台线程自己的，不影响这个会话。）
+    wait_for(|| {
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+        process_health(&fixture, TEST_COMPILE_PANIC_ID, &hash)
+            .1
+            .filter(|reason| *reason == "compile_panicked")
+    });
+    assert!(take_log().is_empty());
 }
 
 #[test]

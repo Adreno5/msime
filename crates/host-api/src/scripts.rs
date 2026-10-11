@@ -36,7 +36,8 @@ pub(crate) use set::ScriptSet;
 ))]
 pub(crate) use {
     process::{
-        health_barrier, health_snapshot, insert_ready, TEST_PANICKED, TEST_SLOW, TEST_SWITCH,
+        health_barrier, health_snapshot, insert_ready, TEST_COMPILE_PANIC_ID, TEST_PANICKED,
+        TEST_SLOW, TEST_SWITCH,
     },
     set::{TEST_PANIC, TEST_SCRIPT_LOG},
 };

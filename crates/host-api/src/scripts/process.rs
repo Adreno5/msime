@@ -223,8 +223,18 @@ fn send(job: Job) -> bool {
             .name("msime-script-compile".into())
             .spawn(move || {
                 for job in receiver {
-                    // 编译器或文件读写里的 panic 不能带走这个线程，否则之后的模块永远停在 Pending。
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(job)));
+                    let compiling = match &job {
+                        Job::Compile { hash, .. } => Some(hash.clone()),
+                        Job::WriteHealth { .. } => None,
+                    };
+                    // 编译器或文件读写里的 panic 不能带走这个线程，否则之后的模块永远停在 Pending。按设计 §4.5，捕获到 panic 就关掉本进程的全部脚本；那个模块记为不合规，不再停在 Pending，也不再重试。
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(job)));
+                    if ran.is_err() {
+                        if let Some(hash) = compiling {
+                            settle(&hash, Slot::Invalid("compile_panicked"), 0);
+                        }
+                        panic_caught();
+                    }
                 }
             });
         match spawned {
@@ -253,6 +263,10 @@ fn run(job: Job) {
 
 /// 读出已安装的包、核对哈希、按 ABI v1 校验并 Eager 编译，结果放回缓存。
 fn compile(root: &Path, id: &str, hash: &str) {
+    #[cfg(test)]
+    if id == TEST_COMPILE_PANIC_ID {
+        panic!("injected compile panic");
+    }
     let (slot, bytecode) = match script_pack::load(root, id) {
         Err(_) => (Slot::Retry, 0),
         Ok(loaded) if loaded.pack.content_hash != hash => (Slot::Retry, 0),
@@ -266,6 +280,15 @@ fn compile(root: &Path, id: &str, hash: &str) {
             }
         }
     };
+    settle(hash, slot, bytecode);
+}
+
+/// 测试里编译这个 id 时在后台线程上 panic。
+#[cfg(test)]
+pub(crate) const TEST_COMPILE_PANIC_ID: &str = "panicking-compile";
+
+/// 把编译结果放回缓存。
+fn settle(hash: &str, slot: Slot, bytecode: usize) {
     let mut cache = lock(&CACHE);
     // 编译期间条目被淘汰了：结果没人要。
     if let Some(cached) = cache.get_mut(hash) {
