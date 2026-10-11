@@ -26,7 +26,7 @@ Status: implemented
 ## Consequences
 
 - 原生窗口不再为翻译服务拉起共享应用。
-- `msime_client_test_api_credential` 也接受 `voice.asr`、`voice.polish` 和 `ai.assistant`，原生窗口暂时只用三种翻译服务。
+- `msime_client_test_api_credential` 也接受 `voice.asr`、`voice.polish` 和 `ai.assistant`，原生窗口的三种翻译服务和语音页（见 [原生语音页](2026-10-11-windows-settings-voice-page.md)）都用它，`ai.assistant` 还没有原生入口。
 - 共享页的提示、警告文案或测试配置改了，要同步 `TranslationServiceSettings.h` 和 `main.cpp`；`translationEndpointIssue` 改了要同步 `translation::endpoint_issue`。
 - 被拦下的值只标红、不写入；NiuTrans 的示例占位值之类共享页没有专门提示的情况，原生窗口也只有红框，没有文字说明。
 

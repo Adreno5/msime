@@ -44,6 +44,7 @@
 #include "ShellLauncher.h"
 #include "TranslationServiceSettings.h"
 #include "TypingStatisticsModel.h"
+#include "VoiceSettings.h"
 #include "msime_client.h"
 #include "../../common/HostApiString.h"
 #include "../../../shared/contracts/msime_edition.h"
@@ -57,6 +58,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
@@ -92,6 +94,7 @@ using Color = winrt::Windows::UI::Color;
 using A11y = Microsoft::UI::Xaml::Automation::AutomationProperties;
 namespace nav = msime::settings;
 namespace pg = msime::settings::plugins;
+namespace vs = msime::settings::voice;
 
 struct Response {
   std::string text;
@@ -1163,7 +1166,7 @@ fire_and_forget show_logo(Image image, int32_t pixels) {
 struct Option {
   std::wstring value;
   std::wstring label;
-  // 只有分段控件读这一项：不可选的选项照常显示，但按不下去（「候选字体」在 Windows 上的「圆体」）。
+  // 不可选的选项照常显示，但选不了：分段控件的按钮按不下去（「候选字体」在 Windows 上的「圆体」），下拉框里那一项是灰的（「录音后端」里此平台不可用的已存值）。
   bool enabled = true;
 };
 
@@ -1386,6 +1389,22 @@ std::optional<std::vector<msime::settings::plugins::Mention>> plugin_mentions(Re
 }
 
 // 自定义码表在下拉框里的名字，与共享页的 customSchemaLabel 相同：中英文名都有且不同时是「中文名 (英文名)」，否则依次退到中文名、英文名、文件名和方案 id。
+// 偏好库会不会接受本地识别的下载镜像（asr_model_mirror）或模型目录（asr_model_path）这个值，见 msime_client_voice_model_setting_check。语音页只把认可的值写进设置，免得一个没输完的地址让保存失败。
+bool voice_model_setting_accepted(wchar_t const *field, std::wstring const &value) {
+  JsonObject request;
+  request.SetNamedValue(field, JsonValue::CreateStringValue(hstring(value)));
+  const auto body = utf8(request.Stringify());
+  const auto response = take_response(msime_client_voice_model_setting_check(
+      reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+  if (!response.ok)
+    return false;
+  try {
+    return JsonObject::Parse(text(response.text)).GetNamedObject(L"value").GetNamedBoolean(field, false);
+  } catch (...) {
+    return false;
+  }
+}
+
 std::wstring custom_helpcode_label(JsonObject const &schema) {
   const auto name = named_string(schema, L"name");
   const auto name_en = named_string(schema, L"name_en");
@@ -2158,6 +2177,8 @@ struct MainWindow : WindowT<MainWindow> {
       // A save refused while closing has no window left to report in; the stored settings stay as they were.
       closed_ = true;
       flush_pending();
+      // 本地模型的下载随窗口一起停下，下次安装时清掉没装完的临时文件。
+      take_response(msime_client_voice_local_model_cancel(nullptr, 0));
     });
   }
 
@@ -3284,7 +3305,14 @@ private:
     combo.Width(156);
     int32_t selected = -1;
     for (size_t i = 0; i < options.size(); ++i) {
-      combo.Items().Append(box_value(hstring(options[i].label)));
+      if (options[i].enabled) {
+        combo.Items().Append(box_value(hstring(options[i].label)));
+      } else {
+        ComboBoxItem item;
+        item.Content(box_value(hstring(options[i].label)));
+        item.IsEnabled(false);
+        combo.Items().Append(item);
+      }
       if (options[i].value == current)
         selected = static_cast<int32_t>(i);
     }
@@ -10525,43 +10553,113 @@ private:
     return tiles;
   }
 
-  void build_voice_page(StackPanel const &page) {
-    auto general = add_group(page, L"");
-    const bool enabled = document_.Boolean(L"voice_input.enabled", false);
-    add_row(general, 0xE720, L"语音输入", L"使用语音识别将录音转换为文字",
-            toggle_control(L"启用语音输入", enabled, [this](bool on) {
-              change([&](PreferencesDocument &doc) {
-                doc.SetBoolean(L"voice_input.enabled", on);
-              }, true);
-            }));
-    select_row(general, 0xE8C8, L"结果提交策略", L"由当前桌面宿主决定如何把识别结果交给前台窗口",
-               L"voice_input.commit_mode",
-               {{L"tsf", L"输入法会话"}, {L"sendinput", L"系统按键"}, {L"ctrl_v", L"剪贴板粘贴"}},
-               L"tsf", false, enabled);
-    shell_row(general, 0xE713, L"识别服务与润色", L"选择识别服务、语言与文字润色", L"设置",
-              nav::shell_links::voice);
+  // ---- 语音输入 ----
 
-    auto recording = add_group(page, L"录音行为");
-    const std::array<std::pair<const wchar_t *, const wchar_t *>, 4> sounds{{
-        {L"sound_enabled", L"语音提示音"},
-        {L"start_sound", L"开始录音提示音"},
-        {L"end_sound", L"结束录音提示音"},
-        {L"mute_system_audio", L"录音时静音其他声音"},
-    }};
-    std::vector<Check> sound_checks;
-    sound_checks.reserve(sounds.size());
-    for (const auto &[id, label] : sounds) {
-      const std::wstring key = std::wstring(L"voice_input.") + id;
-      sound_checks.push_back({label, document_.Boolean(key, false),
-                              [this, key](bool on) {
-                                change([&](PreferencesDocument &doc) {
-                                  doc.SetBoolean(key, on);
-                                }, false);
-                              },
-                              enabled});
+  // 本地识别模型目录里的一个模型（msime_client_voice_local_models 的一项）和「不联网安装」要的一个文件。
+  struct LocalModelFile {
+    std::wstring name;
+    std::wstring url;
+    double size = 0;
+  };
+  struct LocalModel {
+    std::wstring id, title, description;
+    std::vector<std::wstring> languages;
+    bool streaming = false;
+    bool is_default = false;
+    bool installed = false;
+    std::wstring path;
+    double installed_size = 0, archive_size = 0, memory = 0;
+    std::wstring license_spdx, license_source, license_terms, license_notice;
+    std::vector<LocalModelFile> import_files;
+  };
+  struct LocalModelProgress {
+    std::wstring stage;
+    double downloaded = 0;
+    double total = 0;
+  };
+  struct CaptureDevice {
+    std::wstring backend, id, label;
+  };
+
+  // 共享语音页（`voice-settings-content.tsx` 的桌面分支）在 Windows 上的内容，顺序也相同：按识别服务说明怎么用的一组，「识别」（开关、服务、语言），「识别服务配置」（预置模型、模型、豆包的鉴权和流式接口、地址、凭据、豆包选项、本地模型，末尾是测试），语音快捷键，录音行为，识别结果，文本润色，录音设备。服务表、换服务的规则和本地模型的文字在 VoiceSettings.h。输入框边输入边写进设置、停下后保存，不重建页面，跟着输入内容变的下拉框选中项和测试按钮由 voice_sync_ 就地更新；下拉框和开关的改动保存后重画整页。
+  void build_voice_page(StackPanel const &page) {
+    if (!indexing_) {
+      credential_test_views_.clear();
+      voice_sync_.clear();
+      local_model_views_.clear();
     }
-    add_row(recording, 0xE767, L"录音行为", L"录音期间的提示音与静音由输入法在本机处理",
-            nullptr, checks_panel(std::move(sound_checks), 200));
+    const auto provider = document_.String(L"voice_input.asr_provider", L"doubao");
+    const bool system_voice = provider == L"system";
+    const bool local_voice = provider == L"local";
+    const bool service_voice = !system_voice && !local_voice;
+    const bool doubao = provider == L"doubao";
+    const std::wstring auth_mode(
+        vs::doubao_auth_mode(document_.String(L"voice_input.doubao_auth_mode", L"")));
+
+    // 页首一组（VoiceInputIntroSection）：本地识别和 Windows 系统识别各是一段说明，其余服务是打开语音面板的一行，面板仍由 MSIME.exe 显示。
+    if (local_voice || indexing_) {
+      auto intro = add_group(page, L"本地识别");
+      intro.Children().Append(group_note(
+          L"录音和识别都在这台设备上完成，音频不会离开本机，也不需要任何 API Key。在下方下载一个模型并点击“使用”即可生效；下载只会连接 GitHub 或你配置的镜像。你的用户词库会作为热词提高专有名词的识别率。可选的文本润色仍会调用你配置的云服务。"));
+    }
+    if (system_voice || indexing_) {
+      auto intro = add_group(page, L"Windows 系统语音");
+      intro.Children().Append(group_note(
+          L"用下方语音快捷键或悬浮工具栏开始语音输入，由 Windows 自带的语音识别在这台电脑上完成识别，音频不会离开本机，也不需要识别 API Key。需要先在 Windows 设置 › 时间和语言 › 语言和区域 中为识别语言安装“语音识别”。可选文本润色仍使用你配置的云服务。"));
+    }
+    if (service_voice || indexing_) {
+      auto intro = add_group(page, L"语音面板");
+      shell_row(intro, 0xE720, L"打开语音输入", L"在本机录音，音频发送给下方选择的识别服务转写",
+                L"打开", nav::shell_links::voice_panel);
+    }
+
+    auto recognition = add_group(page, L"识别");
+    add_row(recognition, 0xE720, L"语音输入", L"使用语音识别将录音转换为文字",
+            toggle_control(L"启用语音输入", document_.Boolean(L"voice_input.enabled", true),
+                           [this](bool on) {
+                             change([&](PreferencesDocument &doc) {
+                               doc.SetBoolean(L"voice_input.enabled", on);
+                             }, false);
+                           }));
+    std::vector<Option> providers;
+    for (auto const &choice : vs::asr_provider_choices())
+      providers.push_back({std::wstring(choice.value), std::wstring(choice.label)});
+    auto provider_combo = select_control(
+        L"识别服务", std::move(providers), provider,
+        [this](std::wstring const &value) { select_asr_provider(value); });
+    provider_combo.Width(200);
+    add_row(recognition, 0xE753, L"识别服务", L"", provider_combo);
+    add_row(recognition, 0xE8C1, L"识别语言",
+            system_voice ? L"选择明确的语言代码，例如 zh-CN、en-US；可用语言由系统决定" : L"",
+            language_input(document_.String(L"voice_input.language", L""), system_voice));
+
+    // 「识别服务配置」：系统识别没有要配的，这一组不画。
+    if (!system_voice || indexing_) {
+      auto config = add_group(page, L"识别服务配置");
+      if (service_voice || indexing_)
+        build_asr_service_rows(config, provider, doubao, auth_mode);
+      if (local_voice || indexing_)
+        build_local_model_rows(config);
+      if (vs::is_asr_service_provider(provider) || indexing_) {
+        auto silence = make_text(
+            L"测试会向当前服务发送一秒合成静音，不使用麦克风；服务可能计入 API 用量。", 12,
+            palette_.sub);
+        silence.Margin(Thickness{4, 8, 4, 4});
+        config.Children().Append(silence);
+        add_credential_test(config, L"voice.asr",
+                            doubao ? L"测试豆包识别配置" : L"测试语音识别配置",
+                            [this] { return asr_test_config(); },
+                            [this] {
+                              const auto current = document_.String(L"voice_input.asr_provider", L"doubao");
+                              return vs::asr_test_disabled(
+                                  current,
+                                  vs::doubao_auth_mode(
+                                      document_.String(L"voice_input.doubao_auth_mode", L"")),
+                                  document_.String(L"voice_input.asr_token", L""),
+                                  document_.String(L"voice_input.asr_app_key", L""));
+                            });
+      }
+    }
 
     const std::array<std::pair<const wchar_t *, const wchar_t *>, 5> hotkeys{{
         {L"hotkey_ctrl_f9", L"Ctrl+F9 切换语音"},
@@ -10579,13 +10677,1154 @@ private:
                                  change([&](PreferencesDocument &doc) {
                                    doc.SetBoolean(key, on);
                                  }, false);
-                               },
-                               enabled});
+                               }});
     }
     auto shortcuts = add_group(page, L"语音快捷键");
     add_row(shortcuts, 0xEDA7, L"语音快捷键",
             L"输入法运行时全局生效。长按快捷键录音，松开结束；按住期间按空格锁定录音，锁定后再按一次快捷键或点 ✓ 结束，Escape 或 ✗ 取消。Ctrl+F9 按一次开始、再按一次结束。",
             nullptr, checks_panel(std::move(hotkey_checks), 230));
+
+    auto recording = add_group(page, L"录音行为");
+    const std::array<std::pair<const wchar_t *, const wchar_t *>, 4> sounds{{
+        {L"sound_enabled", L"语音提示音"},
+        {L"start_sound", L"开始录音提示音"},
+        {L"end_sound", L"结束录音提示音"},
+        {L"mute_system_audio", L"录音时静音其他声音"},
+    }};
+    std::vector<Check> sound_checks;
+    sound_checks.reserve(sounds.size());
+    for (const auto &[id, label] : sounds) {
+      const std::wstring key = std::wstring(L"voice_input.") + id;
+      sound_checks.push_back({label, document_.Boolean(key, false),
+                              [this, key](bool on) {
+                                change([&](PreferencesDocument &doc) {
+                                  doc.SetBoolean(key, on);
+                                }, false);
+                              }});
+    }
+    add_row(recording, 0xE767, L"录音行为", L"录音期间的提示音与静音由输入法在本机处理",
+            nullptr, checks_panel(std::move(sound_checks), 200));
+
+    // 「识别结果」（VoiceRecognitionResultSection）：Windows 两项都有。
+    auto result = add_group(page, L"识别结果");
+    bool_row(result, 0xE8D2, L"流式预编辑", L"识别服务支持时显示实时识别片段",
+             L"voice_input.stream_inline_preedit", true);
+    select_row(result, 0xE8C8, L"结果提交策略", L"由当前桌面宿主决定如何把识别结果交给前台窗口",
+               L"voice_input.commit_mode",
+               {{L"tsf", L"输入法会话"}, {L"sendinput", L"系统按键"}, {L"ctrl_v", L"剪贴板粘贴"}},
+               L"tsf");
+
+    build_polish_group(page);
+    build_capture_device_group(page);
+  }
+
+  void redraw_voice() {
+    if (!closed_ && current_page_ == "voice")
+      render_page(true);
+  }
+
+  // 语音页上随输入内容变化的控件：下拉框的选中项和两个「测试配置」按钮。
+  void sync_voice() {
+    for (auto const &update : voice_sync_)
+      update();
+    refresh_credential_test(L"voice.asr");
+    refresh_credential_test(L"voice.polish");
+  }
+
+  // 语音页的一个文字输入框（共享页的 TextInputRow、EndpointSettingRow、SecretSettingRow）。每输入一个字就写进设置，停下后保存；accepted 不认可的值不写入，输入框标红。
+  void voice_text_row(StackPanel const &group, wchar_t glyph, std::wstring const &title,
+                      std::wstring const &subtitle, std::wstring const &label, std::wstring key,
+                      bool secret = false, std::wstring const &placeholder = L"",
+                      int32_t max_length = 0,
+                      std::function<bool(std::wstring const &)> accepted = nullptr) {
+    add_row(group, glyph, title, subtitle,
+            voice_text_input(label, key, secret, placeholder, max_length, std::move(accepted)));
+  }
+
+  FrameworkElement voice_text_input(std::wstring const &label, std::wstring key, bool secret,
+                                    std::wstring const &placeholder, int32_t max_length,
+                                    std::function<bool(std::wstring const &)> accepted) {
+    auto input = credential_input(
+        label, document_.String(key, L""), secret, placeholder, true,
+        [this, key, accepted = std::move(accepted)](std::wstring const &value) {
+          const bool saved = !accepted || accepted(value);
+          if (saved)
+            write_credential(key, value);
+          sync_voice();
+          return saved;
+        });
+    if (max_length > 0)
+      if (auto box = input.try_as<TextBox>())
+        box.MaxLength(max_length);
+    return input;
+  }
+
+  // 识别语言（共享页带 datalist 的 TextInputRow，最多 64 个字符）：可以直接输入，也可以从建议里选。刚点进去时列出全部建议，打字后只列名字或代码里含有输入内容的；选中一项填入它的代码。每输入一个字就写进设置，停下后保存。
+  FrameworkElement language_input(std::wstring const &value, bool system_voice) {
+    AutoSuggestBox input;
+    input.Width(240);
+    input.Text(hstring(value));
+    input.UpdateTextOnSelect(false);
+    input.IsEnabled(loaded_);
+    A11y::SetName(input, L"识别语言");
+    auto entries = std::make_shared<std::vector<std::pair<std::wstring, std::wstring>>>();
+    for (auto const &choice : vs::language_choices(system_voice))
+      entries->push_back(
+          {std::wstring(choice.label) + L" · " + std::wstring(choice.value), std::wstring(choice.value)});
+    auto search = std::make_shared<bool>(false);
+    auto update_menu = [entries, search](AutoSuggestBox const &field) {
+      const auto typed = lowercase(std::wstring(field.Text().c_str()));
+      std::vector<Inspectable> items;
+      for (auto const &[shown, code] : *entries)
+        if (!*search || lowercase(shown).find(typed) != std::wstring::npos)
+          items.push_back(box_value(hstring(shown)));
+      const bool any = !items.empty();
+      field.ItemsSource(single_threaded_vector<Inspectable>(std::move(items)));
+      field.IsSuggestionListOpen(any);
+    };
+    auto write = [this](std::wstring const &language) {
+      write_credential(L"voice_input.language", language);
+      sync_voice();
+    };
+    input.GotFocus([search, update_menu](Inspectable const &sender, RoutedEventArgs const &) {
+      if (auto field = sender.try_as<AutoSuggestBox>()) {
+        *search = false;
+        update_menu(field);
+      }
+    });
+    input.LostFocus([this](Inspectable const &, RoutedEventArgs const &) { flush_pending(); });
+    input.TextChanged([search, update_menu, write](AutoSuggestBox const &sender,
+                                                   AutoSuggestBoxTextChangedEventArgs const &args) {
+      if (args.Reason() != AutoSuggestionBoxTextChangeReason::UserInput)
+        return;
+      std::wstring typed(sender.Text().c_str());
+      if (typed.size() > 64) {
+        typed.resize(64);
+        sender.Text(hstring(typed));
+      }
+      *search = true;
+      write(typed);
+      update_menu(sender);
+    });
+    input.QuerySubmitted([entries, search, write](AutoSuggestBox const &sender,
+                                                  AutoSuggestBoxQuerySubmittedEventArgs const &args) {
+      const auto item = args.ChosenSuggestion();
+      if (!item)
+        return;
+      const std::wstring chosen = unbox_value_or<hstring>(item, L"").c_str();
+      for (auto const &[shown, code] : *entries)
+        if (shown == chosen) {
+          sender.Text(hstring(code));
+          *search = false;
+          sender.IsSuggestionListOpen(false);
+          write(code);
+          return;
+        }
+    });
+    return input;
+  }
+
+  // 预置模型和接入说明（ProviderPresetSection）：服务商已知支持的模型可以直接选（「自定义模型…」表示模型框里是自己填的），文档按钮用默认浏览器打开。两样都没有时不画。
+  void add_provider_preset(StackPanel const &group, std::wstring const &label,
+                           vs::ProviderDefaults const *preset, std::wstring model_key) {
+    if (!preset || (preset->models.empty() && preset->documentation.empty()))
+      return;
+    FrameworkElement link{nullptr};
+    if (!preset->documentation.empty()) {
+      const std::wstring url(preset->documentation);
+      link = button_control(label + L"接入说明与 API Key", [this, url] { open_url(url.c_str()); });
+    }
+    if (preset->models.empty()) {
+      StackPanel content;
+      content.Padding(Thickness{25, 12, 25, 12});
+      content.Children().Append(link);
+      auto card = make_card();
+      card.Child(content);
+      group.Children().Append(card);
+      return;
+    }
+    std::vector<Option> options{{L"", L"自定义模型…"}};
+    for (auto const &model : preset->models)
+      options.push_back({std::wstring(model), std::wstring(model)});
+    const auto model = document_.String(model_key, L"");
+    const bool known = std::find(preset->models.begin(), preset->models.end(), model) !=
+                       preset->models.end();
+    auto combo = select_control(label + L"预置模型", std::move(options), known ? model : L"",
+                                [this, model_key](std::wstring const &value) {
+                                  if (value.empty() || value == document_.String(model_key, L""))
+                                    return;
+                                  change([&](PreferencesDocument &doc) {
+                                    doc.SetString(model_key, value);
+                                  }, true);
+                                });
+    combo.Width(240);
+    FrameworkElement below{nullptr};
+    if (link) {
+      StackPanel holder;
+      holder.Margin(Thickness{61, 0, 25, 14});
+      holder.Children().Append(link);
+      below = holder;
+    }
+    add_row(group, 0xE8F1, L"预置模型", L"服务商已知支持的模型；也可以在模型框中自行填写", combo,
+            below);
+    if (indexing_)
+      return;
+    voice_sync_.push_back([this, weak = make_weak(combo.as<ComboBox>()), models = preset->models,
+                           model_key] {
+      auto shown = weak.get();
+      if (!shown)
+        return;
+      const auto current = document_.String(model_key, L"");
+      int32_t index = 0;
+      for (size_t i = 0; i < models.size(); ++i)
+        if (models[i] == current)
+          index = static_cast<int32_t>(i + 1);
+      if (shown.SelectedIndex() != index)
+        shown.SelectedIndex(index);
+    });
+  }
+
+  // 云服务的几行（VoiceAsrProviderSettingsSection 的 Windows 分支和 DoubaoOptionsRows）：豆包多出鉴权方式、流式接口、资源 ID 和识别选项，旧版鉴权多出 App Key。
+  void build_asr_service_rows(StackPanel const &group, std::wstring const &provider, bool doubao,
+                              std::wstring const &auth_mode) {
+    add_provider_preset(group, L"识别服务", vs::find_defaults(vs::asr_provider_defaults(), provider),
+                        L"voice_input.asr_model");
+    voice_text_row(group, 0xE950, L"识别模型", L"由语音服务选择对应模型", L"识别模型",
+                   L"voice_input.asr_model");
+    if (doubao || indexing_) {
+      add_row(group, 0xE8D7, L"豆包鉴权方式", L"新版控制台使用单 API Key；旧版使用 App ID + Access Token",
+              select_control(L"豆包鉴权方式",
+                             {{L"api_key", L"新版 API Key"}, {L"legacy", L"旧版 App ID + Access Token"}},
+                             auth_mode, [this](std::wstring const &value) {
+                               change([&](PreferencesDocument &doc) {
+                                 doc.SetString(L"voice_input.doubao_auth_mode", value);
+                               }, true);
+                             }));
+      std::vector<Option> streams;
+      for (auto const &option : vs::doubao_stream_endpoints)
+        streams.push_back({std::wstring(option.id), std::wstring(option.title)});
+      streams.push_back({L"custom", L"自定义地址"});
+      auto stream = select_control(
+          L"流式接口", std::move(streams),
+          std::wstring(vs::doubao_stream_endpoint_id(document_.String(L"voice_input.asr_endpoint", L""))),
+          [this](std::wstring const &value) {
+            for (auto const &option : vs::doubao_stream_endpoints)
+              if (option.id == value) {
+                const std::wstring endpoint(option.endpoint);
+                if (endpoint == document_.String(L"voice_input.asr_endpoint", L""))
+                  return;
+                change([&](PreferencesDocument &doc) {
+                  doc.SetString(L"voice_input.asr_endpoint", endpoint);
+                }, true);
+              }
+          });
+      stream.Width(200);
+      add_row(group, 0xE895, L"流式接口",
+              L"整句流式边录边传、说完返回整句，服务方称准确率更高并推荐用于输入法；双向流式返回增量结果，流式预编辑刷新更频繁。选择后写入下方接口地址。",
+              stream);
+      if (!indexing_)
+        voice_sync_.push_back([this, weak = make_weak(stream.as<ComboBox>())] {
+          auto shown = weak.get();
+          if (!shown)
+            return;
+          const auto id =
+              vs::doubao_stream_endpoint_id(document_.String(L"voice_input.asr_endpoint", L""));
+          int32_t index = static_cast<int32_t>(vs::doubao_stream_endpoints.size());
+          for (size_t i = 0; i < vs::doubao_stream_endpoints.size(); ++i)
+            if (vs::doubao_stream_endpoints[i].id == id)
+              index = static_cast<int32_t>(i);
+          if (shown.SelectedIndex() != index)
+            shown.SelectedIndex(index);
+        });
+    }
+    voice_text_row(group, 0xE71B, L"识别接口地址", L"留空使用当前服务的默认地址", L"识别接口地址",
+                   L"voice_input.asr_endpoint");
+    if ((doubao && auth_mode == L"legacy") || indexing_)
+      voice_text_row(group, 0xE8D7, L"Doubao App Key", L"旧版控制台鉴权使用", L"Doubao App Key",
+                     L"voice_input.asr_app_key", true);
+    const std::wstring token_label(vs::asr_token_label(provider, auth_mode));
+    voice_text_row(group, 0xE72E, token_label, L"仅保存在本机设置中", token_label,
+                   L"voice_input.asr_token", true);
+    if (!doubao && !indexing_)
+      return;
+    // 只有豆包的识别请求读资源 ID 和下面这几项。
+    voice_text_row(group, 0xE8EC, L"Doubao 资源 ID", L"仅豆包识别使用", L"Doubao 资源 ID",
+                   L"voice_input.asr_resource_id");
+    group.Children().Append(group_note(L"以下豆包识别选项随识别请求发送给豆包"));
+    bool_row(group, 0xE8EF, L"数字格式化", L"", L"voice_input.doubao_enable_itn", true);
+    bool_row(group, 0xE8D2, L"标点预测", L"", L"voice_input.doubao_enable_punc", true);
+    bool_row(group, 0xE8FB, L"语义顺滑", L"", L"voice_input.doubao_enable_ddc", false);
+    voice_text_row(group, 0xE8EC, L"热词表 ID", L"", L"热词表 ID",
+                   L"voice_input.doubao_boosting_table_id");
+  }
+
+  // 「测试豆包识别配置」「测试语音识别配置」发给 msime_client_test_api_credential 的配置（asrServiceCredentialTestConfig）。
+  JsonObject asr_test_config() const {
+    const auto provider = document_.String(L"voice_input.asr_provider", L"doubao");
+    auto string = [](std::wstring const &value) { return JsonValue::CreateStringValue(hstring(value)); };
+    JsonObject config;
+    config.SetNamedValue(L"provider", string(provider));
+    config.SetNamedValue(L"endpoint", string(vs::provider_setting_value(
+                                          document_.String(L"voice_input.asr_endpoint", L""),
+                                          provider, vs::asr_provider_defaults(), true)));
+    config.SetNamedValue(L"model", string(vs::provider_setting_value(
+                                       document_.String(L"voice_input.asr_model", L""), provider,
+                                       vs::asr_provider_defaults(), false)));
+    config.SetNamedValue(L"token", string(document_.String(L"voice_input.asr_token", L"")));
+    if (provider != L"doubao")
+      return config;
+    const std::wstring auth_mode(
+        vs::doubao_auth_mode(document_.String(L"voice_input.doubao_auth_mode", L"")));
+    config.SetNamedValue(L"auth_mode", string(auth_mode));
+    config.SetNamedValue(L"app_id", string(auth_mode == L"legacy"
+                                               ? document_.String(L"voice_input.asr_app_key", L"")
+                                               : std::wstring()));
+    config.SetNamedValue(L"resource_id", string(document_.String(L"voice_input.asr_resource_id",
+                                                                 L"volc.seedasr.sauc.duration")));
+    config.SetNamedValue(L"doubao_enable_itn", JsonValue::CreateBooleanValue(
+                                                   document_.Boolean(L"voice_input.doubao_enable_itn", true)));
+    config.SetNamedValue(L"doubao_enable_punc", JsonValue::CreateBooleanValue(
+                                                    document_.Boolean(L"voice_input.doubao_enable_punc", true)));
+    config.SetNamedValue(L"doubao_enable_ddc", JsonValue::CreateBooleanValue(
+                                                   document_.Boolean(L"voice_input.doubao_enable_ddc", false)));
+    config.SetNamedValue(L"doubao_boosting_table_id",
+                         string(document_.String(L"voice_input.doubao_boosting_table_id", L"")));
+    return config;
+  }
+
+  // 每个服务各自记着的令牌（asr_tokens、polish_tokens）。
+  vs::TokenMap token_slots(std::wstring_view key) const {
+    vs::TokenMap tokens;
+    const auto value = document_.Value(key);
+    if (!value || value.ValueType() != JsonValueType::Object)
+      return tokens;
+    for (auto const &entry : value.GetObject())
+      if (entry.Value().ValueType() == JsonValueType::String)
+        tokens[std::wstring(entry.Key().c_str())] = entry.Value().GetString().c_str();
+    return tokens;
+  }
+
+  // 换服务时写的那几项（asrProviderUpdate、polishProviderUpdate 的结果），prefix 是 asr 或 polish。
+  static void apply_provider_update(PreferencesDocument &doc, std::wstring const &prefix,
+                                    vs::ProviderUpdate const &update) {
+    doc.SetString(L"voice_input." + prefix + L"_provider", update.provider);
+    doc.SetString(L"voice_input." + prefix + L"_token", update.token);
+    JsonObject slots;
+    for (auto const &[provider, token] : update.tokens)
+      slots.SetNamedValue(hstring(provider), JsonValue::CreateStringValue(hstring(token)));
+    doc.SetValue(L"voice_input." + prefix + L"_tokens", slots);
+    if (update.endpoint)
+      doc.SetString(L"voice_input." + prefix + L"_endpoint", *update.endpoint);
+    if (update.model)
+      doc.SetString(L"voice_input." + prefix + L"_model", *update.model);
+  }
+
+  vs::ProviderFields provider_fields(std::wstring const &prefix, std::wstring_view fallback) const {
+    return {document_.String(L"voice_input." + prefix + L"_provider", fallback),
+            document_.String(L"voice_input." + prefix + L"_endpoint", L""),
+            document_.String(L"voice_input." + prefix + L"_model", L""),
+            document_.String(L"voice_input." + prefix + L"_token", L""),
+            token_slots(L"voice_input." + prefix + L"_tokens")};
+  }
+
+  // 共享页的 onProviderChange（VoiceInputBasicsSection）：换上新服务的令牌、地址和模型，选系统识别时把「自动识别」换成 zh-CN。换到或换走本地模型时，模型列表像共享页的模型管理器重新挂载一样重读。
+  void select_asr_provider(std::wstring const &provider) {
+    const auto current = provider_fields(L"asr", L"doubao");
+    if (provider == current.provider)
+      return;
+    const auto update = vs::asr_provider_update(provider, current);
+    const bool locale = provider == L"system" &&
+                        document_.String(L"voice_input.language", L"") == L"auto";
+    change([&](PreferencesDocument &doc) {
+      apply_provider_update(doc, L"asr", update);
+      if (locale)
+        doc.SetString(L"voice_input.language", L"zh-CN");
+    }, true);
+    if (provider == L"local" || current.provider == L"local")
+      reset_local_models();
+  }
+
+  // 「文本润色」（VoicePolishSettingsSection 的 Windows 分支）：关着时只有开关；打开后是服务、预置模型、模型、地址、令牌、润色方案和提示词，最后是测试。
+  void build_polish_group(StackPanel const &page) {
+    auto group = add_group(page, L"文本润色");
+    group.Children().Append(group_note(L"识别结果可交给用户管理的服务润色"));
+    const bool enabled = document_.Boolean(L"voice_input.polish_text", false) ||
+                         document_.Boolean(L"voice_input.polish_enabled", false);
+    add_row(group, 0xE70F, L"启用润色", L"",
+            toggle_control(L"启用文本润色", enabled, [this](bool on) {
+              change([&](PreferencesDocument &doc) {
+                doc.SetBoolean(L"voice_input.polish_text", on);
+                doc.SetBoolean(L"voice_input.polish_enabled", on);
+              }, true);
+            }));
+    if (!enabled && !indexing_)
+      return;
+    const auto provider = document_.String(L"voice_input.polish_provider", L"siliconflow");
+    std::vector<Option> providers;
+    for (auto const &choice : vs::polish_provider_choices)
+      providers.push_back({std::wstring(choice.value), std::wstring(choice.label)});
+    add_row(group, 0xE753, L"服务提供商", L"",
+            select_control(L"文本润色服务提供商", std::move(providers), provider,
+                           [this](std::wstring const &value) {
+                             const auto current = provider_fields(L"polish", L"siliconflow");
+                             if (value == current.provider)
+                               return;
+                             const auto update = vs::polish_provider_update(value, current);
+                             change([&](PreferencesDocument &doc) {
+                               apply_provider_update(doc, L"polish", update);
+                             }, true);
+                           }));
+    add_provider_preset(group, L"文本润色",
+                        vs::find_defaults(vs::polish_provider_defaults(), provider),
+                        L"voice_input.polish_model");
+    voice_text_row(group, 0xE950, L"模型", L"", L"文本润色模型", L"voice_input.polish_model");
+    voice_text_row(group, 0xE71B, L"润色接口地址", L"留空使用当前服务的默认地址", L"润色接口地址",
+                   L"voice_input.polish_endpoint");
+    voice_text_row(group, 0xE72E, L"润色 API Token", L"仅保存在本机设置中", L"润色 API Token",
+                   L"voice_input.polish_token", true);
+
+    // 润色方案（PolishPromptSection）：内置方案只读地显示它的完整提示词，自定义方案就地编辑，空着时发送内置的「精炼整理」。
+    const std::wstring slot(
+        vs::polish_prompt_slot(document_.String(L"voice_input.polish_prompt_id", L"")));
+    std::vector<Option> slots;
+    for (auto const &preset : vs::polish_presets)
+      slots.push_back({std::wstring(preset.id), std::wstring(preset.name)});
+    for (auto const &custom : vs::polish_custom_slots)
+      slots.push_back({std::wstring(custom.value), std::wstring(custom.label)});
+    add_row(group, 0xE8FD, L"润色方案", L"",
+            select_control(L"润色方案", std::move(slots), slot, [this](std::wstring const &value) {
+              change([&](PreferencesDocument &doc) {
+                doc.SetString(L"voice_input.polish_prompt_id", value);
+              }, true);
+            }));
+    const bool custom = vs::is_polish_custom_slot(slot);
+    const std::wstring description =
+        custom ? L"这一段会保存到所选的自定义方案；留空时使用内置的「精炼整理」提示词"
+               : L"内置方案的完整提示词；要改写请选择自定义方案";
+    record(L"润色提示词", description);
+    StackPanel block;
+    block.Spacing(6);
+    block.Padding(Thickness{25, 16, 25, 16});
+    block.Children().Append(make_text(L"润色提示词", 14, palette_.text));
+    block.Children().Append(make_text(description, 12, palette_.sub));
+    TextBox prompt;
+    prompt.AcceptsReturn(true);
+    prompt.TextWrapping(TextWrapping::Wrap);
+    prompt.MinHeight(160);
+    prompt.MaxHeight(360);
+    prompt.IsSpellCheckEnabled(false);
+    const std::wstring prompt_key = L"voice_input.polish_prompt_" + slot;
+    prompt.Text(hstring(custom ? document_.String(prompt_key, L"")
+                               : std::wstring(vs::polish_preset_prompt(slot))));
+    prompt.IsReadOnly(!custom);
+    prompt.IsEnabled(loaded_);
+    A11y::SetName(prompt, L"润色提示词");
+    if (custom)
+      prompt.TextChanged([this, prompt_key](Inspectable const &sender, TextChangedEventArgs const &) {
+        // TextBox 把换行存成 \r；提示词按共享页的 textarea 一样以 \n 分行保存。
+        std::wstring value(sender.as<TextBox>().Text().c_str());
+        std::wstring normalized;
+        normalized.reserve(value.size());
+        for (size_t i = 0; i < value.size(); ++i) {
+          if (value[i] == L'\r') {
+            normalized.push_back(L'\n');
+            if (i + 1 < value.size() && value[i + 1] == L'\n')
+              ++i;
+          } else {
+            normalized.push_back(value[i]);
+          }
+        }
+        write_credential(prompt_key, normalized);
+      });
+    block.Children().Append(prompt);
+    auto card = make_card();
+    card.Child(block);
+    group.Children().Append(card);
+    mark_search_target(L"润色提示词", card);
+    add_credential_test(group, L"voice.polish", L"测试语音润色配置",
+                        [this] {
+                          const auto current = document_.String(L"voice_input.polish_provider", L"siliconflow");
+                          JsonObject config;
+                          auto string = [](std::wstring const &value) {
+                            return JsonValue::CreateStringValue(hstring(value));
+                          };
+                          config.SetNamedValue(L"provider", string(current));
+                          config.SetNamedValue(L"endpoint", string(vs::provider_setting_value(
+                                                                document_.String(L"voice_input.polish_endpoint", L""),
+                                                                current, vs::polish_provider_defaults(), true)));
+                          config.SetNamedValue(L"model", string(vs::provider_setting_value(
+                                                             document_.String(L"voice_input.polish_model", L""),
+                                                             current, vs::polish_provider_defaults(), false)));
+                          config.SetNamedValue(L"token", string(document_.String(L"voice_input.polish_token", L"")));
+                          return config;
+                        },
+                        [this] {
+                          return vs::polish_test_disabled(document_.String(L"voice_input.polish_token", L""));
+                        });
+  }
+
+  // 「录音设备」（VoiceCaptureDevicesSection 的 Windows 分支）：录音后端、读取并选择麦克风，以及手填的设备标识。
+  void build_capture_device_group(StackPanel const &page) {
+    auto group = add_group(page, L"录音设备");
+    group.Children().Append(group_note(L"保存后从下一次录音生效，不打断当前录音"));
+    const auto backend = document_.String(L"voice_input.capture_backend", L"");
+    const auto device = document_.String(L"voice_input.capture_device", L"");
+    std::vector<Option> backends;
+    bool known = false;
+    for (auto const &choice : vs::capture_backend_choices) {
+      backends.push_back({std::wstring(choice.value), std::wstring(choice.label)});
+      known = known || choice.value == backend;
+    }
+    if (!known)
+      backends.push_back({backend, backend + L"（此平台不可用）", false});
+    add_row(group, 0xE7F5, L"录音后端", L"",
+            select_control(L"录音后端", std::move(backends), backend,
+                           [this](std::wstring const &value) {
+                             change([&](PreferencesDocument &doc) {
+                               doc.SetString(L"voice_input.capture_backend", value);
+                               doc.SetString(L"voice_input.capture_device", L"");
+                             }, true);
+                           }));
+
+    // VoiceDevicePicker：先读取设备列表，再从中选择。
+    auto status = make_text(capture_notice_, 12, palette_.sub);
+    A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+    add_row(group, 0xE72C, L"读取录音设备", L"",
+            button_control(capture_busy_ ? L"读取中…" : L"刷新设备",
+                           [this] { refresh_capture_devices(); }, !capture_busy_),
+            [&] {
+              StackPanel holder;
+              holder.Margin(Thickness{61, 0, 25, 14});
+              holder.Children().Append(status);
+              return holder;
+            }());
+    std::vector<Option> listed;
+    std::wstring selected;
+    for (size_t index = 0; index < capture_devices_.size(); ++index) {
+      auto const &item = capture_devices_[index];
+      listed.push_back({std::to_wstring(index), item.label + L" (" + item.backend + L")"});
+      if (selected.empty() && item.backend == backend && item.id == device)
+        selected = std::to_wstring(index);
+    }
+    auto picker = select_control(
+        L"可用录音设备", std::move(listed), selected,
+        [this](std::wstring const &value) {
+          const auto index = static_cast<size_t>(std::stoul(value));
+          if (index >= capture_devices_.size())
+            return;
+          const auto chosen = capture_devices_[index];
+          if (chosen.backend == document_.String(L"voice_input.capture_backend", L"") &&
+              chosen.id == document_.String(L"voice_input.capture_device", L""))
+            return;
+          change([&](PreferencesDocument &doc) {
+            doc.SetString(L"voice_input.capture_backend", chosen.backend);
+            doc.SetString(L"voice_input.capture_device", chosen.id);
+          }, true);
+        },
+        !capture_devices_.empty() && !capture_busy_);
+    auto picker_box = picker.as<ComboBox>();
+    picker_box.PlaceholderText(L"选择设备");
+    picker_box.Width(240);
+    add_row(group, 0xE720, L"可用录音设备", L"", picker);
+    if (!indexing_)
+      voice_sync_.push_back([this, weak = make_weak(picker_box)] {
+        auto shown = weak.get();
+        if (!shown)
+          return;
+        const auto current_backend = document_.String(L"voice_input.capture_backend", L"");
+        const auto current_device = document_.String(L"voice_input.capture_device", L"");
+        int32_t index = -1;
+        for (size_t i = 0; i < capture_devices_.size() && index < 0; ++i)
+          if (capture_devices_[i].backend == current_backend && capture_devices_[i].id == current_device)
+            index = static_cast<int32_t>(i);
+        if (shown.SelectedIndex() != index)
+          shown.SelectedIndex(index);
+      });
+    voice_text_row(group, 0xE8D6, L"麦克风设备",
+                   L"刷新列表并选择麦克风，保存其端点标识而非设备序号。留空使用系统默认设备；已选设备不可用时录音失败，不切换到其他麦克风。",
+                   L"麦克风设备", L"voice_input.capture_device", false, L"", 1024);
+  }
+
+  // 「刷新设备」：在工作线程上经 msime_client_voice_capture_devices 列出 WASAPI 录音设备（与 Tauri 的 list_voice_capture_devices 同一份），读不到时留着上次的列表。
+  void refresh_capture_devices() {
+    if (capture_busy_)
+      return;
+    capture_busy_ = true;
+    redraw_voice();
+    run_host([] { return take_response(msime_client_voice_capture_devices()); },
+             [this](Response const &response) {
+               capture_busy_ = false;
+               bool read = false;
+               if (response.ok) {
+                 try {
+                   std::vector<CaptureDevice> devices;
+                   for (auto const &item :
+                        JsonObject::Parse(text(response.text)).GetNamedArray(L"value")) {
+                     const auto object = item.GetObject();
+                     devices.push_back({named_string(object, L"backend"), named_string(object, L"id"),
+                                        named_string(object, L"label")});
+                   }
+                   capture_devices_ = std::move(devices);
+                   read = true;
+                 } catch (...) {
+                 }
+               }
+               capture_notice_ = !read ? L"无法读取设备列表，可重试或手动填写"
+                                 : capture_devices_.empty()
+                                     ? L"未发现设备，可手动填写设备名称或使用默认设备"
+                                     : L"选择设备后从下一次录音生效";
+               redraw_voice();
+             });
+  }
+
+  // ---- 本地识别模型 ----
+
+  // 本地模型存放的目录：共享设置应用（Tauri）的应用数据目录 %APPDATA%\<本版本的 identifier> 下的 voice-models，与 Tauri 的语音页管同一批模型。读不到已知文件夹时为空。
+  static std::filesystem::path local_model_root() {
+    PWSTR roaming = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &roaming))) {
+      CoTaskMemFree(roaming);
+      return {};
+    }
+    auto root = std::filesystem::path(roaming) / MSIME_EDITION_TAURI_IDENTIFIER / L"voice-models";
+    CoTaskMemFree(roaming);
+    return root;
+  }
+
+  // 本地模型（VoiceLocalModelSettingsSection，带模型管理器的那一支）：模型列表，然后「更多选项」里是下载镜像和手填的模型目录。
+  void build_local_model_rows(StackPanel const &group) {
+    if (!indexing_ && local_models_stale_)
+      refresh_local_models();
+    add_local_model_manager(group);
+    Expander more;
+    more.Header(box_value(L"更多选项"));
+    more.HorizontalAlignment(HorizontalAlignment::Stretch);
+    more.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    more.IsExpanded(local_more_open_ || focus_row_ == L"模型下载镜像" ||
+                    focus_row_ == L"本地模型目录");
+    more.Expanding([this](Expander const &, ExpanderExpandingEventArgs const &) {
+      local_more_open_ = true;
+    });
+    more.Collapsed([this](Expander const &, ExpanderCollapsedEventArgs const &) {
+      local_more_open_ = false;
+    });
+    StackPanel rows;
+    rows.Spacing(4);
+    voice_text_row(rows, 0xE896, L"模型下载镜像",
+                   L"可选。以 https:// 开头的加速前缀，下载地址为“镜像/原始地址”；留空直接从 GitHub 下载",
+                   L"模型下载镜像", L"voice_input.asr_model_mirror", false,
+                   L"https://mirror.example.com", 2048, [](std::wstring const &value) {
+                     return voice_model_setting_accepted(L"asr_model_mirror", value);
+                   });
+    // VoiceModelPathSection：手填目录，或用「选择…」打开系统的选择文件夹对话框（与 Tauri 的 pick_voice_model_path 相同，只选已有的目录，取消时不改）。
+    StackPanel path;
+    path.Orientation(Orientation::Horizontal);
+    path.Spacing(8);
+    auto accepted = [](std::wstring const &value) {
+      return voice_model_setting_accepted(L"asr_model_path", value);
+    };
+    path.Children().Append(voice_text_input(L"本地模型目录", L"voice_input.asr_model_path", false,
+                                            L"/path/to/voice-models/<model>", 0, accepted));
+    path.Children().Append(button_control(L"选择…", [this, accepted] {
+      const auto chosen = pick_model_directory();
+      if (!chosen || !accepted(*chosen))
+        return;
+      change([&](PreferencesDocument &doc) {
+        doc.SetString(L"voice_input.asr_model_path", *chosen);
+      }, true);
+    }, loaded_));
+    add_row(rows, 0xE8B7, L"本地模型目录", L"已安装模型所在文件夹的绝对路径（包含 msime-model.json）",
+            path);
+    more.Content(rows);
+    group.Children().Append(more);
+  }
+
+  // 模型管理器（LocalModelManager）：每个模型一张卡片，写着它是什么、多大、许可，按状态给出下载、从文件导入、取消、使用、删除。
+  void add_local_model_manager(StackPanel const &group) {
+    static constexpr wchar_t note[] = L"模型下载到本机后完全离线运行，录音不会上传。点击“使用”后生效。";
+    record(L"本地识别模型", note);
+    StackPanel block;
+    block.Spacing(10);
+    block.Padding(Thickness{25, 16, 25, 16});
+    StackPanel heading;
+    heading.Spacing(1);
+    heading.Children().Append(make_text(L"本地识别模型", 14, palette_.text));
+    heading.Children().Append(make_text(note, 12, palette_.sub));
+    block.Children().Append(heading);
+    if (!local_models_ && local_models_notice_.empty())
+      block.Children().Append(make_text(L"正在读取模型列表…", 13, palette_.sub));
+    const auto model_path = document_.String(L"voice_input.asr_model_path", L"");
+    if (local_models_)
+      for (auto const &model : *local_models_)
+        block.Children().Append(local_model_card(model, model_path));
+    if (!local_models_notice_.empty()) {
+      auto notice = make_text(local_models_notice_, 13, palette_.text);
+      A11y::SetLiveSetting(notice, Automation::Peers::AutomationLiveSetting::Polite);
+      block.Children().Append(notice);
+    }
+    A11y::SetName(block, L"本地识别模型");
+    auto card = make_card();
+    card.Child(block);
+    group.Children().Append(card);
+    mark_search_target(L"本地识别模型", card);
+  }
+
+  // 一段带链接的文字：链接用默认浏览器打开（模型目录里的地址都是 https）。
+  void append_link(TextBlock const &block, std::wstring const &label, std::wstring const &url) {
+    Documents::Hyperlink link;
+    Documents::Run run;
+    run.Text(hstring(label));
+    link.Inlines().Append(run);
+    link.Click([this, url](Documents::Hyperlink const &, Documents::HyperlinkClickEventArgs const &) {
+      if (url.rfind(L"https://", 0) == 0)
+        open_url(url.c_str());
+    });
+    block.Inlines().Append(link);
+  }
+
+  static void append_run(TextBlock const &block, std::wstring const &value) {
+    Documents::Run run;
+    run.Text(hstring(value));
+    block.Inlines().Append(run);
+  }
+
+  FrameworkElement local_model_card(LocalModel const &model, std::wstring const &model_path) {
+    const bool in_use = vs::local_model_in_use(model.path, model_path);
+    const bool running = local_model_installing_.count(model.id) > 0;
+    const bool importing = local_model_importing_.count(model.id) > 0;
+    const bool removing = local_model_removing_.count(model.id) > 0;
+    const auto progress = local_model_progress_.find(model.id);
+    StackPanel lines;
+    lines.Spacing(4);
+    StackPanel title;
+    title.Orientation(Orientation::Horizontal);
+    title.Spacing(8);
+    auto name = make_text(model.title, 14, palette_.text);
+    name.FontWeight(Windows::UI::Text::FontWeight{600});
+    title.Children().Append(name);
+    auto badge = [&](std::wstring_view label, bool strong) {
+      auto text = make_text(label, 12, strong ? palette_.text : palette_.sub);
+      text.VerticalAlignment(VerticalAlignment::Center);
+      if (strong)
+        text.FontWeight(Windows::UI::Text::FontWeight{600});
+      title.Children().Append(text);
+    };
+    if (model.streaming)
+      badge(L"流式", false);
+    if (model.is_default)
+      badge(L"推荐", false);
+    if (in_use)
+      badge(L"正在使用", true);
+    if (model.installed && !in_use)
+      badge(L"已下载", false);
+    lines.Children().Append(title);
+    lines.Children().Append(make_text(model.description, 13, palette_.text));
+    lines.Children().Append(make_text(
+        L"语言：" + vs::local_model_languages(model.languages) + L" · 下载 " +
+            vs::format_model_bytes(model.archive_size) + L" · 占用磁盘 " +
+            vs::format_model_bytes(model.installed_size) + L" · 运行内存约 " +
+            vs::format_model_bytes(model.memory),
+        12, palette_.sub));
+    auto license = make_text(L"", 12, palette_.sub);
+    append_run(license, L"许可：" + model.license_spdx + L"。" + model.license_notice + L" 来源：");
+    append_link(license, model.license_source, model.license_source);
+    if (!model.license_terms.empty())
+      append_run(license, L"（条款：" + model.license_terms + L"）");
+    lines.Children().Append(license);
+    if (!model.installed && !model.import_files.empty()) {
+      auto offline = make_text(L"", 12, palette_.sub);
+      append_run(offline, L"不联网安装：先下载 ");
+      for (size_t index = 0; index < model.import_files.size(); ++index) {
+        auto const &file = model.import_files[index];
+        if (index > 0)
+          append_run(offline, L"、");
+        append_link(offline, file.name + L"（" + vs::format_model_bytes(file.size) + L"）", file.url);
+      }
+      append_run(offline, L"，再点“从文件导入”一起选中。文件改过名也能认出。");
+      lines.Children().Append(offline);
+    }
+    if (running || (importing && progress != local_model_progress_.end())) {
+      Grid row;
+      row.ColumnSpacing(8);
+      ColumnDefinition bar_column;
+      bar_column.Width(GridLength{1, GridUnitType::Star});
+      ColumnDefinition label_column;
+      label_column.Width(GridLength{1, GridUnitType::Auto});
+      row.ColumnDefinitions().Append(bar_column);
+      row.ColumnDefinitions().Append(label_column);
+      ProgressBar bar;
+      bar.Maximum(100);
+      bar.VerticalAlignment(VerticalAlignment::Center);
+      A11y::SetName(bar, hstring(model.title + (importing ? L" 导入进度" : L" 下载进度")));
+      auto label = make_text(L"", 12, palette_.text);
+      label.VerticalAlignment(VerticalAlignment::Center);
+      Grid::SetColumn(label, 1);
+      row.Children().Append(bar);
+      row.Children().Append(label);
+      lines.Children().Append(row);
+      auto show = [this, id = model.id, weak_bar = make_weak(bar), weak_label = make_weak(label)] {
+        auto shown_bar = weak_bar.get();
+        auto shown_label = weak_label.get();
+        if (!shown_bar || !shown_label)
+          return;
+        const auto found = local_model_progress_.find(id);
+        const std::wstring stage = found == local_model_progress_.end() ? L"" : found->second.stage;
+        const int percent = found == local_model_progress_.end()
+                                ? 0
+                                : vs::local_model_progress_percent(stage, found->second.downloaded,
+                                                                   found->second.total);
+        shown_bar.Value(percent);
+        shown_label.Text(hstring(std::wstring(vs::local_model_stage_label(stage)) + L" " +
+                                 std::to_wstring(percent) + L"%"));
+      };
+      show();
+      if (!indexing_)
+        local_model_views_[model.id] = std::move(show);
+    }
+    StackPanel buttons;
+    buttons.Orientation(Orientation::Horizontal);
+    buttons.Spacing(8);
+    if (running || importing) {
+      buttons.Children().Append(button_control(importing ? L"取消导入" : L"取消下载", [id = model.id] {
+        JsonObject request;
+        request.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+        const auto body = utf8(request.Stringify());
+        take_response(msime_client_voice_local_model_cancel(
+            reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+      }));
+    } else if (model.installed) {
+      buttons.Children().Append(button_control(
+          in_use ? L"使用中" : L"使用",
+          [this, path = model.path] {
+            if (!voice_model_setting_accepted(L"asr_model_path", path))
+              return;
+            change([&](PreferencesDocument &doc) {
+              doc.SetString(L"voice_input.asr_model_path", path);
+            }, true);
+          },
+          loaded_ && !in_use && !removing));
+      buttons.Children().Append(button_control(L"删除", [this, model] { remove_local_model(model); },
+                                               !removing));
+    } else {
+      buttons.Children().Append(button_control(
+          L"下载（" + vs::format_model_bytes(model.archive_size) + L"）",
+          [this, id = model.id] { install_local_model(id, false); }));
+      buttons.Children().Append(
+          button_control(L"从文件导入", [this, id = model.id] { install_local_model(id, true); }));
+    }
+    lines.Children().Append(buttons);
+    Border card;
+    card.BorderBrush(brush(palette_.stroke));
+    card.BorderThickness(Thickness{1, 1, 1, 1});
+    card.CornerRadius(CornerRadius{8, 8, 8, 8});
+    card.Padding(Thickness{12, 12, 12, 12});
+    card.Child(lines);
+    A11y::SetName(card, hstring(model.title));
+    return card;
+  }
+
+  // 共享页的模型管理器重新挂载：作废进行中的请求，清掉状态，下次绘制时重读列表。
+  void reset_local_models() {
+    ++local_models_generation_;
+    local_models_.reset();
+    local_models_notice_.clear();
+    local_model_progress_.clear();
+    local_model_installing_.clear();
+    local_model_importing_.clear();
+    local_model_removing_.clear();
+    local_models_stale_ = true;
+  }
+
+  // 在工作线程上经 msime_client_voice_local_models 读模型目录和已安装的模型，完成后重画。
+  void refresh_local_models() {
+    local_models_stale_ = false;
+    const auto root = local_model_root();
+    if (root.empty()) {
+      local_models_notice_ = *vs::local_model_error_message(L"local_model_invalid_root");
+      return;
+    }
+    JsonObject request;
+    request.SetNamedValue(L"root", JsonValue::CreateStringValue(hstring(root.wstring())));
+    const auto generation = local_models_generation_;
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_voice_local_models(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this, generation](Response const &response) {
+          if (generation != local_models_generation_)
+            return;
+          if (!response.ok) {
+            local_models_notice_ =
+                vs::local_model_error_message(vs::local_model_error_code(response_error(response)))
+                    .value_or(L"");
+          } else {
+            try {
+              local_models_ = parse_local_models(
+                  JsonObject::Parse(text(response.text)).GetNamedObject(L"value"));
+            } catch (...) {
+              local_models_notice_ = *vs::local_model_error_message(L"");
+            }
+          }
+          redraw_voice();
+        });
+  }
+
+  static std::vector<LocalModel> parse_local_models(JsonObject const &value) {
+    std::vector<LocalModel> models;
+    for (auto const &object : named_objects(value, L"models")) {
+      LocalModel model;
+      model.id = named_string(object, L"id");
+      model.title = named_string(object, L"title");
+      model.description = named_string(object, L"description");
+      model.languages = named_strings(object, L"languages");
+      model.streaming = object.GetNamedBoolean(L"streaming", false);
+      model.is_default = object.GetNamedBoolean(L"default", false);
+      model.installed = object.GetNamedBoolean(L"installed", false);
+      model.path = named_string(object, L"path");
+      model.installed_size = named_number(object, L"installed_size").value_or(0);
+      model.archive_size = named_number(object, L"archive_size").value_or(0);
+      model.memory = named_number(object, L"memory").value_or(0);
+      model.license_spdx = named_string(object, L"license_spdx");
+      model.license_source = named_string(object, L"license_source");
+      model.license_terms = named_string(object, L"license_terms");
+      model.license_notice = named_string(object, L"license_notice");
+      for (auto const &file : named_objects(object, L"import_files"))
+        model.import_files.push_back({named_string(file, L"name"), named_string(file, L"url"),
+                                      named_number(file, L"size").value_or(0)});
+      models.push_back(std::move(model));
+    }
+    return models;
+  }
+
+  // 安装进度的去处：每次进度在工作线程上交给 local_model_progress，百分比或阶段变了才送回 UI 线程。
+  struct ModelProgressSink {
+    weak_ref<MainWindow> window;
+    Microsoft::UI::Dispatching::DispatcherQueue queue{nullptr};
+    uint64_t generation = 0;
+    std::wstring id;
+    int percent = -1;
+    std::wstring stage;
+  };
+
+  static void local_model_progress(const uint8_t *json, size_t length, void *context) noexcept {
+    try {
+      auto *sink = static_cast<ModelProgressSink *>(context);
+      const auto object = JsonObject::Parse(
+          text(std::string_view(reinterpret_cast<const char *>(json), length)));
+      std::wstring stage(object.GetNamedString(L"stage", L"").c_str());
+      const double downloaded = object.GetNamedNumber(L"downloaded", 0);
+      const double total = object.GetNamedNumber(L"total", 0);
+      const int percent = vs::local_model_progress_percent(stage, downloaded, total);
+      if (percent == sink->percent && stage == sink->stage)
+        return;
+      sink->percent = percent;
+      sink->stage = stage;
+      sink->queue.TryEnqueue([window = sink->window, generation = sink->generation, id = sink->id,
+                              stage, downloaded, total] {
+        auto self = window.get();
+        if (!self || self->closed_ || generation != self->local_models_generation_)
+          return;
+        const bool shown = self->local_model_progress_.count(id) > 0;
+        self->local_model_progress_[id] = {stage, downloaded, total};
+        if (const auto view = self->local_model_views_.find(id); view != self->local_model_views_.end())
+          view->second();
+        else if (!shown)
+          self->redraw_voice();
+      });
+    } catch (...) {
+    }
+  }
+
+  // 「下载」和「从文件导入」（install、importFiles）：导入先让用户在打开对话框里多选下载好的文件，关掉对话框不算失败。下载用已保存的下载镜像。安装在工作线程上进行，完成后若还没有选模型就用上这个，并重读列表。
+  void install_local_model(std::wstring const &id, bool import) {
+    if (!local_models_)
+      return;
+    const auto found = std::find_if(local_models_->begin(), local_models_->end(),
+                                    [&](LocalModel const &model) { return model.id == id; });
+    if (found == local_models_->end())
+      return;
+    const auto title = found->title;
+    const auto archive_size = found->archive_size;
+    std::vector<std::wstring> files;
+    if (import) {
+      auto picked = pick_model_files();
+      if (!picked)
+        return;
+      files = std::move(*picked);
+    }
+    const auto root = local_model_root();
+    if (root.empty()) {
+      local_models_notice_ = *vs::local_model_error_message(L"local_model_invalid_root");
+      redraw_voice();
+      return;
+    }
+    flush_pending();
+    local_models_notice_.clear();
+    JsonObject request;
+    request.SetNamedValue(L"root", JsonValue::CreateStringValue(hstring(root.wstring())));
+    request.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+    if (import) {
+      local_model_importing_.insert(id);
+      JsonArray paths;
+      for (auto const &file : files)
+        paths.Append(JsonValue::CreateStringValue(hstring(file)));
+      request.SetNamedValue(L"files", paths);
+    } else {
+      local_model_installing_.insert(id);
+      local_model_progress_[id] = {L"download", 0, archive_size};
+      request.SetNamedValue(L"mirror", JsonValue::CreateStringValue(hstring(
+                                           document_.String(L"voice_input.asr_model_mirror", L""))));
+    }
+    const auto generation = local_models_generation_;
+    run_host(
+        [body = utf8(request.Stringify()), window = get_weak(), queue = DispatcherQueue(),
+         generation, id] {
+          ModelProgressSink sink{window, queue, generation, id};
+          return take_response(msime_client_voice_local_model_install(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size(),
+              &MainWindow::local_model_progress, &sink));
+        },
+        [this, generation, id, title, import](Response const &response) {
+          if (generation != local_models_generation_)
+            return;
+          if (response.ok) {
+            local_models_notice_ = L"「" + title + (import ? L"」已导入。" : L"」已下载。");
+            std::wstring path;
+            try {
+              path = JsonObject::Parse(text(response.text))
+                         .GetNamedObject(L"value")
+                         .GetNamedString(L"path", L"")
+                         .c_str();
+            } catch (...) {
+            }
+            // 第一个装上的模型就是为它下载的，直接用上；之后的等用户选。
+            if (!path.empty() &&
+                msime::settings::js_trim(document_.String(L"voice_input.asr_model_path", L"")).empty() &&
+                voice_model_setting_accepted(L"asr_model_path", path))
+              change([&](PreferencesDocument &doc) {
+                doc.SetString(L"voice_input.asr_model_path", path);
+              }, false);
+          } else {
+            const auto code = vs::local_model_error_code(response_error(response));
+            const auto message = import ? vs::local_model_import_error_message(code)
+                                        : vs::local_model_error_message(code);
+            local_models_notice_ =
+                message ? *message
+                        : (import ? L"已取消导入「" : L"已取消下载「") + title + L"」。";
+          }
+          local_model_installing_.erase(id);
+          local_model_importing_.erase(id);
+          local_model_progress_.erase(id);
+          refresh_local_models();
+          redraw_voice();
+        });
+    redraw_voice();
+  }
+
+  // 「删除」（remove）：确认后在工作线程上删除；删掉的是正在用的模型时清空 asr_model_path。
+  fire_and_forget remove_local_model(LocalModel model) {
+    auto strong = get_strong();
+    const bool in_use =
+        vs::local_model_in_use(model.path, document_.String(L"voice_input.asr_model_path", L""));
+    if (!co_await confirm(L"删除本地模型",
+                          in_use ? L"「" + model.title +
+                                       L"」正在使用。删除后本地识别将不可用，直到选择其他模型。确定删除？"
+                                 : L"确定删除「" + model.title + L"」？需要时可以重新下载。",
+                          L"删除"))
+      co_return;
+    const auto root = local_model_root();
+    if (root.empty()) {
+      local_models_notice_ = *vs::local_model_error_message(L"local_model_invalid_root");
+      redraw_voice();
+      co_return;
+    }
+    local_models_notice_.clear();
+    local_model_removing_.insert(model.id);
+    JsonObject request;
+    request.SetNamedValue(L"root", JsonValue::CreateStringValue(hstring(root.wstring())));
+    request.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(model.id)));
+    const auto generation = local_models_generation_;
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_voice_local_model_remove(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this, generation, model](Response const &response) {
+          if (generation != local_models_generation_)
+            return;
+          if (response.ok) {
+            // 按删除完成时的设置判断，与共享页的 onRemoved 相同。
+            if (vs::local_model_in_use(model.path,
+                                       document_.String(L"voice_input.asr_model_path", L"")))
+              change([&](PreferencesDocument &doc) {
+                doc.SetString(L"voice_input.asr_model_path", L"");
+              }, false);
+          } else {
+            local_models_notice_ =
+                vs::local_model_error_message(vs::local_model_error_code(response_error(response)))
+                    .value_or(L"");
+          }
+          local_model_removing_.erase(model.id);
+          refresh_local_models();
+          redraw_voice();
+        });
+    redraw_voice();
+  }
+
+  // 「选择…」的系统选择文件夹对话框（与 Tauri 的 pick_voice_model_path 相同的标题）。用户取消或对话框打不开时返回空。
+  std::optional<std::wstring> pick_model_directory() {
+    com_ptr<IFileDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put()))))
+      return std::nullopt;
+    FILEOPENDIALOGOPTIONS options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetTitle(L"选择本地语音模型目录");
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    // 点击按钮时本窗口就是这个线程的活动窗口，对话框以它为所有者，模态地挡住设置窗口。
+    if (dialog->Show(GetActiveWindow()) != S_OK)
+      return std::nullopt;
+    com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put())))
+      return std::nullopt;
+    PWSTR raw = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw)
+      return std::nullopt;
+    std::wstring chosen(raw);
+    CoTaskMemFree(raw);
+    return chosen;
+  }
+
+  // 「从文件导入」的打开对话框（与 Tauri 的 voice_local_model_import 相同的标题）：可以多选，不按扩展名过滤，下载工具可能改过名，认文件靠内容。用户取消或对话框打不开时返回空。
+  std::optional<std::vector<std::wstring>> pick_model_files() {
+    com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put()))))
+      return std::nullopt;
+    FILEOPENDIALOGOPTIONS options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetTitle(L"选择下载好的模型文件");
+    dialog->SetOptions(options | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    if (dialog->Show(GetActiveWindow()) != S_OK)
+      return std::nullopt;
+    com_ptr<IShellItemArray> items;
+    if (FAILED(dialog->GetResults(items.put())))
+      return std::nullopt;
+    DWORD count = 0;
+    if (FAILED(items->GetCount(&count)))
+      return std::nullopt;
+    std::vector<std::wstring> files;
+    for (DWORD index = 0; index < count; ++index) {
+      com_ptr<IShellItem> item;
+      if (FAILED(items->GetItemAt(index, item.put())))
+        continue;
+      PWSTR raw = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw)
+        files.emplace_back(raw);
+      CoTaskMemFree(raw);
+    }
+    return files;
   }
 
   // 共享的「手写输入」页在 Windows 上只有「手写识别板」一组：打开面板的一行和一张静态预览，没有可调的项（手写面板主题在「主题」页），所以这里只留打开面板的一行，文案与 handwriting-settings-section.tsx 相同。
@@ -11175,6 +12414,22 @@ private:
   std::wstring keyboard_photo_source_;
   Imaging::BitmapImage keyboard_photo_{nullptr};
 
+
+  // 「语音输入」页：跟着输入内容就地更新的控件（每次绘制时重建）；读到的录音设备和「刷新设备」的说明，跨页面重建保留（共享页 VoiceDevicePicker 的组件状态）；本地模型的列表、说明、各模型的安装、导入、删除状态和进度（共享页 LocalModelManager 的组件状态），local_models_generation_ 在换到或换走本地模型时递增，作废进行中的请求；进度条是当前页面上的那一组，按模型 id 就地更新；「更多选项」是否展开。
+  std::vector<std::function<void()>> voice_sync_;
+  std::vector<CaptureDevice> capture_devices_;
+  std::wstring capture_notice_ = L"点击刷新读取可用录音设备";
+  bool capture_busy_ = false;
+  std::optional<std::vector<LocalModel>> local_models_;
+  std::wstring local_models_notice_;
+  std::map<std::wstring, LocalModelProgress> local_model_progress_;
+  std::set<std::wstring> local_model_installing_;
+  std::set<std::wstring> local_model_importing_;
+  std::set<std::wstring> local_model_removing_;
+  std::map<std::wstring, std::function<void()>> local_model_views_;
+  uint64_t local_models_generation_ = 0;
+  bool local_models_stale_ = true;
+  bool local_more_open_ = false;
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。
   bool update_checking_ = false;

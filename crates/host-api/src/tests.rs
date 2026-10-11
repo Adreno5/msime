@@ -10512,6 +10512,64 @@ fn voice_local_models_list_install_cancel_and_remove_validate_their_requests() {
 }
 
 #[test]
+fn voice_model_setting_check_answers_what_the_preferences_store_accepts() {
+    let check = |request: Value| {
+        let body = request.to_string();
+        read(unsafe { msime_client_voice_model_setting_check(body.as_ptr(), body.len()) })
+    };
+    for (mirror, accepted) in [
+        ("", true),
+        ("https://mirror.example.test/gh/", true),
+        ("https://", false),
+        ("http://mirror.example.test", false),
+        ("https://user:pass@mirror.example.test", false),
+        ("https://mirror.example.test?query", false),
+        ("https://mirror example.test", false),
+    ] {
+        assert_eq!(
+            check(json!({ "asr_model_mirror": mirror })),
+            json!({"ok": true, "value": {"asr_model_mirror": accepted}}),
+            "{mirror:?}"
+        );
+    }
+    for (path, accepted) in [
+        ("", true),
+        (r"C:\Users\someone\voice-models\model", true),
+        (r"\\server\share\model", true),
+        ("/home/someone/model", true),
+        ("voice-models/model", false),
+        ("C:\\models\u{7}", false),
+    ] {
+        assert_eq!(
+            check(json!({ "asr_model_path": path })),
+            json!({"ok": true, "value": {"asr_model_path": accepted}}),
+            "{path:?}"
+        );
+    }
+    assert_eq!(
+        check(json!({ "asr_model_path": format!("/{}", "a".repeat(4096)) }))["value"]
+            ["asr_model_path"],
+        false
+    );
+    // 两项一起问时各自回答；什么都没问时是空对象。
+    assert_eq!(
+        check(json!({ "asr_model_mirror": "https://m.example.test", "asr_model_path": "rel" })),
+        json!({"ok": true, "value": {"asr_model_mirror": true, "asr_model_path": false}})
+    );
+    assert_eq!(check(json!({})), json!({"ok": true, "value": {}}));
+    assert_eq!(
+        read(unsafe { msime_client_voice_model_setting_check(std::ptr::null(), 0) })["ok"],
+        false
+    );
+    let not_json = b"{";
+    assert_eq!(
+        read(unsafe { msime_client_voice_model_setting_check(not_json.as_ptr(), not_json.len()) })
+            ["ok"],
+        false
+    );
+}
+
+#[test]
 fn voice_local_model_install_from_files_validates_the_paths_and_names_what_is_missing() {
     let root = tempfile::tempdir().unwrap();
     let downloads = tempfile::tempdir().unwrap();

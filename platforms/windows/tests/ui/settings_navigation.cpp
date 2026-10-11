@@ -96,6 +96,8 @@ int main() {
                 request_for(shell_links::keyboard_panel)) == L"keyboard");
     require(msime::windows::shell_route_argument(request_for(
                 shell_links::handwriting_panel)) == L"handwriting");
+    // 语音页的识别服务与润色在本窗口里原生绘制，只有语音面板仍由共享应用打开，路由与托盘的「语音输入」相同。
+    require(msime::windows::shell_route_argument(request_for(shell_links::voice_panel)) == L"voice");
     require(msime::windows::shell_route_argument(request_for(
                 find_page("ai")->shell)) == L"settings:ai");
 

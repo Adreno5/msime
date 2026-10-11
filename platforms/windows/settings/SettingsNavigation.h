@@ -49,18 +49,19 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；云词库和云剪贴板面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；云词库和云剪贴板面板；以及屏幕键盘、语音输入和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget skin{"", "skin"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
 inline constexpr ShellTarget cloud_dictionary{"cloud-dictionary", ""};
 // The cloud clipboard is a panel of the shared app as well, opened from the 剪贴板 page.
 inline constexpr ShellTarget cloud_clipboard{"cloud-clipboard", ""};
-inline constexpr ShellTarget voice{"", "voice"};
+// The voice panel (the tray's 语音输入 entry opens the same route), from the 语音输入 page's 语音面板 group.
+inline constexpr ShellTarget voice_panel{"voice", ""};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
 inline constexpr std::array<ShellTarget, 6> all{
-    {skin, voice, keyboard_panel, handwriting_panel, cloud_dictionary, cloud_clipboard}};
+    {skin, voice_panel, keyboard_panel, handwriting_panel, cloud_dictionary, cloud_clipboard}};
 } // namespace shell_links
 
 struct RouteAlias {

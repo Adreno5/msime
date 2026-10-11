@@ -13,7 +13,7 @@ Status: implemented
 - 形状收进 `msime_host_api::voice_capture_device_values(backend, devices)`，Tauri 的 Windows 和 macOS 分支都改调它，各自传 `"windows"`、`"macos"`。
 - 新导出 `msime_client_voice_capture_devices(void)`：Windows 上返回 `[{backend:"windows",id,label}]`，`id` 是 `wasapi:` 加端点 id 每个 UTF-16 单元四位小写十六进制（`voice_capture::wasapi_device_id`，也就是 TSF 宿主打开的那种），至多 128 个，没有设备时是空数组。其他目标返回错误 `voice capture devices unavailable`：macOS 的 Tauri 用 `msime_host_macos` 列的 CoreAudio UID，Linux 用自己的 PulseAudio/PipeWire/ALSA 列表，host-api 在那里列出的 `coreaudio:`/`alsa:` 编码不是这两处页面保存的值，假装能用反而会存进错的设备。
 - 枚举经 COM（cpal 在当前线程按 STA 初始化，线程已是 MTA 时沿用），头文件写明不要在界面线程上调用；原生窗口的 `run_host` 在线程池线程上跑，符合要求。
-- 本地模型的根目录：Tauri 是 `app_data_dir()/voice-models`，Windows 上的标识是 `app.msime.windows`（`tauri.windows.conf.json`），即 `%APPDATA%\app.msime.windows\voice-models`。原生页把这个绝对路径作为 `root` 传给现有四个导出，管的就是同一批模型。
+- 本地模型的根目录：Tauri 是 `app_data_dir()/voice-models`，Windows 上的标识按版本不同（full 是 `tauri.windows.conf.json` 的 `app.msime.windows`，其他版本由 `platform/windows.rs` 换成版本表的 `tauri_identifier`），即 `%APPDATA%\<identifier>\voice-models`。原生页从 `msime_edition.h` 的 `MSIME_EDITION_TAURI_IDENTIFIER` 取标识，把这个绝对路径作为 `root` 传给现有四个导出，管的就是同一批模型。
 - 测试：`voice_capture_device_values` 的纯形状；导出在 Windows 上返回的每一项都是 `windows` 后端、`wasapi:` 加四位一组的十六进制、标签非空（机器上有几个设备就查几个，不打开设备）；「测试配置」导出补上语音页的几种不联网就回答的配置（豆包非 wss、上传服务缺 Key、http 转写地址、本地识别、http 润色地址）。
 
 ## Alternatives considered
