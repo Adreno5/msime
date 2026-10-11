@@ -40,11 +40,12 @@ export const harmonyVoiceIntro =
 /** 鸿蒙手机在「识别服务」组下作为脚注显示的介绍，而不是单独成组；选择方式与 {@link VoiceInputIntroSection} 选它的组相同。 */
 export function harmonyPhoneVoiceFooter({
   localVoice,
-  localVoiceModelsAvailable,
   systemVoice,
 }: Pick<VoiceInputIntroSectionProps, "localVoice" | "localVoiceModelsAvailable" | "systemVoice">) {
-  if (localVoice) return localVoiceIntro(localVoiceModelsAvailable);
-  return systemVoice ? systemVoiceIntro : harmonyVoiceIntro;
+  // 手机上只说用户需要知道的一句：用的是什么、要不要配置、去哪配置。采样率、CoreSpeechKit、热词这些实现细节留给 2in1 和桌面的说明。
+  if (localVoice) return "在手机上识别，音频不离开手机。先在「服务配置」里下载一个模型。";
+  if (systemVoice) return "使用系统自带的语音识别，不用配置，只识别普通话。";
+  return "使用云端语音识别，先在「服务配置」里填好 API Key。说完后文字先出现在键盘上，确认后才输入。";
 }
 
 /** Platform-specific voice entry guidance: the first group of the 语音输入 page. */

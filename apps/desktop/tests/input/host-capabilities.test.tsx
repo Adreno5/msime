@@ -546,7 +546,8 @@ test("a host with one commit path is not offered a choice between three", async 
       client={{
         load: async () => initial,
         save: vi.fn(),
-        host: capabilities({ platform: "harmony" }),
+        // 2in1 画完整的语音页；手机把录音行为收成「录音」组，这里要测的是能力，不是手机的排版。
+        host: capabilities({ platform: "harmony", mobile_settings: false }),
       }}
     />,
   );
@@ -701,7 +702,12 @@ test("a host that can enumerate microphones gets the picker, whatever it is call
           load: async () => initial,
           save: vi.fn(),
           listVoiceCaptureDevices: read,
-          host: capabilities({ platform: "harmony", voice_capture_devices }),
+          // 2in1 把录音设备列在语音页上；手机收在「服务配置」子视图里，这里测的是能力。
+          host: capabilities({
+            platform: "harmony",
+            mobile_settings: false,
+            voice_capture_devices,
+          }),
         }}
       />,
     );

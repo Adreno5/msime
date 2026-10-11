@@ -114,6 +114,12 @@ function shownValue(title: string) {
   return row;
 }
 
+/** 手机语音页上点「服务配置」，打开收着密钥、接口、润色和录音设备的子视图。 */
+function openServiceConfig() {
+  fireEvent.click(screen.getByRole("button", { name: "服务配置" }));
+  return screen.getByRole("dialog", { name: "服务配置" });
+}
+
 // ---- 语音输入 ----
 
 // Ctrl+F9、长按右 Alt 这些语音快捷键要连实体键盘才用得上：手机上不列，2in1 照旧列。
@@ -141,7 +147,9 @@ test("the phone voice page puts language and punctuation first and the service b
   expect(titles.slice(0, 2)).toEqual(["识别", "识别服务"]);
   // 介绍说明现在是「识别服务」的页脚，不再单独成组。
   expect(titles).not.toContain("HarmonyOS 输入法语音");
-  expect(within(page).getByText(/豆包配置有效时，键盘直接采集 16 kHz 麦克风音频/)).toBeTruthy();
+  // 页脚只说用户需要知道的一句：用的是云端识别，去「服务配置」填 API Key。
+  expect(within(page).getByText(/使用云端语音识别，先在「服务配置」里填好 API Key/)).toBeTruthy();
+  expect(within(page).queryByText(/16 kHz/)).toBeNull();
   const recognition = within(page).getByRole("region", { name: "识别" });
   expect(within(recognition).getByText("自动添加标点")).toBeTruthy();
   const service = within(page).getByRole("region", { name: "识别服务" });
@@ -219,6 +227,42 @@ test("the system recognizer only offers Mandarin and is given it as a locale", a
   expect(save).not.toHaveBeenCalled();
 });
 
+// 主页面只留普通人会调的：识别三项、服务和它的配置入口、两个录音开关。密钥、接口、润色服务、提示音细分和录音设备都在「服务配置」子视图里，返回回到语音页。
+test("the phone voice page keeps service details behind 服务配置", async () => {
+  renderSettings({
+    page: "voice",
+    preferences: { voice_input: { enabled: true, language: "", asr_provider: "doubao" } },
+    devices: true,
+  });
+  await settingsFormReady();
+  const page = screen.getByRole("group", { name: "语音输入" });
+  expect(groupTitles(page)).toEqual(["识别", "识别服务", "录音"]);
+  for (const hidden of ["Doubao API Key", "流式接口", "录音设备", "开始录音提示音", "文本润色"]) {
+    expect(within(page).queryByText(hidden)).toBeNull();
+  }
+  expect(within(page).getByRole("switch", { name: "提示音" })).toBeTruthy();
+  const entry = screen.getByRole("button", { name: "服务配置" });
+  expect(entry.textContent).toContain("未填写");
+
+  const dialog = openServiceConfig();
+  expect(within(dialog).getByLabelText("Doubao API Key")).toBeTruthy();
+  expect(within(dialog).getByRole("switch", { name: "开始录音提示音" })).toBeTruthy();
+  expect(within(dialog).getByRole("region", { name: "录音设备" })).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "返回" }));
+  expect(await screen.findByRole("button", { name: "服务配置" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "服务配置" })).toBeNull();
+});
+
+// 系统识别不用配置，不画「服务配置」。
+test("the system recognizer has no service configuration row", async () => {
+  renderSettings({
+    page: "voice",
+    preferences: { voice_input: { enabled: true, language: "zh-CN", asr_provider: "system" } },
+  });
+  await settingsFormReady();
+  expect(screen.queryByRole("button", { name: "服务配置" })).toBeNull();
+});
+
 test("the phone voice page picks the service and the stream endpoint from sheets", async () => {
   const { save } = renderSettings({
     page: "voice",
@@ -235,6 +279,7 @@ test("the phone voice page picks the service and the stream endpoint from sheets
   // 两行原本是行尾的原生下拉框，手机上会把说明挤成几个字一行；现在和其他选择行一样点开面板。
   expect(within(openSheet("识别服务")).getByRole("button", { name: "豆包" })).toBeTruthy();
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  openServiceConfig();
   expect(shownValue("流式接口").textContent).toContain("双向流式（增量结果）");
   fireEvent.click(
     within(openSheet("流式接口")).getByRole("button", { name: "整句流式（准确率更高）" }),
@@ -253,6 +298,7 @@ test("the phone voice page lays credentials and devices out as rows of their gro
     devices: true,
   });
   await settingsFormReady();
+  openServiceConfig();
   const service = screen.getByRole("region", { name: "识别服务" });
   // API Key 原本是旧的 `label.section-header` 字段，放在分组里缺了行的内边距，贴着卡片左边。
   expect(within(service).getByText("Doubao API Key").hasAttribute("data-row-title")).toBe(true);
@@ -327,6 +373,7 @@ test("the polish scheme sheet keeps the custom slots and shows the stored one", 
     },
   });
   await settingsFormReady();
+  openServiceConfig();
   // 存的是自定义槽位时，行上显示该槽位，而不是回退到第一个预设。
   expect(shownValue("润色方案").textContent).toContain("自定义二");
   const sheet = openSheet("润色方案");
