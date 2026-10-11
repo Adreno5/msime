@@ -17,7 +17,7 @@ Status: implemented
 | Linux IBus | `msime-linux-ibus` | `ibus_main.cpp`，`ibus_init()` 之前 |
 | Linux Fcitx5 | fcitx5 守护进程（addon 是它加载的共享库） | `FcitxEngine` 构造函数开头 |
 
-Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script-plugin-hosts.py` 检查这 4 处各有一次调用，`platforms/windows/tsf` 和其余任何源码（host-api 自己的定义和测试除外）都不调用它、不按名字取它的地址。
+Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script-plugin-hosts.py` 检查这 4 处各有一次调用，`platforms/windows/tsf` 和其余任何源码（定义它的 `ffi/lifecycle.rs` 和测试除外，host-api 的其余源码同样受检）都不调用它、不按名字取它的地址，也不直接调用内部的 `scripts::enable`。
 
 **运行条件，五项同时满足：** 进程开关开着；会话经 `msime_client_set_lifecycle` 选择加入（没选择加入的会话没有 `LifecycleState`，脚本集合就挂在它上面，所以什么都没有）；字段属性带 `KNOWN`；不带 `SECURE` 或 `PRIVATE`；不带 `ELEVATED`。属性未知按不满足处理。`set_field_traits` 让属性变得不满足时，正在跑的实例当场丢弃。
 
