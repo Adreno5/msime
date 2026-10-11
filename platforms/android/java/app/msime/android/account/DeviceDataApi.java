@@ -407,10 +407,8 @@ public final class DeviceDataApi {
 
     /** Data summary counters are JSON integers; reject coercion and negative values. */
     public static long strictCount(Object value) throws CloudApi.Failure {
-        if (!(value instanceof Integer) && !(value instanceof Long))
-            throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
-        long count = ((Number) value).longValue();
-        if (count < 0) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
+        Long count = JsonPolicy.nonNegativeLong(value);
+        if (count == null) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
         return count;
     }
 
