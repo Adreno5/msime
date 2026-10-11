@@ -3532,6 +3532,8 @@ static void TestSoundsFollowKeysCommitsAndActivation() {
         [controller apply:@{ @"handled": @YES, @"commit": @"坏", @"view": idle, @"feedback": @{ @"typing_effect": invalid } }];
     [controller apply:@{ @"handled": @YES, @"commit": @"坏", @"view": idle, @"feedback": @7 }];
     [controller apply:@{ @"handled": @YES, @"commit": NSNull.null, @"view": idle, @"feedback": @{ @"typing_effect": @0 } }];
+    // 有上屏但答 0（失焦上屏、安全输入、特效关闭）也不画，否则会撤掉还在屏幕上的连击徽标。
+    [controller apply:@{ @"handled": @YES, @"commit": @"零", @"view": idle, @"feedback": @{ @"typing_effect": @0 } }];
     assert(controller.effects.count == 2);
 
     // 只有音乐最后跟随的控制器能停它：下一个客户端的激活可能先于上一个的停用到达。核心另外按会话仲裁所有者。
@@ -3596,8 +3598,8 @@ static void TestCommitCompositionFinishesAsAFocusLoss() {
     [controller commitComposition:client];
     assert(session.commandCalls == 1 && session.lastCommand == MSIME_FINISH_ON_FOCUS_LOSS);
     assert([client.committed isEqual:@"你好"]);
-    // 核心对失焦上屏答 0，控制器原样交去画，不会画出上屏特效。
-    for (NSArray *effect in controller.effects) assert([effect[0] isEqual:@0]);
+    // 核心对失焦上屏答 0，控制器什么都不画，屏幕上的连击徽标不会被撤掉。
+    assert(!controller.effects.count);
     // 它不是一次按下，不开新的一轮。
     assert(!session.keys.count);
     MSIMERemoveTestPreferenceSuite(defaults, suite);
