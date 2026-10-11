@@ -461,6 +461,7 @@ import type { PluginClient } from "./settings/plugins-section";
 import type { PluginPreferences } from "./settings/plugin-preferences";
 import { AboutSettingsPage } from "./settings/pages/about-page";
 import { UsageReportingSettingsPage } from "./settings/pages/usage-reporting-page";
+import { PrivacySettingsPage } from "./settings/pages/privacy-page";
 import type {
   CustomHelpcodeSchema,
   HelpcodePackOption,
@@ -3953,6 +3954,8 @@ function SettingsShell(props: SettingsPageProps) {
                     />
                     <AboutSettingsPage />
                     <UsageReportingSettingsPage />
+                    {/* 只在打开着时渲染：它和「关于」用同一个统计开关，常驻的话桌面上会有两个。 */}
+                    {page === "privacy" && <PrivacySettingsPage />}
                   </SettingsFormContext.Provider>
                   <SettingsFormFooter
                     draft={draft}

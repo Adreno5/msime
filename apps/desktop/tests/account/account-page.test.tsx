@@ -1449,8 +1449,10 @@ test("Harmony 我的 groups its rows with real values and destinations", async (
   expect(general.getByRole("button", { name: "应用主题" }).textContent).toContain("四季 · 秋杉");
   const privacy = general.getByRole("button", { name: "隐私" });
   expect(privacy.textContent).toContain("本地优先");
+  // 打开应用里的「隐私」页，不直接跳去浏览器看隐私政策网页。
   fireEvent.click(privacy);
-  expect(onOpenUrl).toHaveBeenCalledWith("https://msime.app/privacy/");
+  expect(onOpenPage).toHaveBeenLastCalledWith("privacy");
+  expect(onOpenUrl).not.toHaveBeenCalledWith("https://msime.app/privacy/");
 
   expect(screen.getByRole("button", { name: "其他平台下载" }).textContent).toContain("7 个平台");
   expect(screen.getByRole("button", { name: "关于" }).textContent).toContain("1.2.3");

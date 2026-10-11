@@ -1380,17 +1380,18 @@ function AccountDetailsPage({
         {user && client.settingsSync && (
           <SettingsSyncCard client={client.settingsSync} userId={user.id} rows />
         )}
-        {(appTheme || onOpenUrl) && (
+        {(appTheme || onOpenPage || onOpenUrl) && (
           <MeGroup title="通用">
             {appTheme && <AppThemeRow client={appTheme} disabled={busy} />}
-            {onOpenUrl && (
+            {(onOpenPage || onOpenUrl) && (
               <NavRow
                 variant="me"
                 icon={icon("shield_lock")}
                 title="隐私"
                 value="本地优先"
                 disabled={busy}
-                onClick={() => onOpenUrl(privacyUrl)}
+                // 打开应用里的「隐私」页（数据怎么处理、使用统计开关），完整的隐私政策网页在那一页的最后一行；没有设置页可开的宿主才直接打开网页。
+                onClick={() => (onOpenPage ? onOpenPage("privacy") : onOpenUrl?.(privacyUrl))}
               />
             )}
           </MeGroup>

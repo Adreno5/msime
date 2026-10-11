@@ -70,6 +70,8 @@ export function settingsPageProjections({
         (item.id !== "plugins" || hasPlugins) &&
         (item.id !== "handwriting" || hasHandwriting) &&
         (item.id !== "more" || mobilePlatform) &&
+        // 「隐私」页是触屏「我的」里那一行打开的；桌面的隐私设置在「关于」里。
+        (item.id !== "privacy" || mobilePlatform) &&
         // 有对话的触屏宿主在「对话」标签里试键盘，独立的试用页只留给没有对话的宿主。
         (item.id !== "try-keyboard" || (mobilePlatform && hasHomePage && !hasChat)),
     )
