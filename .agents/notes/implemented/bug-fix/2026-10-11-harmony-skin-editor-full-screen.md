@@ -13,7 +13,7 @@ HarmonyOS 手机的「皮肤」页是缩略图网格，设置项收在「更多�
 ## Decision
 
 - `TouchKeyboardSkinEditor` 新增 `fullScreen`：以页面背景覆盖整个设置界面（与 `AiSkinGeneration` 的 `fullScreen` 同一套 `fullScreenSurface` / `fullScreenColumn`），顶部是返回按钮和标题「设计我的皮肤」，下面一行说明；返回按钮调用 `onClose`，所以不再画「完成」。「AI 皮肤抽卡」「保存设计」仍在说明下方。外层是 `role="dialog"`、`aria-label="设计我的皮肤"`。
-- 鸿蒙手机的皮肤页（`phoneGrid`）只有网格，不再有「更多选项」：颜色模式和各界面的明暗覆盖在手机上不提供，在线皮肤在「社区」标签页，我的皮肤本来就是网格里的一张卡片。
+- 鸿蒙手机的皮肤页（`phoneGrid`）只有网格，不再有「更多选项」：颜色模式和各界面的明暗覆盖在手机上不提供，在线皮肤在「社区」标签页，我的皮肤本来就是网格里的一张卡片。「键盘」页底部指向「主题 › 高级」的「屏幕键盘外观」一行随之在鸿蒙手机上不画。
 - 编辑器的入口是网格里的「我的皮肤」卡片：没选中时点一下选中它，选中后再点一次打开编辑器（`SkinGridCustomDesign.onEdit`，走卡片的 `deselect`），选中时标题后画一个 › 提示。打开时压一条 `{ page: "skin", skinSubpage: "editor" }` 再显示全屏编辑器；返回按钮在这条记录还在时 `history.back()`，否则直接关掉。`popstate` 时编辑器的开关取自历史记录里的 `skinSubpage`，与 AI 视图共用同一个处理函数。
 - 「我的 → 社区作品 → 我的设计」照旧通过 `showTouchSkinEditor` 打开编辑器，鸿蒙手机上它直接以全屏视图出现，没有对应的历史记录。用返回手势离开时，回到的那条记录里没有 `skinSubpage`，编辑器随之关上，下次进入皮肤页不会再自己打开。
 - 其他宿主（桌面、Android、iOS、HarmonyOS 2in1）不变：仍有颜色模式、自定义主题和「高级」，编辑器仍在原处就地展开。
