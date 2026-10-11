@@ -336,7 +336,7 @@ public final class BackendAccount {
     public static boolean validEmailCode(String code) {
         if (code == null || code.length() != 6) return false;
         for (int index = 0; index < code.length(); index++) {
-            if (code.charAt(index) < '0' || code.charAt(index) > '9') return false;
+            if (!TextPolicy.isAsciiDigit(code.charAt(index))) return false;
         }
         return true;
     }
