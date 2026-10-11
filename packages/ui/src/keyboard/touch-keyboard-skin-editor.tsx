@@ -1,3 +1,4 @@
+import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { errorCode } from "../core/error-code";
 import { StatusMessage } from "../core/status-message";
@@ -388,11 +389,7 @@ export function AiSkinGeneration({
               </select>
             </label>
             <label>
-              <input
-                type="checkbox"
-                checked={publishAgreed}
-                onChange={(event) => setPublishAgreed(event.target.checked)}
-              />
+              <ControlledCheckbox checked={publishAgreed} onChange={setPublishAgreed} />
               我拥有发布所用素材的权利，并同意其他用户免费下载使用
             </label>
             <p>发布后插画背景将公开，请勿包含私人或敏感资料。</p>
@@ -753,12 +750,11 @@ export function TouchKeyboardSkinEditor({
                 />
               </label>
               <label className={skin.checkLabel}>
-                <input
+                <ControlledCheckbox
                   aria-label="渐变背景"
-                  type="checkbox"
                   checked={design.gradientEnd !== undefined}
-                  onChange={(event) =>
-                    patch({ gradientEnd: event.target.checked ? design.background : undefined })
+                  onChange={(checked) =>
+                    patch({ gradientEnd: checked ? design.background : undefined })
                   }
                 />
                 渐变背景
@@ -778,11 +774,10 @@ export function TouchKeyboardSkinEditor({
                     />
                   </label>
                   <label className={skin.checkLabel}>
-                    <input
+                    <ControlledCheckbox
                       aria-label="横向渐变"
-                      type="checkbox"
                       checked={design.gradientHorizontal ?? false}
-                      onChange={(event) => patch({ gradientHorizontal: event.target.checked })}
+                      onChange={(checked) => patch({ gradientHorizontal: checked })}
                     />
                     横向渐变
                   </label>
@@ -1005,11 +1000,10 @@ export function TouchKeyboardSkinEditor({
         {category === "文本" && (
           <div className={`${skin.controlBlock} ${skin.formGrid}`}>
             <label className={skin.checkLabel}>
-              <input
+              <ControlledCheckbox
                 aria-label="等宽字形"
-                type="checkbox"
                 checked={design.monospaced}
-                onChange={(event) => patch({ monospaced: event.target.checked })}
+                onChange={(checked) => patch({ monospaced: checked })}
               />
               等宽字形
             </label>
