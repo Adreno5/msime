@@ -7,7 +7,7 @@
 //!
 //! Every rule lives in `msime_client_core::plugins`: `validate` stages each pack the way `import` does and runs the same checks, so a pack this tool accepts is one the 插件 page installs, and the other way round. Nothing is installed and no plugins directory is touched. One line per pack, in the order given: `ok <id> <kind> <version>`, or `error <path>: <reason>` where the reason starts with the same failure code the settings page decodes (`plugin_invalid`, `plugin_archive`, ...) followed by the broken rule in Chinese. The exit status is 0 when every pack is valid, 1 when any is not, and 2 for a usage error.
 //!
-//! `run`（只在桌面）按夹具里的事件运行一个脚本插件，每个事件输出一行 JSON，见 [`run`] 模块。退出码：全部事件都没有失败为 0；有任何失败（trap、fuel 耗尽、返回负数、初始化失败）或者包不合规为 1；命令行、`--grant` 或夹具写错为 2。
+//! `run`（只在桌面）按夹具里的事件运行一个脚本插件，每个事件输出一行 JSON，细节见 `src/run.rs`（那个模块只在桌面编译）。退出码：全部事件都没有失败为 0；有任何失败（trap、fuel 耗尽、返回负数、初始化失败）或者包不合规为 1；命令行、`--grant` 或夹具写错为 2。
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -22,11 +22,11 @@ use msime_client_core::plugins::{self, PluginError};
 ))]
 pub mod run;
 
-/// Every pack given is valid.
+/// 成功：`validate` 给的包全部合规，或者 `run` 的每个事件都没有失败。
 pub const EXIT_OK: i32 = 0;
-/// At least one pack is not.
+/// 失败：`validate` 有包不合规；`run` 的包不合规，或者有事件失败（trap、fuel 耗尽、返回负数、初始化失败）。
 pub const EXIT_INVALID: i32 = 1;
-/// The command line was not understood.
+/// 用法错误：命令行看不懂，或者 `run` 的 `--grant` 写错、夹具读不出或写错。
 pub const EXIT_USAGE: i32 = 2;
 
 const USAGE: &str = "usage: msime-pack validate <pack folder or .zip>...\n       msime-pack run <pack folder or .zip> --events <fixture.jsonl> [--grant all|<capability>,...]";
