@@ -90,4 +90,21 @@ final class CloudSyncMarkingTests: XCTestCase {
     XCTAssertEqual(CustomKeyboardSkinStore.current, design.normalized)
     XCTAssertEqual(try generation(.settings), before + 1)
   }
+
+  func testCommonPhraseEditsMarkPhrasesInTheSharedStoreOnly() throws {
+    let before = try generation(.phrases)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("msime-cloud-sync-phrases-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let added = try CommonPhrasesBridge.add("测试目录里的常用语", directory: directory.path)
+    _ = try CommonPhrasesBridge.remove(id: try XCTUnwrap(added.first).id, directory: directory.path)
+    XCTAssertEqual(try generation(.phrases), before)
+
+    let text = "云同步标记测试 \(UUID().uuidString)"
+    let stored = try CommonPhrasesBridge.add(text)
+    let id = try XCTUnwrap(stored.first { $0.text == text }).id
+    XCTAssertEqual(try generation(.phrases), before + 1)
+    _ = try CommonPhrasesBridge.remove(id: id)
+    XCTAssertEqual(try generation(.phrases), before + 2)
+  }
 }

@@ -87,6 +87,7 @@ struct CloudSyncRun {
   let binding: Int64
   private var schema: BackendAccountClient.PreferenceSchema?
   private var preferences: BackendAccountClient.Preferences?
+  private var phrases: BackendAccountClient.CloudPhrases?
 
   static func perform(state: CloudSyncState, session: BackendAccountSession, client: BackendAccountClient,
                       choice: BackendSyncPolicy.Choice?, force: Bool) async -> Outcome {
@@ -150,10 +151,13 @@ struct CloudSyncRun {
     schema = try await call { try await client.preferenceSchema(token: $0) }
     let preferences = try await call { try await client.preferences(token: $0) }
     self.preferences = preferences
+    let phrases = try await call { try await client.phrases(token: $0) }
+    self.phrases = phrases
     guard await current() else { throw CancellationError() }
     if choice != nil { return true }
     let record = try state.read()
     let needs = record.cursor(.settings).isEmpty && !preferences.settings.isEmpty
+      || record.cursor(.phrases).isEmpty && !phrases.phrases.isEmpty
     return !needs
   }
 
@@ -164,6 +168,12 @@ struct CloudSyncRun {
       try await settings()
     } catch {
       failure = try Self.message(error, fallback: "设置同步失败，稍后自动重试")
+    }
+    do {
+      try await commonPhrases()
+    } catch {
+      let message = try Self.message(error, fallback: "常用语同步失败，稍后自动重试")
+      if failure == nil { failure = message }
     }
     return failure
   }
@@ -216,6 +226,69 @@ struct CloudSyncRun {
     guard await current() else { throw CancellationError() }
     try state.updateIfCurrent(binding) { $0.cursors[CloudSyncSection.settings.rawValue] = String(result.revision) }
     try state.clearDirtyIfCurrent(.settings, expected: generation, bindingGeneration: binding)
+  }
+
+  // ---- 常用语 ----
+
+  private func commonPhrases() async throws {
+    guard await current(), let cloud = phrases else { return }
+    let record = try state.read()
+    let generation = record.generation(.phrases)
+    let local = try ownPhrases()
+    let mode = try mode(.phrases, cloudHasData: !cloud.phrases.isEmpty,
+                        cloudChanged: BackendSyncPolicy.cloudChanged(cursor: record.cursor(.phrases), revision: cloud.revision),
+                        dirty: record.dirty(.phrases))
+    let unheld = Set(record.unheldPhrases)
+    var revision = cloud.revision
+    var target: [BackendSyncPolicy.Phrase]?
+    switch mode {
+    case .none:
+      break
+    case .download:
+      target = cloud.phrases
+    case .upload, .merge:
+      let client = client
+      let saved = try await BackendSyncPolicy.resolvingConflicts(cloud, mode: mode, put: { cloud, mode in
+        let mine = BackendSyncPolicy.asCloudPhrases(local, cloud: cloud.phrases)
+        let upload = mode == .merge
+          ? BackendSyncPolicy.mergePhrases(mine, cloud.phrases)
+          : BackendSyncPolicy.uploadPhrases(mine, cloud.phrases, unheld: unheld)
+        guard await current() else { throw CancellationError() }
+        return try await call { try await client.putPhrases(revision: cloud.revision, phrases: upload, token: $0) }
+      }, refetch: {
+        try await call { try await client.phrases(token: $0) }
+      })
+      revision = saved.revision
+      target = saved.phrases
+    }
+    if let target {
+      guard await current() else { throw CancellationError() }
+      let unheld = CloudSyncState.suppressingMarks { applyPhrases(local, target: target) }
+      try state.updateIfCurrent(binding) { $0.unheldPhrases = unheld.sorted() }
+    }
+    guard await current() else { throw CancellationError() }
+    try state.updateIfCurrent(binding) { $0.cursors[CloudSyncSection.phrases.rawValue] = String(revision) }
+    // 自己写本机不记改动，所以只在代数仍是读本机之前那一版时清标记，期间用户的改动留到下一轮上传。
+    try state.clearDirtyIfCurrent(.phrases, expected: generation, bindingGeneration: binding)
+  }
+
+  /// 用户自己添加的常用语（id, 正文），按本机顺序；社区常用语包里的不同步，装包的设备各自管理。读不出来时这一类放弃这一轮。
+  private func ownPhrases() throws -> [(id: String, text: String)] {
+    try CommonPhrasesBridge.load().filter { $0.pack == nil }.map { ($0.id, $0.text) }
+  }
+
+  /// 把本机改成 `target`，返回本机收不下的正文（过长、超出本机条数上限或写入失败；已经有的不算），与 Android 的 `applyPhrases` 相同：删不掉的跳过，下一轮再对齐。
+  private func applyPhrases(_ local: [(id: String, text: String)], target: [BackendSyncPolicy.Phrase]) -> Set<String> {
+    let plan = BackendSyncPolicy.localPlan(local, target: target)
+    for id in plan.remove { _ = try? CommonPhrasesBridge.remove(id: id) }
+    var unheld = Set<String>()
+    for text in plan.add {
+      guard CommonPhrasesBridge.storable(text) else { unheld.insert(text); continue }
+      do { _ = try CommonPhrasesBridge.add(text) }
+      catch CommonPhrasesBridge.Failure.rejected("common_phrases_duplicate") {}
+      catch { unheld.insert(text) }
+    }
+    return unheld
   }
 
   /// 把云端设置应用到本机，与「设置同步」页的「下载并应用」走同一条路（`IOSCloudSettings.apply`），只是不记成本机改动。去掉本地专属的键再应用。

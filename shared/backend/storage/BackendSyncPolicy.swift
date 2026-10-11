@@ -86,6 +86,76 @@ enum BackendSyncPolicy {
     }
   }
 
+  // ---- 常用语 ----
+
+  /// 常用语接口的条数上限。
+  static let maxPhrases = 500
+  /// 常用语接口每条正文的 UTF-16 单元上限。
+  static let maxPhraseUnits = 2000
+
+  /// 云端常用语接口里的一条：`group` 可为空串，`position` 从 0 数。
+  struct Phrase: Equatable, Sendable {
+    var id: String
+    var text: String
+    var group: String = ""
+    var position: Int = 0
+  }
+
+  /// 合并两份常用语：先按 id，`preferred` 里的同 id 项胜出；再按正文去重，保留先出现的；最后重排 position 并截到 `maxPhrases` 条。正文为空或超长的项丢掉。
+  ///
+  /// - Parameters:
+  ///   - preferred: 后写的一方（本机这次的列表），排在前面
+  ///   - other: 另一方（云端），只补上 `preferred` 里没有的
+  static func mergePhrases(_ preferred: [Phrase], _ other: [Phrase]) -> [Phrase] {
+    var seen = Set<String>()
+    var merged: [Phrase] = []
+    for phrase in preferred + other where usable(phrase) && seen.insert(phrase.id).inserted {
+      merged.append(phrase)
+    }
+    return normalized(merged)
+  }
+
+  /// 按正文去重、重排 position 并截断；上传前对任何一份列表都要过这一步。
+  static func normalized(_ phrases: [Phrase]) -> [Phrase] {
+    var texts = Set<String>()
+    var result: [Phrase] = []
+    for phrase in phrases where usable(phrase) && texts.insert(phrase.text).inserted {
+      guard result.count < maxPhrases else { break }
+      result.append(Phrase(id: phrase.id, text: phrase.text, group: phrase.group, position: result.count))
+    }
+    return result
+  }
+
+  /// 只有本机改动时要上传的整份常用语：本机列表在前，再接上云端里正文属于 `unheld` 的那些。
+  ///
+  /// `unheld` 是上次应用云端结果时本机收不下的正文（本机自己添加的上限比服务端小）。它们从没进过本机列表，所以不会被当成本机删除而从云端抹掉；本机真正删掉的常用语从来不在 `unheld` 里，照常随这次上传从云端消失。
+  static func uploadPhrases(_ local: [Phrase], _ cloud: [Phrase], unheld: Set<String>) -> [Phrase] {
+    normalized(local + cloud.filter { unheld.contains($0.text) })
+  }
+
+  /// 本机要新增的正文和要删掉的本机 id：`target` 是合并或云端的结果，`local` 是本机现有的（id, 正文）。
+  ///
+  /// 本机 id 由 client-core 生成，和云端 id 不通用，所以按正文对齐：`target` 里有、本机没有的正文要新增；本机有、`target` 里没有的要删掉（只有「使用云端」和下载才会走到删除）。
+  static func localPlan(_ local: [(id: String, text: String)], target: [Phrase]) -> (add: [String], remove: [String]) {
+    let wanted = Set(target.map(\.text))
+    let present = Set(local.map(\.text))
+    return (target.map(\.text).filter { !present.contains($0) }, local.filter { !wanted.contains($0.text) }.map(\.id))
+  }
+
+  /// 本机列表换成云端格式；同一正文在云端有分组时沿用云端的分组。
+  static func asCloudPhrases(_ local: [(id: String, text: String)], cloud: [Phrase]) -> [Phrase] {
+    var groups: [String: String] = [:]
+    for phrase in cloud where groups[phrase.text] == nil { groups[phrase.text] = phrase.group }
+    return local.enumerated().map { index, phrase in
+      Phrase(id: phrase.id, text: phrase.text, group: groups[phrase.text] ?? "", position: index)
+    }
+  }
+
+  private static func usable(_ phrase: Phrase) -> Bool {
+    !phrase.id.isEmpty && !phrase.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && phrase.text.utf16.count <= maxPhraseUnits && !phrase.text.contains("\0")
+  }
+
   static let networkMessage = "网络不可用，稍后自动重试"
 
   /// 一个分类失败时展示给用户的原因。nil 表示这一轮作废（任务取消，或跑的过程中退出登录、换了账号），不写进状态。不是网络或云端的失败（本机读写出错）用 `fallback`。
