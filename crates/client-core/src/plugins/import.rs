@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use super::{
     is_builtin, kind_directory, load_directory, PluginError, PluginSummary, MAX_PACK_FILES,
+    UNKNOWN_KIND,
 };
 
 /// Serializes every write to the plugins root in this process. The file lock below does the same across processes (the settings window and an input process both install and remove packs), but a lock on a file is not something every platform promises to hold between two threads of one process.
@@ -57,6 +58,20 @@ const MAX_TOTAL_BYTES: u64 = super::music_pack::MAX_PACK_BYTES + 2 * 1024 * 1024
 ///
 /// Names starting with a dot (`.DS_Store`, `.git`) and a zip's `__MACOSX` folder are left behind, as the file managers that add them intend; anything else the pack may not contain - a subdirectory, a symbolic link, a file its manifest does not account for - refuses the whole import.
 pub fn import(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> {
+    import_inner(source, root, true)
+}
+
+/// `import` for the 插件 settings page's import command. 授权页（第 5 阶段）落地之前，设置页不列出脚本插件，release 构建也从不运行它们（`msime_client_scripts_enable` 恒为 false）：在那里装进去的脚本包既看不见也删不掉，所以 release 构建在安装之前就拒绝它，用的是移动端遇到 `script` 时同一条"kind 不是已知的插件类型"。开发构建照旧接受，开发者自测时从设置页安装。
+pub fn import_from_settings(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> {
+    import_inner(source, root, cfg!(debug_assertions))
+}
+
+/// `import`, refusing a script pack before anything is installed or any grant is written when `allow_scripts` is false.
+pub(super) fn import_inner(
+    source: &Path,
+    root: &Path,
+    allow_scripts: bool,
+) -> Result<PluginSummary, PluginError> {
     let archive = is_archive(source)?;
     if !crate::storage::create_directory_and_check(root).map_err(|_| PluginError::Storage)? {
         return Err(PluginError::Storage);
@@ -77,6 +92,9 @@ pub fn import(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> 
     stage(source, archive, &staging.path, staging_directory.as_ref())?;
     let mut summary = check_staged(&staging.path)?;
     let kind = summary.kind();
+    if !allow_scripts && kind.is_script() {
+        return Err(PluginError::Invalid(UNKNOWN_KIND.into()));
+    }
     let directory = kind_directory(root, kind);
     if !crate::storage::create_directory_and_check(&directory).map_err(|_| PluginError::Storage)? {
         return Err(PluginError::Storage);

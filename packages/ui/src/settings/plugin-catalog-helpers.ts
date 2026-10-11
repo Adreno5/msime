@@ -18,11 +18,11 @@ export const kindLabels: Record<PluginKind, string> = {
 /** 按键旋律（`mode = "sequence"` 的音效包）的类型显示名。 */
 export const melodyKindLabel = "音效包·旋律";
 
-/** 一个包的类型显示名：旋律音效包显示为「音效包·旋律」，其余用 `kindLabels`。 */
+/** 一个包的类型显示名：旋律音效包显示为「音效包·旋律」，其余用 `kindLabels`。`PluginKind` 之外的类型（开发构建的设置页能导入、但页面不列出的脚本插件）显示为「插件」。 */
 export function packKindLabel(pack: Pick<PluginPackage, "kind" | "mode">): string {
   return pack.kind === "sound" && pack.mode === "sequence"
     ? melodyKindLabel
-    : kindLabels[pack.kind];
+    : (kindLabels[pack.kind] ?? "插件");
 }
 
 /** The order the 我的插件 list groups the installed packs in. */
