@@ -266,7 +266,11 @@ impl AccountSessionStorage for FileAccountSessionStorage {
 
     fn load_clipboard_keystore(&self) -> Result<Option<String>, AccountError> {
         self.read_private(CLOUD_CLIPBOARD_KEYSTORE_FILE, MAX_KEYSTORE_BYTES)?
-            .map(|bytes| String::from_utf8(bytes).map_err(|_| AccountError::Storage))
+            .map(|bytes| {
+                let value = String::from_utf8(bytes).map_err(|_| AccountError::Storage)?;
+                // 别的写入方可能在末尾带一个换行，它不属于密钥串；带着它解析会失败，驱动随后会换一个新的设备身份。
+                Ok(value.trim_end_matches(['\n', '\r']).to_owned())
+            })
             .transpose()
     }
 
@@ -341,6 +345,12 @@ mod tests {
                 0
             );
         }
+
+        std::fs::write(&path, b"v1.synthetic-swift\n").unwrap();
+        assert_eq!(
+            storage.load_clipboard_keystore().unwrap().as_deref(),
+            Some("v1.synthetic-swift")
+        );
 
         storage.clear().unwrap();
         assert!(!path.exists());
