@@ -945,6 +945,25 @@ void resource_pack_progress(void *context, const char *phase, uint64_t done, uin
     progress->env->CallVoidMethod(progress->listener, progress->method, name, bounded(done), bounded(total));
     progress->env->DeleteLocalRef(name);
 }
+
+// 本地语音模型安装的进度回调上下文：与资源包一样在调用安装的线程上触发，所以直接用这个线程的 JNIEnv。
+struct LocalModelProgress {
+    JNIEnv *env;
+    jobject listener;
+    jmethodID method;
+};
+
+// 把一次进度（{id,stage,downloaded,total} 的 JSON）原样交给 Java 的 onProgress(byte[])。共享层回调返回后缓冲区就失效，所以这里复制一份；listener 抛出异常后不再调用，局部引用每次释放。
+void local_model_progress(const uint8_t *json, size_t length, void *context) {
+    auto *progress = static_cast<LocalModelProgress *>(context);
+    if (!progress || !json || progress->env->ExceptionCheck()) return;
+    if (length > static_cast<size_t>(kResourcePackRequestLimit)) return;
+    jbyteArray bytes = progress->env->NewByteArray(static_cast<jsize>(length));
+    if (!bytes) return;
+    progress->env->SetByteArrayRegion(bytes, 0, static_cast<jsize>(length), reinterpret_cast<const jbyte *>(json));
+    progress->env->CallVoidMethod(progress->listener, progress->method, bytes);
+    progress->env->DeleteLocalRef(bytes);
+}
 } // namespace
 
 extern "C" {
@@ -1076,6 +1095,44 @@ JNIEXPORT void JNICALL Java_app_msime_android_NativeClient_resourcePackCancelRaw
     if (!bytes) return;
     msime_client_resource_pack_cancel(reinterpret_cast<const uint8_t *>(bytes), static_cast<size_t>(length));
     env->ReleaseByteArrayElements(pack, bytes, JNI_ABORT);
+}
+// 本地语音模型（msime_client.h 里 msime_client_voice_local_model* 一节）：列出、下载、取消、删除，模型装在 filesDir/voice-models/<id>。列出只读目录；安装阻塞，只在主进程的工作线程上调用。
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_voiceLocalModelsRaw(JNIEnv *env, jclass, jbyteArray request) {
+    return bounded_request(env, request, kResourcePackRequestLimit, msime_client_voice_local_models);
+}
+// listener 可以为 null；不为 null 时在本线程上收到 onProgress(byte[])。listener 抛出的异常在安装结束后原样抛给调用方，此时不返回结果。
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_voiceLocalModelInstallRaw(JNIEnv *env, jclass, jbyteArray request, jobject listener) {
+    LocalModelProgress progress{env, listener, nullptr};
+    if (listener) {
+        jclass type = env->GetObjectClass(listener);
+        if (!type) return nullptr;
+        progress.method = env->GetMethodID(type, "onProgress", "([B)V");
+        env->DeleteLocalRef(type);
+        if (!progress.method) return nullptr;
+    }
+    const auto install = [&](const uint8_t *bytes, size_t length) {
+        return msime_client_voice_local_model_install(bytes, length,
+            listener ? local_model_progress : nullptr, listener ? &progress : nullptr);
+    };
+    if (!request) return response(env, install(nullptr, 0));
+    jsize length = env->GetArrayLength(request);
+    if (length > kResourcePackRequestLimit) return response(env, install(nullptr, 0));
+    jbyte *bytes = env->GetByteArrayElements(request, nullptr);
+    if (!bytes) return nullptr;
+    char *result = install(reinterpret_cast<const uint8_t *>(bytes), static_cast<size_t>(length));
+    env->ReleaseByteArrayElements(request, bytes, JNI_ABORT);
+    if (env->ExceptionCheck()) {
+        msime::host_api::discard_string(result);
+        return nullptr;
+    }
+    return response(env, result);
+}
+// 任何线程都可以调用，立即返回。
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_voiceLocalModelCancelRaw(JNIEnv *env, jclass, jbyteArray request) {
+    return bounded_request(env, request, kResourcePackRequestLimit, msime_client_voice_local_model_cancel);
+}
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_voiceLocalModelRemoveRaw(JNIEnv *env, jclass, jbyteArray request) {
+    return bounded_request(env, request, kResourcePackRequestLimit, msime_client_voice_local_model_remove);
 }
 // 指定 libsherpa-onnx-c-api.so 的绝对路径（下载的 voice-runtime 资源包）。之前没加载成功的结果作废，下一次 localSpeechAvailableRaw 按新路径重试；已经加载成功后不再改变。
 JNIEXPORT void JNICALL Java_app_msime_android_NativeClient_localSpeechRuntimeRaw(JNIEnv *env, jclass, jbyteArray path) {

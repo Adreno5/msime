@@ -16,7 +16,8 @@ public final class VoiceProviderPolicySmoke {
             for (String candidate : accepted) known |= candidate.equals(provider);
             check(known, provider + " is accepted by the shared preferences validation");
         }
-        check(VoiceProviderPolicy.PROVIDERS[0].equals("system"), "the platform recogniser is listed first");
+        check(VoiceProviderPolicy.PROVIDERS[0].equals("system") && VoiceProviderPolicy.PROVIDERS[1].equals("local"),
+            "the two services that need no key come first");
 
         check(VoiceProviderPolicy.label("").equals("系统识别") && VoiceProviderPolicy.label(null).equals("系统识别"),
             "nothing stored reads as the platform recogniser");
@@ -95,7 +96,13 @@ public final class VoiceProviderPolicySmoke {
         check(VoiceProviderPolicy.status("openai", "openai") == null, "a working configuration needs no remark");
         check("使用设备自带的语音识别服务".equals(VoiceProviderPolicy.status("system", null)),
             "the platform recogniser is explained");
-        check(VoiceProviderPolicy.status("local", "local") == null, "the local model has its own page");
+        check(VoiceProviderPolicy.status("local", "local") == null, "the local model reports through localStatus");
+        check("还没有可用的模型，请在下面下载一个".equals(VoiceProviderPolicy.localStatus(false, true))
+                && "还没有可用的模型，请在下面下载一个".equals(VoiceProviderPolicy.localStatus(false, false)),
+            "a missing model is named first");
+        check("还要下载本地语音运行库".equals(VoiceProviderPolicy.localStatus(true, false)),
+            "a thin package also needs the runtime");
+        check(VoiceProviderPolicy.localStatus(true, true) == null, "a ready local model needs no remark");
         System.out.println("Android voice provider settings: provider list, token slots, credentials and endpoints passed");
     }
 }

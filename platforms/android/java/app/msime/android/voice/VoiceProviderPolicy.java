@@ -21,20 +21,19 @@ public final class VoiceProviderPolicy {
     public static final String DOUBAO_NOSTREAM = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
     public static final String DOUBAO_ASYNC = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 
-    /** 设置页可选的服务，按显示顺序；本地模型要先有模型管理，这一页暂不提供。 */
+    /** 设置页可选的服务，按显示顺序。 */
     public static final String[] PROVIDERS = {
-        SYSTEM, DoubaoAsrPolicy.PROVIDER, "siliconflow", "openai", "groq", "everyapi", "mistral", "bailian",
+        SYSTEM, LOCAL, DoubaoAsrPolicy.PROVIDER, "siliconflow", "openai", "groq", "everyapi", "mistral", "bailian",
     };
     private static final String[] LABELS = {
-        "系统识别", "豆包", "SiliconFlow", "OpenAI", "Groq", "EveryAPI", "Mistral · Voxtral", "阿里云百炼 · 千问",
+        "系统识别", "本地模型", "豆包", "SiliconFlow", "OpenAI", "Groq", "EveryAPI", "Mistral · Voxtral", "阿里云百炼 · 千问",
     };
 
     private VoiceProviderPolicy() {}
 
-    /** 显示名；本地模型由其他设置页选中时显示「本地模型」，不认识的 id 原样显示。 */
+    /** 显示名；不认识的 id 原样显示。 */
     public static String label(String provider) {
         if (provider == null || provider.isEmpty()) return LABELS[0];
-        if (LOCAL.equals(provider)) return "本地模型";
         for (int index = 0; index < PROVIDERS.length; index++) {
             if (PROVIDERS[index].equals(provider)) return LABELS[index];
         }
@@ -95,6 +94,14 @@ public final class VoiceProviderPolicy {
         if (value.equals(DOUBAO_NOSTREAM)) return "整句流式";
         if (value.isEmpty() || value.equals(DOUBAO_ASYNC)) return "双向流式";
         return "自定义地址";
+    }
+
+    /**
+     * 选了本地模型时「识别服务」行的说明：还没选用装好的模型，或这个安装包不带、也还没下载语音运行库时，说明缺什么；都齐了为 null。本地识别不会回退到系统识别（录音不该在用户不知道时离开手机），所以这里说的是「还不能用」而不是「暂用系统识别」。
+     */
+    public static String localStatus(boolean modelReady, boolean runtimeReady) {
+        if (!modelReady) return "还没有可用的模型，请在下面下载一个";
+        return runtimeReady ? null : "还要下载本地语音运行库";
     }
 
     /**

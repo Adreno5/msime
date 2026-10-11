@@ -28,7 +28,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.json.JSONObject;
 
 /**
- * 按需资源包的下载：主进程里的前台服务（dataSync），带进度通知，可以取消。
+ * 按需资源包和本地语音模型的下载：主进程里的前台服务（dataSync），带进度通知，可以取消。
+ *
+ * <p>本地语音模型（{@link LocalVoiceModels}）和资源包走同一条队列：同样几十到几百 MB、同样要在主进程的工作线程上跑、同样要能从通知里取消。它们在这里的键是 {@code voice-model:<id>}（{@link #voiceModelKey}），状态、进度、取消和结果通知与资源包完全相同，只是安装和取消调用的是模型的共享接口。
  *
  * <p>下载只由用户的操作发起：在「添加语言」里加日语、粤语、注音或笔画，打开离线释义，打开离线识别，或在设置页点「下载」「重试」。启动时从不自动下载，服务也不在进程被杀后自己重启（{@link #START_NOT_STICKY}）；没下完的文件留在共享层的续传目录里，下次点下载时用 HTTP Range 接着下。
  *
@@ -46,6 +48,7 @@ public final class ResourcePackService extends Service {
     private static final int RESULT_NOTIFICATION = 0x6d730510;
     private static final List<String> PACKS = List.of(ResourcePacks.JAPANESE, ResourcePacks.LANGUAGE_DICTIONARIES,
         ResourcePacks.OFFLINE_GLOSSES, ResourcePacks.VOICE_RUNTIME);
+    private static final String VOICE_MODEL_PREFIX = "voice-model:";
 
     /** 一个资源包正在经历的阶段。下载完成后不再有状态。 */
     public enum Phase { DOWNLOADING, VERIFYING, FAILED }
@@ -70,6 +73,8 @@ public final class ResourcePackService extends Service {
     private static final List<Listener> LISTENERS = new CopyOnWriteArrayList<>();
     /** 用户已经要求取消、但下载还没结束的资源包。共享层的取消标记要等下载线程进入安装后才登记，在那之前的取消只记在这里，由下载线程补上。 */
     private static final Set<String> CANCELLING = ConcurrentHashMap.newKeySet();
+    /** 本地语音模型给用户看的名字，在用户点下载时由设置页给出（共享层目录里的 title）。 */
+    private static final Map<String, String> MODEL_TITLES = new ConcurrentHashMap<>();
     private static final Handler MAIN = MainThreadPolicy.mainHandler();
 
     // ---- 设置页用的静态入口（主线程） ----
@@ -118,11 +123,32 @@ public final class ResourcePackService extends Service {
             .show();
     }
 
+    /** 本地语音模型在这里的键；{@link #status}、{@link #cancel}、{@link Listener} 收到的都是它。 */
+    public static String voiceModelKey(String id) {
+        return VOICE_MODEL_PREFIX + id;
+    }
+
+    public static boolean isVoiceModel(String pack) {
+        return pack != null && pack.startsWith(VOICE_MODEL_PREFIX) && pack.length() > VOICE_MODEL_PREFIX.length();
+    }
+
+    /** 用户点了下载某个本地语音模型；网络与流量确认同 {@link #request}。 */
+    public static void requestVoiceModel(Context context, String id, String title, long size) {
+        String key = voiceModelKey(id);
+        MODEL_TITLES.put(key, title);
+        request(context, key, size);
+    }
+
     /** 停下这个资源包的下载；已下载的部分留着，下次接着下。 */
     public static void cancel(String pack) {
         Status current = STATUS.get(pack);
         if (current != null && current.running()) CANCELLING.add(pack);
-        ResourcePacks.cancel(pack);
+        cancelInstall(pack);
+    }
+
+    private static void cancelInstall(String pack) {
+        if (isVoiceModel(pack)) LocalVoiceModels.cancel(pack.substring(VOICE_MODEL_PREFIX.length()));
+        else ResourcePacks.cancel(pack);
     }
 
     /** 资源包给用户看的名字。 */
@@ -132,7 +158,7 @@ public final class ResourcePackService extends Service {
             case ResourcePacks.LANGUAGE_DICTIONARIES -> "粤拼、注音和笔画词库";
             case ResourcePacks.OFFLINE_GLOSSES -> "离线释义词典";
             case ResourcePacks.VOICE_RUNTIME -> "本地语音运行库";
-            default -> pack;
+            default -> isVoiceModel(pack) ? MODEL_TITLES.getOrDefault(pack, "本地语音模型") : pack;
         };
     }
 
@@ -184,7 +210,8 @@ public final class ResourcePackService extends Service {
         }
         // startForegroundService 之后必须很快进入前台，即使这次请求最后什么也不做。
         enterForeground();
-        if (ACTION_INSTALL.equals(action) && pack != null && PACKS.contains(pack) && claim(pack)) {
+        if (ACTION_INSTALL.equals(action) && pack != null && (PACKS.contains(pack) || isVoiceModel(pack))
+                && claim(pack)) {
             install(pack);
         }
         if (runningPacks().isEmpty()) stop();
@@ -213,9 +240,8 @@ public final class ResourcePackService extends Service {
 
     private static List<String> runningPacks() {
         List<String> running = new ArrayList<>(PACKS.size());
-        for (String pack : PACKS) {
-            Status status = STATUS.get(pack);
-            if (status != null && status.running()) running.add(pack);
+        for (Map.Entry<String, Status> entry : STATUS.entrySet()) {
+            if (entry.getValue().running()) running.add(entry.getKey());
         }
         return running;
     }
@@ -227,6 +253,12 @@ public final class ResourcePackService extends Service {
             try {
                 if (CANCELLING.contains(pack)) {
                     failure = "";
+                } else if (isVoiceModel(pack)) {
+                    List<String> mirrors = mirrors(context);
+                    String path = LocalVoiceModels.install(context, pack.substring(VOICE_MODEL_PREFIX.length()),
+                        mirrors.isEmpty() ? "" : mirrors.get(0),
+                        (stage, done, total) -> progress(pack, stage, done, total));
+                    LocalVoiceModels.adoptIfUnset(context, path);
                 } else {
                     ResourcePacks.install(context, pack, mirrors(context),
                         (phase, done, total) -> progress(pack, phase, done, total));
@@ -255,7 +287,7 @@ public final class ResourcePackService extends Service {
     /** 共享层的进度回调，在下载线程上：只在阶段或百分比变化时更新状态，免得每个数据块都重画页面和通知。 */
     private void progress(String pack, String phase, long done, long total) {
         // 共享层这时已经登记了这次安装，补上登记之前就到了的取消。
-        if (CANCELLING.contains(pack)) ResourcePacks.cancel(pack);
+        if (CANCELLING.contains(pack)) cancelInstall(pack);
         Phase next = "download".equals(phase) ? Phase.DOWNLOADING : Phase.VERIFYING;
         Status updated = new Status(next, done, total, null);
         Status previous = STATUS.get(pack);
@@ -299,7 +331,8 @@ public final class ResourcePackService extends Service {
             case "local_model_io" -> "无法写入文件，请检查手机剩余空间";
             case "local_model_invalid_mirror" -> "下载镜像地址无效，请检查镜像设置";
             case "local_model_invalid_root", "invalid state root" -> "请先完成首次设置";
-            case "resource_pack_busy" -> "这个资源包正在下载";
+            case "resource_pack_busy", "local_model_install_running" -> "正在下载中";
+            case "local_model_unknown" -> "这个模型已不在目录里，请更新应用";
             default -> code.isEmpty() ? "下载组件不可用，请重试" : "下载失败（" + code + "）";
         };
     }
@@ -374,7 +407,9 @@ public final class ResourcePackService extends Service {
             .setAutoCancel(true);
         PendingIntent open = openApp();
         if (open != null) builder.setContentIntent(open);
-        manager.notify(RESULT_NOTIFICATION + PACKS.indexOf(pack), builder.build());
+        // 本地语音模型共用资源包之后的一个位置：同一时间通常只下一个模型，后一条结果替换前一条。
+        int slot = PACKS.indexOf(pack);
+        manager.notify(RESULT_NOTIFICATION + (slot >= 0 ? slot : PACKS.size()), builder.build());
     }
 
     @Nullable private PendingIntent openApp() {

@@ -399,6 +399,31 @@ public final class NativeClient {
         resourcePackCancelRaw(pack == null ? null : pack.getBytes(StandardCharsets.UTF_8));
     }
 
+    /** 本地语音模型安装的进度：{@code {id, stage, downloaded, total}} 的 JSON 字节，stage 是 "download"、"verify"、"extract" 或 "done"。在调用 {@link #voiceLocalModelInstall} 的工作线程上调用；不要在这里抛异常或做耗时的事。 */
+    public interface LocalModelProgress {
+        void onProgress(byte[] json);
+    }
+
+    /** 本地语音模型目录与安装状态：请求 {@code {"root"}}，返回 {@code {ok, value:{models:[...], default}}}。只读目录。 */
+    public static String voiceLocalModels(String requestJson) {
+        return TextPolicy.utf8(voiceLocalModelsRaw(utf8(requestJson)));
+    }
+
+    /** 下载、校验并发布一个本地语音模型：请求 {@code {"root","id","mirror"?}}，返回 {@code {ok, value:{path}}}。阻塞到结束，只在主进程的工作线程上调用；listener 可以为 null。 */
+    public static String voiceLocalModelInstall(String requestJson, LocalModelProgress listener) {
+        return TextPolicy.utf8(voiceLocalModelInstallRaw(utf8(requestJson), listener));
+    }
+
+    /** 让正在安装的模型尽快停下，安装随后以 local_model_cancelled 失败：请求 {@code {"id"}}。任何线程，立即返回。 */
+    public static String voiceLocalModelCancel(String requestJson) {
+        return TextPolicy.utf8(voiceLocalModelCancelRaw(utf8(requestJson)));
+    }
+
+    /** 删除一个已装的模型：请求 {@code {"root","id"}}；正在安装的模型拒绝删除。 */
+    public static String voiceLocalModelRemove(String requestJson) {
+        return TextPolicy.utf8(voiceLocalModelRemoveRaw(utf8(requestJson)));
+    }
+
     /** 把升级前已解压在本机的文件收编为资源包：请求 {@code {"state_root","pack","source"}}。要哈希整组文件，只在主进程的工作线程上调用。 */
     public static String resourcePackAdopt(String requestJson) {
         return TextPolicy.utf8(resourcePackAdoptRaw(utf8(requestJson)));
@@ -735,6 +760,10 @@ public final class NativeClient {
     private static native byte[] resourcePackInstallRaw(byte[] request, ResourcePackProgress listener);
     private static native void resourcePackCancelRaw(byte[] pack);
     private static native byte[] resourcePackAdoptRaw(byte[] request);
+    private static native byte[] voiceLocalModelsRaw(byte[] request);
+    private static native byte[] voiceLocalModelInstallRaw(byte[] request, LocalModelProgress listener);
+    private static native byte[] voiceLocalModelCancelRaw(byte[] request);
+    private static native byte[] voiceLocalModelRemoveRaw(byte[] request);
     private static native long localSpeechCreateRaw();
     private static native byte[] localSpeechStartRaw(long handle, byte[] model, byte[] language,
                                                      byte[] hotwords, int threads);
