@@ -8,10 +8,12 @@ import { GroupList, Row } from "../core/platform-controls";
 import {
   CLOUD_CLIPBOARD_MAX_UTF16,
   cloudClipboardAvailabilityNote,
+  cloudClipboardErrorMessage,
   cloudClipboardFailure,
   type CloudClipboardAvailability,
   type CloudClipboardRequest,
 } from "./cloud-clipboard-send";
+import { cloudClipboardE2e } from "../keyboard/cloud-response";
 import { ActionButton } from "./action-button";
 import { SwitchRow } from "./switch-row";
 import { useAsyncGeneration } from "./use-async-generation";
@@ -97,8 +99,15 @@ export function ClipboardHistorySection({
     if (!cloudRequest || !historyShown) return;
     cloudRequest({ operation: "list", search: "" }).then(
       (result) => {
-        if (revision === cloudRevision.current)
-          setCloud(result.enabled === false ? "disabled" : "ready");
+        if (revision !== cloudRevision.current) return;
+        const e2e = cloudClipboardE2e(result);
+        setCloud(
+          result.enabled === false || e2e?.status === "disabled"
+            ? "disabled"
+            : e2e?.status === "pending"
+              ? "pending"
+              : "ready",
+        );
       },
       (error: unknown) => {
         if (revision === cloudRevision.current) setCloud(cloudClipboardFailure(error));
@@ -120,11 +129,13 @@ export function ClipboardHistorySection({
       if (revision === cloudRevision.current) setCloudNotice("已发到云剪贴板");
     } catch (error) {
       if (revision !== cloudRevision.current) return;
-      if (cloudClipboardFailure(error) === "signed_out") {
-        setCloud("signed_out");
-        setCloudNotice("");
+      const failure = cloudClipboardFailure(error);
+      if (failure === "unavailable") {
+        setCloudNotice(cloudClipboardErrorMessage(error, "发到云剪贴板失败，请稍后重试"));
       } else {
-        setCloudNotice("发到云剪贴板失败，请稍后重试");
+        // 未登录、本设备待批准和云剪贴板已关闭都要先由用户处理，在那之前不再允许发送。
+        setCloud(failure);
+        setCloudNotice("");
       }
     } finally {
       if (revision === cloudRevision.current) setSending(false);

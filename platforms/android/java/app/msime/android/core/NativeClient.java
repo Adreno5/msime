@@ -243,6 +243,21 @@ public final class NativeClient {
         return TextPolicy.utf8(mobileClipboardHistoryRaw(utf8(request)));
     }
 
+    /** 共享 `msime_client_cloud_clipboard_e2e` 的请求上限：继续一步的请求带着一整页密文响应。 */
+    public static final int CLOUD_CLIPBOARD_E2E_REQUEST_LIMIT = 2 * 1024 * 1024;
+
+    /**
+     * 云剪贴板端到端加密驱动的一步：`{start,keystore,device_name}` 开始一个操作，`{resume,response}` 交回上一步请求的响应，返回 `{"ok":true,"value":…}`。
+     *
+     * <p>驱动不联网、不碰会话，也不落盘；请求由宿主带着账号凭据发出，密钥串由宿主保存（见 {@link CloudClipboardE2e}）。协议见 `docs/cloud-clipboard-e2e.md`。
+     */
+    public static String cloudClipboardE2e(String request) {
+        byte[] payload = utf8(request);
+        if (payload.length > CLOUD_CLIPBOARD_E2E_REQUEST_LIMIT)
+            throw new IllegalArgumentException("Cloud clipboard request is too large");
+        return TextPolicy.utf8(cloudClipboardE2eRaw(payload));
+    }
+
     /**
      * Decode a Doubao streaming response frame with the shared implementation.
      *
@@ -660,6 +675,7 @@ public final class NativeClient {
     private static native byte[] polishPromptRaw(byte[] id, byte[] custom1, byte[] custom2,
         byte[] custom3);
     private static native byte[] mobileClipboardHistoryRaw(byte[] request);
+    private static native byte[] cloudClipboardE2eRaw(byte[] request);
     private static native byte[] doubaoDecodeFrameRaw(byte[] frame);
     private static native byte[] doubaoStartFrameRaw(boolean itn, boolean punctuation, boolean ddc,
         byte[] boostingTableId);

@@ -12202,7 +12202,8 @@ private:
   };
 
   // 共享页的 CloudClipboardAvailability：只有账号已登录、服务端也开着云剪贴板时才是 ready，才能发送。
-  enum class CloudClipboardState { checking, ready, signed_out, disabled, unavailable };
+  // pending：本机还没有获准使用云剪贴板（端到端加密，见 docs/cloud-clipboard-e2e.md），要先在一台已在使用的设备上点「允许」。
+  enum class CloudClipboardState { checking, ready, signed_out, pending, disabled, unavailable };
 
   void redraw_clip() {
     if (!closed_ && current_page_ == "clip")
@@ -12363,11 +12364,15 @@ private:
         std::move(done));
   }
 
-  // 共享页的 cloudClipboardFailure：账号未登录或会话失效算未登录，其他失败算服务不可用。
+  // 共享页的 cloudClipboardFailure：账号未登录或会话失效算未登录，本机待批准和云剪贴板已关闭各算一种，其他失败算服务不可用。
   static CloudClipboardState cloud_clipboard_failure(std::wstring const &code) {
-    return code == L"unauthorized" || code.ends_with(L"_unauthorized")
-               ? CloudClipboardState::signed_out
-               : CloudClipboardState::unavailable;
+    if (code == L"unauthorized" || code.ends_with(L"_unauthorized"))
+      return CloudClipboardState::signed_out;
+    if (code == L"clipboard_device_pending")
+      return CloudClipboardState::pending;
+    if (code == L"clipboard_sync_disabled")
+      return CloudClipboardState::disabled;
+    return CloudClipboardState::unavailable;
   }
 
   void reset_cloud_clipboard() {
@@ -12395,8 +12400,15 @@ private:
         try {
           const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
           const auto enabled = value.GetNamedValue(L"enabled", JsonValue::CreateNullValue());
-          if (enabled.ValueType() == JsonValueType::Boolean && !enabled.GetBoolean())
+          const auto e2e = value.GetNamedValue(L"e2e", JsonValue::CreateNullValue());
+          const auto status = e2e.ValueType() == JsonValueType::Object
+                                  ? e2e.GetObject().GetNamedString(L"status", L"")
+                                  : hstring{};
+          if ((enabled.ValueType() == JsonValueType::Boolean && !enabled.GetBoolean()) ||
+              status == L"disabled")
             cloud_state_ = CloudClipboardState::disabled;
+          else if (status == L"pending")
+            cloud_state_ = CloudClipboardState::pending;
         } catch (...) {
           cloud_state_ = CloudClipboardState::unavailable;
         }
@@ -12427,9 +12439,10 @@ private:
       cloud_sending_ = false;
       if (response.ok) {
         cloud_notice_ = L"已发到云剪贴板";
-      } else if (cloud_clipboard_failure(response_error(response)) ==
-                 CloudClipboardState::signed_out) {
-        cloud_state_ = CloudClipboardState::signed_out;
+      } else if (const auto failure = cloud_clipboard_failure(response_error(response));
+                 failure != CloudClipboardState::unavailable) {
+        // 未登录、本机待批准和云剪贴板已关闭都要先由用户处理，在那之前不再允许发送。
+        cloud_state_ = failure;
         cloud_notice_.clear();
       } else {
         cloud_notice_ = L"发到云剪贴板失败，请稍后重试";
@@ -12446,6 +12459,8 @@ private:
     switch (cloud_state_) {
     case CloudClipboardState::signed_out:
       return L"登录水杉账号后可在设备间同步剪贴板";
+    case CloudClipboardState::pending:
+      return L"本设备还没有获准使用云剪贴板：请打开云剪贴板查看本设备的核对码，再到一台已在使用云剪贴板的设备上点「允许」";
     case CloudClipboardState::disabled:
       return L"云剪贴板未开启";
     case CloudClipboardState::unavailable:

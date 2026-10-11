@@ -646,6 +646,31 @@ fn host_capability_boundary_describes_each_platform() {
 }
 
 #[test]
+fn cloud_clipboard_e2e_boundary_starts_with_a_key_request() {
+    let call = |bytes: &[u8]| {
+        // SAFETY: the slice outlives the call.
+        read(unsafe { msime_client_cloud_clipboard_e2e(bytes.as_ptr(), bytes.len()) })
+    };
+    let started = call(br#"{"start":{"op":"list"},"keystore":null,"device_name":"Test"}"#);
+    assert_eq!(started["ok"], true);
+    let value = &started["value"];
+    assert_eq!(value["request"]["method"], "GET");
+    assert!(value["request"]["path"]
+        .as_str()
+        .unwrap()
+        .starts_with("/v1/users/me/clipboard/keys?device_id="));
+    assert!(value["keystore"].as_str().unwrap().starts_with("v1."));
+    assert!(value["state"].is_object());
+
+    assert_eq!(call(b"{}")["ok"], false);
+    assert_eq!(
+        // SAFETY: a null pointer is rejected before it is read.
+        read(unsafe { msime_client_cloud_clipboard_e2e(std::ptr::null(), 0) })["ok"],
+        false
+    );
+}
+
+#[test]
 fn traditional_conversion_boundary_returns_text_or_null() {
     let convert = |bytes: &[u8]| {
         // SAFETY: the slice outlives the call.

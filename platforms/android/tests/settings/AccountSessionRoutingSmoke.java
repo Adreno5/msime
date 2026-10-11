@@ -162,9 +162,24 @@ public final class AccountSessionRoutingSmoke {
             clipboardRequests.incrementAndGet();
             throw new AssertionError("old session must not send a clipboard request");
         }, switchedOwner);
+        // 旧会话排队的读取或上传连驱动和密钥串都不碰，更不会发请求。
+        CloudClipboardE2e.Local untouched = new CloudClipboardE2e.Local(new CloudClipboardE2e.Driver() {
+            @Override public CloudClipboardE2e.Step start(CloudClipboardE2e.Operation operation, String keystore, String name) {
+                throw new AssertionError("old session must not start the clipboard driver");
+            }
+            @Override public CloudClipboardE2e.Step resume(String state, int status, String body) {
+                throw new AssertionError("old session must not resume the clipboard driver");
+            }
+        }, new CloudClipboardE2e.Keystore() {
+            @Override public String load() { throw new AssertionError("old session must not read the keystore"); }
+            @Override public void save(String value, CloudClipboardE2e.Guard guard) {
+                throw new AssertionError("old session must not write the keystore");
+            }
+            @Override public void delete() { throw new AssertionError("old session must not delete the keystore"); }
+        }, "Synthetic Phone");
         boolean oldUploadCancelled = false;
         try {
-            clipboard.addClipboard("synthetic note", "session-a");
+            clipboard.addClipboard("synthetic note", "session-a", untouched);
         } catch (java.util.concurrent.CancellationException expected) {
             oldUploadCancelled = true;
         }
@@ -172,7 +187,7 @@ public final class AccountSessionRoutingSmoke {
             "an upload queued by the old session cannot send using the new session");
         boolean oldListCancelled = false;
         try {
-            clipboard.clipboard("", "session-a");
+            clipboard.clipboard("", "session-a", untouched);
         } catch (java.util.concurrent.CancellationException expected) {
             oldListCancelled = true;
         }
@@ -244,8 +259,48 @@ public final class AccountSessionRoutingSmoke {
             @Override public void save(String value) { signOutTouches.incrementAndGet(); }
             @Override public void clear() { signOutTouches.incrementAndGet(); }
         };
-        new BackendAccount(signOutStore, requester, () -> TOKEN).signOut();
+        AtomicInteger keystoreDeletes = new AtomicInteger();
+        CloudClipboardE2e.Keystore clipboardKeys = new CloudClipboardE2e.Keystore() {
+            @Override public String load() { throw new AssertionError("sign-out never reads the keystore"); }
+            @Override public void save(String value, CloudClipboardE2e.Guard guard) {
+                throw new AssertionError("sign-out never writes the keystore");
+            }
+            @Override public void delete() { keystoreDeletes.incrementAndGet(); }
+        };
+        new BackendAccount(signOutStore, requester, () -> TOKEN, null, clipboardKeys).signOut();
         check(signOutTouches.get() == 0, "a non-owning process never signs out through its local store");
+        check(keystoreDeletes.get() == 0, "a non-owning process never deletes the cloud clipboard keystore");
+        java.util.List<String> signOutOrder = new java.util.ArrayList<>();
+        BackendAccount.SessionStore ownStore = new BackendAccount.SessionStore() {
+            @Override public String load() { return TOKEN_SESSION; }
+            @Override public void save(String value) { throw new AssertionError("no save on sign-out"); }
+            @Override public void clear() { signOutOrder.add("session"); }
+        };
+        new BackendAccount(ownStore, requester, null, null, new CloudClipboardE2e.Keystore() {
+            @Override public String load() { throw new AssertionError("sign-out never reads the keystore"); }
+            @Override public void save(String value, CloudClipboardE2e.Guard guard) {
+                throw new AssertionError("sign-out never writes the keystore");
+            }
+            @Override public void delete() { signOutOrder.add("keystore"); }
+        }).signOut();
+        check(signOutOrder.equals(java.util.List.of("session", "keystore")),
+            "sign-out clears the session first, then deletes the cloud clipboard keystore");
+        BackendAccount.SessionStore keptStore = new BackendAccount.SessionStore() {
+            @Override public String load() { return TOKEN_SESSION; }
+            @Override public void save(String value) { throw new AssertionError("no save on sign-out"); }
+            @Override public void clear() { }
+        };
+        boolean keystoreFailed = false;
+        try {
+            new BackendAccount(keptStore, requester, null, null, new CloudClipboardE2e.Keystore() {
+                @Override public String load() { return null; }
+                @Override public void save(String value, CloudClipboardE2e.Guard guard) { }
+                @Override public void delete() throws Exception { throw new java.io.IOException("synthetic failure"); }
+            }).signOut();
+        } catch (IllegalStateException expected) {
+            keystoreFailed = true;
+        }
+        check(keystoreFailed, "sign-out reports a keystore that could not be deleted");
 
         BackendAccount.SessionStore failingStore = new BackendAccount.SessionStore() {
             @Override public String load() { return TOKEN_SESSION; }
@@ -253,12 +308,14 @@ public final class AccountSessionRoutingSmoke {
             @Override public void clear() throws Exception { throw new java.io.IOException("synthetic failure"); }
         };
         boolean clearFailed = false;
+        int deletesBefore = keystoreDeletes.get();
         try {
-            new BackendAccount(failingStore, requester).signOut();
+            new BackendAccount(failingStore, requester, null, null, clipboardKeys).signOut();
         } catch (IllegalStateException expected) {
             clearFailed = true;
         }
         check(clearFailed, "sign-out must report a failed persistent clear");
+        check(keystoreDeletes.get() == deletesBefore, "a failed session clear leaves the keystore for the retry");
         check(TOKEN_SESSION.equals(failingStore.load()), "a failed clear leaves the stored session present");
         System.out.println("Android account session routing: single refreshing process passed");
     }

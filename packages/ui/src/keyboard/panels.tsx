@@ -69,8 +69,22 @@ import {
   WINDOWS_HANDWRITING_STROKES,
 } from "./handwriting-input";
 import {
+  CloudClipboardDeviceList,
+  CloudClipboardPendingNotice,
+  CloudClipboardWaitingDevices,
+} from "./cloud-clipboard-devices";
+import {
+  cloudClipboardErrorMessage,
+  cloudClipboardFailure,
+} from "../settings/cloud-clipboard-send";
+import {
   candidateMutationCode,
+  cloudClipboardDeviceStatus,
+  cloudClipboardE2e,
   cloudClipboardItems,
+  type CloudClipboardDeviceShape,
+  type CloudClipboardDeviceStatusShape,
+  type CloudClipboardE2eShape,
   cloudDictionaryCatalogEntries,
   cloudDictionaryEntries,
   cloudResponseInteger,
@@ -153,18 +167,37 @@ export interface VoicePanelClient extends PanelClient {
   copyText?(text: string): Promise<void>;
 }
 
+/** 云剪贴板面板发给宿主的动作，见 `docs/cloud-clipboard-e2e.md` 的「共享面板的动作」。 */
 export type CloudClipboardAction =
   | { operation: "list"; search: string }
   | { operation: "add"; text: string }
   | { operation: "delete"; id: string }
-  | { operation: "set_enabled"; enabled: boolean };
-export type CloudClipboardItem = { id: string; text: string };
+  | { operation: "set_enabled"; enabled: boolean }
+  | { operation: "devices" }
+  | { operation: "approve" | "reject" | "remove"; device_id: string }
+  | { operation: "reset" };
+export type CloudClipboardItem = {
+  id: string;
+  text: string;
+  updated_at?: string;
+  pinned?: boolean;
+  device?: string;
+};
+/** 宿主的回答：`list` 带 `items`、`enabled`、`retention_days` 和 `e2e`，设备管理动作带 `status`、`device_id`、`code` 和 `devices`。各字段由 `cloud-response` 里的读取函数逐项核对。 */
+export type CloudClipboardResponse = {
+  items?: CloudClipboardItem[];
+  enabled?: boolean;
+  retention_days?: number;
+  e2e?: unknown;
+  status?: unknown;
+  device_id?: unknown;
+  code?: unknown;
+  devices?: unknown;
+};
 export interface CloudClipboardPanelClient extends PanelClient {
   canSendText?(): Promise<boolean>;
   copyText?(text: string): Promise<void>;
-  request(
-    action: CloudClipboardAction,
-  ): Promise<{ items?: CloudClipboardItem[]; enabled?: boolean }>;
+  request(action: CloudClipboardAction): Promise<CloudClipboardResponse>;
 }
 
 export type { CloudDictionaryKind } from "./cloud-dictionary-kind-tabs";
@@ -1882,16 +1915,54 @@ export function VoicePanel({
   );
 }
 
+/** 云剪贴板面板里等待用户确认的操作：关闭、重置或移除一台设备，三者都会清掉云端条目。 */
+type CloudClipboardConfirmation =
+  | { kind: "disable" }
+  | { kind: "reset" }
+  | { kind: "remove"; device: CloudClipboardDeviceShape };
+
+function cloudClipboardConfirmationText(confirmation: CloudClipboardConfirmation): {
+  label: string;
+  message: string;
+  action: string;
+} {
+  switch (confirmation.kind) {
+    case "disable":
+      return {
+        label: "关闭云剪贴板",
+        message:
+          "关闭云剪贴板会删除云端历史和全部设备登记；重新开启后，其他设备都需要重新允许。是否继续？",
+        action: "确认关闭并删除历史",
+      };
+    case "reset":
+      return {
+        label: "重置云剪贴板",
+        message:
+          "重置后，云端的全部条目会被清空，本设备换用一把新密钥；其他所有设备都需要在本设备上重新允许，才能继续使用云剪贴板。是否继续？",
+        action: "确认重置",
+      };
+    case "remove":
+      return {
+        label: "移除设备",
+        message: `移除「${confirmation.device.name || "未命名设备"}」后，云端的全部条目会被清空并换用新密钥；其他所有设备（包括仍在使用的）都需要在本设备上重新允许。是否继续？`,
+        action: "确认移除",
+      };
+  }
+}
+
 export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelClient }) {
   const [inputAvailable, setInputAvailable] = useState(
     Boolean(client.sendText && !client.canSendText),
   );
-  const [confirmDisable, setConfirmDisable] = useState(false);
+  const [confirmation, setConfirmation] = useState<CloudClipboardConfirmation | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
   const [items, setItems] = useState<CloudClipboardItem[]>([]);
   const [draft, setDraft] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [e2e, setE2e] = useState<CloudClipboardE2eShape | null>(null);
+  const [devices, setDevices] = useState<CloudClipboardDeviceStatusShape | null>(null);
+  const [showDevices, setShowDevices] = useState(false);
   const [notice, setNotice] = useState("只上传你明确选择的内容");
   const {
     busy,
@@ -1902,6 +1973,7 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
   } = usePanelAction(setNotice);
   const draftRevision = useAsyncGeneration();
   const searchRef = useLatestRef(search);
+  const showDevicesRef = useLatestRef(showDevices);
   const cloudGeneration = useAsyncGeneration(client);
 
   async function load(revision: number, nextSearch: string) {
@@ -1912,15 +1984,30 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
       if (revision === refreshRevision.current) {
         setItems([]);
         setLoaded(false);
-        setConfirmDisable(false);
+        setE2e(null);
+        setDevices(null);
+        setConfirmation(null);
       }
       throw error;
     }
     if (revision !== refreshRevision.current) return;
+    const nextE2e = cloudClipboardE2e(result);
     setItems(cloudClipboardItems(result));
+    setE2e(nextE2e);
     setLoaded(true);
     if (typeof result.enabled === "boolean") setEnabled(result.enabled);
     setNotice("云剪贴板已刷新");
+    // 有设备在等本机允许，或用户打开了设备列表时，再取一次设备状态；取不到不影响条目。
+    if (nextE2e?.status === "ready" && (nextE2e.pending_devices > 0 || showDevicesRef.current)) {
+      try {
+        const status = cloudClipboardDeviceStatus(await client.request({ operation: "devices" }));
+        if (revision === refreshRevision.current) setDevices(status);
+      } catch {
+        if (revision === refreshRevision.current) setDevices(null);
+      }
+    } else {
+      setDevices(null);
+    }
   }
 
   function refresh(nextSearch = searchRef.current) {
@@ -1932,6 +2019,8 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
     busyRef.current = false;
     setItems([]);
     setLoaded(false);
+    setE2e(null);
+    setDevices(null);
     setInputAvailable(Boolean(client.sendText && !client.canSendText));
     if (client.canSendText)
       void client
@@ -1941,7 +2030,7 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
             setInputAvailable(available && Boolean(client.sendText));
         })
         .catch(() => {
-          if (generation === cloudGeneration.current) setInputAvailable(false);
+          if (generation === cloudGeneration.current) setNotice("未能记录前台输入窗口");
         });
     if (client.rememberInputTarget)
       void client.rememberInputTarget().catch(() => {
@@ -1953,6 +2042,44 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
     };
   }, [client, cloudGeneration, invalidate]);
 
+  /** 发出一个可能失败的动作，失败时按错误码给出说明；成功后刷新条目，再显示 `success`。 */
+  function act(
+    action: CloudClipboardAction,
+    success: string,
+    failure: string,
+    after?: (result: CloudClipboardResponse) => void,
+  ) {
+    return run(async (revision) => {
+      let result: CloudClipboardResponse;
+      try {
+        result = await client.request(action);
+      } catch (error) {
+        if (revision !== refreshRevision.current) return;
+        const message = cloudClipboardErrorMessage(error, failure);
+        // 本设备其实还在等待允许，或者云剪贴板已被关闭：刷新一次，让面板换成对应的样子。
+        if (cloudClipboardFailure(error) !== "unavailable") {
+          try {
+            await load(revision, searchRef.current);
+          } catch {
+            // 刷新失败时 load 已清空列表，这里只保留动作本身的失败说明。
+          }
+        }
+        if (revision === refreshRevision.current) setNotice(message);
+        return;
+      }
+      if (revision !== refreshRevision.current) return;
+      after?.(result);
+      try {
+        await load(revision, searchRef.current);
+      } catch {
+        if (revision === refreshRevision.current)
+          setNotice(`${success}，但历史刷新失败，请点击刷新`);
+        return;
+      }
+      if (revision === refreshRevision.current) setNotice(success);
+    }, failure);
+  }
+
   function add() {
     if (!enabled || draft.trim().length === 0 || draft.length > 4000) {
       if (draft.trim().length === 0) setNotice("请输入要上传的文本");
@@ -1960,45 +2087,84 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
       return;
     }
     const uploadedRevision = draftRevision.current;
-    return run(async (revision) => {
-      await client.request({ operation: "add", text: draft });
-      if (revision !== refreshRevision.current) return;
-      if (uploadedRevision === draftRevision.current) setDraft("");
-      try {
-        await load(revision, searchRef.current);
-      } catch {
-        if (revision === refreshRevision.current) setNotice("已上传，但历史刷新失败，请点击刷新");
-      }
-    }, "上传失败，请确认账号 provider 已连接");
+    return act(
+      { operation: "add", text: draft },
+      "已上传",
+      "上传失败，请确认账号 provider 已连接",
+      () => {
+        if (uploadedRevision === draftRevision.current) setDraft("");
+      },
+    );
   }
 
   function remove(id: string) {
-    return run(async (revision) => {
-      await client.request({ operation: "delete", id });
-      if (revision !== refreshRevision.current) return;
-      try {
-        await load(revision, searchRef.current);
-      } catch {
-        if (revision === refreshRevision.current) setNotice("已删除，但历史刷新失败，请点击刷新");
-      }
-    }, "删除失败");
+    return act({ operation: "delete", id }, "已删除", "删除失败");
+  }
+
+  function deviceAction(action: CloudClipboardAction, success: string, failure: string) {
+    return act(action, success, failure, (result) => {
+      const status = cloudClipboardDeviceStatus(result);
+      if (status) setDevices(status);
+    });
   }
 
   function toggle(confirmed = false) {
     if (enabled && !confirmed) {
-      setConfirmDisable(true);
+      setConfirmation({ kind: "disable" });
       return;
     }
-    setConfirmDisable(false);
+    setConfirmation(null);
     const next = !enabled;
     return run(async (revision) => {
       const result = await client.request({ operation: "set_enabled", enabled: next });
       if (revision !== refreshRevision.current) return;
       const effective = typeof result.enabled === "boolean" ? result.enabled : next;
       setEnabled(effective);
-      if (!effective) setItems([]);
-      setNotice(effective ? "云剪贴板已开启" : "云剪贴板已关闭");
+      if (!effective) {
+        setItems([]);
+        setE2e(null);
+        setDevices(null);
+      } else {
+        // 刚开启时本机要先登记，可能直接可用，也可能要等另一台设备允许。
+        try {
+          await load(revision, searchRef.current);
+        } catch {
+          // 刷新失败只影响列表，开关本身已经生效。
+        }
+      }
+      if (revision === refreshRevision.current)
+        setNotice(effective ? "云剪贴板已开启" : "云剪贴板已关闭");
     }, "更新云剪贴板设置失败");
+  }
+
+  function confirm() {
+    const current = confirmation;
+    if (!current) return;
+    if (current.kind === "disable") return toggle(true);
+    setConfirmation(null);
+    if (current.kind === "reset")
+      return deviceAction(
+        { operation: "reset" },
+        "云剪贴板已重置，其他设备需要重新允许",
+        "重置云剪贴板失败",
+      );
+    return deviceAction(
+      { operation: "remove", device_id: current.device.device_id },
+      "已移除设备，其他设备需要重新允许",
+      "移除设备失败",
+    );
+  }
+
+  function toggleDevices() {
+    const next = !showDevices;
+    setShowDevices(next);
+    if (!next) return;
+    return run(async (revision) => {
+      const status = cloudClipboardDeviceStatus(await client.request({ operation: "devices" }));
+      if (revision !== refreshRevision.current) return;
+      setDevices(status);
+      setNotice("设备列表已刷新");
+    }, "无法读取设备列表");
   }
 
   function choose(item: CloudClipboardItem, copyOnly = false) {
@@ -2018,11 +2184,19 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
     );
   }
 
+  const pending = e2e?.status === "pending";
+  const ready = e2e?.status === "ready";
+  const waiting = devices?.devices.filter((device) => !device.approved && !device.current) ?? null;
+  const waitingCount = waiting ? waiting.length : (e2e?.pending_devices ?? 0);
+  const confirmText = confirmation && cloudClipboardConfirmationText(confirmation);
+
   return (
     <main className={`native-panel ${cloud.clipboardPanel}`} aria-label="云剪贴板">
       <CloudPanelHeader title="水杉云剪贴板" onClose={() => void client.close()} />
       <div className={cloud.clipboardBody}>
-        <p className={cloud.clipboardNote}>只上传你明确选择的文本，不自动读取本地剪贴板。</p>
+        <p className={cloud.clipboardNote}>
+          只上传你明确选择的文本，不自动读取本地剪贴板；内容在设备上加密后才上传，服务器只保存密文。
+        </p>
         <label className={cloud.clipboardToggle}>
           <span>启用云剪贴板</span>
           <input
@@ -2032,107 +2206,167 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
             disabled={busy || !loaded}
           />
         </label>
-        {confirmDisable && (
+        {confirmation && confirmText && (
           <div
             className={cloud.clipboardConfirm}
             role="alertdialog"
-            aria-label="关闭云剪贴板"
+            aria-label={confirmText.label}
             aria-modal="true"
           >
-            <p className="m-0">关闭云剪贴板会删除云端历史，是否继续？</p>
+            <p className="m-0">{confirmText.message}</p>
             <button
               type="button"
               className={cloud.clipboardDelete}
               disabled={busy}
-              onClick={() => void toggle(true)}
+              onClick={() => void confirm()}
             >
-              确认关闭并删除历史
+              {confirmText.action}
             </button>
             <button
               type="button"
               className={cloud.clipboardButton}
-              onClick={() => setConfirmDisable(false)}
+              onClick={() => setConfirmation(null)}
             >
               取消
             </button>
           </div>
         )}
-        <div className={cloud.clipboardSearchRow}>
-          <input
-            className={cloud.clipboardInput}
-            aria-label="搜索云端历史"
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void refresh();
-            }}
-            placeholder="搜索云端历史"
+        {pending && e2e ? (
+          <CloudClipboardPendingNotice
+            code={e2e.code}
+            busy={busy}
+            onRefresh={() => void refresh()}
+            onReset={() => setConfirmation({ kind: "reset" })}
           />
-          <button
-            type="button"
-            className={cloud.clipboardButton}
-            onClick={() => void refresh()}
-            disabled={busy}
-          >
-            刷新
-          </button>
-        </div>
-        <div className={cloud.clipboardAddRow}>
-          <textarea
-            className={cloud.clipboardTextArea}
-            aria-label="待上传文本"
-            value={draft}
-            onChange={(event) => {
-              draftRevision.current++;
-              setDraft(event.target.value);
-            }}
-            placeholder="输入要上传的文本"
-            rows={3}
-          />
-          <small className={cloud.clipboardCount(draft.length > 4000)}>{draft.length} / 4000</small>
-          <button
-            type="button"
-            className={cloud.clipboardSubmit}
-            onClick={() => void add()}
-            disabled={!enabled || draft.trim().length === 0 || draft.length > 4000 || busy}
-          >
-            上传明确选择的文本
-          </button>
-        </div>
-        <div className={cloud.clipboardList} aria-label="云端历史">
-          {items.length ? (
-            items.map((item) => (
-              <article className={cloud.clipboardItem} key={item.id}>
-                <button type="button" disabled={busy} onClick={() => void choose(item)}>
-                  {item.text}
-                </button>
-                {client.copyText && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-label="复制此条云端记录"
-                    onClick={() => void choose(item, true)}
-                  >
-                    复制
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={cloud.clipboardDelete}
-                  aria-label={`删除 ${item.text}`}
-                  onClick={() => void remove(item.id)}
-                  disabled={busy}
-                >
-                  删除
-                </button>
-              </article>
-            ))
-          ) : (
-            <p className={cloud.clipboardNote}>暂无云端历史</p>
-          )}
-        </div>
+        ) : (
+          <>
+            {ready && waitingCount > 0 && (
+              <CloudClipboardWaitingDevices
+                devices={waiting}
+                count={waitingCount}
+                busy={busy}
+                onApprove={(device) =>
+                  void deviceAction(
+                    { operation: "approve", device_id: device.device_id },
+                    `已允许「${device.name || "未命名设备"}」使用云剪贴板`,
+                    "允许设备失败",
+                  )
+                }
+                onReject={(device) =>
+                  void deviceAction(
+                    { operation: "reject", device_id: device.device_id },
+                    `已拒绝「${device.name || "未命名设备"}」`,
+                    "拒绝设备失败",
+                  )
+                }
+                onShow={() => void refresh()}
+              />
+            )}
+            {ready && (
+              <button
+                type="button"
+                className={cloud.clipboardButton}
+                aria-expanded={showDevices}
+                disabled={busy}
+                onClick={() => void toggleDevices()}
+              >
+                {showDevices ? "收起设备列表" : "管理设备"}
+              </button>
+            )}
+            {ready && showDevices && devices && (
+              <CloudClipboardDeviceList
+                devices={devices.devices}
+                busy={busy}
+                onRemove={(device) => setConfirmation({ kind: "remove", device })}
+                onReset={() => setConfirmation({ kind: "reset" })}
+              />
+            )}
+            <div className={cloud.clipboardSearchRow}>
+              <input
+                className={cloud.clipboardInput}
+                aria-label="搜索云端历史"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void refresh();
+                }}
+                placeholder="搜索云端历史"
+              />
+              <button
+                type="button"
+                className={cloud.clipboardButton}
+                onClick={() => void refresh()}
+                disabled={busy}
+              >
+                刷新
+              </button>
+            </div>
+            <div className={cloud.clipboardAddRow}>
+              <textarea
+                className={cloud.clipboardTextArea}
+                aria-label="待上传文本"
+                value={draft}
+                onChange={(event) => {
+                  draftRevision.current++;
+                  setDraft(event.target.value);
+                }}
+                placeholder="输入要上传的文本"
+                rows={3}
+              />
+              <small className={cloud.clipboardCount(draft.length > 4000)}>
+                {draft.length} / 4000
+              </small>
+              <button
+                type="button"
+                className={cloud.clipboardSubmit}
+                onClick={() => void add()}
+                disabled={!enabled || draft.trim().length === 0 || draft.length > 4000 || busy}
+              >
+                上传明确选择的文本
+              </button>
+            </div>
+            {e2e && e2e.undecryptable > 0 && (
+              <p className={cloud.clipboardNote} role="note">
+                有 {e2e.undecryptable}{" "}
+                条云端记录无法在本设备解密，已略去。它们可能是用另一把密钥写入的。
+              </p>
+            )}
+            <div className={cloud.clipboardList} aria-label="云端历史">
+              {items.length ? (
+                items.map((item) => (
+                  <article className={cloud.clipboardItem} key={item.id}>
+                    <button type="button" disabled={busy} onClick={() => void choose(item)}>
+                      {item.text}
+                    </button>
+                    {client.copyText && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label="复制此条云端记录"
+                        onClick={() => void choose(item, true)}
+                      >
+                        复制
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={cloud.clipboardDelete}
+                      aria-label={`删除 ${item.text}`}
+                      onClick={() => void remove(item.id)}
+                      disabled={busy}
+                    >
+                      删除
+                    </button>
+                  </article>
+                ))
+              ) : (
+                <p className={cloud.clipboardNote}>暂无云端历史</p>
+              )}
+            </div>
+          </>
+        )}
         <p className={cloud.clipboardNote} role="status">
           {notice}
         </p>

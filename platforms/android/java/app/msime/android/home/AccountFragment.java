@@ -24,6 +24,7 @@ import app.msime.android.AppIconStyle;
 import app.msime.android.AppVersionPolicy;
 import app.msime.android.BackendAccount;
 import app.msime.android.CloudApi;
+import app.msime.android.CloudClipboardNativeDriver;
 import app.msime.android.DeviceDataApi;
 import app.msime.android.R;
 import app.msime.android.SyncSignals;
@@ -118,8 +119,10 @@ public final class AccountFragment extends HomeTabFragment {
             }
             int clipboard;
             try {
-                BackendAccount.ClipboardPage page = new BackendAccount(context).clipboard("", sessionId);
-                clipboard = page.enabled() ? page.items().size() : -1;
+                BackendAccount.ClipboardPage page = new BackendAccount(context).clipboard("", sessionId,
+                    CloudClipboardNativeDriver.local(context));
+                // 这台设备还在等允许时读不到条目，不写「0 条」。
+                clipboard = page.enabled() && !page.pending() ? page.items().size() : -1;
             } catch (Exception unavailable) {
                 clipboard = -1;
             }

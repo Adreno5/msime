@@ -981,7 +981,11 @@ function localVoiceModelClient(native: NativeBridge): LocalVoiceModelClient {
   };
 }
 
+/**
+ * 云剪贴板面板的动作原样交给原生账号桥接：`operation` 改名为 `clipboard_operation`，其余字段（`search`、`text`、`id`、`enabled`、`device_id`）不动。列表、上传和 `devices`、`approve`、`reject`、`remove`、`reset` 在原生一侧经端到端加密驱动，结果是驱动给的形状；错误以 `{code}` 抛出，码是驱动或账号桥接给的（例如 `clipboard_device_pending`）。
+ */
 function cloudClipboardClient(native: NativeBridge, close: () => void): CloudClipboardPanelClient {
+  type Response = Awaited<ReturnType<CloudClipboardPanelClient["request"]>>;
   return {
     close: async () => close(),
     copyText: async (text) => native.copyText(text),
@@ -991,11 +995,15 @@ function cloudClipboardClient(native: NativeBridge, close: () => void): CloudCli
         native,
         "account",
         JSON.stringify({ operation: "clipboard", clipboard_operation: operation, ...payload }),
+        // 一次操作是驱动依次发出的几个请求（首次使用时取密钥状态、登记本机、建钥、再取状态、列表），每个都有自己 30 秒的读超时，页面这边等得比单个请求久。
+        CLOUD_CLIPBOARD_TIMEOUT_MS,
       );
-      return unwrap<{ items?: { id: string; text: string }[]; enabled?: boolean }>(value);
+      return unwrap<Response>(value);
     },
   };
 }
+
+const CLOUD_CLIPBOARD_TIMEOUT_MS = 2 * 60 * 1000;
 
 type CloudDictionaryPage = "main" | "catalog" | "candidates" | "files" | "apply";
 

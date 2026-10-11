@@ -1,6 +1,8 @@
 //! Cloud clipboard requests over the account session, for every Tauri host that holds one.
 //!
 //! iOS and Android serve the page through their account session alone; the three desktop shells fall back to theirs when no provider socket or native input-method session answers. The dispatch itself is `msime_host_api::cloud_clipboard::account_request`, which the native Windows settings window reaches through the C ABI as well; this only moves it off the async runtime with the session this target's `AccountState` holds.
+//!
+//! 列表、上传和设备管理（`devices`、`approve`、`reject`、`remove`、`reset`）经端到端加密驱动，结果形状见 `docs/cloud-clipboard-e2e.md` 的「共享面板的动作」；驱动给出的错误码（例如 `clipboard_device_pending`）原样作为 `CommandError` 的 `code` 交给面板。
 
 use msime_client_core::account::{AccountApi, AccountSessionStorage, BackendAccountSession};
 use serde_json::Value;
@@ -25,19 +27,84 @@ pub(crate) async fn cloud_clipboard_request<A: AccountApi, S: AccountSessionStor
 mod tests {
     use super::cloud_clipboard_request;
     use msime_client_core::account::{
-        AccountApi, AccountChallenge, AccountClipboardItem, AccountClipboardPage, AccountError,
-        AccountProfile, AccountSessionStorage, AccountTokens, AccountUser, BackendAccountSession,
-        SavedAccountSession,
+        AccountApi, AccountChallenge, AccountError, AccountProfile, AccountSessionStorage,
+        AccountTokens, AccountUser, BackendAccountSession, SavedAccountSession,
     };
+    use msime_client_core::cloud::clipboard_e2e::{HttpRequest, HttpResponse};
     use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
 
     /// The session validates stored tokens as 64 lowercase hex digits, so the synthetic ones have that shape.
     const ACCESS_TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    /// 合成的现有剪贴板密钥编号：账号已由另一台设备开启，本机登记后等待批准。
+    const OTHER_KEY_ID: &str = "0123456789abcdef0123456789abcdef";
 
-    /// A backend that records the clipboard calls it receives and answers them from a synthetic page. Every call outside the clipboard is a test failure.
+    /// 云剪贴板服务端的最小合成实现：登记设备、建钥和删除登记，其余经驱动的请求都不应出现。
+    #[derive(Default)]
+    struct FakeServer {
+        enabled: bool,
+        key_id: Option<String>,
+        devices: Vec<(String, String)>,
+        wraps: Vec<String>,
+    }
+
+    impl FakeServer {
+        fn handle(&mut self, request: &HttpRequest) -> HttpResponse {
+            let reply = |status: u16, body: Value| HttpResponse {
+                status,
+                body: body.to_string(),
+            };
+            let body: Value = request
+                .body
+                .as_deref()
+                .map(|body| serde_json::from_str(body).unwrap())
+                .unwrap_or(Value::Null);
+            let path = request.path.as_str();
+            match request.method.as_str() {
+                "GET" if path.starts_with("/v1/users/me/clipboard/keys?device_id=") => reply(
+                    200,
+                    json!({
+                        "enabled": self.enabled,
+                        "key_id": self.key_id,
+                        "wrap": null,
+                        "devices": self.devices.iter().map(|(id, key)| json!({
+                            "device_id": id,
+                            "public_key": key,
+                            "name": "合成设备",
+                            "created_at": "2026-10-11T08:00:00Z",
+                            "approved": self.wraps.contains(id),
+                        })).collect::<Vec<_>>(),
+                    }),
+                ),
+                "PUT" if path.starts_with("/v1/users/me/clipboard/devices/") => {
+                    let id = path.rsplit('/').next().unwrap().to_owned();
+                    self.devices
+                        .push((id, body["public_key"].as_str().unwrap().to_owned()));
+                    reply(204, Value::Null)
+                }
+                "DELETE" if path.starts_with("/v1/users/me/clipboard/devices/") => reply(
+                    404,
+                    json!({ "error": { "code": "not_found", "message": "not found" } }),
+                ),
+                "POST" if path == "/v1/users/me/clipboard/keys" => {
+                    self.key_id = body["key_id"].as_str().map(str::to_owned);
+                    self.wraps = body["wraps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|wrap| wrap["device_id"].as_str().unwrap().to_owned())
+                        .collect();
+                    reply(204, Value::Null)
+                }
+                _ => panic!("unexpected request {} {path}", request.method),
+            }
+        }
+    }
+
+    /// A backend that records the clipboard calls it receives. Every call outside the clipboard is a test failure.
     struct FakeApi {
         calls: Arc<Mutex<Vec<String>>>,
+        server: Arc<Mutex<FakeServer>>,
     }
 
     impl FakeApi {
@@ -72,28 +139,24 @@ mod tests {
         fn delete_account(&self, _: &str) -> Result<(), AccountError> {
             unreachable!("delete_account")
         }
-        fn clipboard(
+        fn clipboard_e2e(
             &self,
-            search: &str,
+            request: &HttpRequest,
             token: &str,
-        ) -> Result<AccountClipboardPage, AccountError> {
-            self.record(format!("list:{search}"), token);
-            Ok(AccountClipboardPage {
-                enabled: true,
-                items: vec![item("synthetic-1", "合成文本")],
-            })
+        ) -> Result<HttpResponse, AccountError> {
+            self.record(
+                format!(
+                    "{} {}",
+                    request.method,
+                    request.path.split('?').next().unwrap()
+                ),
+                token,
+            );
+            Ok(self.server.lock().unwrap().handle(request))
         }
         fn set_clipboard_enabled(&self, enabled: bool, token: &str) -> Result<(), AccountError> {
             self.record(format!("set_enabled:{enabled}"), token);
             Ok(())
-        }
-        fn add_clipboard(
-            &self,
-            text: &str,
-            token: &str,
-        ) -> Result<AccountClipboardItem, AccountError> {
-            self.record(format!("add:{text}"), token);
-            Ok(item("synthetic-2", text))
         }
         fn delete_clipboard(&self, id: Option<&str>, token: &str) -> Result<(), AccountError> {
             self.record(format!("delete:{}", id.unwrap_or("*")), token);
@@ -101,11 +164,14 @@ mod tests {
         }
     }
 
-    struct MemoryStorage(Option<SavedAccountSession>);
+    struct MemoryStorage {
+        session: Option<SavedAccountSession>,
+        keystore: Arc<Mutex<Option<String>>>,
+    }
 
     impl AccountSessionStorage for MemoryStorage {
         fn load(&self) -> Result<Option<SavedAccountSession>, AccountError> {
-            Ok(self.0.clone())
+            Ok(self.session.clone())
         }
         fn save(&self, _: &SavedAccountSession) -> Result<(), AccountError> {
             Ok(())
@@ -113,13 +179,12 @@ mod tests {
         fn clear(&self) -> Result<(), AccountError> {
             Ok(())
         }
-    }
-
-    fn item(id: &str, text: &str) -> AccountClipboardItem {
-        AccountClipboardItem {
-            id: id.into(),
-            text: text.into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
+        fn load_clipboard_keystore(&self) -> Result<Option<String>, AccountError> {
+            Ok(self.keystore.lock().unwrap().clone())
+        }
+        fn save_clipboard_keystore(&self, value: &str) -> Result<(), AccountError> {
+            *self.keystore.lock().unwrap() = Some(value.to_owned());
+            Ok(())
         }
     }
 
@@ -151,15 +216,40 @@ mod tests {
     type Session = BackendAccountSession<FakeApi, MemoryStorage>;
     type Calls = Arc<Mutex<Vec<String>>>;
 
-    fn session(saved: Option<SavedAccountSession>) -> (Arc<Session>, Calls) {
+    struct Fixture {
+        session: Arc<Session>,
+        calls: Calls,
+        server: Arc<Mutex<FakeServer>>,
+        keystore: Arc<Mutex<Option<String>>>,
+    }
+
+    fn shell(saved: Option<SavedAccountSession>, server: FakeServer) -> Fixture {
         let calls = Calls::default();
+        let server = Arc::new(Mutex::new(server));
+        let keystore = Arc::new(Mutex::new(None));
         let api = FakeApi {
             calls: Arc::clone(&calls),
+            server: Arc::clone(&server),
         };
-        (
-            Arc::new(BackendAccountSession::new(api, MemoryStorage(saved))),
+        let storage = MemoryStorage {
+            session: saved,
+            keystore: Arc::clone(&keystore),
+        };
+        Fixture {
+            session: Arc::new(BackendAccountSession::new(api, storage)),
             calls,
-        )
+            server,
+            keystore,
+        }
+    }
+
+    /// 账号已由另一台设备开启并建好密钥。
+    fn enabled_elsewhere() -> FakeServer {
+        FakeServer {
+            enabled: true,
+            key_id: Some(OTHER_KEY_ID.into()),
+            ..FakeServer::default()
+        }
     }
 
     fn request(session: &Arc<Session>, action: Value) -> Result<Value, &'static str> {
@@ -168,28 +258,97 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_the_enabled_flag_and_items_the_page_reads() {
-        let (session, calls) = session(signed_in());
-        let page = request(&session, json!({ "operation": "list", "search": "合成" })).unwrap();
-        assert_eq!(
-            page,
-            json!({
-                "enabled": true,
-                "items": [{ "id": "synthetic-1", "text": "合成文本", "updated_at": "2026-01-01T00:00:00Z" }],
-            })
-        );
-        assert_eq!(*calls.lock().unwrap(), ["list:合成"]);
+    fn list_returns_the_driver_shape_with_this_device_pending() {
+        let fixture = shell(signed_in(), enabled_elsewhere());
+        let page = request(
+            &fixture.session,
+            json!({ "operation": "list", "search": "合成" }),
+        )
+        .unwrap();
+        assert_eq!(page["enabled"], true);
+        assert_eq!(page["retention_days"], 0);
+        assert_eq!(page["items"], json!([]));
+        assert_eq!(page["e2e"]["status"], "pending");
+        assert_eq!(page["e2e"]["pending_devices"], 0);
+        assert_eq!(page["e2e"]["undecryptable"], 0);
+        assert_eq!(page["e2e"]["code"].as_str().unwrap().len(), 19);
+        // 登记了本机，并在发请求之前保存了它的密钥串。
+        let calls = fixture.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], "GET /v1/users/me/clipboard/keys");
+        assert!(calls[1].starts_with("PUT /v1/users/me/clipboard/devices/"));
+        assert_eq!(calls[2], "GET /v1/users/me/clipboard/keys");
+        assert!(fixture.keystore.lock().unwrap().is_some());
     }
 
     #[test]
-    fn add_delete_and_set_enabled_reach_the_matching_backend_call() {
-        let (session, calls) = session(signed_in());
-        let added = request(&session, json!({ "operation": "add", "text": "合成上传" })).unwrap();
-        assert_eq!(added["id"], "synthetic-2");
-        assert_eq!(added["text"], "合成上传");
+    fn driver_errors_reach_the_page_with_their_own_code() {
+        let fixture = shell(signed_in(), enabled_elsewhere());
         assert_eq!(
             request(
-                &session,
+                &fixture.session,
+                json!({ "operation": "add", "text": "合成上传" })
+            ),
+            Err("clipboard_device_pending")
+        );
+        let other = "f".repeat(32);
+        assert_eq!(
+            request(
+                &fixture.session,
+                json!({ "operation": "approve", "device_id": other })
+            ),
+            Err("clipboard_device_pending")
+        );
+        assert_eq!(
+            request(
+                &fixture.session,
+                json!({ "operation": "reject", "device_id": other })
+            ),
+            Err("not_found")
+        );
+
+        let disabled = shell(signed_in(), FakeServer::default());
+        assert_eq!(
+            request(&disabled.session, json!({ "operation": "reset" })),
+            Err("clipboard_sync_disabled")
+        );
+    }
+
+    #[test]
+    fn devices_and_reset_return_the_status_shape() {
+        let fixture = shell(signed_in(), enabled_elsewhere());
+        let status = request(&fixture.session, json!({ "operation": "devices" })).unwrap();
+        assert_eq!(status["enabled"], true);
+        assert_eq!(status["status"], "pending");
+        let own = status["device_id"].as_str().unwrap().to_owned();
+        assert_eq!(status["devices"][0]["device_id"], own.as_str());
+        assert_eq!(status["devices"][0]["current"], true);
+        assert_eq!(status["devices"][0]["approved"], false);
+        assert_eq!(status["devices"][0]["code"], status["code"]);
+        assert_eq!(status["devices"][0]["name"], "合成设备");
+
+        let reset = request(&fixture.session, json!({ "operation": "reset" })).unwrap();
+        assert_eq!(reset["status"], "ready");
+        assert_eq!(reset["device_id"], own.as_str());
+        assert_eq!(fixture.server.lock().unwrap().wraps, [own]);
+        assert_eq!(
+            fixture
+                .server
+                .lock()
+                .unwrap()
+                .key_id
+                .as_deref()
+                .map(str::len),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn delete_and_set_enabled_keep_calling_the_backend_directly() {
+        let fixture = shell(signed_in(), enabled_elsewhere());
+        assert_eq!(
+            request(
+                &fixture.session,
                 json!({ "operation": "delete", "id": "synthetic-1" })
             )
             .unwrap(),
@@ -197,44 +356,66 @@ mod tests {
         );
         assert_eq!(
             request(
-                &session,
+                &fixture.session,
                 json!({ "operation": "set_enabled", "enabled": false })
             )
             .unwrap(),
             json!({ "enabled": false })
         );
         assert_eq!(
-            *calls.lock().unwrap(),
-            ["add:合成上传", "delete:synthetic-1", "set_enabled:false"]
+            *fixture.calls.lock().unwrap(),
+            ["delete:synthetic-1", "set_enabled:false"]
         );
     }
 
     #[test]
     fn a_signed_out_session_reports_the_account_code_without_calling_the_backend() {
-        let (session, calls) = session(None);
+        let fixture = shell(None, enabled_elsewhere());
+        let device_id = "f".repeat(32);
         for action in [
             json!({ "operation": "list", "search": "" }),
             json!({ "operation": "add", "text": "合成上传" }),
             json!({ "operation": "delete", "id": "synthetic-1" }),
             json!({ "operation": "set_enabled", "enabled": true }),
+            json!({ "operation": "devices" }),
+            json!({ "operation": "approve", "device_id": device_id }),
+            json!({ "operation": "reject", "device_id": device_id }),
+            json!({ "operation": "remove", "device_id": device_id }),
+            json!({ "operation": "reset" }),
         ] {
-            assert_eq!(request(&session, action), Err("account_unauthorized"));
+            assert_eq!(
+                request(&fixture.session, action),
+                Err("account_unauthorized")
+            );
         }
-        assert!(calls.lock().unwrap().is_empty());
+        assert!(fixture.calls.lock().unwrap().is_empty());
+        assert!(fixture.keystore.lock().unwrap().is_none());
     }
 
     #[test]
     fn malformed_actions_are_rejected_before_the_backend() {
-        let (session, calls) = session(signed_in());
+        let fixture = shell(signed_in(), enabled_elsewhere());
         for action in [
             json!({}),
             json!({ "operation": "clear" }),
             json!({ "operation": "add" }),
             json!({ "operation": "delete" }),
             json!({ "operation": "set_enabled", "enabled": "yes" }),
+            json!({ "operation": "approve" }),
+            json!({ "operation": "remove", "device_id": 7 }),
         ] {
-            assert_eq!(request(&session, action), Err("invalid_cloud_clipboard"));
+            assert_eq!(
+                request(&fixture.session, action),
+                Err("invalid_cloud_clipboard")
+            );
         }
-        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(
+            request(
+                &fixture.session,
+                json!({ "operation": "remove", "device_id": "not-a-device" })
+            ),
+            Err("account_invalid")
+        );
+        assert!(fixture.calls.lock().unwrap().is_empty());
     }
 }

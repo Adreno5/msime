@@ -567,6 +567,12 @@ fn migrated_account_session_payload(value: &str) -> Option<String> {
     None
 }
 
+/// 云剪贴板密钥串约 130 个字符，与桌面端文件的上限相同。
+#[cfg(target_os = "ios")]
+fn is_valid_cloud_clipboard_keystore(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 4096
+}
+
 #[cfg(target_os = "ios")]
 pub struct MobilePlatform<R: Runtime>(PluginHandle<R>);
 
@@ -640,6 +646,37 @@ impl<R: Runtime> MobilePlatform<R> {
 
     pub fn clear_account_session(&self) -> Result<(), ()> {
         self.0.run_mobile_plugin("clearSession", ()).map_err(|_| ())
+    }
+
+    /// 云剪贴板密钥串：钥匙串里与账号会话同一个 App Group 访问组的通用密码项，App、键盘扩展和这里共用一份；`clearSession` 会一并删除它。
+    pub fn load_cloud_clipboard_keystore(&self) -> Result<Option<String>, ()> {
+        let response = self
+            .0
+            .run_mobile_plugin::<AccountSessionResponse>("loadCloudClipboardKeystore", ())
+            .map_err(|_| ())?;
+        response
+            .value
+            .map(|value| {
+                if is_valid_cloud_clipboard_keystore(&value) {
+                    Ok(value)
+                } else {
+                    Err(())
+                }
+            })
+            .transpose()
+    }
+
+    /// 原子替换云剪贴板密钥串。
+    pub fn save_cloud_clipboard_keystore(&self, value: &str) -> Result<(), ()> {
+        if !is_valid_cloud_clipboard_keystore(value) {
+            return Err(());
+        }
+        self.0
+            .run_mobile_plugin(
+                "saveCloudClipboardKeystore",
+                AccountSessionRequest { value },
+            )
+            .map_err(|_| ())
     }
 
     pub async fn sign_in_with_apple(&self, challenge_id: &str, nonce: &str) -> Result<String, ()> {

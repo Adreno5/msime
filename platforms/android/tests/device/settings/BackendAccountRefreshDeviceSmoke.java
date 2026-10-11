@@ -124,14 +124,14 @@ public final class BackendAccountRefreshDeviceSmoke extends Instrumentation {
             return clipboardPage();
         });
 
-        check(account.clipboard("").enabled(), "an account 401 retries after refresh");
+        account.setClipboardEnabled(true);
         check(calls.get() == 3, "account request, refresh and retry are each issued once");
         check(!new JSONObject(store.load()).optString("session_id").isEmpty(),
             "refresh retains a persisted login identity");
     }
 
-    /** 会话相关的用例借云剪贴板的读取做一次普通的账号请求：空搜索的路径和一页空结果。 */
-    private static final String CLIPBOARD = "/v1/users/me/clipboard?q=";
+    /** 会话相关的用例借云剪贴板的开关做一次普通的账号请求。云剪贴板的列表经端到端加密驱动、一次要发好几个请求，不再适合当作「一个请求」。 */
+    private static final String CLIPBOARD = "/v1/users/me/clipboard/settings";
 
     private static JSONObject clipboardPage() throws Exception {
         return new JSONObject().put("enabled", true).put("items", new org.json.JSONArray());
@@ -157,7 +157,7 @@ public final class BackendAccountRefreshDeviceSmoke extends Instrumentation {
 
         boolean cancelled = false;
         try {
-            old.clipboard("");
+            old.setClipboardEnabled(true);
         } catch (java.util.concurrent.CancellationException expected) {
             cancelled = true;
         }
@@ -180,7 +180,7 @@ public final class BackendAccountRefreshDeviceSmoke extends Instrumentation {
 
         boolean cancelled = false;
         try {
-            old.clipboard("");
+            old.setClipboardEnabled(true);
         } catch (java.util.concurrent.CancellationException expected) {
             cancelled = true;
         }
@@ -204,7 +204,7 @@ public final class BackendAccountRefreshDeviceSmoke extends Instrumentation {
 
         boolean cancelled = false;
         try {
-            secondary.clipboard("");
+            secondary.setClipboardEnabled(true);
         } catch (java.util.concurrent.CancellationException expected) {
             cancelled = true;
         }
@@ -222,7 +222,7 @@ public final class BackendAccountRefreshDeviceSmoke extends Instrumentation {
 
         boolean cancelled = false;
         try {
-            account.clipboard("");
+            account.setClipboardEnabled(true);
         } catch (java.util.concurrent.CancellationException expected) {
             cancelled = true;
         }

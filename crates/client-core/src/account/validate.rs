@@ -415,7 +415,7 @@ pub(super) fn read_bounded_response(
 }
 
 /// Largest error body read to find the server's error code; the backend's error documents are a few dozen bytes.
-const MAX_ERROR_BODY_BYTES: u64 = 4096;
+pub(super) const MAX_ERROR_BODY_BYTES: u64 = 4096;
 
 pub(super) fn error_from_response(response: Response) -> AccountError {
     let status = response.status();

@@ -347,11 +347,15 @@ struct AccountSettingsView: View {
     await loadClipboardCount()
   }
 
-  /// 「云剪贴板」行尾的条数。取不到时这一行不显示值，不为一个数字弹出提示。
+  /// 「云剪贴板」行尾的条数；本机等待批准、或有其他设备等待本机批准时显示这件事。取不到时这一行不显示值，不为一个数字弹出提示。
   @MainActor private func loadClipboardCount() async {
     do {
-      let page = try await BackendAccountClient().clipboard(session: .shared)
-      clipboardValue = page.enabled ? "\(page.items.count) 条" : "已关闭"
+      let page = try await BackendAccountClient().clipboard(e2e: IOSCloudClipboardDriver.e2e, session: .shared)
+      let waiting = page.e2e?.pending_devices ?? 0
+      if !page.enabled { clipboardValue = "已关闭" }
+      else if page.isPending { clipboardValue = "等待批准" }
+      else if waiting > 0 { clipboardValue = "\(waiting) 台设备待批准" }
+      else { clipboardValue = "\(page.items.count) 条" }
     } catch {
       if !isCancellation(error) { clipboardValue = nil }
     }

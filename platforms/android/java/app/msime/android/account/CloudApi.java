@@ -245,6 +245,19 @@ public final class CloudApi {
      * <p>带令牌的请求被 401 拒绝时，向令牌来源要一枚新的（同一个被拒的令牌不会再给回来）并只重试一次。
      */
     public Response send(String method, String path, Body body, Auth auth) throws Failure {
+        Exchange exchange = exchange(method, path, body, auth);
+        if (exchange.status() / 100 == 2) {
+            return new Response(exchange.status(), exchange.contentType(), exchange.body());
+        }
+        throw failure(exchange);
+    }
+
+    /**
+     * 发一个请求，不论状态码都把这次往返交回，给要自己读错误响应的调用方（云剪贴板的端到端驱动，见 {@link CloudClipboardE2e}）。
+     *
+     * <p>令牌、401 换令牌重试一次、登录变化的检查都与 {@link #send} 相同；连不上服务器仍抛状态为 0 的 {@link Failure}。
+     */
+    public Exchange exchange(String method, String path, Body body, Auth auth) throws Failure {
         if (path == null || !path.startsWith("/") || path.indexOf('\\') >= 0 || containsDotSegment(path)) {
             throw new IllegalArgumentException("path must be a safe absolute API path");
         }
@@ -263,9 +276,6 @@ public final class CloudApi {
                 throw new Failure(0, "network", offline.getMessage(), 0);
             }
             ensureCurrentLogin(credential);
-            if (exchange.status() / 100 == 2) {
-                return new Response(exchange.status(), exchange.contentType(), exchange.body());
-            }
             if (exchange.status() == 401 && credential.token() != null && attempt == 0) {
                 Credential fresh = credential(credential.auth(), credential.token());
                 if (credential.sessionId() != null
@@ -275,7 +285,7 @@ public final class CloudApi {
                     continue;
                 }
             }
-            throw failure(exchange);
+            return exchange;
         }
     }
 

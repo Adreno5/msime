@@ -134,6 +134,8 @@ constexpr jsize kTypingStatisticsDirectoryLimit = 16384;
 constexpr jsize kPersonalDictionaryRequestLimit = 2248576;
 constexpr jsize kCreateOptionsLimit = 1 * 1024 * 1024;
 constexpr jsize kMobileClipboardHistoryRequestLimit = 524288;
+// 与 msime_client_cloud_clipboard_e2e 的上限一致：继续一步的请求带着一整页密文响应。
+constexpr jsize kCloudClipboardE2eRequestLimit = 2 * 1024 * 1024;
 constexpr jsize kVocabularyReviewRequestLimit = 8 * 1024 * 1024;
 constexpr jsize kPrepareHostRequestLimit = 16384;
 constexpr jsize kSavePreferencesDirectoryLimit = 16384;
@@ -333,6 +335,10 @@ JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_polishPromptRaw
 JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_mobileClipboardHistoryRaw(JNIEnv *env, jclass, jbyteArray request) {
     return bounded_request(env, request, kMobileClipboardHistoryRequestLimit,
         msime_client_mobile_clipboard_history);
+}
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_cloudClipboardE2eRaw(JNIEnv *env, jclass, jbyteArray request) {
+    return bounded_request(env, request, kCloudClipboardE2eRequestLimit,
+        msime_client_cloud_clipboard_e2e);
 }
 JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_doubaoDecodeFrameRaw(JNIEnv *env, jclass, jbyteArray frame) {
     if (!frame) return response(env, msime_client_doubao_decode_frame(nullptr, 0));
