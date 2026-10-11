@@ -40,6 +40,7 @@
 #include "SettingsDocumentFile.h"
 #include "SettingsNavigation.h"
 #include "SettingsStateDirectory.h"
+#include "ThemeSkinModel.h"
 #include "ShellLauncher.h"
 #include "TranslationServiceSettings.h"
 #include "TypingStatisticsModel.h"
@@ -1458,6 +1459,8 @@ struct KeyboardColors {
 struct ThemeEntry {
   std::wstring id;
   std::wstring title;
+  // The catalog's `appearance`: a built-in theme of one fixed mode, none for the themes that follow the mode.
+  std::optional<bool> dark;
   std::optional<ThemePreview> preview;
   std::optional<KeyboardColors> keyboard;
 };
@@ -1662,6 +1665,293 @@ constexpr std::array<std::pair<const wchar_t *, const wchar_t *>, 9>
                    {L"后选", L"choose"},
                    {L"候", L"wait"},
                    {L"后", L"after"}}};
+
+// ---- 外部皮肤 ----
+
+namespace sk = msime::settings::skins;
+
+// The palette a msime_client_resolve_theme answer draws, as the Server reads it: each slot the answer sets over the native palette of the answer's own appearance, else of `dark`. A refused request, or an answer this reader does not recognise, draws the native tokens.
+msime::windows::CandidatePalette resolved_candidate_palette(Response const &response, bool dark) {
+  if (!response.ok)
+    return msime::windows::candidate_native_palette(dark);
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    std::optional<bool> theme_dark;
+    const auto appearance = value.GetNamedValue(L"appearance", JsonValue::CreateNullValue());
+    if (appearance.ValueType() == JsonValueType::String) {
+      if (appearance.GetString() == L"dark")
+        theme_dark = true;
+      else if (appearance.GetString() == L"light")
+        theme_dark = false;
+    }
+    msime::windows::CandidatePaletteOverrides slots;
+    const auto candidate = value.GetNamedValue(L"candidate", JsonValue::CreateNullValue());
+    if (candidate.ValueType() == JsonValueType::Object) {
+      const auto colors = candidate.GetObject();
+      auto slot = [&colors](const wchar_t *key, std::optional<std::string> &target) {
+        const auto item = colors.GetNamedValue(key, JsonValue::CreateNullValue());
+        if (item.ValueType() == JsonValueType::String)
+          target = utf8(item.GetString());
+      };
+      slot(L"surface", slots.surface);
+      slot(L"border", slots.border);
+      slot(L"text", slots.text);
+      slot(L"number", slots.number);
+      slot(L"accent", slots.accent);
+      slot(L"selected", slots.selected);
+      slot(L"selected_text", slots.selected_text);
+      slot(L"selected_number", slots.selected_number);
+      slot(L"hover", slots.hover);
+      slot(L"secondary", slots.secondary);
+      const auto bar = colors.GetNamedValue(L"show_selected_bar", JsonValue::CreateNullValue());
+      if (bar.ValueType() == JsonValueType::Boolean)
+        slots.show_selected_bar = bar.GetBoolean();
+    }
+    return msime::windows::candidate_palette(
+        slots, msime::windows::candidate_native_palette(theme_dark.value_or(dark)));
+  } catch (hresult_error const &) {
+    return msime::windows::candidate_native_palette(dark);
+  }
+}
+
+// One package of the skin catalog (msime_client_skin_catalog) with what its card draws: the palette `resolve()` gives it in each mode, read when the catalog is scanned, and its images as package-relative paths.
+struct SkinPackage {
+  std::wstring id, name, version, base, author, description;
+  std::vector<std::wstring> layouts, themes;
+  // The card radius, 0-32; none keeps the theme's own.
+  std::optional<double> corner_radius;
+  double min_width = 0;
+  // The decoration band, set only for a decorated package (both sizes above zero).
+  double decoration_top = 0;
+  double decoration_width = 0;
+  std::wstring decoration_image;
+  std::wstring decoration_align = L"right";
+  std::wstring background_image;
+  std::wstring background_fit = L"cover";
+  double background_opacity = 1;
+  msime::windows::CandidatePalette light, dark;
+};
+
+struct SkinIssue {
+  std::wstring folder, reason;
+};
+
+// One package image as msime_client_skin_resource answered it; `bytes` is empty when it could not be read.
+struct SkinImageBytes {
+  std::wstring key;
+  std::string content_type;
+  std::vector<uint8_t> bytes;
+};
+
+// What one scan of the skin root found. `signature` is the catalog answer itself, so an automatic rescan that found the same thing leaves the cards alone, as the shared page compares JSON.stringify of two scans.
+struct SkinScan {
+  bool ok = false;
+  std::string signature;
+  std::wstring directory;
+  std::vector<SkinPackage> packages;
+  std::vector<SkinIssue> issues;
+  std::vector<SkinImageBytes> images;
+};
+
+// The key a package image is kept under: the package id and its relative path.
+std::wstring skin_image_key(std::wstring const &id, std::wstring const &relative) {
+  return id + L"\n" + relative;
+}
+
+// `dimension` in external-skins.tsx: a manifest size inside [0, maximum], else 0.
+double skin_dimension(double value, double maximum) {
+  return std::isfinite(value) && value >= 0 && value <= maximum ? value : 0;
+}
+
+std::wstring json_text(JsonObject const &object, wchar_t const *key) {
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  return value.ValueType() == JsonValueType::String ? std::wstring(value.GetString().c_str())
+                                                    : std::wstring();
+}
+
+std::optional<double> json_number(JsonObject const &object, wchar_t const *key) {
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  if (value.ValueType() != JsonValueType::Number)
+    return std::nullopt;
+  return value.GetNumber();
+}
+
+std::vector<std::wstring> json_texts(JsonObject const &object, wchar_t const *key) {
+  std::vector<std::wstring> values;
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  if (value.ValueType() != JsonValueType::Array)
+    return values;
+  for (auto const &item : value.GetArray())
+    if (item.ValueType() == JsonValueType::String)
+      values.emplace_back(item.GetString().c_str());
+  return values;
+}
+
+// The content type and bytes of a msime_client_skin_resource answer, {"ok":true,"value":{"contentType":...,"bytes":[...]}}. The byte array is read by hand: an image of a few hundred kilobytes is that many JSON numbers, which Windows.Data.Json would turn into as many objects.
+std::optional<std::pair<std::string, std::vector<uint8_t>>>
+skin_resource_bytes(std::string const &answer) {
+  const std::string type_key = "\"contentType\":\"";
+  const std::string bytes_key = "\"bytes\":[";
+  const auto type_at = answer.find(type_key);
+  const auto bytes_at = answer.find(bytes_key);
+  if (type_at == std::string::npos || bytes_at == std::string::npos)
+    return std::nullopt;
+  const auto type_start = type_at + type_key.size();
+  const auto type_end = answer.find('"', type_start);
+  if (type_end == std::string::npos)
+    return std::nullopt;
+  std::vector<uint8_t> bytes;
+  size_t at = bytes_at + bytes_key.size();
+  unsigned value = 0;
+  bool digits = false;
+  bool closed = false;
+  for (; at < answer.size() && !closed; ++at) {
+    const char c = answer[at];
+    if (c >= '0' && c <= '9') {
+      value = value * 10 + static_cast<unsigned>(c - '0');
+      if (value > 255)
+        return std::nullopt;
+      digits = true;
+    } else if (c == ',' || c == ']') {
+      if (digits)
+        bytes.push_back(static_cast<uint8_t>(value));
+      else if (c == ',' || !bytes.empty())
+        return std::nullopt;
+      value = 0;
+      digits = false;
+      closed = c == ']';
+    } else if (c != ' ') {
+      return std::nullopt;
+    }
+  }
+  if (!closed)
+    return std::nullopt;
+  return std::pair{answer.substr(type_start, type_end - type_start), std::move(bytes)};
+}
+
+// The palette a package's card draws in one mode: the custom theme made of the package alone over its manifest base, as the shared card layers `customCandidateStyle(skin.base, undefined, palette)`. The layout is one the package declares, since a card previews the package whatever layout the candidate window has.
+msime::windows::CandidatePalette skin_card_palette(SkinPackage const &skin, std::string const &root,
+                                                   bool dark) {
+  JsonObject custom;
+  custom.SetNamedValue(L"base", JsonValue::CreateStringValue(hstring(skin.base)));
+  custom.SetNamedValue(L"candidate_skin", JsonValue::CreateStringValue(hstring(skin.id)));
+  custom.SetNamedValue(L"candidate_skin_dark", JsonValue::CreateStringValue(hstring(skin.id)));
+  JsonObject request;
+  request.SetNamedValue(L"global_theme", JsonValue::CreateStringValue(L"custom"));
+  request.SetNamedValue(L"custom_theme", custom);
+  request.SetNamedValue(L"dark", JsonValue::CreateBooleanValue(dark));
+  const bool horizontal = !skin.layouts.empty() && skin.layouts.front() == L"horizontal";
+  request.SetNamedValue(L"layout",
+                        JsonValue::CreateStringValue(horizontal ? L"horizontal" : L"vertical"));
+  request.SetNamedValue(L"skins_directory", JsonValue::CreateStringValue(text(root)));
+  const auto body = utf8(request.Stringify());
+  return resolved_candidate_palette(
+      take_response(msime_client_resolve_theme(reinterpret_cast<const uint8_t *>(body.data()),
+                                               body.size())),
+      dark);
+}
+
+// One package image through msime_client_skin_resource, which checks again that it is an image inside the package. Empty when it cannot be read.
+std::vector<uint8_t> skin_image(std::string const &root, std::wstring const &id,
+                                std::wstring const &relative, std::string &content_type) {
+  JsonObject request;
+  request.SetNamedValue(L"directory", JsonValue::CreateStringValue(text(root)));
+  request.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+  request.SetNamedValue(L"relative", JsonValue::CreateStringValue(hstring(relative)));
+  request.SetNamedValue(L"kind", JsonValue::CreateStringValue(L"image"));
+  const auto body = utf8(request.Stringify());
+  const auto response = take_response(
+      msime_client_skin_resource(reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+  if (!response.ok)
+    return {};
+  auto resource = skin_resource_bytes(response.text);
+  if (!resource)
+    return {};
+  content_type = std::move(resource->first);
+  return std::move(resource->second);
+}
+
+// Scans the skin root the Server reads (`skins` under the state directory, the root the Tauri shell scans as well), then resolves each package's palettes and reads its images. Reads the disk: call on a worker. A root that cannot be named fails the scan; an unreadable root is an empty catalog, as msime_client_skin_catalog answers it.
+SkinScan read_skin_catalog(std::filesystem::path const &root) {
+  SkinScan scan;
+  const auto path = root.is_absolute() ? path_utf8(root) : std::string();
+  if (path.empty())
+    return scan;
+  auto response = take_response(
+      msime_client_skin_catalog(reinterpret_cast<const uint8_t *>(path.data()), path.size()));
+  if (!response.ok)
+    return scan;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    for (auto const &item : value.GetNamedArray(L"packages")) {
+      if (item.ValueType() != JsonValueType::Object)
+        continue;
+      const auto object = item.GetObject();
+      SkinPackage skin;
+      skin.id = json_text(object, L"id");
+      skin.name = json_text(object, L"name");
+      if (skin.id.empty())
+        continue;
+      if (skin.name.empty())
+        skin.name = skin.id;
+      skin.version = json_text(object, L"version");
+      skin.base = json_text(object, L"base");
+      if (skin.base.empty())
+        skin.base = L"system";
+      skin.author = json_text(object, L"author");
+      skin.description = json_text(object, L"description");
+      skin.layouts = json_texts(object, L"layouts");
+      skin.themes = json_texts(object, L"themes");
+      if (const auto radius = json_number(object, L"cornerRadiusDip"))
+        skin.corner_radius = skin_dimension(*radius, 32);
+      skin.min_width = skin_dimension(json_number(object, L"minWidthDip").value_or(0), 1000);
+      const double top = skin_dimension(json_number(object, L"decorationTopDip").value_or(0), 500);
+      const double width =
+          skin_dimension(json_number(object, L"decorationWidthDip").value_or(0), 1000);
+      if (top > 0 && width > 0) {
+        skin.decoration_top = top;
+        skin.decoration_width = width;
+        skin.decoration_image = json_text(object, L"decorationImage");
+      }
+      if (const auto align = json_text(object, L"decorationAlign");
+          align == L"left" || align == L"center")
+        skin.decoration_align = align;
+      if (const auto background =
+              object.GetNamedValue(L"background", JsonValue::CreateNullValue());
+          background.ValueType() == JsonValueType::Object) {
+        const auto fields = background.GetObject();
+        skin.background_image = json_text(fields, L"image");
+        if (const auto fit = json_text(fields, L"fit"); fit == L"contain" || fit == L"stretch")
+          skin.background_fit = fit;
+        const double opacity = json_number(fields, L"opacity").value_or(0);
+        skin.background_opacity = std::isfinite(opacity) ? std::clamp(opacity, 0.0, 1.0) : 0.0;
+      }
+      skin.light = skin_card_palette(skin, path, false);
+      skin.dark = skin_card_palette(skin, path, true);
+      for (auto const *relative : {&skin.decoration_image, &skin.background_image}) {
+        if (relative->empty())
+          continue;
+        SkinImageBytes image;
+        image.key = skin_image_key(skin.id, *relative);
+        image.bytes = skin_image(path, skin.id, *relative, image.content_type);
+        scan.images.push_back(std::move(image));
+      }
+      scan.packages.push_back(std::move(skin));
+    }
+    for (auto const &item : value.GetNamedArray(L"issues")) {
+      if (item.ValueType() != JsonValueType::Object)
+        continue;
+      const auto object = item.GetObject();
+      scan.issues.push_back({json_text(object, L"folder"), json_text(object, L"reason")});
+    }
+  } catch (hresult_error const &) {
+    return SkinScan{};
+  }
+  scan.ok = true;
+  scan.signature = std::move(response.text);
+  scan.directory = root.wstring();
+  return scan;
+}
 
 // ---- 打字统计 ----
 
@@ -1904,6 +2194,9 @@ private:
         entry.title = theme.GetNamedString(L"title", L"").c_str();
         if (entry.id.empty() || entry.title.empty())
           continue;
+        if (const auto appearance = json_text(theme, L"appearance");
+            appearance == L"dark" || appearance == L"light")
+          entry.dark = appearance == L"dark";
         const auto preview =
             theme.GetNamedValue(L"preview", JsonValue::CreateNullValue());
         if (preview.ValueType() == JsonValueType::Object) {
@@ -1973,7 +2266,8 @@ private:
   }
 
   // The candidate palette the Server draws for a global theme. The request is the one the Server sends (candidate_theme_request): the stored custom theme without its keyboard design, the candidate window's mode and layout, and the skin root, so a custom theme's candidate_colors and skin package reach the preview exactly as they reach the real window. A request the shared layer refuses, or a response this reader does not recognise, draws the native tokens, as the Server does. The last answer is kept for its request, since the preview redraws on every slider step.
-  msime::windows::CandidatePalette candidate_theme(std::wstring const &id) {
+  // Without `skins` the custom theme is resolved without its skin packages and without the skin root, which is how the shared page draws the 自定义 card: what the custom theme is made of besides a package (`customCandidateStyle(base, candidate_colors)`). That answer is kept apart, so the card and the preview do not evict each other.
+  msime::windows::CandidatePalette candidate_theme(std::wstring const &id, bool skins = true) {
     const bool dark = candidate_dark();
     JsonObject request;
     request.SetNamedValue(L"global_theme",
@@ -1981,8 +2275,14 @@ private:
     if (const auto custom = document_.Value(L"custom_theme");
         custom && custom.ValueType() == JsonValueType::Object) {
       auto copy = JsonObject::Parse(custom.Stringify());
-      if (copy.HasKey(L"keyboard"))
-        copy.Remove(L"keyboard");
+      std::vector<const wchar_t *> dropped{L"keyboard"};
+      if (!skins) {
+        dropped.push_back(L"candidate_skin");
+        dropped.push_back(L"candidate_skin_dark");
+      }
+      for (const auto *key : dropped)
+        if (copy.HasKey(key))
+          copy.Remove(key);
       request.SetNamedValue(L"custom_theme", copy);
     }
     request.SetNamedValue(L"dark", JsonValue::CreateBooleanValue(dark));
@@ -1992,66 +2292,22 @@ private:
             document_.String(L"candidate_layout", L"vertical") == L"horizontal"
                 ? L"horizontal"
                 : L"vertical"));
-    if (const auto state = state_directory(); state.is_absolute())
-      if (const auto skins = path_utf8(state / L"skins"); !skins.empty())
+    if (const auto state = state_directory(); skins && state.is_absolute())
+      if (const auto root = path_utf8(state / L"skins"); !root.empty())
         request.SetNamedValue(L"skins_directory",
-                              JsonValue::CreateStringValue(text(skins)));
+                              JsonValue::CreateStringValue(text(root)));
     auto body = utf8(request.Stringify());
-    if (resolved_theme_ && body == resolved_request_)
-      return *resolved_theme_;
+    auto &cached_request = skins ? resolved_request_ : unskinned_request_;
+    auto &cached = skins ? resolved_theme_ : unskinned_theme_;
+    if (cached && body == cached_request)
+      return *cached;
 
-    auto palette = msime::windows::candidate_native_palette(dark);
-    auto response = take_response(msime_client_resolve_theme(
-        reinterpret_cast<const uint8_t *>(body.data()), body.size()));
-    if (response.ok) {
-      try {
-        const auto value =
-            JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
-        std::optional<bool> theme_dark;
-        const auto appearance =
-            value.GetNamedValue(L"appearance", JsonValue::CreateNullValue());
-        if (appearance.ValueType() == JsonValueType::String) {
-          if (appearance.GetString() == L"dark")
-            theme_dark = true;
-          else if (appearance.GetString() == L"light")
-            theme_dark = false;
-        }
-        msime::windows::CandidatePaletteOverrides slots;
-        const auto candidate =
-            value.GetNamedValue(L"candidate", JsonValue::CreateNullValue());
-        if (candidate.ValueType() == JsonValueType::Object) {
-          const auto colors = candidate.GetObject();
-          auto slot = [&colors](const wchar_t *key,
-                                std::optional<std::string> &target) {
-            const auto item =
-                colors.GetNamedValue(key, JsonValue::CreateNullValue());
-            if (item.ValueType() == JsonValueType::String)
-              target = utf8(item.GetString());
-          };
-          slot(L"surface", slots.surface);
-          slot(L"border", slots.border);
-          slot(L"text", slots.text);
-          slot(L"number", slots.number);
-          slot(L"accent", slots.accent);
-          slot(L"selected", slots.selected);
-          slot(L"selected_text", slots.selected_text);
-          slot(L"selected_number", slots.selected_number);
-          slot(L"hover", slots.hover);
-          slot(L"secondary", slots.secondary);
-          const auto bar = colors.GetNamedValue(L"show_selected_bar",
-                                                JsonValue::CreateNullValue());
-          if (bar.ValueType() == JsonValueType::Boolean)
-            slots.show_selected_bar = bar.GetBoolean();
-        }
-        palette = msime::windows::candidate_palette(
-            slots, msime::windows::candidate_native_palette(
-                       theme_dark.value_or(dark)));
-      } catch (hresult_error const &) {
-        palette = msime::windows::candidate_native_palette(dark);
-      }
-    }
-    resolved_request_ = std::move(body);
-    resolved_theme_ = palette;
+    const auto palette = resolved_candidate_palette(
+        take_response(msime_client_resolve_theme(
+            reinterpret_cast<const uint8_t *>(body.data()), body.size())),
+        dark);
+    cached_request = std::move(body);
+    cached = palette;
     return palette;
   }
 
@@ -2106,6 +2362,9 @@ private:
     }
     // A skin package may have been edited in the shared app; its colours are read again on the next preview.
     resolved_theme_.reset();
+    // 与共享页一样，「主题」页显示时窗口重新获得焦点就重扫皮肤目录（用户可能刚把皮肤文件夹拷进去）；扫到的与上次相同时不重画。
+    if (root_ && current_page_ == "themes")
+      scan_skins(false);
     if (!changed || !root_)
       return;
     // A click that activates the window is still on its way to a control: the press and release arrive after this event, and a redraw between them would replace the control under the pointer and drop the click. That redraw waits for the release. Every other activation redraws once this event has returned.
@@ -2522,6 +2781,9 @@ private:
       reset_statistics_page();
     if (id == "plugins" && id != current_page_)
       enter_plugins_page();
+    // 每次进入「主题」页都重扫皮肤目录，与共享页重新显示时一样。
+    if (id == "themes" && id != current_page_)
+      skins_stale_ = true;
     current_page_ = id;
     select_navigation_item();
     render_page(false);
@@ -3613,9 +3875,9 @@ private:
     if (id == L"system")
       return ThemePreview{palette_.window_bg, palette_.preview_bg,
                           palette_.accent, palette_.text};
-    // The custom theme is what the user made of it: the candidate card as the shared layer resolves it (base, candidate_colors and skin package), over the base theme's backdrop. The catalog's own entry for it only shows the default custom colours.
+    // The custom card is what the custom theme is made of besides a skin package, as on the shared page: the candidate card as the shared layer resolves its base and candidate_colors, over the base theme's backdrop. Each package has its own card after the built-in ones. The catalog's own entry for it only shows the default custom colours.
     if (id == L"custom") {
-      const auto candidate = candidate_theme(id);
+      const auto candidate = candidate_theme(id, false);
       const auto base = builtin(document_.String(L"custom_theme.base", L"system"));
       return ThemePreview{base ? base->background : palette_.window_bg,
                           to_color(candidate.surface), to_color(candidate.accent),
@@ -3679,14 +3941,36 @@ private:
                                          RoutedEventArgs const &) {
       if (on)
         return;
-      change([&](PreferencesDocument &doc) { doc.SetString(L"global_theme", id); },
-             true);
+      change([&](PreferencesDocument &doc) {
+        doc.SetString(L"global_theme", id);
+        // 选「自定义」卡片本身会去掉两个槽位的皮肤包，保留自定义主题的其余部分，画在它自己的底上。
+        if (id == L"custom") {
+          doc.SetValue(L"custom_theme.candidate_skin", JsonValue::CreateNullValue());
+          doc.SetValue(L"custom_theme.candidate_skin_dark", JsonValue::CreateNullValue());
+        }
+      }, true);
     });
     return card;
   }
 
+  // 共享设置「主题」页（packages/ui/src/settings/pages/skin-page.tsx）在 Windows 上的样子：页首说明，内置主题卡片，皮肤包卡片（skin/external-skins.tsx 的 ExternalSkinCard）和两种明暗各用哪款皮肤的说明，「外观」组，「更多皮肤」组的「外部皮肤」一行（ExternalSkinDirectoryRow），「自定义主题」组的七个候选颜色取色器（candidate-colors-section.tsx），以及各界面的单独明暗。规则在 ThemeSkinModel.h。Windows 不是触屏键盘设计的宿主，没有「我的皮肤」编辑器；发布到社区和社区皮肤库仍在共享应用里。
   void build_themes_page(StackPanel const &page) {
+    if (!indexing_ && skins_stale_)
+      scan_skins(!skins_scanned_);
     const auto current = document_.String(L"global_theme", L"system");
+    const bool custom_selected = current == L"custom";
+    const auto custom = custom_skins(document_);
+    const bool active_dark = candidate_dark();
+    const auto listed = listed_skins();
+    const auto shown = sk::shown_package(custom_selected, custom, active_dark, listed);
+
+    // 卡片上的明暗预览只改卡片，页首照共享页说明这一点。
+    auto intro = make_text(
+        L"选择候选窗口和悬浮工具栏使用的主题；明暗预览仅影响当前卡片，不修改设置。", 14,
+        palette_.sub);
+    intro.Margin(Thickness{4, 0, 4, 12});
+    page.Children().Append(intro);
+
     if (themes_.empty()) {
       auto group = add_group(page, L"");
       add_row(group, 0xE790, L"全局主题", L"无法读取主题列表。请重新安装输入法后再试。",
@@ -3701,12 +3985,36 @@ private:
       for (const auto &theme : themes_) {
         record(theme.title, L"主题");
         if (!indexing_) {
-          const auto card = make_theme_card(theme, theme.id == current);
+          // 自定义主题用着目录里的皮肤包时，选中的是那款包的卡片，「自定义」卡片代表不带皮肤包的自定义主题。
+          const bool on = theme.id == current && (theme.id != L"custom" || !shown);
+          const auto card = make_theme_card(theme, on);
           mark_search_target(theme.title, card);
           cards.Children().Append(card);
         }
       }
       page.Children().Append(cards);
+    }
+
+    if (!skin_packages_.empty()) {
+      StackPanel list;
+      list.Spacing(8);
+      list.Margin(Thickness{0, 4, 0, 0});
+      const std::wstring layout =
+          document_.String(L"candidate_layout", L"vertical") == L"horizontal" ? L"horizontal"
+                                                                               : L"vertical";
+      for (const auto &skin : skin_packages_) {
+        record(skin.name, L"皮肤");
+        if (!indexing_)
+          list.Children().Append(make_skin_card(
+              skin, sk::skin_in_use(custom_selected, custom, skin.id), active_dark, layout));
+      }
+      page.Children().Append(list);
+    }
+    if (const auto summary = sk::slot_summary(custom_selected, custom, listed);
+        !summary.empty()) {
+      auto note = make_text(summary, 12, palette_.sub);
+      note.Margin(Thickness{4, 10, 4, 0});
+      page.Children().Append(note);
     }
 
     auto look = add_group(page, L"外观");
@@ -3719,12 +4027,17 @@ private:
     slider_row(look, 0xE8E9, L"候选窗字号", L"候选词的字号（12–32）",
                L"candidate_font_size", 12, 32, 18);
     candidate_font_rows(look);
-    shell_row(look, 0xE70F, L"自定义主题",
-              L"取色器、皮肤包与键盘样式在水杉输入法应用中编辑", L"编辑",
-              nav::shell_links::skin);
-    shell_row(look, 0xE716, L"社区皮肤",
+
+    auto more = add_group(page, L"更多皮肤");
+    external_skins_row(more);
+    shell_row(more, 0xE716, L"社区皮肤",
               L"在水杉输入法应用的「主题 › 社区皮肤」中浏览、安装和发布候选窗口皮肤", L"浏览",
               nav::shell_links::skin);
+
+    auto colors = add_group(page, L"自定义主题");
+    record(L"自定义主题", L"候选颜色取色器");
+    mark_search_target(L"自定义主题", colors);
+    candidate_color_rows(colors);
 
     auto surfaces = add_group(page, L"界面主题");
     select_row(surfaces, 0xE8FD, L"候选窗口主题", L"覆盖颜色模式，只影响候选窗口",
@@ -3744,6 +4057,630 @@ private:
                surface_theme_options(), L"follow");
     select_row(surfaces, 0xE92E, L"屏幕键盘主题", L"", L"screen_keyboard_theme",
                surface_theme_options(), L"follow");
+  }
+
+  // ---- 皮肤包 ----
+
+  void redraw_themes() {
+    // 取色器打开时不重画：重画会拿掉它所在的页面。它关上时整页重画一次。
+    if (!closed_ && current_page_ == "themes" && !color_picker_open_)
+      queue_refresh();
+  }
+
+  // Runs `call` on a worker and hands its result to `done` on the UI thread, unless the window has closed by then.
+  template <typename T>
+  fire_and_forget run_worker(std::function<T()> call, std::function<void(T &)> done) {
+    auto weak = get_weak();
+    auto queue = DispatcherQueue();
+    co_await resume_background();
+    auto result = std::make_shared<T>(call());
+    queue.TryEnqueue([weak, done = std::move(done), result] {
+      if (auto self = weak.get(); self && !self->closed_)
+        done(*result);
+    });
+  }
+
+  // 皮肤根目录：Server 和 Tauri 外壳读的同一个，状态目录下的 skins。
+  std::filesystem::path skins_root() const {
+    const auto state = state_directory();
+    return state.is_absolute() ? state / L"skins" : std::filesystem::path();
+  }
+
+  // 以 `base` 为底的皮肤包放在哪个槽位，按主题目录里那个主题的明暗。
+  sk::Slot theme_slot(std::wstring const &base) const {
+    for (const auto &entry : themes_)
+      if (entry.id == base && entry.dark)
+        return *entry.dark ? sk::Slot::dark : sk::Slot::light;
+    return sk::Slot::either;
+  }
+
+  std::wstring theme_title(std::wstring const &id) const {
+    for (const auto &entry : themes_)
+      if (entry.id == id)
+        return entry.title;
+    return id;
+  }
+
+  std::vector<sk::Listed> listed_skins() const {
+    std::vector<sk::Listed> listed;
+    listed.reserve(skin_packages_.size());
+    for (const auto &skin : skin_packages_)
+      listed.push_back({skin.id, skin.name, theme_slot(skin.base)});
+    return listed;
+  }
+
+  static sk::CustomSkins custom_skins(PreferencesDocument const &doc) {
+    sk::CustomSkins value;
+    value.base = doc.String(L"custom_theme.base", L"system");
+    value.light = doc.String(L"custom_theme.candidate_skin", L"");
+    value.dark = doc.String(L"custom_theme.candidate_skin_dark", L"");
+    return value;
+  }
+
+  static void write_custom_skins(PreferencesDocument &doc, sk::CustomSkins const &value) {
+    doc.SetString(L"custom_theme.base", value.base);
+    auto slot = [&doc](wchar_t const *key, std::wstring const &id) {
+      if (id.empty())
+        doc.SetValue(key, JsonValue::CreateNullValue());
+      else
+        doc.SetString(key, id);
+    };
+    slot(L"custom_theme.candidate_skin", value.light);
+    slot(L"custom_theme.candidate_skin_dark", value.dark);
+  }
+
+  // 打开一款包的开关：放进它所属的槽位，清单的 base 成为自定义主题的底，这样预览一致，取下皮肤后也保留这个底；关掉已在使用的包则把它从所在的槽位取下。两种都选上自定义主题。
+  void use_skin(std::wstring const &id, std::wstring const &base, bool use) {
+    const auto listed = listed_skins();
+    const auto slot = theme_slot(base);
+    auto slot_of = [&listed](std::wstring const &other) -> std::optional<sk::Slot> {
+      for (const auto &entry : listed)
+        if (entry.id == other)
+          return entry.slot;
+      return std::nullopt;
+    };
+    change([&](PreferencesDocument &doc) {
+      const auto current = custom_skins(doc);
+      write_custom_skins(doc, use ? sk::apply_candidate_skin(current, id, base, slot, slot_of)
+                                  : sk::remove_candidate_skin(current, id));
+      doc.SetString(L"global_theme", L"custom");
+    }, true);
+  }
+
+  // 扫描皮肤目录，同一时间只有一次在进行。`manual`（第一次进入页面和「刷新皮肤」）的结果总会落地，并重读皮肤图片；自动重扫（再次进入页面、窗口重新获得焦点）的结果和上次相同时保留原来的卡片，也不显示「正在读取」，免得窗口一获得焦点整页就重画。进行中又点了「刷新皮肤」时，这次结束后再扫一次。
+  void scan_skins(bool manual) {
+    if (skins_pending_) {
+      skins_manual_queued_ = skins_manual_queued_ || manual;
+      return;
+    }
+    skins_pending_ = true;
+    skins_stale_ = false;
+    if (manual) {
+      skins_busy_ = true;
+      skins_failed_ = false;
+      redraw_themes();
+    }
+    run_worker<SkinScan>([root = skins_root()] { return read_skin_catalog(root); },
+                         [this, manual](SkinScan &scan) { finish_skin_scan(scan, manual); });
+  }
+
+  void finish_skin_scan(SkinScan &scan, bool manual) {
+    skins_pending_ = false;
+    const bool was_busy = skins_busy_;
+    skins_busy_ = false;
+    bool redraw = was_busy;
+    if (!scan.ok) {
+      // 读取失败保留上次扫描的结果。
+      if (manual || !skins_failed_) {
+        skins_failed_ = true;
+        redraw = true;
+      }
+    } else {
+      const bool failed = skins_failed_;
+      skins_failed_ = false;
+      redraw = redraw || failed;
+      if (manual || !skins_scanned_ || scan.signature != skins_signature_) {
+        skins_scanned_ = true;
+        skins_signature_ = std::move(scan.signature);
+        skins_directory_ = std::move(scan.directory);
+        skin_packages_ = std::move(scan.packages);
+        skin_issues_ = std::move(scan.issues);
+        // 新的一次扫描：旧图片作废，在途的解码按 revision 丢弃。
+        ++skins_revision_;
+        skin_images_.clear();
+        skin_image_failures_.clear();
+        for (auto &image : scan.images) {
+          if (image.bytes.empty())
+            skin_image_failures_.insert(image.key);
+          else
+            load_skin_image(std::move(image.key), std::move(image.content_type),
+                            std::move(image.bytes), skins_revision_);
+        }
+        redraw = true;
+      }
+    }
+    if (skins_manual_queued_) {
+      skins_manual_queued_ = false;
+      scan_skins(true);
+      return;
+    }
+    if (redraw)
+      redraw_themes();
+  }
+
+  // 把一张皮肤图片解码成卡片能画的图像，SVG 用 SvgImageSource，其余交给 BitmapImage。解码不了时记为失败，卡片上说明并保留基础预览。
+  fire_and_forget load_skin_image(std::wstring key, std::string content_type,
+                                  std::vector<uint8_t> bytes, uint64_t revision) {
+    auto strong = get_strong();
+    ImageSource source{nullptr};
+    try {
+      Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+      Windows::Storage::Streams::DataWriter writer(stream);
+      writer.WriteBytes(array_view<uint8_t const>(bytes.data(), bytes.data() + bytes.size()));
+      co_await writer.StoreAsync();
+      writer.DetachStream();
+      stream.Seek(0);
+      if (content_type == "image/svg+xml") {
+        Imaging::SvgImageSource svg;
+        if (co_await svg.SetSourceAsync(stream) == Imaging::SvgImageSourceLoadStatus::Success)
+          source = svg;
+      } else {
+        Imaging::BitmapImage bitmap;
+        co_await bitmap.SetSourceAsync(stream);
+        source = bitmap;
+      }
+    } catch (hresult_error const &) {
+      source = nullptr;
+    }
+    if (closed_ || revision != skins_revision_)
+      co_return;
+    if (source)
+      skin_images_.insert_or_assign(key, source);
+    else
+      skin_image_failures_.insert(key);
+    redraw_themes();
+  }
+
+  // 一张已解码的皮肤图片；还在解码、读不到或解码失败时为空。
+  ImageSource skin_image_source(std::wstring const &id, std::wstring const &relative) const {
+    if (relative.empty())
+      return nullptr;
+    const auto found = skin_images_.find(skin_image_key(id, relative));
+    return found == skin_images_.end() ? nullptr : found->second;
+  }
+
+  bool skin_image_failed(std::wstring const &id, std::wstring const &relative) const {
+    return !relative.empty() && skin_image_failures_.contains(skin_image_key(id, relative));
+  }
+
+  // 画到屏幕上才发现解码不了的图片同样记为失败。`image` 是装饰图的 Image 或背景图的 ImageBrush。
+  template <typename Element> void watch_skin_image(Element const &image, std::wstring key) {
+    image.ImageFailed([this, key = std::move(key), revision = skins_revision_](
+                          Inspectable const &, ExceptionRoutedEventArgs const &) {
+      if (revision != skins_revision_ || skin_image_failures_.contains(key))
+        return;
+      skin_images_.erase(key);
+      skin_image_failures_.insert(key);
+      redraw_themes();
+    });
+  }
+
+  // 一张皮肤包卡片（ExternalSkinCard）：标题带上卡片画的明暗和「使用中」，说明、槽位、id · 版本 · 作者，开关和「预览浅色 / 预览深色」，以及按 resolve() 给这款包的配色画的横排、竖排两个候选窗口，带上包的圆角、最小宽度、背景图和装饰图。悬浮工具栏的预览要用包的 CSS 画，这里不画，与内置主题的卡片一致。
+  FrameworkElement make_skin_card(SkinPackage const &skin, bool selected, bool active_dark,
+                                  std::wstring const &layout) {
+    const auto slot = theme_slot(skin.base);
+    std::optional<bool> override_dark;
+    // 卡片上选的预览明暗在当前明暗变了以后作废，与共享卡片一样。
+    if (const auto found = skin_preview_overrides_.find(skin.id);
+        found != skin_preview_overrides_.end() && found->second.first == active_dark)
+      override_dark = found->second.second;
+    const bool dark = sk::card_dark(slot, override_dark, active_dark, skin.themes);
+    const bool compatible =
+        sk::card_compatible(slot, skin.layouts, skin.themes, layout, active_dark);
+
+    Border card;
+    card.Background(brush(palette_.card));
+    card.BorderBrush(brush(selected ? palette_.accent : palette_.stroke));
+    card.BorderThickness(selected ? Thickness{2, 2, 2, 2} : Thickness{1, 1, 1, 1});
+    card.CornerRadius(CornerRadius{6, 6, 6, 6});
+    card.Padding(Thickness{12, 12, 16, 12});
+    Grid body;
+    body.ColumnSpacing(16);
+    ColumnDefinition preview_column;
+    preview_column.Width(GridLength{1, GridUnitType::Auto});
+    ColumnDefinition text_column;
+    text_column.Width(GridLength{1, GridUnitType::Star});
+    body.ColumnDefinitions().Append(preview_column);
+    body.ColumnDefinitions().Append(text_column);
+
+    auto preview = make_skin_preview(skin, dark);
+    Grid::SetColumn(preview, 0);
+    body.Children().Append(preview);
+
+    StackPanel texts;
+    texts.Spacing(4);
+    texts.VerticalAlignment(VerticalAlignment::Center);
+    StackPanel title;
+    title.Orientation(Orientation::Horizontal);
+    title.Spacing(8);
+    title.Children().Append(
+        make_text(skin.name + (dark ? L"（深色）" : L"（浅色）"), 14, palette_.text));
+    if (selected) {
+      auto badge = make_text(L"使用中", 12, palette_.accent);
+      badge.VerticalAlignment(VerticalAlignment::Center);
+      title.Children().Append(badge);
+    }
+    texts.Children().Append(title);
+    texts.Children().Append(make_text(
+        sk::card_description(compatible, skin.description, theme_title(skin.base), skin.layouts,
+                             skin.themes),
+        13, palette_.sub));
+    texts.Children().Append(make_text(sk::slot_label(slot), 12, palette_.faint));
+    if (const auto meta = sk::card_meta(skin.id, skin.version, skin.author); !meta.empty())
+      texts.Children().Append(make_text(meta, 12, palette_.faint));
+
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(16);
+    actions.Margin(Thickness{0, 6, 0, 0});
+    // 已在使用的包总能关掉，哪怕布局变了以后它不再能选。
+    actions.Children().Append(toggle_control(
+        skin.name, selected,
+        [this, id = skin.id, base = skin.base, selected](bool) { use_skin(id, base, !selected); },
+        compatible || selected));
+    if (slot == sk::Slot::either) {
+      auto toggle = button_control(dark ? L"预览浅色" : L"预览深色",
+                                   [this, id = skin.id, active_dark, dark] {
+                                     skin_preview_overrides_[id] = {active_dark, !dark};
+                                     redraw_themes();
+                                   });
+      toggle.VerticalAlignment(VerticalAlignment::Center);
+      actions.Children().Append(toggle);
+    }
+    texts.Children().Append(actions);
+    if (skin_image_failed(skin.id, skin.decoration_image) ||
+        skin_image_failed(skin.id, skin.background_image)) {
+      auto failed = make_text(L"皮肤图片加载失败，保留基础预览。可刷新皮肤重试。", 12,
+                              palette_.sub);
+      A11y::SetLiveSetting(failed, Automation::Peers::AutomationLiveSetting::Polite);
+      texts.Children().Append(failed);
+    }
+    Grid::SetColumn(texts, 1);
+    body.Children().Append(texts);
+    card.Child(body);
+    A11y::SetName(card, hstring(skin.name));
+    mark_search_target(skin.name, card);
+    return card;
+  }
+
+  // 卡片左边的预览：底的背景色上，横排和竖排两个候选窗口，配色是 resolve() 给这款包在这种明暗下的配色（包画在它的 base 之上）。
+  FrameworkElement make_skin_preview(SkinPackage const &skin, bool dark) {
+    const auto &theme = dark ? skin.dark : skin.light;
+    Border stage;
+    stage.Width(260);
+    stage.MinHeight(132);
+    stage.CornerRadius(CornerRadius{4, 4, 4, 4});
+    stage.Padding(Thickness{10, 10, 10, 10});
+    std::optional<Color> backdrop;
+    for (const auto &entry : themes_)
+      if (entry.id == skin.base && entry.preview)
+        backdrop = entry.preview->background;
+    stage.Background(brush(backdrop.value_or(dark ? rgba(0x20, 0x20, 0x20, 1)
+                                                  : rgba(0xF3, 0xF3, 0xF3, 1))));
+    StackPanel samples;
+    samples.Orientation(Orientation::Horizontal);
+    samples.Spacing(10);
+    samples.HorizontalAlignment(HorizontalAlignment::Center);
+    samples.VerticalAlignment(VerticalAlignment::Center);
+    samples.Children().Append(make_skin_sample(skin, theme, false));
+    samples.Children().Append(make_skin_sample(skin, theme, true));
+    stage.Child(samples);
+    return stage;
+  }
+
+  // 一个缩小的候选窗口：拼音行和三个候选，首个选中。装饰带按清单的高度和宽度画在卡片上方，按 decorationAlign 对齐；背景图画在表面之上、候选之下，按卡片的圆角裁切。
+  FrameworkElement make_skin_sample(SkinPackage const &skin,
+                                    msime::windows::CandidatePalette const &theme,
+                                    bool vertical) {
+    constexpr double scale = 0.7;
+    const double radius = (skin.corner_radius ? *skin.corner_radius : theme.radius) * scale;
+    StackPanel column;
+    column.VerticalAlignment(VerticalAlignment::Center);
+    if (skin.decoration_top > 0) {
+      Grid band;
+      band.Height(skin.decoration_top * scale);
+      if (const auto source = skin_image_source(skin.id, skin.decoration_image)) {
+        Image image;
+        image.Source(source);
+        image.Stretch(Stretch::Uniform);
+        image.Width(std::min(skin.decoration_width * scale, 120.0));
+        watch_skin_image(image, skin_image_key(skin.id, skin.decoration_image));
+        image.HorizontalAlignment(skin.decoration_align == L"left"     ? HorizontalAlignment::Left
+                                  : skin.decoration_align == L"center" ? HorizontalAlignment::Center
+                                                                       : HorizontalAlignment::Right);
+        band.Children().Append(image);
+      }
+      column.Children().Append(band);
+    }
+
+    Border box;
+    box.Background(brush(to_color(theme.surface)));
+    box.BorderBrush(brush(to_color(theme.border)));
+    const double edge = theme.border_width;
+    box.BorderThickness(Thickness{edge, edge, edge, edge});
+    box.CornerRadius(CornerRadius{radius, radius, radius, radius});
+    box.MinWidth(std::min(skin.min_width * scale, vertical ? 90.0 : 150.0));
+    Grid layers;
+    if (const auto source = skin_image_source(skin.id, skin.background_image)) {
+      Border fill;
+      const double inner = std::max(0.0, radius - edge);
+      fill.CornerRadius(CornerRadius{inner, inner, inner, inner});
+      ImageBrush image;
+      image.ImageSource(source);
+      image.Stretch(skin.background_fit == L"contain"   ? Stretch::Uniform
+                    : skin.background_fit == L"stretch" ? Stretch::Fill
+                                                        : Stretch::UniformToFill);
+      image.Opacity(skin.background_opacity);
+      watch_skin_image(image, skin_image_key(skin.id, skin.background_image));
+      fill.Background(image);
+      layers.Children().Append(fill);
+    }
+    StackPanel content;
+    content.Padding(Thickness{6, 4, 6, 4});
+    content.Spacing(2);
+    auto preedit = make_text(L"ni'mf", 11, to_color(theme.accent));
+    preedit.FontWeight(Windows::UI::Text::FontWeight{600});
+    preedit.Margin(Thickness{3, 0, 3, 0});
+    content.Children().Append(preedit);
+    StackPanel list;
+    list.Orientation(vertical ? Orientation::Vertical : Orientation::Horizontal);
+    list.Spacing(2);
+    const double row_radius = theme.item_radius * scale;
+    constexpr std::array<const wchar_t *, 3> words{L"你们", L"你", L"尼"};
+    for (size_t i = 0; i < words.size(); ++i) {
+      const bool highlighted = i == 0;
+      Grid item;
+      item.Padding(Thickness{5, 2, 6, 2});
+      item.CornerRadius(CornerRadius{row_radius, row_radius, row_radius, row_radius});
+      if (highlighted)
+        item.Background(brush(to_color(theme.selected)));
+      if (highlighted && theme.show_selected_bar) {
+        Border bar;
+        bar.Width(2);
+        bar.Height(11);
+        bar.CornerRadius(CornerRadius{1, 1, 1, 1});
+        bar.Background(brush(to_color(theme.accent)));
+        bar.HorizontalAlignment(HorizontalAlignment::Left);
+        bar.VerticalAlignment(VerticalAlignment::Center);
+        bar.Margin(Thickness{-5, 0, 0, 0});
+        item.Children().Append(bar);
+      }
+      StackPanel cell;
+      cell.Orientation(Orientation::Horizontal);
+      cell.Spacing(4);
+      auto number = make_text(std::to_wstring(i + 1), 10,
+                              to_color(msime::windows::candidate_row_number_color(theme, highlighted)));
+      number.VerticalAlignment(VerticalAlignment::Center);
+      cell.Children().Append(number);
+      auto word = make_text(words[i], 13,
+                            to_color(msime::windows::candidate_row_text_color(
+                                theme, theme.text, highlighted, false)));
+      word.TextWrapping(TextWrapping::NoWrap);
+      cell.Children().Append(word);
+      item.Children().Append(cell);
+      list.Children().Append(item);
+    }
+    content.Children().Append(list);
+    layers.Children().Append(content);
+    box.Child(layers);
+    column.Children().Append(box);
+    return column;
+  }
+
+  // 「外部皮肤」一行（ExternalSkinDirectoryRow）：说明、上次扫描的结果和皮肤目录，「打开目录」「刷新皮肤」，以及打不开、读不到和被忽略的皮肤目录。Windows 打开的是文件夹，不是导入。
+  void external_skins_row(StackPanel const &group) {
+    StackPanel buttons;
+    buttons.Orientation(Orientation::Horizontal);
+    buttons.Spacing(8);
+    buttons.Children().Append(button_control(skins_opening_ ? L"正在打开…" : L"打开目录",
+                                             [this] { open_skin_directory(); }, !skins_opening_));
+    buttons.Children().Append(button_control(skins_busy_ ? L"正在扫描…" : L"刷新皮肤",
+                                             [this] { scan_skins(true); }, !skins_busy_));
+
+    StackPanel below;
+    below.Spacing(4);
+    below.Margin(Thickness{61, 0, 25, 14});
+    const std::wstring status = skins_busy_       ? L"正在读取皮肤目录。"
+                                : !skins_scanned_ ? L"尚未扫描。点击“刷新皮肤”读取皮肤目录。"
+                                : skin_packages_.empty() ? L"没有发现外部皮肤。"
+                                                         : L"";
+    auto state = make_text(status, 12, palette_.sub);
+    A11y::SetLiveSetting(state, Automation::Peers::AutomationLiveSetting::Polite);
+    state.Visibility(status.empty() ? Visibility::Collapsed : Visibility::Visible);
+    below.Children().Append(state);
+    if (skins_scanned_ && !skins_directory_.empty()) {
+      auto directory = make_text(skins_directory_, 12, palette_.sub);
+      directory.FontFamily(FontFamily(L"Consolas"));
+      directory.IsTextSelectionEnabled(true);
+      ToolTipService::SetToolTip(directory, box_value(hstring(skins_directory_)));
+      below.Children().Append(directory);
+    }
+    auto alert = [this, &below](std::wstring const &message) {
+      auto line = make_text(message, 12, danger_color());
+      A11y::SetLiveSetting(line, Automation::Peers::AutomationLiveSetting::Assertive);
+      below.Children().Append(line);
+    };
+    if (skins_open_failed_)
+      alert(L"无法打开皮肤目录，请重试。");
+    if (skins_failed_)
+      alert(std::wstring(L"读取皮肤目录失败，请重试。") +
+            (skins_scanned_ ? L"仍显示上次扫描结果。" : L""));
+    if (!skin_issues_.empty()) {
+      Expander issues;
+      issues.Header(box_value(hstring(L"已忽略 " + std::to_wstring(skin_issues_.size()) +
+                                      L" 个无效皮肤目录")));
+      issues.HorizontalAlignment(HorizontalAlignment::Stretch);
+      issues.HorizontalContentAlignment(HorizontalAlignment::Left);
+      StackPanel lines;
+      lines.Spacing(4);
+      for (const auto &issue : skin_issues_) {
+        auto line = make_text(issue.folder + L"：" + issue.reason, 12, palette_.sub);
+        line.IsTextSelectionEnabled(true);
+        lines.Children().Append(line);
+      }
+      issues.Content(lines);
+      below.Children().Append(issues);
+    }
+    add_row(group, 0xE8B7, L"外部皮肤",
+            L"把包含 skin.toml 的皮肤文件夹复制到下面的目录，回到这个窗口时会自动列出。",
+            buttons, below);
+  }
+
+  // 「打开目录」：没有皮肤目录时先建出来，再在资源管理器里打开，与 Tauri 外壳的 open_skin_directory 相同。建目录在工作线程上，打开在 UI 线程上。
+  void open_skin_directory() {
+    if (skins_opening_)
+      return;
+    skins_opening_ = true;
+    skins_open_failed_ = false;
+    redraw_themes();
+    const auto root = skins_root();
+    run_worker<bool>(
+        [root] {
+          if (root.empty())
+            return false;
+          std::error_code error;
+          std::filesystem::create_directories(root, error);
+          return std::filesystem::is_directory(root, error);
+        },
+        [this, root](bool &ready) {
+          const bool opened =
+              ready && reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", root.c_str(),
+                                                               nullptr, nullptr,
+                                                               SW_SHOWNORMAL)) > 32;
+          skins_opening_ = false;
+          skins_open_failed_ = !opened;
+          redraw_themes();
+        });
+  }
+
+  // ---- 候选颜色 ----
+
+  // 「自定义主题」组的七个取色器。没设的颜色在色块上显示候选窗口当前明暗下的默认色，与共享页按预览明暗取默认色一样。
+  void candidate_color_rows(StackPanel const &group) {
+    const bool light = !candidate_dark();
+    for (const auto &slot : sk::color_slots) {
+      const std::wstring key = L"custom_theme.candidate_colors." + std::wstring(slot.key);
+      const auto set = sk::candidate_text_color(document_.String(key, L""));
+      const std::wstring shown = set.value_or(std::wstring(light ? slot.light : slot.dark));
+      add_row(group, 0xE790, std::wstring(slot.title), L"",
+              candidate_color_control(slot, key, set.has_value(), shown));
+    }
+  }
+
+  static std::wstring color_hex(Color const &color) {
+    wchar_t buffer[8];
+    swprintf_s(buffer, L"#%02x%02x%02x", color.R, color.G, color.B);
+    return buffer;
+  }
+
+  // 设一个候选颜色或交还给主题（`value` 为空），连同 updateCandidateColor 的其余改动：选了颜色就选上自定义主题；原来不是自定义主题时，把当时的主题留作底并清掉两个槽位的皮肤包。
+  static void write_candidate_color(PreferencesDocument &doc, std::wstring const &key,
+                                    std::optional<std::wstring> const &value) {
+    const auto change = sk::candidate_color_change(doc.String(L"global_theme", L"system"),
+                                                   doc.String(L"custom_theme.base", L"system"),
+                                                   !value);
+    if (value)
+      doc.SetString(key, *value);
+    else
+      doc.SetValue(key, JsonValue::CreateNullValue());
+    if (change.select_custom)
+      doc.SetString(L"global_theme", L"custom");
+    if (change.reset_skins) {
+      doc.SetString(L"custom_theme.base", change.base);
+      doc.SetValue(L"custom_theme.candidate_skin", JsonValue::CreateNullValue());
+      doc.SetValue(L"custom_theme.candidate_skin_dark", JsonValue::CreateNullValue());
+    }
+  }
+
+  // 色块打开 WinUI 的取色器；拖动时颜色随时写入并刷新顶部的预览，停下后保存，取色器关上时整页重画。「跟随主题」把这一项交还给底下的主题：文字、编号、强调、选中和悬停的按钮在没设颜色时是按下的，再点不起作用；表面色和边框色的没有按下状态，点它总会清掉那一项。
+  FrameworkElement candidate_color_control(sk::ColorSlot const &slot, std::wstring const &key,
+                                           bool set, std::wstring const &shown) {
+    const std::wstring title(slot.title);
+    const auto color = parse_hex(shown).value_or(palette_.text);
+    StackPanel box;
+    box.Orientation(Orientation::Horizontal);
+    box.Spacing(8);
+
+    Button swatch;
+    swatch.Width(52);
+    swatch.Height(32);
+    swatch.Padding(Thickness{6, 6, 6, 6});
+    swatch.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    swatch.VerticalContentAlignment(VerticalAlignment::Stretch);
+    Border chip;
+    chip.CornerRadius(CornerRadius{3, 3, 3, 3});
+    chip.BorderBrush(brush(palette_.stroke2));
+    chip.BorderThickness(Thickness{1, 1, 1, 1});
+    chip.Background(brush(color));
+    swatch.Content(chip);
+    A11y::SetName(swatch, hstring(title));
+    A11y::SetHelpText(swatch, hstring(shown));
+    swatch.IsEnabled(loaded_);
+
+    ColorPicker picker;
+    picker.IsAlphaEnabled(false);
+    picker.IsHexInputVisible(true);
+    picker.IsColorChannelTextInputVisible(true);
+    picker.Color(color);
+    picker.ColorChanged([this, key, weak_chip = make_weak(chip)](
+                            ColorPicker const &, ColorChangedEventArgs const &args) {
+      // 只有用户真的换了颜色才写：取色器自己报一次没变的颜色时，不能因此选上自定义主题。
+      const auto value = color_hex(args.NewColor());
+      if (value == color_hex(args.OldColor()))
+        return;
+      if (auto target = weak_chip.get())
+        target.Background(brush(args.NewColor()));
+      write_candidate_color(document_, key, value);
+      schedule_save();
+      update_preview();
+    });
+    Flyout flyout;
+    flyout.Content(picker);
+    flyout.Opened([this](Inspectable const &, Inspectable const &) { color_picker_open_ = true; });
+    flyout.Closed([this](Inspectable const &, Inspectable const &) {
+      color_picker_open_ = false;
+      flush_pending();
+      queue_refresh();
+    });
+    swatch.Flyout(flyout);
+    box.Children().Append(swatch);
+
+    const std::wstring reset_name =
+        slot.reset_label.empty() ? std::wstring(L"跟随主题") : std::wstring(slot.reset_label);
+    auto clear = [this, key] {
+      change([&](PreferencesDocument &doc) { write_candidate_color(doc, key, std::nullopt); },
+             true);
+    };
+    if (slot.pressed) {
+      Primitives::ToggleButton reset;
+      reset.Content(box_value(L"跟随主题"));
+      reset.Height(32);
+      reset.IsChecked(!set);
+      reset.IsEnabled(loaded_);
+      A11y::SetName(reset, hstring(reset_name));
+      reset.Click([set, clear](Inspectable const &sender, RoutedEventArgs const &) {
+        if (set)
+          clear();
+        else
+          sender.as<Primitives::ToggleButton>().IsChecked(true);
+      });
+      box.Children().Append(reset);
+    } else {
+      auto reset = button_control(L"跟随主题", clear, loaded_);
+      A11y::SetName(reset, hstring(reset_name));
+      box.Children().Append(reset);
+    }
+    return box;
   }
 
   static std::vector<Option> surface_theme_options() {
@@ -10157,6 +11094,8 @@ private:
   std::vector<ThemeEntry> themes_;
   std::string resolved_request_;
   std::optional<msime::windows::CandidatePalette> resolved_theme_;
+  std::string unskinned_request_;
+  std::optional<msime::windows::CandidatePalette> unskinned_theme_;
   Windows::UI::ViewManagement::UISettings ui_settings_;
   bool system_dark_ = false;
   InputMethodState input_method_ = InputMethodState::unknown;
@@ -10300,6 +11239,25 @@ private:
   std::set<std::wstring> plugin_sound_titles_;
   TextBlock plugin_mentions_warning_{nullptr};
   Button plugin_mentions_save_{nullptr};
+
+  // 「主题」页的皮肤目录：上次扫描到的包、被忽略的目录和皮肤目录，跨页面重建保留。skins_pending_ 是在途的扫描，skins_busy_ 是显示「正在读取」的那种（第一次和「刷新皮肤」）；skins_signature_ 是上次落地的目录回答，自动重扫据此判断有没有变化。skins_revision_ 在每次落地时递增，作废还在解码的旧图片。skin_preview_overrides_ 是卡片上选的预览明暗，连同选它时的当前明暗。color_picker_open_ 是有取色器开着，这时不重画页面。
+  std::vector<SkinPackage> skin_packages_;
+  std::vector<SkinIssue> skin_issues_;
+  std::wstring skins_directory_;
+  std::string skins_signature_;
+  bool skins_scanned_ = false;
+  bool skins_stale_ = true;
+  bool skins_pending_ = false;
+  bool skins_manual_queued_ = false;
+  bool skins_busy_ = false;
+  bool skins_failed_ = false;
+  bool skins_opening_ = false;
+  bool skins_open_failed_ = false;
+  uint64_t skins_revision_ = 0;
+  std::map<std::wstring, ImageSource> skin_images_;
+  std::set<std::wstring> skin_image_failures_;
+  std::map<std::wstring, std::pair<bool, bool>> skin_preview_overrides_;
+  bool color_picker_open_ = false;
 
   // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
   enum class FontCatalogStatus { idle, loading, ready, failed };

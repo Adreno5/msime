@@ -49,7 +49,7 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：皮肤编辑器、取色器、主题包和社区皮肤库；云词库和云剪贴板面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；云词库和云剪贴板面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget skin{"", "skin"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
