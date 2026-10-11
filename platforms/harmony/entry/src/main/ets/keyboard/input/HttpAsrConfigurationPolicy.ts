@@ -63,7 +63,7 @@ export class HttpAsrConfigurationPolicy {
     if (provider === "everyapi") {
       return {
         endpoint: "https://api.everyapi.ai/v1/audio/transcriptions",
-        model: "openai/whisper-large-v3-turbo",
+        model: "volc.seedasr.sauc.duration",
       };
     }
     if (provider === "mistral") {

@@ -15494,7 +15494,7 @@ group("Harmony batch transcription accepts every shared cloud preset", () => {
     "EveryAPI resolves to its transcription endpoint",
   );
   check(
-    HttpAsrConfigurationPolicy.model(everyapi) === "openai/whisper-large-v3-turbo",
+    HttpAsrConfigurationPolicy.model(everyapi) === "volc.seedasr.sauc.duration",
     "EveryAPI resolves to its shared default model",
   );
   check(

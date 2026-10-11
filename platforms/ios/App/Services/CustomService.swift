@@ -128,7 +128,7 @@ enum VoiceProviderPreset: String, CaseIterable, Codable, Sendable {
   var models: [String] {
     switch self {
     case .local, .system: []
-    case .everyAPI: ["openai/whisper-large-v3-turbo", "volc.seedasr.sauc.duration"]
+    case .everyAPI: ["volc.seedasr.sauc.duration"]
     case .doubao: ["volc.seedasr.sauc.duration"]
     case .openAI: ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
     case .siliconFlow: ["FunAudioLLM/SenseVoiceSmall"]
@@ -191,8 +191,17 @@ struct CustomServiceConfiguration: Codable, Sendable, Equatable {
     }
     result.endpoint = defaults.string(forKey: "service.\(kind.rawValue).endpoint") ?? ""
     result.model = defaults.string(forKey: "service.\(kind.rawValue).model") ?? ""
+    if kind == .voice { result.model = currentVoiceModel(result.model, for: result.voiceProvider) }
     result.prompt = defaults.string(forKey: "service.\(kind.rawValue).prompt") ?? result.prompt
     return result
+  }
+
+  /// The EveryAPI preset used to default to `openai/whisper-large-v3-turbo`, a name copied from another service that EveryAPI never routed (it answers 503 `model_not_found`). Configurations saved with that default still name it, so it is read as the preset's current default; any other model the user chose is kept.
+  static let retiredEveryAPIVoiceModel = "openai/whisper-large-v3-turbo"
+
+  static func currentVoiceModel(_ model: String, for provider: VoiceProviderPreset) -> String {
+    guard provider == .everyAPI, model.trimmingCharacters(in: .whitespaces) == retiredEveryAPIVoiceModel else { return model }
+    return provider.models.first ?? ""
   }
 
   static func loadPreset(_ provider: AIProviderPreset, defaults: UserDefaults = .standard) -> Self {
@@ -210,7 +219,7 @@ struct CustomServiceConfiguration: Codable, Sendable, Equatable {
     var result = Self()
     result.voiceProvider = provider
     result.endpoint = defaults.string(forKey: prefix + ".endpoint") ?? provider.endpoint
-    result.model = defaults.string(forKey: prefix + ".model") ?? provider.models.first ?? ""
+    result.model = currentVoiceModel(defaults.string(forKey: prefix + ".model") ?? provider.models.first ?? "", for: provider)
     return result
   }
 

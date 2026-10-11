@@ -53,7 +53,7 @@ LOCAL_PROVIDER = "local"
 DEFAULT_MODELS = {
     "asr": {"openai": "whisper-1", "groq": "whisper-large-v3-turbo",
             "siliconflow": "FunAudioLLM/SenseVoiceSmall", "doubao": "",
-            "everyapi": "openai/whisper-large-v3-turbo", "mistral": "voxtral-mini-latest",
+            "everyapi": "volc.seedasr.sauc.duration", "mistral": "voxtral-mini-latest",
             "bailian": "qwen3-asr-flash"},
     "polish": {"openai": "gpt-4o-mini", "groq": "llama-3.3-70b-versatile",
                "siliconflow": "Qwen/Qwen3-8B", "deepseek": "deepseek-v4-flash"},
