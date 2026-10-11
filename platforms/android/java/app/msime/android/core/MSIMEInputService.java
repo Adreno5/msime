@@ -5924,7 +5924,8 @@ public final class MSIMEInputService extends InputMethodService {
                 copy = ClipboardImageCache.replace(input, directory, mimeType, ClipboardImagePolicy.MAX_BYTES);
             } catch (ClipboardImageCache.TooLargeException error) {
                 failure = "图片太大，不能直接发送，可以长按输入框粘贴";
-            } catch (IOException | SecurityException | IllegalArgumentException error) {
+            } catch (IOException | RuntimeException error) {
+                // 图片来自别的应用的 provider，它在 openFile 里抛的 NullPointerException、IllegalStateException 等会经 binder 原样抛到这里；这是系统边界，漏掉一个就会让整个键盘进程崩掉、这一次也收不到提示。
                 failure = "无法读取复制的图片";
             }
             final File sent = copy;
