@@ -267,7 +267,23 @@ fn a_nonexistent_root_is_an_empty_catalog() {
 fn manifests_are_refused_for_every_rule_they_break() {
     let root = tempdir().unwrap();
     let cases: &[(&str, &str, &str)] = &[
+        // 移动端没有脚本插件；桌面上 script 是已知类型，但必须写 schema_version = 2。
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )))]
         ("kind = 'sound'", "kind = 'script'", "不是已知的插件类型"),
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
+        (
+            "kind = 'sound'",
+            "kind = 'script'",
+            "script 插件必须写 schema_version = 2",
+        ),
         ("kind = 'sound'", "kind = 'wasm'", "不是已知的插件类型"),
         (
             "permissions = []",
@@ -1418,8 +1434,30 @@ fn kinds_are_a_closed_set() {
     for kind in PluginKind::ALL {
         assert_eq!(PluginKind::parse(kind.as_str()), Some(kind));
     }
-    for other in ["", "script", "wasm", "dylib", "Sound", "command-table"] {
+    for other in ["", "wasm", "dylib", "Sound", "command-table"] {
         assert_eq!(PluginKind::parse(other), None);
+    }
+    // 移动端没有脚本插件，`script` 不是已知类型；桌面上它是最后一种。
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
+    {
+        assert_eq!(PluginKind::ALL.len(), 8);
+        assert_eq!(PluginKind::parse("script"), None);
+        assert!(PluginKind::ALL.iter().all(|kind| !kind.is_script()));
+    }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    {
+        assert_eq!(PluginKind::ALL.len(), 9);
+        assert_eq!(PluginKind::parse("script"), Some(PluginKind::Script));
+        assert_eq!(PluginKind::ALL.last(), Some(&PluginKind::Script));
+        assert!(PluginKind::Script.is_script());
     }
 }
 
@@ -1471,6 +1509,15 @@ fn remove_named_refuses_unknown_kinds_and_built_in_sound_packs() {
     let state = tempdir().unwrap();
     let root = state.path().join("plugins");
     import(&picked_folder(files.path(), SOUND), &root).unwrap();
+    assert_eq!(
+        remove_named(&root, "wasm", "typewriter"),
+        Err(PluginFailure::code("invalid"))
+    );
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
     assert_eq!(
         remove_named(&root, "script", "typewriter"),
         Err(PluginFailure::code("invalid"))

@@ -86,6 +86,23 @@ pub fn import(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> 
     if fs::symlink_metadata(&target).is_ok_and(|metadata| !metadata.is_dir()) {
         crate::storage::remove_private_file(&target)?;
     }
+    // 脚本包的授权绑定在内容哈希上：在同一把锁里、替换包目录之前更新它的条目。先改授权再换包，写授权失败时包还是旧的，替换失败时授权已经收紧，两头都不会让授权落到另一份内容上。
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    if let super::PluginContent::Script(pack) = &summary.content {
+        let replaces_installed =
+            fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_dir());
+        super::script_grants::installing(
+            root,
+            &_writes,
+            &summary.id,
+            &pack.content_hash,
+            replaces_installed,
+        )?;
+    }
     // Named uniquely, so a backup a crashed import left behind, too young yet for the sweep, cannot stand in the way of this one.
     let backup = directory.join(format!(
         ".replaced-{}-{}",

@@ -199,9 +199,10 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
         );
         let root = roots.installed.ok_or_else(invalid)?;
         let value = match request.action {
-            PluginAction::Catalog => {
-                serde_json::to_value(plugins::scan(&root, roots.builtin_sounds.as_deref()))
-            }
+            // 脚本插件不列出：授权页落地之前，设置页不展示它们。
+            PluginAction::Catalog => serde_json::to_value(
+                plugins::scan(&root, roots.builtin_sounds.as_deref()).without_scripts(),
+            ),
             PluginAction::Import { source } => {
                 if !absolute_path(&source) {
                     return Err(invalid());

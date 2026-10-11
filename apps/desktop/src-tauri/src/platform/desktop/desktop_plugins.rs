@@ -101,7 +101,7 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| PluginFailure::code("storage"))?
 }
 
-/// Every installed and built-in pack, with what is wrong with each folder that is not one.
+/// 已安装的包和内置包，以及每个不是包的文件夹出了什么问题。脚本插件不列出：授权页（第 5 阶段）落地之前，设置页不展示它们。
 #[tauri::command]
 pub async fn plugin_catalog(
     app: tauri::AppHandle,
@@ -111,10 +111,7 @@ pub async fn plugin_catalog(
     let root = state.0.clone();
     let options = options.inner().clone();
     blocking(move || {
-        Ok(plugins::scan(
-            &root,
-            builtin_sound_packs(&app, &options).as_deref(),
-        ))
+        Ok(plugins::scan(&root, builtin_sound_packs(&app, &options).as_deref()).without_scripts())
     })
     .await
 }

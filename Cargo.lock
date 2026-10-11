@@ -2864,6 +2864,7 @@ dependencies = [
  "libc",
  "md-5",
  "msime-path-trust",
+ "msime-script-runtime",
  "pinyin",
  "pulldown-cmark",
  "reqwest 0.12.28",

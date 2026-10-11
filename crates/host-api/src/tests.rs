@@ -11774,12 +11774,26 @@ fn plugins_boundary_lists_imports_removes_and_keeps_the_name_list() {
         "plugin_reserved"
     );
     assert_eq!(
+        call(json!({"operation": "remove", "kind": "wasm", "id": "rain"}))["error"],
+        "invalid"
+    );
+    // 移动端没有脚本插件，`script` 不是已知类型；桌面上它是，删一个没装的包照常成功。
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
+    assert_eq!(
         call(json!({"operation": "remove", "kind": "script", "id": "rain"}))["error"],
         "invalid"
     );
     let removed = call(json!({"operation": "remove", "kind": "music", "id": "rain"}));
     assert_eq!(removed, json!({"ok": true, "value": null}));
     assert_eq!(ids(&call(json!({"operation": "catalog"}))), builtins(&[]));
+    // 脚本插件在授权页落地之前不出现在设置页的目录里，坏掉的脚本文件夹也不报。
+    std::fs::create_dir_all(state.path().join("plugins/script/hidden")).unwrap();
+    let catalog = call(json!({"operation": "catalog"}));
+    assert_eq!(catalog["value"]["issues"], json!([]), "{catalog}");
 
     assert_eq!(
         call(json!({"operation": "load_mentions"}))["value"],

@@ -55,3 +55,24 @@ pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
 pub const MAX_ENABLED_SCRIPTS: usize = 8;
 /// 候选类事件里交给插件的行数上限（窗口内前 20 行）。
 pub const MAX_CANDIDATE_ROWS: usize = 20;
+
+/// 进程里全部脚本合计的内存总账：线性内存预留、翻译后的字节码和解释器值栈。授权和启用时按它做准入检查，超出就拒绝启用，而不是让脚本在运行时争抢。
+pub const PROCESS_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// 翻译后字节码相对模块大小的膨胀倍数，按第 3 阶段实测的约 3.3 倍向上取整。准入检查拿不到编译结果，按它估算字节码。
+pub const TRANSLATED_BYTES_PER_MODULE_BYTE: usize = 4;
+
+/// 一个脚本在总账里占的字节：一次预留的线性内存，加按模块大小估算的字节码。
+pub fn script_memory_bytes(module_bytes: usize, memory_pages: u32) -> usize {
+    (memory_pages as usize)
+        .saturating_mul(PAGE_BYTES)
+        .saturating_add(module_bytes.saturating_mul(TRANSLATED_BYTES_PER_MODULE_BYTE))
+}
+
+/// 一组脚本（每项是模块字节数和 `memory_pages`）合计放不放得进总账。值栈整个 Engine 共用一份，只算一次。
+pub fn fits_memory_budget(scripts: impl IntoIterator<Item = (usize, u32)>) -> bool {
+    scripts
+        .into_iter()
+        .map(|(module_bytes, memory_pages)| script_memory_bytes(module_bytes, memory_pages))
+        .fold(MAX_STACK_HEIGHT, usize::saturating_add)
+        <= PROCESS_MEMORY_BYTES
+}
