@@ -248,7 +248,13 @@ def select_ai_config(config, query):
     return config.get("profiles", {}).get(provider)
 
 
-def ai_cache_key(query):
+def ai_config_matches(options, config):
+    return isinstance(config, dict) and all(
+        options.get(key) == config.get(key)
+        for key in ("provider", "endpoint", "model"))
+
+
+def ai_cache_key(query, config):
     options = query.get("ai_assistant")
     segments = query.get("pinyin_segments")
     if (not isinstance(options, dict) or not options.get("enabled") or
@@ -260,6 +266,12 @@ def ai_cache_key(query):
         if not isinstance(value, str):
             return None
         identity[key] = value
+    token = config.get("token") if isinstance(config, dict) else None
+    if not isinstance(token, str):
+        return None
+    # A credential rotation must not reuse an answer generated under the
+    # previous credential. Keep only a digest in the in-memory key.
+    identity["credential_sha256"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
     configured_limit = options.get("candidate_limit", 3)
     identity["candidate_limit"] = (configured_limit
                                     if type(configured_limit) is int and 1 <= configured_limit <= 10
@@ -290,7 +302,10 @@ def configured_ai(query, path, cache=None, cache_lock=None):
         return None
     config = load_ai_config(path)
     selected = select_ai_config(config, query)
-    key = ai_cache_key(query)
+    options = query.get("ai_assistant")
+    if not ai_config_matches(options, selected):
+        return None
+    key = ai_cache_key(query, selected)
     if key is not None and cache is not None and cache_lock is not None:
         with cache_lock:
             cached = cache.get(key)
@@ -317,7 +332,7 @@ def ai(query, config):
         return None
     # Bind each credential to its configured endpoint; never send it to a URL
     # supplied by a socket request or an HTTP redirect.
-    if not config or any(options.get(key) != config.get(key) for key in ("provider", "endpoint", "model")):
+    if not ai_config_matches(options, config):
         return None
     segments = query.get("pinyin_segments")
     context = query.get("ai_context", "")
