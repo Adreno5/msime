@@ -16,7 +16,7 @@ def main() -> int:
     ui = UI.read_text(encoding="utf-8")
     required = (
         "public static TextView centeredLabel(Context context, CharSequence text, float sizeSp,",
-        "TextView centered = label(context, text, sizeSp, color);",
+        "TextView centered = ViewPolicy.label(context, text, sizeSp, color);",
         "public static TextView centeredLabel(Context context, CharSequence text, int sizeSp, int weight,",
         "TextView centered = styledLabel(context, text, sizeSp, weight, color);",
         "TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);",

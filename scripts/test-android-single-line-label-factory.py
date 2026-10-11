@@ -14,9 +14,8 @@ UI = HOME / "Ui.java"
 def main() -> int:
     errors = []
     ui = UI.read_text(encoding="utf-8")
+    # 普通单行标签工厂已挪到 ViewPolicy.singleLineLabel，由 scripts/test-android-view-policy.py 检查；Ui 只剩居中单行这一层。
     required = (
-        "public static TextView singleLineLabel(Context context, CharSequence text, int sizeSp, int weight,",
-        "TextView singleLine = styledLabel(context, text, sizeSp, weight, color);",
         "public static TextView centeredSingleLineLabel(Context context, CharSequence text, int sizeSp,",
         "TextView singleLine = centeredLabel(context, text, sizeSp, weight, color);",
         "TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);",
@@ -26,7 +25,7 @@ def main() -> int:
             errors.append(f"{UI}: 单行标签工厂缺少：{snippet}")
 
     consumers = {
-        "AiSkinPage.java": ("Ui.singleLineLabel(", 2),
+        "AiSkinPage.java": ("ViewPolicy.singleLineLabel(", 2),
         "LexiconPage.java": ("Ui.centeredSingleLineLabel(", 1),
         "SegmentedControl.java": ("Ui.centeredSingleLineLabel(", 1),
     }

@@ -15,7 +15,7 @@ def main() -> int:
     ui = UI.read_text(encoding="utf-8")
     required = (
         "public static TextView headingLabel(Context context, CharSequence text, float sizeSp,",
-        "TextView heading = label(context, text, sizeSp, color);",
+        "TextView heading = ViewPolicy.label(context, text, sizeSp, color);",
         "public static TextView headingLabel(Context context, CharSequence text, int sizeSp, int weight,",
         "TextView heading = styledLabel(context, text, sizeSp, weight, color);",
         "return headingLabel(context, text, TEXT_GROUP_TITLE, 500, ThemeColorPolicy.accent(context));",

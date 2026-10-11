@@ -7,7 +7,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / "platforms/android/java/app/msime/android/home"
-UI = HOME / "Ui.java"
+# 适配方法已随文本监听收拢挪到 ViewPolicy（见 scripts/test-android-view-policy.py），这里跟着检查新位置。
+UI = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 CONSUMERS = {
     "SearchPill.java": 1,
     "InputDialog.java": 1,
@@ -34,9 +35,9 @@ def main() -> int:
     for name, expected in CONSUMERS.items():
         path = HOME / name
         source = path.read_text(encoding="utf-8")
-        actual = source.count("Ui.afterTextChanged(")
+        actual = source.count("ViewPolicy.afterTextChanged(")
         if actual != expected:
-            errors.append(f"{path}: 应有 {expected} 处 Ui.afterTextChanged，实际为 {actual}")
+            errors.append(f"{path}: 应有 {expected} 处 ViewPolicy.afterTextChanged，实际为 {actual}")
         if "new TextWatcher()" in source or "import android.text.TextWatcher;" in source:
             errors.append(f"{path}: 仍在直接实现 TextWatcher")
 
@@ -44,7 +45,7 @@ def main() -> int:
         if path == UI:
             continue
         if "new TextWatcher()" in path.read_text(encoding="utf-8"):
-            errors.append(f"{path}: 应复用 Ui.afterTextChanged")
+            errors.append(f"{path}: 应复用 ViewPolicy.afterTextChanged")
 
     if errors:
         print("\n".join(errors), file=sys.stderr)

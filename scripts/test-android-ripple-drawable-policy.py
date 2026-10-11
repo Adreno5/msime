@@ -24,9 +24,11 @@ def main() -> int:
     ui = UI.read_text(encoding="utf-8")
     if "Ui.ripple(" in ui:
         errors.append(f"{UI}: 仍保留 Ui ripple 转发调用")
+    # ViewPolicy 要在不带 AndroidX/Material 的 check-host.sh 里编译，不能引用 DrawablePolicy，只能自己构造圆角波纹（见 .agents/notes/implemented/bug-fix/2026-10-11-android-host-compile-regressions.md）。
+    framework_only = ANDROID / "ViewPolicy.java"
     for path in ANDROID.rglob("*.java"):
         source = path.read_text(encoding="utf-8")
-        if path != POLICY and "new RippleDrawable(" in source:
+        if path not in (POLICY, framework_only) and "new RippleDrawable(" in source:
             errors.append(f"{path}: 应复用 DrawablePolicy.ripple")
         for forbidden in (
             "DrawablePolicy.ripple(this)",
