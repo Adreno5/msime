@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cwchar>
 #include <string>
 #include <string_view>
 
@@ -102,7 +103,7 @@ inline bool issue_credential_test_disabled(bool available, std::wstring_view iss
 
 // ---- 偏好库接受什么（preferences.rs 的 validate） ----
 
-// 字符串转成 UTF-8 后的字节数；落单的代理按替换字符的 3 字节算。
+// 字符串转成 UTF-8 后的字节数；落单的代理按替换字符的 3 字节算。wchar_t 是 32 位的平台（Windows 规则在 macOS、Linux 上跑测试时）一个 wchar_t 就是一个码点，基本平面以外的直接算 4 字节；用预处理判断，16 位 wchar_t 上 `> 0xFFFF` 恒假会让 MinGW 的 -Werror=type-limits 报错。
 inline std::size_t utf8_length(std::wstring_view value) {
   std::size_t bytes = 0;
   for (std::size_t i = 0; i < value.size(); ++i) {
@@ -111,6 +112,10 @@ inline std::size_t utf8_length(std::wstring_view value) {
       bytes += 1;
     else if (c < 0x800)
       bytes += 2;
+#if WCHAR_MAX > 0xFFFF
+    else if (static_cast<unsigned long>(c) > 0xFFFF)
+      bytes += 4;
+#endif
     else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < value.size() && value[i + 1] >= 0xDC00 &&
              value[i + 1] <= 0xDFFF) {
       bytes += 4;
