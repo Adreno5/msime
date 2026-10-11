@@ -383,7 +383,7 @@ export function VoiceSettingsContent({
             })}
           </p>
         </div>
-        {hotkeys}
+        {/* 不画「语音快捷键」：Ctrl+F9、长按右 Alt 这些要连实体键盘才用得上，手机上列出来只是一堆用不到的开关。2in1 照旧显示。 */}
         {recordingBehavior}
         {recognitionResult}
         {polish}
