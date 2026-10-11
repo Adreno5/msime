@@ -18,6 +18,8 @@ final class CloudSync: ObservableObject {
   private let session: BackendAccountSession
   private let client: BackendAccountClient
   private var running = false
+  /// 用户在另一轮还在跑时做出的首次选择，那一轮结束后马上执行，不丢掉。
+  private var pendingChoice: BackendSyncPolicy.Choice?
 
   init(state: CloudSyncState = .shared, session: BackendAccountSession = .shared,
        client: BackendAccountClient = BackendAccountClient()) {
@@ -60,7 +62,10 @@ final class CloudSync: ObservableObject {
   }
 
   private func request(choice: BackendSyncPolicy.Choice?, force: Bool) {
-    guard !running else { return }
+    guard !running else {
+      if let choice { pendingChoice = choice }
+      return
+    }
     running = true
     let state = state, session = session, client = client
     Task {
@@ -69,6 +74,12 @@ final class CloudSync: ObservableObject {
       }.value
       running = false
       if let record = try? state.read() { self.record = record }
+      if let next = pendingChoice {
+        // 用户已经选过了，不再弹出选择。
+        pendingChoice = nil
+        request(choice: next, force: true)
+        return
+      }
       if outcome == .needsChoice { asksFirstRun = true }
     }
   }
