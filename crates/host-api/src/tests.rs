@@ -773,6 +773,104 @@ fn native_preference_save_clears_history_only_after_successful_disable() {
 }
 
 #[test]
+fn desktop_clipboard_history_lists_pins_removes_and_clears_the_shared_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().to_str().unwrap();
+    let call = |action: serde_json::Value| {
+        let body = serde_json::to_vec(&json!({ "directory": path, "action": action })).unwrap();
+        read(unsafe { msime_client_desktop_clipboard_history(body.as_ptr(), body.len()) })
+    };
+    let store = PreferencesStore::new(directory.path());
+    store
+        .save(
+            0,
+            Preferences {
+                clipboard_history: true,
+                ..Preferences::default()
+            },
+        )
+        .unwrap();
+    for text in ["synthetic first", "synthetic second"] {
+        assert!(store.capture_clipboard_text(text.into()).unwrap());
+    }
+    let listed = call(json!({ "operation": "list" }));
+    assert_eq!(listed["value"]["enabled"], true);
+    let entries = listed["value"]["entries"].as_array().unwrap();
+    assert_eq!(entries[0]["text"], "synthetic second");
+    assert_eq!(entries[1]["text"], "synthetic first");
+    assert!(entries[0]["timestampMs"].as_u64().unwrap() > 0);
+    assert_eq!(entries[0]["pinned"], false);
+
+    // A pinned entry sorts first and the answer is the history after the change.
+    let pinned =
+        call(json!({ "operation": "set_pinned", "text": "synthetic first", "pinned": true }));
+    assert_eq!(pinned["value"]["entries"][0]["text"], "synthetic first");
+    assert_eq!(pinned["value"]["entries"][0]["pinned"], true);
+    let removed = call(json!({ "operation": "remove", "text": "synthetic second" }));
+    assert_eq!(removed["value"]["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(json!({ "operation": "remove", "text": "" }))["error"],
+        "clipboard_history_invalid"
+    );
+    assert_eq!(
+        call(json!({ "operation": "unknown" }))["error"],
+        "clipboard_history_invalid"
+    );
+    let cleared = call(json!({ "operation": "clear" }));
+    assert_eq!(cleared["value"]["entries"], json!([]));
+    assert!(!directory.path().join("clipboard_history.json").exists());
+
+    // Switched off: the list is empty and sync is refused before the clipboard is read.
+    assert!(store
+        .capture_clipboard_text("synthetic third".into())
+        .unwrap());
+    let mut disabled = store.load().unwrap();
+    disabled.preferences.clipboard_history = false;
+    store.save(disabled.revision, disabled.preferences).unwrap();
+    let listed = call(json!({ "operation": "list" }));
+    assert_eq!(listed["value"]["enabled"], false);
+    assert_eq!(listed["value"]["entries"], json!([]));
+    assert_eq!(
+        call(json!({ "operation": "sync" }))["error"],
+        "clipboard_history_disabled"
+    );
+    let relative = br#"{"directory":"relative","action":{"operation":"list"}}"#;
+    assert_eq!(
+        read(unsafe { msime_client_desktop_clipboard_history(relative.as_ptr(), relative.len()) })
+            ["error"],
+        "clipboard_history_invalid"
+    );
+}
+
+#[test]
+fn account_cloud_clipboard_refuses_without_a_signed_in_session_or_a_valid_action() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().to_str().unwrap();
+    let call = |action: serde_json::Value| {
+        let body = serde_json::to_vec(&json!({ "directory": path, "action": action })).unwrap();
+        read(unsafe { msime_client_account_cloud_clipboard(body.as_ptr(), body.len()) })
+    };
+    // No account-session.json: every action stops at the session, before the network.
+    for action in [
+        json!({ "operation": "list", "search": "" }),
+        json!({ "operation": "add", "text": "synthetic upload" }),
+    ] {
+        let result = call(action);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"], "account_unauthorized");
+    }
+    for action in [
+        json!({ "operation": "add", "text": "" }),
+        json!({ "operation": "add", "text": "界".repeat(4001) }),
+        json!({ "operation": "clear" }),
+        json!({}),
+    ] {
+        assert_eq!(call(action)["error"], "invalid_cloud_clipboard");
+    }
+    assert!(!directory.path().join("account-session.json").exists());
+}
+
+#[test]
 fn mixed_input_changes_defer_until_composition_ends() {
     use msime_client_core::preferences::MixedInputPreferences;
     let dir = tempfile::tempdir().unwrap();

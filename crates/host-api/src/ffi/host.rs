@@ -1798,6 +1798,132 @@ pub unsafe extern "C" fn msime_client_remove_clipboard_history(
     })
 }
 
+const MAX_DESKTOP_CLIPBOARD_REQUEST_BYTES: usize = 131_072;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopClipboardRequest {
+    directory: String,
+    action: DesktopClipboardAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+enum DesktopClipboardAction {
+    List,
+    Sync,
+    Clear,
+    SetPinned { text: String, pinned: bool },
+    Remove { text: String },
+}
+
+/// The desktop clipboard history as the 剪贴板 settings page manages it, with the timestamps and pins `msime_client_load_clipboard_history` leaves out. Every operation answers with the history as it now stands, empty while the preference is off; see the header for the operations and codes.
+/// # Safety
+/// `request` points to `length` readable JSON bytes. Null is rejected.
+#[no_mangle]
+pub unsafe extern "C" fn msime_client_desktop_clipboard_history(
+    request: *const u8,
+    length: usize,
+) -> *mut c_char {
+    use crate::clipboard_history::{self, ClipboardHistoryError};
+    use msime_client_core::clipboard::{ClipboardHistoryStore, MAX_TEXT_BYTES};
+    response(|| {
+        const INVALID: &str = "clipboard_history_invalid";
+        const UNAVAILABLE: &str = "clipboard_history_unavailable";
+        if request.is_null() || length > MAX_DESKTOP_CLIPBOARD_REQUEST_BYTES {
+            return Err(INVALID.into());
+        }
+        // SAFETY: guaranteed by the documented caller contract.
+        let bytes = unsafe { std::slice::from_raw_parts(request, length) };
+        let request: DesktopClipboardRequest =
+            serde_json::from_slice(bytes).map_err(|_| INVALID)?;
+        let directory = std::path::Path::new(&request.directory);
+        if !directory.is_absolute() || request.directory.len() > 16384 {
+            return Err(INVALID.into());
+        }
+        let failed = |error: ClipboardHistoryError| match error {
+            ClipboardHistoryError::Disabled => "clipboard_history_disabled".to_owned(),
+            ClipboardHistoryError::Unavailable => UNAVAILABLE.to_owned(),
+        };
+        let entry = |text: &str| {
+            if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+                Err(INVALID.to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        let preferences = PreferencesStore::new(directory);
+        let mut history = ClipboardHistoryStore::open(directory.join("clipboard_history.json"));
+        match &request.action {
+            DesktopClipboardAction::List => {}
+            DesktopClipboardAction::Sync => {
+                #[cfg(windows)]
+                let read = clipboard_history::windows_clipboard_text;
+                // Only Windows reads its clipboard here; the other desktops sync in their own shells.
+                #[cfg(not(windows))]
+                let read = || Err::<Option<String>, ()>(());
+                clipboard_history::capture_clipboard(&preferences, read).map_err(failed)?;
+            }
+            DesktopClipboardAction::Clear => history.clear().map_err(|_| UNAVAILABLE)?,
+            DesktopClipboardAction::SetPinned { text, pinned } => {
+                entry(text)?;
+                history.set_pinned(text, *pinned).map_err(|_| UNAVAILABLE)?;
+            }
+            DesktopClipboardAction::Remove { text } => {
+                entry(text)?;
+                history.remove(text).map_err(|_| UNAVAILABLE)?;
+            }
+        }
+        let enabled = clipboard_history::enabled(&preferences).map_err(failed)?;
+        let entries = if enabled {
+            clipboard_history::entries(&mut history).map_err(failed)?
+        } else {
+            Vec::new()
+        };
+        Ok(json!({ "enabled": enabled, "entries": entries }))
+    })
+}
+
+/// One cloud clipboard action over the signed-in account session stored in `directory`, for a settings window that holds no session of its own. Blocks on the network; see the header.
+/// # Safety
+/// `request` points to `length` readable JSON bytes. Null is rejected.
+#[no_mangle]
+pub unsafe extern "C" fn msime_client_account_cloud_clipboard(
+    request: *const u8,
+    length: usize,
+) -> *mut c_char {
+    use msime_client_core::account::{
+        AccountSessionFileLayout, BackendAccountClient, BackendAccountSession,
+        FileAccountSessionStorage,
+    };
+    response(|| {
+        const INVALID: &str = "invalid_cloud_clipboard";
+        if request.is_null() || length > MAX_DESKTOP_CLIPBOARD_REQUEST_BYTES {
+            return Err(INVALID.into());
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct CloudRequest {
+            directory: String,
+            action: Value,
+        }
+        // SAFETY: guaranteed by the documented caller contract.
+        let bytes = unsafe { std::slice::from_raw_parts(request, length) };
+        let request: CloudRequest = serde_json::from_slice(bytes).map_err(|_| INVALID)?;
+        let directory = std::path::Path::new(&request.directory);
+        if !directory.is_absolute() || request.directory.len() > 16384 {
+            return Err(INVALID.into());
+        }
+        crate::cloud_clipboard::validate_request(&request.action).map_err(|_| INVALID)?;
+        let client = BackendAccountClient::new().map_err(|error| error.code().to_owned())?;
+        let session = BackendAccountSession::new(
+            client,
+            FileAccountSessionStorage::new(directory, AccountSessionFileLayout::Native),
+        );
+        crate::cloud_clipboard::account_request(&session, &request.action).map_err(str::to_owned)
+    })
+}
+
 /// Try to read preferences without waiting for the writer lock.
 /// # Safety
 /// `directory` must point to `length` readable bytes. Null is rejected.

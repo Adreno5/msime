@@ -453,6 +453,61 @@ std::wstring request_id(std::wstring_view prefix) {
   return std::wstring(prefix) + std::to_wstring(now);
 }
 
+// ---- 剪贴板 ----
+
+// The account directory the shared app signs in to (windows_account.rs) and the Server reads (server_main.cpp's anonymous_account_directory): %LOCALAPPDATA%\<this edition's user directory>\account. Empty when the known folder cannot be read.
+std::filesystem::path account_directory() {
+  PWSTR local = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+    CoTaskMemFree(local);
+    return {};
+  }
+  const auto directory =
+      std::filesystem::path(local) / MSIME_EDITION_USER_DATA_DIRECTORY / L"account";
+  CoTaskMemFree(local);
+  return directory;
+}
+
+// A history entry's time as the shared page writes it (`new Date(timestampMs).toLocaleString()`): the short date and the time in the user's locale and time zone.
+std::wstring local_date_time(uint64_t milliseconds) {
+  // FILETIME counts 100-nanosecond intervals from 1601; anything past the year 30000 is not a real capture.
+  constexpr uint64_t unix_epoch = 116444736000000000ULL;
+  if (milliseconds > 900000000000000ULL)
+    return {};
+  ULARGE_INTEGER ticks{};
+  ticks.QuadPart = milliseconds * 10000ULL + unix_epoch;
+  const FILETIME utc{ticks.LowPart, ticks.HighPart};
+  SYSTEMTIME universal{}, local{};
+  if (!FileTimeToSystemTime(&utc, &universal) ||
+      !SystemTimeToTzSpecificLocalTime(nullptr, &universal, &local))
+    return {};
+  wchar_t date[80] = {};
+  wchar_t time[80] = {};
+  if (!GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &local, nullptr, date, 80,
+                       nullptr) ||
+      !GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &local, nullptr, time, 80))
+    return {};
+  return std::wstring(date) + L" " + time;
+}
+
+// An entry's text on one line, as the shared row shows it (`white-space: nowrap`): every run of white space, line breaks included, becomes one space.
+std::wstring single_line(std::wstring const &value) {
+  std::wstring line;
+  line.reserve(value.size());
+  bool space = false;
+  for (const wchar_t c : value) {
+    if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n' || c == L'\f') {
+      space = true;
+      continue;
+    }
+    if (space && !line.empty())
+      line.push_back(L' ');
+    space = false;
+    line.push_back(c);
+  }
+  return line;
+}
+
 Response call_mcp(char *(*entry)(const uint8_t *, size_t),
                   JsonObject const &request) {
   const auto body = utf8(request.Stringify());
@@ -902,8 +957,6 @@ const PageLabel &page_label(std::string_view id) {
 const wchar_t *shell_page_description(std::string_view id) {
   if (id == "account")
     return L"登录水杉输入法账号，管理设置和词库在设备之间的同步。";
-  if (id == "clip")
-    return L"开关本机的剪贴板历史，打开在各台设备之间同步的云剪贴板。";
   if (id == "stats")
     return L"查看打字字数、速度和常用输入方式的统计。统计只保存在本机。";
   if (id == "plugins")
@@ -2141,6 +2194,11 @@ private:
     // 每次进入「输入」页都重读已安装的辅助码表插件。
     if (id == "typing" && id != current_page_)
       helpcode_packs_stale_ = true;
+    // 与共享页一样，每次进入「剪贴板」页都重读历史，并重新查一次能否发到云剪贴板。
+    if (id == "clip" && id != current_page_) {
+      clip_stale_ = true;
+      reset_cloud_clipboard();
+    }
     current_page_ = id;
     select_navigation_item();
     render_page(false);
@@ -3190,6 +3248,8 @@ private:
       build_voice_page(page);
     else if (id == "hand")
       build_hand_page(page);
+    else if (id == "clip")
+      build_clip_page(page);
     else if (id == "dev")
       build_dev_page(page);
     else if (id == "feedback")
@@ -3198,7 +3258,7 @@ private:
       build_about_page(page);
   }
 
-  // 剪贴板、打字统计、插件、AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
+  // 打字统计、插件、AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
   void build_shell_page(nav::Page const &model, StackPanel const &page) {
     const auto &label = page_label(model.id);
     auto group = add_group(page, L"");
@@ -5657,6 +5717,384 @@ private:
                            !vocabulary_busy_));
   }
 
+  // ---- 剪贴板 ----
+
+  // 共享的「剪贴板」页（packages/ui/src/settings/pages/tools-page.tsx 和 clipboard-history-section.tsx）在 Windows 上画三组：「剪贴板」（历史开关、从系统剪贴板同步、清空历史）、开着历史时的「历史记录」（每条可重新复制、发到云剪贴板、固定和删除），以及打开云剪贴板面板的「云剪贴板」。历史文件与共享应用的相同（偏好目录下的 clipboard_history.json），经 msime_client_desktop_clipboard_history 读写；发到云剪贴板经 msime_client_account_cloud_clipboard 用共享应用登录的账号会话。云剪贴板面板是输入工具，仍由共享应用打开。
+
+  struct ClipboardEntry {
+    std::wstring text;
+    uint64_t timestamp_ms = 0;
+    bool pinned = false;
+  };
+
+  // 共享页的 CloudClipboardAvailability：只有账号已登录、服务端也开着云剪贴板时才是 ready，才能发送。
+  enum class CloudClipboardState { checking, ready, signed_out, disabled, unavailable };
+
+  void redraw_clip() {
+    if (!closed_ && current_page_ == "clip")
+      queue_refresh();
+  }
+
+  bool clipboard_history_enabled() const { return document_.Boolean(L"clipboard_history", false); }
+
+  static JsonObject clipboard_action(wchar_t const *operation) {
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+    return action;
+  }
+
+  // The history an answer carries, or nothing when the call failed or the answer cannot be read.
+  static std::optional<std::vector<ClipboardEntry>> clipboard_entries(Response const &response) {
+    if (!response.ok)
+      return std::nullopt;
+    try {
+      const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+      std::vector<ClipboardEntry> entries;
+      for (auto const &item : value.GetNamedArray(L"entries")) {
+        const auto object = item.GetObject();
+        ClipboardEntry entry;
+        entry.text = named_string(object, L"text");
+        const auto time = object.GetNamedValue(L"timestampMs", JsonValue::CreateNullValue());
+        if (time.ValueType() == JsonValueType::Number && time.GetNumber() > 0)
+          entry.timestamp_ms = static_cast<uint64_t>(time.GetNumber());
+        entry.pinned = object.GetNamedBoolean(L"pinned", false);
+        if (!entry.text.empty())
+          entries.push_back(std::move(entry));
+      }
+      return entries;
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  // One history action on the state directory, the store the input method and the shared app use; `done` gets the answer on the UI thread.
+  void clipboard_request(JsonObject const &action, std::function<void(Response const &)> done) {
+    JsonObject request;
+    request.SetNamedValue(L"directory",
+                          JsonValue::CreateStringValue(hstring(state_directory().wstring())));
+    request.SetNamedValue(L"action", action);
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_desktop_clipboard_history(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        std::move(done));
+  }
+
+  // 进入页面、修订号变化或打开历史时读一次。读的期间有写入完成时以写入后的结果为准，这次读到的丢掉；读不到时与共享页一样不提示，列表保持原样。
+  void load_clipboard_history() {
+    clip_stale_ = false;
+    clip_read_revision_ = document_.revision();
+    const auto generation = clip_generation_;
+    const auto read = clip_read_;
+    clipboard_request(clipboard_action(L"list"), [this, generation, read](Response const &response) {
+      if (generation != clip_generation_ || read != clip_read_)
+        return;
+      if (auto entries = clipboard_entries(response)) {
+        clip_entries_ = std::move(*entries);
+        clip_clear_armed_ = false;
+        redraw_clip();
+      }
+    });
+  }
+
+  // 同步、清空、固定和删除：一次只做一件，做完换成操作后的历史；失败时在页面顶部说明，与共享页的 onError 相同。
+  void change_clipboard_history(JsonObject const &action, std::wstring failure) {
+    if (clip_busy_)
+      return;
+    clip_busy_ = true;
+    const auto generation = clip_generation_;
+    clipboard_request(action, [this, generation, failure = std::move(failure)](Response const &response) {
+      // The history was switched on or off meanwhile; the answer belongs to the old state.
+      if (generation != clip_generation_)
+        return;
+      clip_busy_ = false;
+      auto entries = clipboard_entries(response);
+      if (!entries) {
+        show_notice(failure);
+        return;
+      }
+      ++clip_read_;
+      clip_clear_armed_ = false;
+      clip_entries_ = std::move(*entries);
+      redraw_clip();
+    });
+    redraw_clip();
+  }
+
+  void set_clipboard_entry_pinned(std::wstring const &value, bool pinned) {
+    auto action = clipboard_action(L"set_pinned");
+    action.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(value)));
+    action.SetNamedValue(L"pinned", JsonValue::CreateBooleanValue(pinned));
+    change_clipboard_history(action, L"无法更新剪贴板固定状态");
+  }
+
+  void remove_clipboard_entry(std::wstring const &value) {
+    auto action = clipboard_action(L"remove");
+    action.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(value)));
+    change_clipboard_history(action, L"无法删除剪贴板记录");
+  }
+
+  // 共享页的 useClipboardHistoryToggle：写偏好；从开到关时再清空已存的历史，失败时说明。开关一变，进行中的读写都作废，列表和「确认清空」复位，云剪贴板重新查询。
+  void toggle_clipboard_history(bool on) {
+    const bool was = clipboard_history_enabled();
+    change([on](PreferencesDocument &doc) { doc.SetBoolean(L"clipboard_history", on); }, true);
+    ++clip_generation_;
+    clip_busy_ = false;
+    clip_stale_ = true;
+    reset_cloud_clipboard();
+    if (on)
+      return;
+    clip_entries_.clear();
+    clip_clear_armed_ = false;
+    if (was)
+      clipboard_request(clipboard_action(L"clear"), [this](Response const &response) {
+        if (!response.ok)
+          show_notice(L"无法清空剪贴板历史，请稍后重试。");
+      });
+  }
+
+  // 「重新复制」：放回系统剪贴板，与共享应用的 copy_text 一样，历史开着时也把它记进历史（排到最前）。失败时与共享页一样不提示。
+  void recopy_clipboard_entry(std::wstring const &value) {
+    if (!copy_text(value))
+      return;
+    JsonObject request;
+    request.SetNamedValue(L"directory",
+                          JsonValue::CreateStringValue(hstring(state_directory().wstring())));
+    request.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(value)));
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_capture_clipboard_history(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [](Response const &) {});
+  }
+
+  // One cloud clipboard action over the account session the shared app signed in; blocks on the network, so it runs off the UI thread.
+  void cloud_clipboard_request(JsonObject const &action, std::function<void(Response const &)> done) {
+    JsonObject request;
+    request.SetNamedValue(L"directory",
+                          JsonValue::CreateStringValue(hstring(account_directory().wstring())));
+    request.SetNamedValue(L"action", action);
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_account_cloud_clipboard(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        std::move(done));
+  }
+
+  // 共享页的 cloudClipboardFailure：账号未登录或会话失效算未登录，其他失败算服务不可用。
+  static CloudClipboardState cloud_clipboard_failure(std::wstring const &code) {
+    return code == L"unauthorized" || code.ends_with(L"_unauthorized")
+               ? CloudClipboardState::signed_out
+               : CloudClipboardState::unavailable;
+  }
+
+  void reset_cloud_clipboard() {
+    ++cloud_generation_;
+    cloud_checked_ = false;
+    cloud_state_ = CloudClipboardState::checking;
+    cloud_notice_.clear();
+    cloud_sending_ = false;
+  }
+
+  // 每次带着历史打开页面时查一次账号和服务端的开关，不轮询。
+  void check_cloud_clipboard() {
+    reset_cloud_clipboard();
+    cloud_checked_ = true;
+    const auto generation = cloud_generation_;
+    auto action = clipboard_action(L"list");
+    action.SetNamedValue(L"search", JsonValue::CreateStringValue(L""));
+    cloud_clipboard_request(action, [this, generation](Response const &response) {
+      if (generation != cloud_generation_)
+        return;
+      if (!response.ok) {
+        cloud_state_ = cloud_clipboard_failure(response_error(response));
+      } else {
+        cloud_state_ = CloudClipboardState::ready;
+        try {
+          const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+          const auto enabled = value.GetNamedValue(L"enabled", JsonValue::CreateNullValue());
+          if (enabled.ValueType() == JsonValueType::Boolean && !enabled.GetBoolean())
+            cloud_state_ = CloudClipboardState::disabled;
+        } catch (...) {
+          cloud_state_ = CloudClipboardState::unavailable;
+        }
+      }
+      redraw_clip();
+    });
+  }
+
+  // 共享页的 sendToCloud：服务端按 UTF-16 单元计长度，最多 4000 个。
+  void send_to_cloud_clipboard(std::wstring const &value) {
+    if (cloud_state_ != CloudClipboardState::ready || cloud_sending_)
+      return;
+    constexpr size_t cloud_clipboard_max_utf16 = 4000;
+    if (value.size() > cloud_clipboard_max_utf16) {
+      cloud_notice_ = L"这条记录超过 " + std::to_wstring(cloud_clipboard_max_utf16) +
+                      L" 个 UTF-16 单元，无法发到云剪贴板";
+      redraw_clip();
+      return;
+    }
+    const auto generation = cloud_generation_;
+    cloud_sending_ = true;
+    cloud_notice_ = L"正在发到云剪贴板…";
+    auto action = clipboard_action(L"add");
+    action.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(value)));
+    cloud_clipboard_request(action, [this, generation](Response const &response) {
+      if (generation != cloud_generation_)
+        return;
+      cloud_sending_ = false;
+      if (response.ok) {
+        cloud_notice_ = L"已发到云剪贴板";
+      } else if (cloud_clipboard_failure(response_error(response)) ==
+                 CloudClipboardState::signed_out) {
+        cloud_state_ = CloudClipboardState::signed_out;
+        cloud_notice_.clear();
+      } else {
+        cloud_notice_ = L"发到云剪贴板失败，请稍后重试";
+      }
+      redraw_clip();
+    });
+    redraw_clip();
+  }
+
+  // The note above the history: what the last send did, else why sending is not possible (cloudClipboardAvailabilityNote).
+  std::wstring cloud_clipboard_note() const {
+    if (!cloud_notice_.empty())
+      return cloud_notice_;
+    switch (cloud_state_) {
+    case CloudClipboardState::signed_out:
+      return L"登录水杉账号后可在设备间同步剪贴板";
+    case CloudClipboardState::disabled:
+      return L"云剪贴板未开启";
+    case CloudClipboardState::unavailable:
+      return L"云剪贴板服务暂不可用，请稍后重试";
+    default:
+      return {};
+    }
+  }
+
+  void build_clip_page(StackPanel const &page) {
+    const bool enabled = clipboard_history_enabled();
+    if (!indexing_ && enabled) {
+      if (!clip_busy_ && (clip_stale_ || clip_read_revision_ != document_.revision()))
+        load_clipboard_history();
+      if (!cloud_checked_)
+        check_cloud_clipboard();
+    }
+
+    auto group = add_group(page, L"剪贴板");
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    actions.Margin(Thickness{61, 0, 25, 16});
+    actions.Children().Append(button_control(
+        L"从系统剪贴板同步",
+        [this] { change_clipboard_history(clipboard_action(L"sync"), L"无法同步剪贴板历史"); },
+        enabled && !clip_busy_));
+    if (!clip_entries_.empty()) {
+      actions.Children().Append(button_control(
+          clip_clear_armed_ ? L"确认清空" : L"清空历史",
+          [this] {
+            if (!clip_clear_armed_) {
+              clip_clear_armed_ = true;
+              redraw_clip();
+              return;
+            }
+            change_clipboard_history(clipboard_action(L"clear"),
+                                     L"无法清空剪贴板历史，请稍后重试。");
+          },
+          enabled && !clip_busy_));
+    }
+    add_row(group, 0xE81C, L"剪贴板历史",
+            L"开启后记录复制的文本；保存关闭设置后清空已保存记录，且只记录文本类型。",
+            toggle_control(L"剪贴板历史", enabled,
+                           [this](bool on) { toggle_clipboard_history(on); }, !clip_busy_),
+            actions);
+
+    if (enabled) {
+      auto history = add_group(page, L"历史记录");
+      if (const auto note = cloud_clipboard_note(); !note.empty())
+        history.Children().Append(group_note(note));
+      StackPanel list;
+      if (clip_entries_.empty()) {
+        auto empty = make_text(L"暂无历史记录", 12, palette_.sub);
+        empty.HorizontalAlignment(HorizontalAlignment::Center);
+        empty.Margin(Thickness{16, 24, 16, 24});
+        list.Children().Append(empty);
+      }
+      bool first = true;
+      for (auto const &entry : clip_entries_) {
+        Border divider;
+        divider.BorderThickness(Thickness{0, first ? 0.0 : 1.0, 0, 0});
+        divider.BorderBrush(brush(palette_.divider));
+        first = false;
+        Grid row;
+        row.MinHeight(62);
+        row.Padding(Thickness{25, 10, 25, 10});
+        row.ColumnSpacing(12);
+        ColumnDefinition text_column;
+        text_column.Width(GridLength{1, GridUnitType::Star});
+        ColumnDefinition actions_column;
+        actions_column.Width(GridLength{1, GridUnitType::Auto});
+        row.ColumnDefinitions().Append(text_column);
+        row.ColumnDefinitions().Append(actions_column);
+
+        StackPanel texts;
+        texts.Spacing(2);
+        texts.VerticalAlignment(VerticalAlignment::Center);
+        auto line = make_text(single_line(entry.text), 14, palette_.text);
+        line.TextWrapping(TextWrapping::NoWrap);
+        line.TextTrimming(TextTrimming::CharacterEllipsis);
+        line.MaxLines(1);
+        ToolTipService::SetToolTip(line, box_value(hstring(entry.text)));
+        texts.Children().Append(line);
+        std::wstring meta = entry.pinned ? L"已固定 · " : L"";
+        meta += entry.timestamp_ms > 1'000'000'000'000ULL ? local_date_time(entry.timestamp_ms)
+                                                           : std::wstring(L"旧记录");
+        texts.Children().Append(make_text(meta, 12, palette_.sub));
+        Grid::SetColumn(texts, 0);
+        row.Children().Append(texts);
+
+        StackPanel buttons;
+        buttons.Orientation(Orientation::Horizontal);
+        buttons.Spacing(6);
+        buttons.VerticalAlignment(VerticalAlignment::Center);
+        buttons.Children().Append(button_control(
+            L"重新复制", [this, value = entry.text] { recopy_clipboard_entry(value); }));
+        buttons.Children().Append(button_control(
+            L"发到云剪贴板", [this, value = entry.text] { send_to_cloud_clipboard(value); },
+            cloud_state_ == CloudClipboardState::ready && !cloud_sending_));
+        auto pin = button_control(entry.pinned ? L"取消固定" : L"固定",
+                                  [this, value = entry.text, pinned = !entry.pinned] {
+                                    set_clipboard_entry_pinned(value, pinned);
+                                  },
+                                  !clip_busy_);
+        A11y::SetName(pin, entry.pinned ? L"取消固定剪贴板记录" : L"固定剪贴板记录");
+        buttons.Children().Append(pin);
+        auto remove = button_control(
+            L"删除", [this, value = entry.text] { remove_clipboard_entry(value); }, !clip_busy_);
+        A11y::SetName(remove, L"删除剪贴板记录");
+        buttons.Children().Append(remove);
+        Grid::SetColumn(buttons, 1);
+        row.Children().Append(buttons);
+
+        divider.Child(row);
+        list.Children().Append(divider);
+      }
+      auto card = make_card();
+      A11y::SetName(card, L"剪贴板历史");
+      card.Child(list);
+      history.Children().Append(card);
+    }
+
+    // 云剪贴板 is a panel of its own, as in the shared app on Windows.
+    auto cloud = add_group(page, L"云剪贴板");
+    shell_row(cloud, 0xE753, L"云剪贴板", L"", L"打开云剪贴板", nav::shell_links::cloud_clipboard);
+  }
+
   // ---- 屏幕键盘、语音、手写 ----
 
   // 共享的「屏幕键盘」页（packages/ui/src/settings/pages/screen-keyboard-page.tsx 和 touch-keyboard-geometry-section.tsx）在 Windows 上画四组：「屏幕键盘」（打开面板和可拖动的预览）、「尺寸」（高度、两种间距和恢复默认）、「工具栏」，以及指向「主题」的「外观」。Windows 不是 `touch_toolbar_components` 的宿主，「工具栏」里只有顶部语音入口；「布局」「手势」两组和触屏反馈只在手机上画，这里也不画。面板本身是输入工具，仍由共享应用打开。
@@ -6886,6 +7324,21 @@ private:
   Button feedback_group_button_{nullptr};
   Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_report_timer_{nullptr};
   Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_group_timer_{nullptr};
+
+  // 「剪贴板」页：读到的历史、「确认清空」是否待确认、写入是否在进行，跨页面重建保留。clip_generation_ 在开关变化时递增，作废进行中的读写；clip_read_ 在写入完成时递增，作废更早发出的读取。
+  std::vector<ClipboardEntry> clip_entries_;
+  bool clip_clear_armed_ = false;
+  bool clip_busy_ = false;
+  bool clip_stale_ = true;
+  uint64_t clip_read_revision_ = 0;
+  uint64_t clip_generation_ = 0;
+  uint64_t clip_read_ = 0;
+  // 发到云剪贴板：这次进入页面查到的状态、最近一次发送的说明和是否正在发送。cloud_generation_ 作废上一次进入页面时发出的请求。
+  CloudClipboardState cloud_state_ = CloudClipboardState::checking;
+  bool cloud_checked_ = false;
+  bool cloud_sending_ = false;
+  std::wstring cloud_notice_;
+  uint64_t cloud_generation_ = 0;
 
   // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
   enum class FontCatalogStatus { idle, loading, ready, failed };

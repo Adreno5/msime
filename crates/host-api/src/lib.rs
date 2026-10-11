@@ -14,6 +14,7 @@ use msime_client_core::edition::Edition;
 use msime_client_core::host_surface::{
     offered_input_schemes, HostCapabilities, HostPlatform, SurfaceRoute,
 };
+pub mod clipboard_history;
 pub mod cloud_clipboard;
 pub mod cloud_dictionary;
 pub mod settings_dictionary;

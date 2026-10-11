@@ -71,7 +71,6 @@ int main() {
         require(page.shell.panel.empty() && page.shell.page.empty());
     }
     require(find_page("account")->shell.page == "account");
-    require(find_page("clip")->shell.page == "tools");
     require(find_page("stats")->shell.page == "typing-statistics");
     // 插件和 AI 辅助打开共享应用的对应页面，和剪贴板、打字统计同在「工具」组。
     require(find_page("plugins")->shell.page == "plugins" &&
@@ -85,12 +84,13 @@ int main() {
     require(find_page("download") == nullptr);
     // MCP stays in this window's developer page and the core pages stay native.
     for (auto id : {"themes", "candidate", "typing", "expression", "shortcuts",
-                    "lexicon", "dev", "feedback", "about"})
+                    "lexicon", "clip", "dev", "feedback", "about"})
       require(find_page(id)->host == PageHost::Native);
     for (const auto &target : shell_links::all)
       require(launchable(target));
+    // 剪贴板页在本窗口里原生绘制，只有云剪贴板面板仍由共享应用打开。
     require(msime::windows::shell_route_argument(
-                request_for(find_page("clip")->shell)) == L"settings:tools");
+                request_for(shell_links::cloud_clipboard)) == L"cloud-clipboard");
     require(msime::windows::shell_route_argument(
                 request_for(shell_links::skin)) == L"settings:skin");
     require(msime::windows::shell_route_argument(

@@ -36,8 +36,7 @@ inline constexpr std::array<Page, 18> pages{{
     {"osk", 2, PageHost::Native, {}},
     {"voice", 2, PageHost::Native, {}},
     {"hand", 2, PageHost::Native, {}},
-    // The shared 剪贴板 page holds the local clipboard history switch and opens the cloud clipboard panel, so this window draws neither.
-    {"clip", 3, PageHost::Shell, {"", "tools"}},
+    {"clip", 3, PageHost::Native, {}},
     {"stats", 3, PageHost::Shell, {"", "typing-statistics"}},
     // Sound packs, music and command tables are imported and chosen in the shared app, which reads packs from a folder or archive the user picks; this window only opens it there.
     {"plugins", 3, PageHost::Shell, {"", "plugins"}},
@@ -51,16 +50,18 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：皮肤编辑器、取色器、主题包和社区皮肤库；云词库面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：皮肤编辑器、取色器、主题包和社区皮肤库；云词库和云剪贴板面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget skin{"", "skin"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
 inline constexpr ShellTarget cloud_dictionary{"cloud-dictionary", ""};
+// The cloud clipboard is a panel of the shared app as well, opened from the 剪贴板 page.
+inline constexpr ShellTarget cloud_clipboard{"cloud-clipboard", ""};
 inline constexpr ShellTarget voice{"", "voice"};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
-inline constexpr std::array<ShellTarget, 5> all{
-    {skin, voice, keyboard_panel, handwriting_panel, cloud_dictionary}};
+inline constexpr std::array<ShellTarget, 6> all{
+    {skin, voice, keyboard_panel, handwriting_panel, cloud_dictionary, cloud_clipboard}};
 } // namespace shell_links
 
 struct RouteAlias {
