@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import type { Preferences } from "../index";
 import { ActionButton } from "../core/action-button";
 import { ActionSheet } from "../core/action-sheet";
@@ -36,6 +36,7 @@ import { pushMobileSettingsState } from "../settings/mobile-navigation";
 import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
+import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
 
@@ -1028,8 +1029,6 @@ function AccountDetailsPage({
   const [mobileSubpage, setMobileSubpage] = useState<AccountSubpage | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [copiedAccountId, setCopiedAccountId] = useState(false);
-  const [googleWaiting, setGoogleWaiting] = useState(false);
-  const googleWaitingRef = useRef(false);
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
     setError,
@@ -1050,17 +1049,16 @@ function AccountDetailsPage({
     updateTarget,
     sendCode,
   } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
+  const {
+    waiting: googleWaiting,
+    resetWaiting: resetGoogleWaiting,
+    cancel: cancelGoogle,
+    signIn: runGoogleLogin,
+  } = useAccountGoogleLogin({ client, mounted, clientGeneration });
 
   useEffect(() => {
-    googleWaitingRef.current = false;
-    setGoogleWaiting(false);
+    resetGoogleWaiting();
   }, [client]);
-
-  const cancelGoogle = () => {
-    if (!googleWaitingRef.current || !client.googleCancel) return;
-    // The pending googleLogin reports the outcome; a failed cancel only means there was nothing left to cancel.
-    void client.googleCancel().catch(() => undefined);
-  };
 
   // Leaving the page must not leave the loopback listener waiting for a browser the user abandoned.
   useEffect(() => () => cancelGoogle(), [client]);
@@ -1322,24 +1320,11 @@ function AccountDetailsPage({
 
   const signInWithGoogle = () =>
     void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!client.googleLogin) throw { code: "account_unavailable" };
-      googleWaitingRef.current = true;
-      setGoogleWaiting(true);
-      let result: { user?: AccountUser | null };
-      try {
-        result = await client.googleLogin();
-      } finally {
-        if (mounted.current && generation === clientGeneration.current) {
-          googleWaitingRef.current = false;
-          setGoogleWaiting(false);
-        }
-      }
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      if (!result.user) throw { code: "account_unavailable" };
+      const result = await runGoogleLogin();
+      if (!result) return;
       setUser(result.user);
-      await loadProfile(generation);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+      await loadProfile(result.generation);
+      if (!mounted.current || result.generation !== clientGeneration.current) return;
       setNotice("登录成功。");
       onLoginComplete?.();
     });

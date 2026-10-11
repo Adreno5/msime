@@ -3,6 +3,7 @@ import { privacyUrl } from "../settings/app-resources";
 import { AccountInputField } from "./account-input-field";
 import { AccountStatusMessages } from "./account-status-messages";
 import { useAccountAction } from "./account-operation";
+import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import * as account from "./account-style";
 import type { AccountClient, AccountProviders, AccountUser } from "./account-page";
@@ -129,8 +130,6 @@ export function LoginSheet({
 }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [googleWaiting, setGoogleWaiting] = useState(false);
-  const googleWaitingRef = useRef(false);
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
     setError,
@@ -149,14 +148,11 @@ export function LoginSheet({
     updateTarget,
     sendCode,
   } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
-
-  const cancelGoogle = () => {
-    if (!googleWaitingRef.current || !client.googleCancel) return;
-    // 同一次等待只取消一次：关面板时 onClose 和卸载清理都会走到这里。
-    googleWaitingRef.current = false;
-    // 等着的 googleLogin 会报告结果；取消失败只说明已经没有可取消的了。
-    void client.googleCancel().catch(() => undefined);
-  };
+  const {
+    waiting: googleWaiting,
+    cancel: cancelGoogle,
+    signIn: runGoogleLogin,
+  } = useAccountGoogleLogin({ client, mounted, clientGeneration, cancelOnce: true });
 
   // 关掉面板或换了客户端时，不留一个还在等浏览器的本机监听。
   useEffect(() => () => cancelGoogle(), [client]);
@@ -183,22 +179,8 @@ export function LoginSheet({
 
   const signInWithGoogle = () =>
     void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!client.googleLogin) throw { code: "account_unavailable" };
-      googleWaitingRef.current = true;
-      setGoogleWaiting(true);
-      let result: { user?: AccountUser | null };
-      try {
-        result = await client.googleLogin();
-      } finally {
-        if (mounted.current && generation === clientGeneration.current) {
-          googleWaitingRef.current = false;
-          setGoogleWaiting(false);
-        }
-      }
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      if (!result.user) throw { code: "account_unavailable" };
-      onSignedIn(result.user);
+      const result = await runGoogleLogin();
+      if (result) onSignedIn(result.user);
     });
 
   const refreshProviders = () =>
