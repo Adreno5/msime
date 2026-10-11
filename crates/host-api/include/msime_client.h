@@ -424,6 +424,8 @@ char *msime_client_update_preferences(uint64_t session, const uint8_t *snapshot,
 char *msime_client_focus(uint64_t session, bool focused);
 /* Clear the current session's Engine candidate cache and refresh its view. */
 char *msime_client_reset_cache(uint64_t session);
+/* Release process-level model caches without a session handle (memory pressure). */
+void msime_client_release_process_cache(void);
 char *msime_client_voice_start(uint64_t session);
 char *msime_client_voice_cancel(uint64_t session);
 /* Capture bounded mono 16 kHz samples. The JSON result is transient audio and
