@@ -11,17 +11,12 @@ class EmptyGlossResultWiring(unittest.TestCase):
         source = (ROOT / "platforms/macos/src/input/InputController.mm").read_text()
         body = source.split("- (BOOL)applyCandidateTranslationResults {", 1)[1]
         body = body.split("- (void)stopAccountGloss {", 1)[0]
-        guard = body.index("if (results.count) {")
+        guard = body.index("if (!results.count) {")
         apply = body.index("[_session applyTranslations:")
-        publish = body.index("_view = next;")
-        synchronize = body.index("[self synchronizeCandidateServices];")
-        self.assertIn("NSDictionary *next = view;", body[:guard])
-        nonempty = body[guard:body.index("if (![next isKindOfClass:")]
-        self.assertIn("[_session applyTranslations:", nonempty)
-        self.assertLess(guard, apply)
-        self.assertLess(publish, synchronize)
-        self.assertIn('_translationAppliedGeneration = next[@"generation"];', body[apply:synchronize])
-        self.assertIn("return YES;", body[synchronize:])
+        empty = body[guard:apply]
+        self.assertIn('_translationAppliedGeneration = view[@"generation"];', empty)
+        self.assertIn("[self synchronizeCandidateServices];", empty)
+        self.assertIn("return YES;", empty)
         for method in ("appearanceChanged:", "applySharedToolbarPreferences:"):
             clearing = source.split(f"- (void){method}", 1)[1].split("\n- (", 1)[0]
             self.assertIn("applyTranslations:@[]", clearing, method)
