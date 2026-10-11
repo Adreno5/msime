@@ -581,12 +581,12 @@ fn ending_the_composition_forgets_the_operations() {
 #[test]
 fn expanding_with_more_rows_hidden_pulls_the_highlight_back_into_view() {
     let words = ["甲", "乙", "丙", "丁", "戊", "己", "庚"];
-    let paths: [(&str, fn() -> Action); 3] = [
-        ("space", || Action::SelectHighlighted),
-        ("finish", || Action::Finish),
-        ("punctuation", || Action::Punctuation(b'.')),
-    ];
-    for (name, action) in paths {
+    for name in ["space", "finish", "punctuation"] {
+        let action = || match name {
+            "space" => Action::SelectHighlighted,
+            "finish" => Action::Finish,
+            _ => Action::Punctuation(b'.'),
+        };
         let mut harness = Harness::new(TransformEngine::new(&words), Vec::new());
         harness.key(b'a');
         // 第二页（己 庚）是最后一页，还没满；引擎这时没有留着的候选。
