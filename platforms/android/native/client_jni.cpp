@@ -1049,6 +1049,10 @@ JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_accountSettings
 JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_accountSettingsApplyRaw(JNIEnv *env, jclass, jbyteArray request) {
     return bounded_request(env, request, kAccountSettingsLimit, msime_client_account_settings_apply);
 }
+// 语音设置页的「测试」：按偏好目录里存的配置测识别或润色服务，阻塞到约 15 秒，只在工作线程上调用。请求带偏好目录，响应只有结果文案，不含凭据。
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_testVoiceCredentialRaw(JNIEnv *env, jclass, jbyteArray request) {
+    return bounded_request(env, request, kResourcePackRequestLimit, msime_client_test_voice_credential);
+}
 // 按需下载的资源包（msime_client.h 里 msime_client_resource_pack_* 一节）。列出只读几个文件属性；安装和收编阻塞，只在主进程的工作线程上调用。
 JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_resourcePacksRaw(JNIEnv *env, jclass, jbyteArray request) {
     return bounded_request(env, request, kResourcePackRequestLimit, msime_client_resource_packs);
