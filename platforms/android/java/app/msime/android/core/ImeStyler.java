@@ -418,8 +418,8 @@ final class ImeStyler {
         s.skin = themed(s.skin);
         s.emojiSkin = themed(s.emojiSkin);
         s.handwritingSkin = themed(s.handwritingSkin);
-        // 浮动时根视图铺满屏幕，底色透明才看得见下面的应用；导航栏也不再画成键盘底色的一条。
-        boolean floating = s.floatingDrawn();
+        // 浮动（以及候选栏跟随光标）时根视图铺满屏幕，底色透明才看得见下面的应用；导航栏也不再画成键盘底色的一条。
+        boolean floating = s.overlayDrawn();
         int rootColor = floating ? Color.TRANSPARENT : color(s.skin.background());
         ViewPolicy.setBackgroundColor(s.keyboardRoot, rootColor);
         s.imeFrame.applyNavigationBar(rootColor, s.skin.dark());
@@ -509,8 +509,8 @@ final class ImeStyler {
     void applyKeyboardSurfaceGeometry() {
         if (s.keyboardSurface == null) return;
         Configuration configuration = s.getResources().getConfiguration();
-        if (s.floatingDrawn()) {
-            // 浮动：缩窄成圆角面板贴在根视图左上角，位置由 MSIMEInputService.positionFloatingKeyboard 用平移决定；高度包裹内容，不能是 MATCH_PARENT，否则键盘列会被撑到整屏高。
+        if (s.overlayDrawn()) {
+            // 浮动：缩窄成圆角面板贴在根视图左上角，位置由 MSIMEInputService.positionKeyboardSurface 用平移决定（浮动键盘按拖到的位置，跟随光标的候选栏按光标）；高度包裹内容，不能是 MATCH_PARENT，否则键盘列会被撑到整屏高。
             s.keyboardSurface.setLayoutParams(LayoutPolicy.frameParamsPx(
                 s.pixels(FloatingKeyboardPolicy.widthDp(configuration.screenWidthDp)),
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT));

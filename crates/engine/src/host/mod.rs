@@ -23,6 +23,9 @@ pub use crate::types::{
     SentenceAssociationOptions, ShuangpinCustomTable,
 };
 // Hosts call one of these at shutdown (or before replacing a data directory) so the delayed personal-context writes reach the journal; the bridge had no counterpart because the C++ flushed from `atexit`.
+pub use crate::wubi::lookup::{
+    WubiCodeLookup, WubiTextCodes, MAX_LOOKUP_CHARACTERS as MAX_WUBI_LOOKUP_CHARACTERS,
+};
 pub use crate::{close_cached_databases, flush_personal_learning};
 pub use dictionary::{
     count_learning_habits, dictionary_edit, dictionary_edit_bundled, dictionary_entries,
@@ -45,5 +48,5 @@ pub use session::{
 pub use text::{
     emoji_catalog_filtered_page, emoji_catalog_groups, emoji_catalog_slice, emoji_symbol_groups,
     handwriting_order_candidates, hanzi_to_pinyin, normalize_full_pinyin, shuangpin_key_hints,
-    shuangpin_zero_initials,
+    shuangpin_zero_initials, wubi_code_lookup,
 };

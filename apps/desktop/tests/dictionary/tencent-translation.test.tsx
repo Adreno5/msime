@@ -106,6 +106,9 @@ test("the copy no longer claims a Linux provider on every platform", async () =>
   const custom = screen.getByRole("group", { name: "自定义翻译服务" });
   expect(custom.textContent).not.toContain("Linux provider");
   expect(custom.textContent).toContain("DeepLX");
+  // 同一个自定义服务也接受 DeepL 官方 API 地址，并提示候选词会发送到 DeepL。
+  expect(custom.textContent).toContain("api-free.deepl.com");
+  expect(custom.textContent).toContain("候选词会发送到 DeepL");
 });
 
 test("Linux delegates Tencent credentials to the user-managed provider", async () => {

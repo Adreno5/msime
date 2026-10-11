@@ -93,6 +93,20 @@ std::optional<nlohmann::json> ai_descriptor(const std::string &query,
   }
 }
 
+// 这次查询有没有向 AI 发问：查询符合条件且 AI 开着。只有发问了的查询，空回答才要交给 owner 去把占位行换成「—」（#6888）。
+bool ai_requested(const std::string &query) {
+  try {
+    const auto parsed = nlohmann::json::parse(query, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object() ||
+        !parsed.value("ai_eligible", false))
+      return false;
+    const auto config = parsed.value("ai_assistant", nlohmann::json::object());
+    return config.is_object() && config.value("enabled", false);
+  } catch (...) {
+    return false;
+  }
+}
+
 std::optional<std::string> ai_cache_key(const std::string &query) {
   try {
     const auto parsed = nlohmann::json::parse(query, nullptr, false);
@@ -352,7 +366,7 @@ void AiCandidateWorker::run() {
         candidates = fetch_(request.query, is_cancelled);
       } catch (...) {
         failed_.store(true, std::memory_order_release);
-        continue;
+        candidates.clear();
       }
       if (is_cancelled())
         continue;
@@ -369,7 +383,10 @@ void AiCandidateWorker::run() {
         }
       }
     }
-    if (candidates.empty() || is_cancelled())
+    if (is_cancelled())
+      continue;
+    // 空回答（失败、被拒、模型没给词）也交给 owner：它把 AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。没向 AI 发问的查询什么都不交。
+    if (candidates.empty() && !ai_requested(request.query))
       continue;
     try {
       completed_(Result{request.lease, request.query, std::move(candidates)});

@@ -1262,9 +1262,12 @@ void CandidateWindow::paint() {
     // because their unselected text would otherwise be unreadable on the fill.
     const bool selected = value->candidates[i].highlighted;
     const auto number_color = candidate_row_number_color(palette_, selected);
+    // AI 占位行用序号的颜色（次要色）画，和真候选区分开。
     const auto row_text_color =
-        candidate_row_text_color(palette_, text_color, selected,
-                                 value->candidates[i].fixed_position != 0);
+        value->candidates[i].pending
+            ? number_color
+            : candidate_row_text_color(palette_, text_color, selected,
+                                       value->candidates[i].fixed_position != 0);
     const auto number_label = std::to_wstring(i + 1);
     target->DrawText(number_label.c_str(), static_cast<UINT32>(number_label.size()),
                       format(font_size_, DWRITE_TEXT_ALIGNMENT_TRAILING),

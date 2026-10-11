@@ -656,9 +656,9 @@ if ! rg -A 12 'void insertClipboardText\(' \
   echo "Android clipboard insertion must retire the recent-clip suggestion (#5692)" >&2
   exit 1
 fi
-# 剪贴板历史关着时，「最近复制」既不显示也不读剪贴板：本地开关只能经 recentClipEnabled（RecentClipboardSuggestion.enabled）和历史开关一起判断，补看在读剪贴板之前就要问它，系统标为敏感的内容从不提供。
+# 剪贴板历史关着时，「最近复制」既不显示也不读剪贴板：本地开关只能经 recentClipEnabled（RecentClipboardSuggestion.enabled）和历史开关一起判断，补看在读剪贴板之前就要问它，系统标为敏感的内容从不提供，文字和图片（#6781）都一样。
 service_java="$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java"
-offer_body=$(rg -A 14 'void offerRecentClip\(' "$service_java" || true)
+offer_body=$(rg -A 22 'void offerRecentClip\(' "$service_java" || true)
 offer_gate_line=$(printf '%s\n' "$offer_body" | rg -n 'if \(!recentClipEnabled\(\)' | head -n 1 | cut -d: -f1 || true)
 offer_read_line=$(printf '%s\n' "$offer_body" | rg -n 'getPrimaryClipDescription|readPrimaryClip|getPrimaryClip\(' | head -n 1 | cut -d: -f1 || true)
 if ! rg -q 'return RecentClipboardSuggestion\.enabled\(clipboardHistoryEnabled, clipboardSuggestionEnabled\);' "$service_java" \
@@ -667,8 +667,23 @@ if ! rg -q 'return RecentClipboardSuggestion\.enabled\(clipboardHistoryEnabled, 
     | rg -q . \
   || [[ -z "$offer_gate_line" || -z "$offer_read_line" || "$offer_read_line" -lt "$offer_gate_line" ]] \
   || ! printf '%s\n' "$offer_body" | rg -q 'clip == null \|\| clip\.sensitive\(\)\) return;' \
+  || ! printf '%s\n' "$offer_body" | rg -q 'if \(image\.sensitive\(\)\) return;' \
   || ! rg -B 2 -A 2 'String recent = ' "$service_java" | rg -q 'recentClipEnabled\(\)'; then
   echo "Android recent-clip suggestion must stay off, and must not read the clipboard, while clipboard history is off; sensitive clips are never offered (#5692)" >&2
+  exit 1
+fi
+# 「最近复制」的图片（#6781）只在当前输入框经 contentMimeTypes 声明收得下、并且副本的扩展名经 FileProvider 反查仍是图片时占这一行；发出去的是本应用 FileProvider 给的缓存副本并带读权限，不是剪贴板里的原 URI，副本目录必须在 FileProvider 的路径表里。
+if ! rg -A 6 'boolean recentImageSendable\(' "$service_java" \
+    | rg -q 'ClipboardImagePolicy\.accepts\(info\.contentMimeTypes, mimeType\)' \
+  || ! rg -A 7 'boolean recentImageSendable\(' "$service_java" \
+    | rg -q 'clipboardImageExtension\(mimeType\) != null' \
+  || ! rg -q 'ClipboardImageCache\.replace\(input, directory, extension,' "$service_java" \
+  || ! rg -q 'boolean recentImage = recentAllowed && recentImageSendable\(nowMs\);' "$service_java" \
+  || ! rg -q 'Uri uri = ClipboardImageCache\.contentUri\(this, copy\);' "$service_java" \
+  || ! rg -q 'InputConnection\.INPUT_CONTENT_GRANT_READ_URI_PERMISSION' "$service_java" \
+  || ! rg -qF '<cache-path name="clipboard-images" path="clipboard-images/" />' \
+    "$repo_root/platforms/android/res/xml/msime_file_paths.xml"; then
+  echo "Android recent-clip images must show only in editors that accept them and be sent as a FileProvider copy from cache/clipboard-images (#6781)" >&2
   exit 1
 fi
 if ! rg -q 'ClipboardCapturePolicy\.captures' \

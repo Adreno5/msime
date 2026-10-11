@@ -919,6 +919,22 @@ static napi_value ApplyOnlineCandidates(napi_env env, napi_callback_info info) {
         static_cast<uint8_t>(source)));
 }
 
+// AI 回答为空、失败或被拒：AI 座位上的占位行换成「—」（#6888）。
+static napi_value ResolveOnlineCandidates(napi_env env, napi_callback_info info) {
+    std::vector<napi_value> argv;
+    uint64_t handle = 0;
+    size_t source = 0;
+    std::string query;
+    if (!arguments(env, info, 3, argv) || !argumentHandle(env, argv[0], handle)
+            || !argumentText(env, argv[1], query) || !argumentIndex(env, argv[2], source)
+            || source > 1) {
+        return response(env, msime_client_resolve_online_candidates(0, nullptr, 0, 2));
+    }
+    return response(env, msime_client_resolve_online_candidates(
+        handle, reinterpret_cast<const uint8_t *>(query.data()), query.size(),
+        static_cast<uint8_t>(source)));
+}
+
 #define HANDLE_ENTRY(name, call)                                                                   \
     static napi_value name(napi_env env, napi_callback_info info) {                                 \
         std::vector<napi_value> argv;                                                               \
@@ -1513,6 +1529,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         ENTRY("parseAiResponse", ParseAiResponse),
         ENTRY("applyCloudResponse", ApplyCloudResponse),
         ENTRY("applyOnlineCandidates", ApplyOnlineCandidates),
+        ENTRY("resolveOnlineCandidates", ResolveOnlineCandidates),
         ENTRY("personalDictionarySync", PersonalDictionarySync),
         ENTRY("personalDictionaryRequest", PersonalDictionaryRequest),
         ENTRY("dictionaryCollections", DictionaryCollections),

@@ -34,6 +34,7 @@ import { settingsThemePreferences } from "./settings/settings-theme-preferences"
 import type { VoiceDeviceReader } from "./voice/voice-device-picker";
 import type { LocalVoiceModelClient } from "./voice/local-models";
 import type { ResourcePackClient } from "./settings/resource-packs";
+import type { WubiCodeLookup } from "./settings/wubi-code-lookup-section";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   type DictionaryEntry,
@@ -865,6 +866,14 @@ export {
 } from "./settings/telemetry-section";
 export { WubiSection, type WubiPreferences, type WubiSectionProps } from "./settings/wubi-section";
 export {
+  WubiCodeLookupSection,
+  WUBI_CODE_LOOKUP_MAX_LENGTH,
+  type WubiCodeLookup,
+  type WubiCodeLookupClient,
+  type WubiCodeLookupSectionProps,
+  type WubiTextCodes,
+} from "./settings/wubi-code-lookup-section";
+export {
   InputModeSection,
   type InputModeScheme,
   type InputModeSectionProps,
@@ -1573,6 +1582,8 @@ export type KeybindingPreferences = {
   switch_language_ctrl_alt_space: boolean;
   toggle_character_set_ctrl_shift_f: boolean;
   toggle_fullwidth_option_shift_h: boolean;
+  /** 单按 Caps Lock 切换中英文，长按照常是大写锁定。缺省为关。 */
+  switch_language_caps_lock?: boolean;
 };
 export type HostPlatform = "windows" | "macos" | "linux" | "android" | "ios" | "harmony";
 /** Mirrors `client-core::preferences::InputScheme`. */
@@ -1697,6 +1708,10 @@ export interface HostCapabilities {
   typing_effects: boolean;
   /** 宿主向会话报告大写锁定状态，「大写锁定时使用英文标点」在这里有效（目前只有 macOS）。 */
   caps_lock_punctuation?: boolean;
+  /** 宿主能分辨 Caps Lock 的轻点和长按并撤回大写锁定，「单按 Caps Lock 切换中英文」在这里有效（三个桌面宿主）。 */
+  caps_lock_language_switch?: boolean;
+  /** 快捷模式只从实体键盘的 Shift+字母进入，「Shift+字母进入快捷模式」总开关在这里有意义（三个桌面宿主）。 */
+  shift_letter_entry_switch?: boolean;
   /** 背单词书目列出单词本插件（`pack-<插件 id>` 词书）。 */
   wordbook_packs: boolean;
   /** 符号面板显示已安装的符号集插件。 */
@@ -2080,6 +2095,8 @@ export interface DictionaryClient {
   dismissFailure?(request_id: string): Promise<void>;
   /** 一种词库的词条总数，含内置词条；手机「词库」页的「拼音词库」行显示它。 */
   count?(kind: LocalDictionaryKind): Promise<number>;
+  /** 五笔查码（词库请求 `wubi_codes`，只读）：`text` 里每个汉字和整段词的 86、98 五笔编码。宿主提供它时，五笔的设置下面出现「五笔查码」。 */
+  wubiCodes?(text: string): Promise<WubiCodeLookup>;
 }
 export { dictionaryKindKeyHint } from "./settings/pages/dictionary-page";
 export type {
@@ -2316,6 +2333,8 @@ export interface PreferencesRecovery {
  * Its page icon is the app logo, which the design does not put in the bar either — its first tab is the `settings` glyph. Three of the four tabs would otherwise be a subject and the fourth a brand.
  */
 export {
+  customTranslationKeyIssue,
+  isDeepLApiEndpoint,
   tencentCredentialIssue,
   translationEndpointIssue,
 } from "./settings/translation-validation";

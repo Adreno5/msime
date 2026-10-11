@@ -65,10 +65,10 @@ static NSDictionary *TranslationPreferencesApplying(NSDictionary *preferences, N
     _target.target = self; _target.action = @selector(controlChanged:);
     _secondary.target = self; _secondary.action = @selector(controlChanged:);
     _provider = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    [_provider addItemsWithTitles:@[@"腾讯云", @"小牛翻译（NiuTrans）", @"自定义 DeepLX", @"水杉账号（发送到 api.msime.app）"]];
+    [_provider addItemsWithTitles:@[@"腾讯云", @"小牛翻译（NiuTrans）", @"自定义（DeepLX / DeepL API）", @"水杉账号（发送到 api.msime.app）"]];
     _provider.target = self; _provider.action = @selector(providerChanged:);
     _endpoint = [NSTextField textFieldWithString:@""]; _endpoint.placeholderString = @"https://example.com/translate";
-    _key = [[NSSecureTextField alloc] initWithFrame:NSZeroRect]; _key.placeholderString = @"留空表示不鉴权";
+    _key = [[NSSecureTextField alloc] initWithFrame:NSZeroRect]; _key.placeholderString = @"DeepLX 可留空；DeepL 填 Auth Key";
     _plainKey = [NSTextField textFieldWithString:@""]; _plainKey.hidden = YES;
     _plainKey.allowsEditingTextAttributes = NO;
     _reveal = [NSButton checkboxWithTitle:@"显示 API Key" target:self action:@selector(revealKey:)];
@@ -97,7 +97,7 @@ static NSDictionary *TranslationPreferencesApplying(NSDictionary *preferences, N
         @[[NSTextField labelWithString:@"第二种候选语言"], _secondary],
         @[[NSTextField labelWithString:@"在线翻译服务"], _provider],
         @[[NSTextField labelWithString:@"完整 POST 接口地址"], _endpoint],
-        @[[NSTextField labelWithString:@"Bearer API Key（可选）"], keys],
+        @[[NSTextField labelWithString:@"API Key"], keys],
         @[[NSTextField labelWithString:@"腾讯云服务"], _tencent],
         @[[NSTextField labelWithString:@"SecretId"], _secretId],
         @[[NSTextField labelWithString:@"SecretKey"], tencentKeys],
@@ -109,7 +109,7 @@ static NSDictionary *TranslationPreferencesApplying(NSDictionary *preferences, N
         [field.widthAnchor constraintEqualToConstant:310].active = YES;
         field.delegate = self;
     }
-    NSTextField *notice = [NSTextField wrappingLabelWithString:@"可同时显示两种候选释义；相同语言会自动去重。离线英文释义使用随客户端打包的词库，不联网；英文候选译为中文，英语目标优先查本地词库。不选择翻译服务时不联网。自定义服务优先，未命中候选会发送到所填地址（建议 HTTPS）；也可选择腾讯云或小牛翻译。腾讯云须填写 SecretId 和 SecretKey，小牛翻译须填写 App ID 和 API Key。凭据仅保存在本机配置文件，不参与云端设置同步。选择「水杉账号」会把当前页的中文候选词发送到 api.msime.app，首次使用会创建匿名账号。"];
+    NSTextField *notice = [NSTextField wrappingLabelWithString:@"可同时显示两种候选释义；相同语言会自动去重。离线英文释义使用随客户端打包的词库，不联网；英文候选译为中文，英语目标优先查本地词库。不选择翻译服务时不联网。自定义服务优先，未命中候选会发送到所填地址（建议 HTTPS）：可填自建的 DeepLX 兼容服务，也可填 DeepL 官方 API 地址（https://api-free.deepl.com/v2/translate 或 https://api.deepl.com/v2/translate）并在 API Key 填 DeepL 的 Auth Key，此时候选词发送到 DeepL，按 DeepL 的数据政策处理；也可选择腾讯云或小牛翻译。腾讯云须填写 SecretId 和 SecretKey，小牛翻译须填写 App ID 和 API Key。凭据仅保存在本机配置文件，不参与云端设置同步。选择「水杉账号」会把当前页的中文候选词发送到 api.msime.app，首次使用会创建匿名账号。"];
     _status = [NSTextField wrappingLabelWithString:@""];
     NSStackView *stack = [NSStackView stackViewWithViews:@[_grid, notice, _status]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeLeading; stack.spacing = 16;
@@ -269,7 +269,7 @@ static NSDictionary *TranslationPreferencesApplying(NSDictionary *preferences, N
         NSURLComponents *url = [NSURLComponents componentsWithString:endpoint];
         if (!request || !url.host.length || url.user || url.password || url.fragment ||
             [endpoint rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound)
-            return @"请输入有效的 HTTP(S) 完整接口地址和不含控制字符的 API Key；修改尚未保存。";
+            return @"请输入有效的 HTTP(S) 完整接口地址和不含控制字符的 API Key（DeepL 官方地址必须填 API Key）；修改尚未保存。";
     }
     NSDictionary *niutrans = form[@"niutrans"];
     if ([niutrans[@"enabled"] boolValue]) {

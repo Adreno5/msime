@@ -549,6 +549,8 @@ fn ios_routes_only_app_group_dictionary_operations() {
     }
     for action in [
         serde_json::json!({ "operation": "reset" }),
+        // 五笔查码只读随包码表，App 进程里的 host-api 直接回答，不经 App Group 的个人词库。
+        serde_json::json!({ "operation": "wubi_codes", "text": "你" }),
         serde_json::json!({ "operation": "unknown" }),
         serde_json::json!({}),
         serde_json::Value::Null,
@@ -1101,6 +1103,9 @@ fn dictionary_mutations_quiesce_but_reads_do_not() {
     ));
     assert!(!super::dictionary_action_requires_quiesce(
         &serde_json::json!({"operation": "export"})
+    ));
+    assert!(!super::dictionary_action_requires_quiesce(
+        &serde_json::json!({"operation": "wubi_codes", "text": "你"})
     ));
 }
 

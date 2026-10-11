@@ -36,6 +36,7 @@ Status: implemented
   - 开关打开且大写锁定时，没有组字的 `/`、`@` 等也是字面符号，不会打开 `/` 指令或 `@` 提及模式，和英文模式下一样。
   - `caps_lock_ascii_punctuation` 是顶层字段，`Preferences` 带 `deny_unknown_fields`，早于它的设置应用或 `msime-mcp` 会拒读写过这个字段的文档；正式包里输入法和设置应用版本一致。
   - 没有加进账号设置同步，也没有加进 macOS 原生设置窗口和 MCP 的 `update_preferences`。
+  - 和[单按 Caps Lock 切换中英文](2026-10-11-caps-lock-language-switch.md)同时打开时，macOS 在轻点认定之前不报告大写锁定，轻点不会让标点改道；长按认定后照常报告。
 
 ## Verification
 

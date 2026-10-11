@@ -35,7 +35,15 @@ final class OnlineCandidateProvider {
   /// Ask again once the composition holds still, if it is one a provider could answer. `allowed` is the host's own gate: Full Access, a composition, no local mode; which schemes qualify is the Engine's call.
   func refresh(allowed: Bool) {
     guard allowed, let document = session.onlineQuery(), let query = Self.object(document),
-          Self.requestsCloud(query) || Self.requestsAI(query) else { cancel(); return }
+          Self.requestsCloud(query) || Self.requestsAI(query) else {
+      cancel()
+      // 宿主不让问（没有完全访问权限等）而组字本可以问 AI：AI 座位上的占位行直接换成「—」，不会一直等下去（#6888）。
+      if !allowed, let document = session.onlineQuery(), let query = Self.object(document),
+         Self.requestsAI(query) {
+        _ = apply { try self.session.resolveOnlineCandidates(query: document, source: 1) }
+      }
+      return
+    }
     let signature = Self.signature(query)
     guard signature != self.signature else { return }
     cancel()
@@ -82,8 +90,14 @@ final class OnlineCandidateProvider {
       cloudApplied = true
       aiDocument = refreshed
     }
-    guard target == epoch, let query = Self.object(aiDocument), Self.requestsAI(query),
-          let limit = Self.aiCandidateLimit(query),
+    guard target == epoch, let query = Self.object(aiDocument), Self.requestsAI(query) else { return }
+    defer {
+      // 向 AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
+      if !aiApplied, target == epoch {
+        _ = apply { try self.session.resolveOnlineCandidates(query: aiDocument, source: 1) }
+      }
+    }
+    guard let limit = Self.aiCandidateLimit(query),
           let descriptor = session.aiRequest(query: aiDocument),
           let request = Self.aiRequest(descriptor) else { return }
     aiRequested = true

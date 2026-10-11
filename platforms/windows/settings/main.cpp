@@ -3367,6 +3367,10 @@ private:
       bool_row(schemes, 0xE8CB, L"四码唯一候选自动上屏",
                L"五笔输入达到四码且只有一个候选时，自动提交该候选。关闭后这个词留在候选列表里，用空格或数字键选它。",
                L"wubi_auto_commit_unique", true);
+      // 查码面板画在共享应用的「输入」页里，本窗口只给入口：五笔版没有辅助码组，这是本窗口通到那一页的唯一一行。
+      shell_row(schemes, 0xE721, L"五笔查码",
+                L"在水杉输入法应用的「输入 › 五笔查码」中输入或粘贴汉字，查它的 86 和 98 五笔编码", L"打开",
+                nav::shell_links::input);
     }
 
     auto language = add_group(page, L"中英文");
@@ -3511,6 +3515,10 @@ private:
                         }});
     }
     auto local = add_group(page, L"快捷模式");
+    // 总开关：关掉后没有输入时 Shift+字母照常打出大写字母，下面各模式的勾选保留原值；/ 和 @ 不经过它。
+    bool_row(local, 0xE8D3, L"Shift+字母进入快捷模式",
+             L"关掉后 Shift+字母照常打出大写字母，下面各模式的开关保留，/ 和 @ 不受影响",
+             L"local_modes.shift_letter_entry", true);
     add_row(local, 0xE945, L"快捷模式", L"用引导字母进入对应的输入模式；V、/、@ 只在拼音方案下没有输入时进入，/ 和 @ 还需中文标点", nullptr,
             checks_panel(std::move(checks), 250));
 
@@ -3727,6 +3735,10 @@ private:
                                  doc.SetBoolean(key, value == choice);
                              }, false);
                            }));
+    // 和上面的切换键互不排斥：Caps Lock 是另加的一个键。
+    bool_row(keys, 0xE8AB, L"单按 Caps Lock 切换中英文",
+             L"轻点（300 毫秒内松开）切换中英文，不打开大写锁定；按住更久照常打开大写锁定",
+             L"keybindings.switch_language_caps_lock", false);
     bool_row(keys, 0xE8C1, L"Ctrl+Shift+F 切换繁体输出", L"在简体与繁体输出之间切换",
              L"keybindings.toggle_character_set_ctrl_shift_f", true);
     bool_row(keys, 0xE8D3, L"Alt+Shift+H 切换全半角",
@@ -3735,7 +3747,7 @@ private:
 
     auto reset = add_group(page, L"");
     add_row(reset, 0xE72C, L"恢复默认快捷键",
-            L"切换中英文、Ctrl+Shift+F 和 Alt+Shift+H 恢复为默认设置",
+            L"切换中英文、Caps Lock、Ctrl+Shift+F 和 Alt+Shift+H 恢复为默认设置",
             button_control(L"恢复默认",
                            [this] {
                              change([](PreferencesDocument &doc) {

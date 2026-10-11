@@ -61,6 +61,9 @@ public:
   std::optional<nlohmann::json>
   apply_ai_candidates(const FocusLease &lease, const std::string &query,
                       const std::string &candidates);
+  /// AI 回答为空、失败或被拒时把 AI 座位上的占位行换成「—」。
+  std::optional<nlohmann::json>
+  resolve_ai_candidates(const FocusLease &lease, const std::string &query);
   /// Re-rank with the settled model; nothing when the order held or no model
   /// is installed, which is the answer on every one-model installation.
   std::optional<nlohmann::json> rerank_settled(const FocusLease &lease);

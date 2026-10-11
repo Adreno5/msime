@@ -380,6 +380,19 @@ impl HostSession {
         self.ai_provider_config()
             .is_some_and(|config| query.ai_assistant.as_ref() == Some(config))
     }
+    /// 按最新请求的偏好和会话密钥重新决定 AI 座位（`ai_seat_ready`）。
+    fn ai_seat_ready(&self) -> bool {
+        let preferences = self
+            .requested
+            .as_ref()
+            .map(|snapshot| &snapshot.preferences)
+            .unwrap_or(&self.applied);
+        ai_seat_ready(&preferences.ai_assistant, self.ai_credential.as_ref())
+    }
+    fn refresh_ai_seat(&mut self) -> Result<(), String> {
+        let ready = self.ai_seat_ready();
+        self.runtime.set_ai_seat(ready).map_err(|e| e.to_string())
+    }
     fn set_ai_provider_cache(&mut self, preferences: &Preferences) {
         let ai = &preferences.ai_assistant;
         self.ai_provider_cache = ai.enabled.then(|| AiAssistantProviderConfig {
@@ -575,6 +588,7 @@ impl HostSession {
         options.local_expression = preferences.local_modes.expression;
         options.local_command = preferences.local_modes.command;
         options.local_mention = preferences.local_modes.mention;
+        options.local_shift_letter_entry = preferences.local_modes.shift_letter_entry;
         // 先定下辅助码设置：插件表的戳要看当前方案的辅助码是否打开、选了哪个辅助码表包。
         let helpcode = helpcode_for_scheme(&preferences, scheme);
         options.helpcode = helpcode.enabled;
@@ -645,6 +659,8 @@ impl HostSession {
         engine
             .set_mention_places(preferences.local_modes.mention_places)
             .map_err(|e| e.to_string())?;
+        // AI 座位跟着最新请求的偏好（与 `ai_provider_cache` 同一份），每个新 Engine 都要重新告诉它。
+        engine.set_ai_seat(self.ai_seat_ready());
         self.runtime
             .replace_engine_with_touch_layout(
                 engine,
@@ -818,6 +834,8 @@ impl HostSession {
             .preferences
             .clone();
         self.set_ai_provider_cache(&requested_preferences);
+        // 关掉或打开 AI 不必等组字结束：占位行跟着请求的偏好立刻出现或消失。
+        self.refresh_ai_seat()?;
         // 宿主状态，不是 Engine 状态：跟着最新请求的偏好走，不必等这次偏好重建 Engine，也不必等组字结束。
         self.runtime
             .set_wubi_auto_commit_unique(requested_preferences.wubi_auto_commit_unique);
@@ -1238,6 +1256,7 @@ impl HostOptions {
             local_expression: self.preferences.local_modes.expression,
             local_command: self.preferences.local_modes.command,
             local_mention: self.preferences.local_modes.mention,
+            local_shift_letter_entry: self.preferences.local_modes.shift_letter_entry,
             command_table: Vec::new(),
             mention_entries: Vec::new(),
             quick_phrase_table: Vec::new(),
@@ -2170,6 +2189,29 @@ const PRIVATE_SESSIONS_SKIP_STATISTICS: bool = cfg!(any(
     target_os = "ios",
     test
 ));
+
+/// 桌面 Linux 的 AI 请求经用户自己的在线服务发出，密钥只在那个服务的私有配置里，Host API 看不到它；其他宿主的请求由 `msime_client_ai_request_for_query` 用偏好或会话里的密钥签名。
+const AI_CREDENTIALS_IN_PROVIDER: bool = cfg!(all(
+    target_os = "linux",
+    not(target_env = "ohos"),
+    not(test)
+));
+
+/// 这个会话的 AI 座位开不开（#6888）：AI 开着，而且请求真的发得出去。macOS 和 Windows 默认开着 AI 却没有密钥，这时不发请求，也就不该在每次组字时留一个永远等不到回答的占位行。
+fn ai_seat_ready(
+    ai: &msime_client_core::preferences::AiAssistantPreferences,
+    credential: Option<&SessionAiCredential>,
+) -> bool {
+    if !ai.enabled {
+        return false;
+    }
+    if AI_CREDENTIALS_IN_PROVIDER {
+        return true;
+    }
+    msime_client_core::ai::endpoint::validate(&ai.endpoint).is_ok()
+        && (credential.is_some_and(|credential| credential.endpoint == ai.endpoint)
+            || msime_client_core::ai::credential_for_endpoint(ai).is_some())
+}
 
 /// 一个会话在两次写统计之间最多记下多少次上屏。正常情况下 `SELECTION_BATCH` 次选词就会写一次，这只是兜底。
 const EFFICIENCY_BATCH_LIMIT: usize = 256;

@@ -176,18 +176,21 @@ int main() {
       harness.recorder.answer = {};
       require(harness.worker.submit(lease(42, 7, 9), query_for("nihao")),
               "the first request is accepted");
-      std::this_thread::sleep_for(beyond_debounce);
+      require(harness.wait_for_results(1), "the empty answer is delivered");
       require(harness.fetches() == 1, "the first request reached the provider");
-      require(harness.results.empty(), "an empty answer delivers nothing");
+      // 空回答照样交给 owner，好把 AI 座位上的占位行换成「—」（#6888）。
+      require(harness.results[0].candidates.empty(),
+              "an empty answer arrives as no candidates");
       {
         std::lock_guard lock(harness.recorder.mutex);
         harness.recorder.answer = {"你好"};
       }
+      std::this_thread::sleep_for(beyond_debounce);
       require(harness.worker.submit(lease(42, 7, 9), query_for("nihao")),
               "the same prefix is asked for again");
-      require(harness.wait_for_results(1), "the retry completes");
+      require(harness.wait_for_results(2), "the retry completes");
       require(harness.fetches() == 2, "the retry was not suppressed by a cache");
-      require(harness.results[0].candidates == std::vector<std::string>{"你好"},
+      require(harness.results[1].candidates == std::vector<std::string>{"你好"},
               "and the answer that arrived is delivered");
     }
 
@@ -294,16 +297,30 @@ int main() {
       harness.recorder.throwing = true;
       require(harness.worker.submit(lease(42, 7, 9), query_for("ni")),
               "the failing request is accepted");
-      std::this_thread::sleep_for(beyond_debounce);
+      require(harness.wait_for_results(1), "the failure is delivered");
       require(harness.worker.failed(), "the failure is recorded");
-      require(harness.results.empty(), "and nothing is delivered");
+      require(harness.results[0].candidates.empty(),
+              "as no candidates, so the owner resolves the AI seat");
       {
         std::lock_guard lock(harness.recorder.mutex);
         harness.recorder.throwing = false;
       }
       require(harness.worker.submit(lease(42, 7, 9), query_for("hao")),
               "the worker still takes requests");
-      require(harness.wait_for_results(1), "and still answers them");
+      require(harness.wait_for_results(2), "and still answers them");
+      require(!harness.results[1].candidates.empty(), "with candidates");
+    }
+
+    // 没向 AI 发问的查询（不符合条件或 AI 关着），空回答什么都不交。
+    {
+      Harness harness;
+      harness.recorder.answer = {};
+      require(harness.worker.submit(
+                  lease(42, 7, 9),
+                  R"({"ai_eligible":false,"ai_assistant":{"enabled":true},"pinyin_segments":["n"]})"),
+              "an ineligible query is accepted");
+      std::this_thread::sleep_for(beyond_debounce);
+      require(harness.results.empty(), "and delivers nothing");
     }
 
     // Rejected envelopes never reach the provider: no lease, no query, or a

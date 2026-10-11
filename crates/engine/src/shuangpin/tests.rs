@@ -311,7 +311,9 @@ fn online_rows_follow_the_query_cache() {
         .collect();
     assert!(engine.insert_online_words(&series, &ai, CandidateSource::AiSuggestion));
     let listed = engine.query(&series, None);
-    assert_eq!(words(&listed)[..4], ["你好", "拟好", "甲", "乙"]);
+    // 第一条 AI 候选坐第 2 位，第二条排在末尾（#6888）。
+    assert_eq!(words(&listed)[..3], ["你好", "拟好", "甲"]);
+    assert_eq!(words(&listed).last(), Some(&"乙"));
     assert!(!engine.insert_online_words(&series, &["".to_string()], CandidateSource::AiSuggestion));
 }
 

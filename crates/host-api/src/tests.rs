@@ -193,6 +193,7 @@ fn local_mode_resource_gates_preserve_unrelated_modes() {
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
@@ -6419,6 +6420,80 @@ fn clearing_online_source_removes_its_rows_without_empty_batch_protocol() {
     read(msime_client_destroy(handle));
 }
 
+/// #6888：开着 AI 时组字先在 AI 座位上放占位行（来源 12）；AI 失败时宿主调用 resolve，占位行换成「—」，别的候选不挪位；关掉 AI 后占位行立刻消失。
+#[test]
+fn an_ai_seat_waits_with_a_placeholder_and_a_failed_answer_leaves_a_dash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut preferences = Preferences {
+        scheme: InputScheme::Quanpin,
+        ..chinese_preferences()
+    };
+    preferences.ai_assistant.enabled = true;
+    preferences.ai_assistant.provider = "deepseek".into();
+    preferences.ai_assistant.endpoint = "https://api.deepseek.com/chat/completions".into();
+    preferences.ai_assistant.model = "synthetic-model".into();
+    let handle = test_host_with_pinyin_fixture(dir.path(), preferences.clone());
+    read(msime_client_focus(handle, true));
+    for byte in b"nihao" {
+        read(msime_client_character(handle, *byte, false));
+    }
+    let has_placeholder = |view: &Value| {
+        view["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["source"] == 12)
+    };
+    // 开着 AI 却没有密钥（macOS、Windows 的出厂状态）时请求发不出去，不留座位。
+    assert!(!has_placeholder(&read(msime_client_view(handle))["value"]));
+    // 只放进会话内存的密钥（iOS 钥匙串）一到，座位就留出来。
+    let token = "synthetic-session-key";
+    assert_eq!(
+        read(unsafe { msime_client_set_ai_credential(handle, token.as_ptr(), token.len()) })
+            ["value"],
+        true
+    );
+    let texts = |view: &Value| -> Vec<String> {
+        view["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate["text"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let before = read(msime_client_view(handle))["value"].clone();
+    let seat = before["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|candidate| candidate["source"] == 12)
+        .expect("an AI placeholder");
+    assert_eq!(before["candidates"][seat]["text"], "…");
+
+    let query = read(msime_client_online_query(handle))["value"].to_string();
+    let resolve = |source: u8| {
+        read(unsafe {
+            msime_client_resolve_online_candidates(handle, query.as_ptr(), query.len(), source)
+        })
+    };
+    let refused = resolve(0);
+    assert_eq!(refused["value"]["applied"], false, "{refused}");
+    let resolved = resolve(1);
+    assert_eq!(resolved["value"]["applied"], true, "{resolved}");
+    let mut expected = texts(&before);
+    expected[seat] = "—".to_owned();
+    assert_eq!(texts(&resolved["value"]["view"]), expected);
+    assert_eq!(resolved["value"]["view"]["candidates"][seat]["source"], 12);
+
+    preferences.ai_assistant.enabled = false;
+    let disabled = update(handle, 1, &preferences);
+    assert!(
+        !has_placeholder(&read(msime_client_view(handle))["value"]),
+        "{disabled}"
+    );
+    read(msime_client_destroy(handle));
+}
+
 #[test]
 fn an_ai_credential_handed_over_in_memory_signs_requests_without_being_stored() {
     let dir = tempfile::tempdir().unwrap();
@@ -6902,6 +6977,59 @@ fn custom_translation_http_bridge_is_bounded_and_pure() {
             ["ok"],
         false
     );
+}
+
+/// 官方 DeepL 地址在描述器里换成 DeepL 的鉴权和正文；Windows、macOS、iOS 和鸿蒙的键盘都直接发这个描述器。
+#[test]
+fn custom_translation_http_bridge_speaks_deepl_to_official_endpoints() {
+    let build = |endpoint: &str, key: &str| {
+        let request = json!({"config":{"enabled":true,"endpoint":endpoint,"api_key":key},
+            "text":"测试","source_language":"zh","target_language":"en"});
+        let bytes = serde_json::to_vec(&request).unwrap();
+        read(unsafe { msime_client_custom_translation_http_request(bytes.as_ptr(), bytes.len()) })
+    };
+    let value = build(" https://api.deepl.com/v2/translate ", " synthetic-key:fx ");
+    assert_eq!(value["ok"], true);
+    assert_eq!(
+        value["value"]["url"],
+        "https://api-free.deepl.com/v2/translate"
+    );
+    assert_eq!(
+        value["value"]["headers"],
+        json!({"Content-Type":"application/json","Authorization":"DeepL-Auth-Key synthetic-key:fx"})
+    );
+    assert_eq!(
+        value["value"]["body"],
+        json!({"text":["测试"],"source_lang":"ZH","target_lang":"EN-US"})
+    );
+    assert_eq!(value["value"]["timeout_ms"], 2500);
+    assert_eq!(value["value"]["max_response_bytes"], 1048576);
+    assert_eq!(
+        build("https://api-free.deepl.com/v2/translate", "")["error"],
+        "invalid custom translation parameters"
+    );
+    // 最长的密钥加上 `DeepL-Auth-Key ` 前缀是 4111 字节，macOS 的描述器校验按这个上限放行。
+    let longest = build("https://api.deepl.com/v2/translate", &"k".repeat(4096));
+    assert_eq!(
+        longest["value"]["headers"]["Authorization"]
+            .as_str()
+            .unwrap()
+            .len(),
+        4111
+    );
+    let parse = |body: &[u8]| {
+        read(unsafe { msime_client_parse_custom_translation_response(body.as_ptr(), body.len()) })
+    };
+    let reply = br#"{"translations":[{"detected_source_language":"ZH","text":"Test"}]}"#;
+    assert_eq!(parse(reply)["value"], "Test");
+    assert!(!unsafe { msime_client_custom_translation_reply_failed(reply.as_ptr(), reply.len()) });
+    for body in [
+        br#"{"message":"Forbidden"}"#.as_slice(),
+        br#"{"message":"Quota Exceeded"}"#,
+    ] {
+        assert!(parse(body)["value"].is_null());
+        assert!(unsafe { msime_client_custom_translation_reply_failed(body.as_ptr(), body.len()) });
+    }
 }
 
 #[test]

@@ -6,6 +6,8 @@
 #include "../clipboard/ClipboardText.h"
 #include "../clipboard/ClipboardAtomicWrite.h"
 #include "../system/ChineseTextConversion.h"
+#include "../system/CapsLockRelease.h"
+#include "../../../../shared/input/CapsLockTap.h"
 #include "HelpcodeDefaults.h"
 #include "HelpcodePack.h"
 #include "HelpcodeSchemaNames.h"
@@ -420,6 +422,8 @@ struct State {
     right_ctrl_down = false;
     left_ctrl_down = false;
     modifier_toggle_deadline = 0;
+    caps_lock_tap.reset();
+    caps_lock_down = false;
     mode_chord_held = false;
     character_set_chord_held = false;
     host_shortcut_strokes.clear();
@@ -428,6 +432,10 @@ struct State {
   bool mode_ctrl_enabled = false;
   bool mode_ctrl_space_enabled = true;
   bool mode_ctrl_alt_space_enabled = true;
+  // 单按 Caps Lock 切换中英文（缺省关）、判定状态，以及 Caps Lock 是否按着（自动重复的按下不重新计时）。
+  bool mode_caps_lock_enabled = false;
+  msime::input::CapsLockTap caps_lock_tap;
+  bool caps_lock_down = false;
   bool character_set_shortcut_enabled = true;
   bool number_row_selection = true;
   std::optional<bool> number_row_override;
@@ -775,6 +783,7 @@ struct State {
     mode_ctrl_enabled = keybindings.value("switch_language_ctrl", false);
     mode_ctrl_alt_space_enabled =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
     traditional_output = traditional_output_override.value_or(
@@ -1031,6 +1040,7 @@ struct State {
     mode_ctrl_enabled = keybindings.value("switch_language_ctrl", false);
     mode_ctrl_alt_space_enabled =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
   }
@@ -2168,6 +2178,34 @@ bool online_request_is_stale(IBusEngine *engine, const std::string &encoded) {
     return false;
   }
 }
+// AI 座位上的占位行（Engine 候选来源 12）：这次组字不会向 AI 发问，或发问落空（失败、空回答、被拒）时换成「—」，留到组字变化为止，后面的候选不挪位（#6888）。座位已经换过或没开时 Host API 答 applied:false，什么都不画。
+void resolve_ai_seat(IBusEngine *engine, const std::string &query) {
+  auto &s = state(engine);
+  if (!s.session || query.empty())
+    return;
+  try {
+    auto resolved = response(msime_client_resolve_online_candidates(
+        s.session, reinterpret_cast<const uint8_t *>(query.data()), query.size(), 1));
+    if (!resolved.value("applied", false))
+      return;
+    s.view = resolved.at("view");
+    render(engine, s.view);
+  } catch (...) {}
+}
+// 不会向 AI 发问的状态（没有在线服务、私密输入框）下，把当前组字的 AI 座位直接换成「—」。
+void resolve_ai_seat_without_provider(IBusEngine *engine) {
+  auto &s = state(engine);
+  if (!s.session || !s.focused || s.blocked || !s.input_enabled)
+    return;
+  try {
+    const auto query = response(msime_client_online_query(s.session));
+    if (!query.is_object() || !query.value("ai_eligible", false))
+      return;
+    const auto ai = query.value("ai_assistant", Json());
+    if (ai.is_object() && ai.value("enabled", false))
+      resolve_ai_seat(engine, query.dump());
+  } catch (...) {}
+}
 // Send one source's provider request. The AI source is sent twice per input change: a cache-only probe at once, then the network request after its own idle delay.
 void online_dispatch(IBusEngine *engine, uint8_t only_source, bool ai_cache_only = false) {
   auto &s = state(engine);
@@ -2266,8 +2304,10 @@ void online_schedule(IBusEngine *engine) {
     }
   }
   if (s.online_provider_socket.empty() || !s.session || !s.focused ||
-      s.blocked || !s.input_enabled || s.private_input)
+      s.blocked || !s.input_enabled || s.private_input) {
+    resolve_ai_seat_without_provider(engine);
     return;
+  }
   s.online_delay_source = g_timeout_add_full(
       G_PRIORITY_DEFAULT, kCloudIdleDelayMs,
       [](gpointer data) -> gboolean {
@@ -2397,24 +2437,30 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
     online_schedule(engine);
     return;
   }
-  if (!raw) {
+  // 网络请求（不是只查缓存的探测）落空：除了留着下次重试，还要把 AI 座位上的占位行换成「—」。
+  const auto empty_ai = [&] {
     retry_empty_ai();
+    if (request->source == 1 && !request->ai_cache_only)
+      resolve_ai_seat(engine, request->query);
+  };
+  if (!raw) {
+    empty_ai();
     return;
   }
   try {
     const auto document = Json::parse(raw.get());
     if (!document.value("ok", false)) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     const auto value = document.at("value");
     if (!value.is_object()) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     const auto candidates = value.value("candidates", Json());
     if (!candidates.is_array() || candidates.size() > 11) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     Json groups[2] = {Json::array(), Json::array()};
@@ -2426,7 +2472,7 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
       groups[source].push_back(candidate);
     }
     if (groups[request->source].empty()) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     bool ai_applied = false;
@@ -2441,7 +2487,7 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
         if (applied.value("applied", false))
           ai_applied = true;
         else
-          retry_empty_ai();
+          empty_ai();
       }
     }
     render(engine, s.view);
@@ -3786,6 +3832,8 @@ void render(IBusEngine *engine, const Json &view) {
         gloss += " · " + translation;
     }
     std::string tail;
+    // Engine 候选来源 12 是 AI 座位上的占位行，下面画成次要色。
+    const bool ai_placeholder = candidate.value("source", 0) == 12;
     switch (candidate.value("source", 0)) {
     case 2: tail += "  云"; break;
     case 3: tail += "  AI"; break;
@@ -3834,6 +3882,11 @@ void render(IBusEngine *engine, const Json &view) {
     else if (row_text_color)
       ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND,
                                  *row_text_color, 0, G_MAXUINT);
+    // AI 占位行用序号的颜色（没有主题色时用灰色）画，追加在行颜色之后所以盖过它。
+    if (ai_placeholder)
+      ibus_text_append_attribute(
+          text, IBUS_ATTR_TYPE_FOREGROUND,
+          state(engine).candidate_number_color.value_or(0x8a8a8a), 0, G_MAXUINT);
     // A skin's translation colour over the gloss, appended after the row colour so it wins where they overlap. Whether the desktop panel honours a ranged attribute is up to the panel.
     if (gloss_end > gloss_start && state(engine).candidate_translation_color)
       ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND,
@@ -6073,6 +6126,30 @@ gboolean process_key(IBusEngine *engine, guint key, guint keycode, guint flags) 
   if (const bool caps_lock = (flags & IBUS_LOCK_MASK) != 0; caps_lock != s.caps_lock) {
     s.caps_lock = caps_lock;
     publish_mode(engine);
+  }
+  // 单按 Caps Lock 切换中英文。认的是 Caps_Lock 这个符号：被 xkb 选项改成 Control 或 Escape 的 Caps Lock 键不算，被改成 Caps_Lock 的 Shift 键（evdev 键码 42、54）也不算。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换；松开本身照常交给应用，和裸 Shift 一样。
+  const bool caps_lock_key = key == IBUS_Caps_Lock && keycode != 42 && keycode != 54;
+  if (!caps_lock_key) {
+    if (!release) s.caps_lock_tap.interrupt();
+  } else if (!release) {
+    if (!s.caps_lock_down) {
+      s.caps_lock_down = true;
+      const bool enabled = s.mode_caps_lock_enabled && s.focused && !s.blocked &&
+                           msime::linux_host::caps_lock_release_available();
+      const bool others = (flags & (IBUS_SHIFT_MASK | IBUS_CONTROL_MASK | IBUS_MOD1_MASK | IBUS_MOD4_MASK |
+                                    IBUS_SUPER_MASK | IBUS_META_MASK | IBUS_HYPER_MASK)) != 0;
+      s.caps_lock_tap.press(g_get_monotonic_time() / 1000, enabled, (flags & IBUS_LOCK_MASK) != 0, others);
+    }
+  } else {
+    s.caps_lock_down = false;
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (s.caps_lock_tap.release(g_get_monotonic_time() / 1000) && s.focused && !s.blocked &&
+        msime::linux_host::release_caps_lock()) {
+      s.caps_lock = false;
+      publish_mode(engine);
+      guarded(engine, "process_key", [&] { toggle_input_mode(engine); });
+      return FALSE;
+    }
   }
   if (key == IBUS_BackSpace && release) {
     const bool owned = s.backspace_hold.armed();

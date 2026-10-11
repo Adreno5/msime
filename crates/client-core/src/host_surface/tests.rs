@@ -266,6 +266,23 @@ fn capabilities_describe_each_host() {
         assert!(!HostCapabilities::for_platform(platform).caps_lock_punctuation);
     }
     assert!(macos.caps_lock_punctuation);
+    // 「单按 Caps Lock 切换中英文」和「Shift+字母进入快捷模式」总开关只在三个桌面宿主上提供。
+    for platform in [
+        HostPlatform::Windows,
+        HostPlatform::Linux,
+        HostPlatform::Macos,
+    ] {
+        let host = HostCapabilities::for_platform(platform);
+        assert!(host.caps_lock_language_switch && host.shift_letter_entry_switch);
+    }
+    for platform in [
+        HostPlatform::Android,
+        HostPlatform::Ios,
+        HostPlatform::Harmony,
+    ] {
+        let host = HostCapabilities::for_platform(platform);
+        assert!(!host.caps_lock_language_switch && !host.shift_letter_entry_switch);
+    }
     // 能在光标旁放徽标的宿主才声明它：触屏键盘在键面上就显示了模式。Windows 的 Server 自己画，Linux 交给 Fcitx5 面板。
     assert!(macos.input_mode_hud);
     assert!(windows.input_mode_hud);
