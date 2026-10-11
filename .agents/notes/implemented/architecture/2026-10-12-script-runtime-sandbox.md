@@ -86,4 +86,4 @@ Status: implemented
 - `Cargo.lock` 里新增的第三方 crate 不只设计说的 7 个，共 16 个。只进锁文件、从不编译的 3 个：`wasmi_collections` 的 `std` 特性写的是弱依赖 `string-interner?/std`，Cargo 把这个可选依赖记进锁文件，连同它的 `hashbrown 0.15.5` 和 `foldhash 0.1.5`，`cargo tree --workspace --target all -e all -i string-interner` 为空。只在测试里编译的 6 个：`wat` 特性带来的 `wat`、`wast`、`wasm-encoder`、`wasmparser 0.261.0`、`leb128fmt`、`unicode-width`，`cargo tree -p msime-host-api -e normal -i wat` 为空。编译进产物的仍是那 7 个，第三方声明脚本只需覆盖它们。
 - 体积增量见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md) 的实测。
 
-相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件，`Hook` 的编号沿用它的 `LifecycleEvent` 判别值。
+相关：[桌面端生命周期核心](../../implemented/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件，`Hook` 的编号沿用它的 `LifecycleEvent` 判别值。
