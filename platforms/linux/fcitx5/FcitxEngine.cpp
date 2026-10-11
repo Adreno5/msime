@@ -5946,6 +5946,8 @@ public:
     set_classicui_config(*classicui, config);
   }
   explicit FcitxEngine(fcitx::Instance *instance) : instance_(instance) {
+    // 脚本插件在 fcitx5 守护进程里运行（本 addon 是它加载的共享库），在第一个会话之前打开；release 构建里这一行什么都不做（msime_client.h）。
+    msime_client_scripts_enable(true);
     // A library Fcitx5 kept loaded across an earlier engine's teardown keeps its globals; this engine writes off the loop again.
     fcitx_key_presses_shutting_down = false;
     refreshOptions();
