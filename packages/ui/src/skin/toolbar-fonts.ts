@@ -4,6 +4,7 @@ import { animationVariables } from "./skin-animation-variables";
 import { preserveAnimationShorthands, preserveFontShorthands } from "./animation-shorthand-source";
 import { installConditionalFonts, type ConditionalFont } from "./conditional-fonts";
 import { walkCssRules } from "./css-rules";
+import { boundedResourceReader } from "./bounded-resource-reader";
 
 export function splitCssFontList(value: string): string[] {
   const parts: string[] = [];
@@ -99,26 +100,19 @@ export async function prepareToolbarFonts(
   if (!definitions.length)
     return { css: preserved.css, partial: preserved.partial, install: () => () => {} };
   let partial = preserved.partial,
-    total = 0,
     count = 0;
   const prefix = "msime-skin-font-" + ++generation + "-";
   const families = new Map<string, string>();
   const loaded: ConditionalFont[] = [];
-  const cache = new Map<string, Promise<ArrayBuffer>>();
-  const read = (relative: string) => {
-    let result = cache.get(relative);
-    if (!result) {
-      if (cache.size >= 16) return Promise.reject(new Error("font count exceeded"));
-      result = resolve(relative).then((bytes) => {
-        total += bytes.byteLength;
-        if (!bytes.byteLength || bytes.byteLength > 8 * 1024 * 1024 || total > 16 * 1024 * 1024)
-          throw new Error("font budget exceeded");
-        return bytes;
-      });
-      cache.set(relative, result);
-    }
-    return result;
-  };
+  const read = boundedResourceReader(resolve, {
+    maxResources: 16,
+    countError: "font count exceeded",
+    sizeOf: (bytes) => bytes.byteLength,
+    validate: (bytes, total) => {
+      if (!bytes.byteLength || bytes.byteLength > 8 * 1024 * 1024 || total > 16 * 1024 * 1024)
+        throw new Error("font budget exceeded");
+    },
+  });
   for (const { style, media, supported } of definitions) {
     const key = fontFamilyKey(style.getPropertyValue("font-family"));
     if (!key) {
