@@ -49,7 +49,7 @@ struct PassthroughKeyState {
   bool injected = false;
 };
 
-// TIP 交给应用的键要不要出按键音、计入连击，要的话是哪一类。和 macOS 的 playKeySound 一致：自动重复只算一次按下，Ctrl、Alt、Windows 组合键是快捷键，英文模式、停用的键盘和安全模式都不出声（按键音会泄露密码的节奏）。Shift 照样算打字。
+// TIP 交给应用的键要不要出按键音、计入连击，要的话是哪一类。和 macOS 的 `reportKeyToLifecycle:`（接入生命周期核心前叫 `playKeySound:`）一致：自动重复只算一次按下，Ctrl、Alt、Windows 组合键是快捷键，英文模式、停用的键盘和安全模式都不出声（按键音会泄露密码的节奏）。Shift 照样算打字。
 inline std::optional<uint32_t> passthrough_key_sound_class(const PassthroughKeyState &key) {
   if (key.auto_repeat || key.ctrl || key.alt || key.win || !key.keyboard_open || key.keyboard_disabled || key.secure ||
       key.injected)
