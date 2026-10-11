@@ -425,6 +425,10 @@ test("the phone keyboard page opens with 布局 and its Chinese keyboard choice"
   );
   const preview = within(size).getByRole("group", { name: "屏幕键盘预览" });
   expect(within(preview).getByText(/在预览上左右拖动/)).toBeTruthy();
+  // 预览画成和真键盘一样的手机键盘：顶上是工具栏图标，不是一行「水杉 IME」；键距按设置的 dp 画。
+  expect(preview.querySelector("[data-keyboard-toolbar]")).toBeTruthy();
+  expect(within(preview).queryByText("水杉 IME")).toBeNull();
+  expect(preview.querySelector("svg")?.getAttribute("viewBox")).toMatch(/^0 0 390 /);
   // 手机上的行只留标题和取值，没有长说明。
   expect(within(page).queryByText(/高度和间距只改变触屏键位的外观/)).toBeNull();
   // 26 键按 123 固定是数字一行、九宫格数字层固定 123 在上，这两项不再可设置。

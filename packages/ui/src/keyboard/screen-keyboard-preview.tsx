@@ -68,6 +68,8 @@ const thumbnailWidth = 390;
 const thumbnailHeight = 292;
 const thumbnailToolbarHeight = 50;
 const thumbnailInset = 3;
+/** 手机预览里一排键在默认键盘高度下的高度，单位约等于 vp。 */
+const phoneKeyHeight = 44;
 // 键盘工具栏上水杉标志之后的图标，以绘制它们的 24 单位方框为坐标：表情、常用语、剪贴板、皮肤和键盘，最后是收起箭头。
 const thumbnailToolbarGlyphs = [
   "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01",
@@ -124,6 +126,8 @@ export function screenKeyboardLayoutFor(platform: string | undefined): "desktop"
 
 /**
  * 用皮肤配色画的键盘。`compact` 是小型装饰卡片的插图；`thumbnail` 是手机皮肤网格的卡片插图，即带工具栏的触屏键盘，画在设计的 390 × 292 画布上，填满容器宽度（圆角和描边由容器负责）。两者都对辅助技术隐藏，因为外面的卡片已带有名称。
+ *
+ * `phone` 是手机设置页「尺寸」卡片里的预览：和缩略图一样的外观（工具栏图标、圆角键、同样大小的字，画布 390 宽，约等于手机的 vp 宽度），但键距、行距按设置的 dp 画，键盘高度按「键盘高度」增减，拖动和滑块改的就是看到的样子。
  */
 export function ScreenKeyboardPreview({
   theme,
@@ -136,6 +140,7 @@ export function ScreenKeyboardPreview({
   heightAdjustment = 0,
   layout,
   touchRows,
+  phone = false,
 }: {
   theme: "dark" | "light";
   skin?: GlobalTheme;
@@ -149,9 +154,13 @@ export function ScreenKeyboardPreview({
   layout?: "desktop" | "touch";
   /** 触屏键盘画哪几排键。省略时是通用的 26 键；HarmonyOS 的「尺寸」预览按当前的中文键盘传入（`harmonyTouchKeyboardRows`），切到 9 键或 14 键时预览跟着变。 */
   touchRows?: PreviewKey[][];
+  /** 按手机键盘的比例和外观画，几何跟随设置，见上。 */
+  phone?: boolean;
 }) {
   const hostLayout = useContext(ScreenKeyboardLayoutContext);
-  const touch = thumbnail || (layout ?? hostLayout) === "touch";
+  const touch = thumbnail || phone || (layout ?? hostLayout) === "touch";
+  // 缩略图和手机预览共用手机键盘的外观：工具栏图标、按键字号、390 宽的画布。
+  const phoneLook = thumbnail || phone;
   const decorative = compact || thumbnail;
   const layoutRows = touch ? (touchRows ?? touchKeyboardRows) : desktopKeyboardRows;
   const look = resolveKeyboardSkinLook(theme, skin, customDesign);
@@ -168,7 +177,7 @@ export function ScreenKeyboardPreview({
     keyMaterial,
     keyOpacity,
   } = look;
-  const cornerRadius = !custom && thumbnail ? 5 : look.cornerRadius;
+  const cornerRadius = !custom && phoneLook ? 5 : look.cornerRadius;
   const unique = useId().replaceAll(":", "");
   const patternId = `touch-skin-pattern-${unique}`;
   const shadowId = `touch-skin-shadow-${unique}`;
@@ -178,21 +187,30 @@ export function ScreenKeyboardPreview({
   const keySpacing = clamp(keySpacingTenths / 10, 3, 6);
   const rowSpacing = clamp(rowSpacingTenths / 10, 4, 10);
   // 触屏键盘按手机竖屏的比例画：桌面画布 1100 宽时，每排十个键被拉成又扁又宽的长条，不像手机上的键盘；700 宽时单键约为宽 3 高 4 的竖长方形，与手机上的键接近。桌面键盘仍是 1100。
-  const canvasWidth = thumbnail ? thumbnailWidth : touch ? 700 : 1100;
-  const canvasHeight = thumbnail ? thumbnailHeight : 400 + clamp(heightAdjustment, -12, 48);
-  const inset = thumbnail ? thumbnailInset : 7;
-  const rowsTop = thumbnail ? thumbnailToolbarHeight + 8 : 28;
-  // 默认插图保持逐字节等价，非默认的几何则明显跟随 iOS 键盘设置里的滑块。缩略图保留设计的固定几何，因为它展示的是皮肤而不是用户的键距。
-  const keyGap = thumbnail ? 6 : 4 + keySpacing - 6;
-  const rowGap = thumbnail ? 11 : 4 + rowSpacing - 7;
+  const canvasWidth = phoneLook ? thumbnailWidth : touch ? 700 : 1100;
+  const inset = phoneLook ? thumbnailInset : 7;
+  const rowsTop = phoneLook ? thumbnailToolbarHeight + 8 : 28;
+  // 默认插图保持逐字节等价，非默认的几何则明显跟随 iOS 键盘设置里的滑块。缩略图保留设计的固定几何，因为它展示的是皮肤而不是用户的键距。手机预览的画布约等于手机的 vp 宽度，键距和行距直接按 dp 画。
+  const keyGap = thumbnail ? 6 : phone ? keySpacing : 4 + keySpacing - 6;
+  const rowGap = thumbnail ? 11 : phone ? rowSpacing : 4 + rowSpacing - 7;
+  // 手机预览：每排键 44 高，「键盘高度」的增减摊到各排，底下留 8。
+  const phoneHeight =
+    rowsTop + layoutRows.length * phoneKeyHeight + rowGap * (layoutRows.length - 1) + 8;
+  const canvasHeight = thumbnail
+    ? thumbnailHeight
+    : phone
+      ? phoneHeight + clamp(heightAdjustment, -12, 48)
+      : 400 + clamp(heightAdjustment, -12, 48);
   const height = thumbnail
     ? 43
-    : (canvasHeight - 28 - 7 - rowGap * (layoutRows.length - 1)) / layoutRows.length;
-  const backgroundRadius = thumbnail ? 0 : 8;
+    : phone
+      ? (canvasHeight - rowsTop - 8 - rowGap * (layoutRows.length - 1)) / layoutRows.length
+      : (canvasHeight - 28 - 7 - rowGap * (layoutRows.length - 1)) / layoutRows.length;
+  const backgroundRadius = thumbnail ? 0 : phone ? 14 : 8;
   return (
     <svg
       className={
-        thumbnail ? "block h-auto w-full" : `screen-keyboard-artwork${compact ? " compact" : ""}`
+        phoneLook ? "block h-auto w-full" : `screen-keyboard-artwork${compact ? " compact" : ""}`
       }
       data-preview-theme={theme}
       data-preview-skin={skin}
@@ -289,7 +307,7 @@ export function ScreenKeyboardPreview({
           fill={`url(#${patternId})`}
         />
       )}
-      {thumbnail ? (
+      {phoneLook ? (
         <ThumbnailToolbar accent={palette.accent} foreground={palette.foreground} />
       ) : (
         <text x="10" y="14" dominantBaseline="middle" fontSize="12" fill={palette.accent}>
@@ -384,7 +402,7 @@ export function ScreenKeyboardPreview({
                     y={y + height / 2}
                     textAnchor="middle"
                     dominantBaseline="middle"
-                    fontSize={item.label.length === 1 ? (thumbnail ? 22 : 15) : thumbnail ? 15 : 12}
+                    fontSize={item.label.length === 1 ? (phoneLook ? 22 : 15) : phoneLook ? 15 : 12}
                     fill={action ? palette.actionForeground : palette.foreground}
                   >
                     {item.label}
