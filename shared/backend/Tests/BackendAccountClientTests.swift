@@ -3,6 +3,7 @@ import XCTest
 @testable import MSIMEBackend
 
 private final class AccountProtocol: URLProtocol {
+  nonisolated(unsafe) static var clipboardQuery: String?
   override class func canInit(with request: URLRequest) -> Bool { true }
   override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
   override func startLoading() {
@@ -18,8 +19,12 @@ private final class AccountProtocol: URLProtocol {
     case ("PATCH", "/v1/users/me"), ("POST", "/v1/auth/logout"), ("DELETE", "/v1/users/me"):
       status = authenticated ? 204 : 401; body = ""
     case ("GET", "/v1/users/me/clipboard"):
-      let search = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "q" })?.value ?? ""
-      let object: [String: Any] = ["enabled": true, "items": [["id": String(repeating: "a", count: 64), "text": search, "updated_at": "2026-09-08"]]]
+      // 服务端不再搜索：记下查询串，好让测试确认搜索词没有发出去。
+      Self.clipboardQuery = request.url!.query
+      let object: [String: Any] = ["enabled": true, "items": [
+        ["id": String(repeating: "a", count: 64), "text": "学习 & q=other + % #", "updated_at": "2026-09-08"],
+        ["id": String(repeating: "b", count: 64), "text": "合成", "updated_at": "2026-09-08"],
+      ]]
       body = String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
       if !authenticated { status = 401 }
     case ("PUT", "/v1/users/me/clipboard/settings"), ("DELETE", "/v1/users/me/clipboard"):
@@ -213,19 +218,20 @@ private final class MalformedAccountPayloadProtocol: URLProtocol {
   override func stopLoading() {}
 }
 private final class MalformedClipboardProtocol: URLProtocol {
+  /// 这一次要返回哪种不合法的条目。
+  nonisolated(unsafe) static var mode = ""
   override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/v1/users/me/clipboard" }
   override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
   override func startLoading() {
-    let search = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value ?? ""
     let validID = String(repeating: "a", count: 64)
     let item: [String: Any]
-    switch request.httpMethod == "POST" ? "bad-id" : search {
+    switch request.httpMethod == "POST" ? "bad-id" : Self.mode {
     case "bad-id": item = ["id": "../logout", "text": "fixture", "updated_at": "2026-09-08"]
     case "bad-text": item = ["id": validID, "text": "\u{0000}fixture", "updated_at": "2026-09-08"]
     case "bad-time": item = ["id": validID, "text": "fixture", "updated_at": String(repeating: "t", count: 129)]
     default: item = ["id": validID, "text": "fixture", "updated_at": "2026-09-08"]
     }
-    let body = try! JSONSerialization.data(withJSONObject: ["enabled": true, "items": [item]])
+    let body = try! JSONSerialization.data(withJSONObject: request.httpMethod == "POST" ? item : ["enabled": true, "items": [item]])
     let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
       headerFields: ["Content-Type": "application/json"])!
     client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -406,11 +412,16 @@ final class BackendAccountClientTests: XCTestCase {
     }
     XCTAssertEqual(AuthInputProtocol.requests, 0)
   }
-  func testClipboardSearchIsEncodedAsOneQueryValue() async throws {
+  /// 搜索交给驱动在解密后进行，搜索词不出现在发往服务端的请求里。
+  func testClipboardSearchIsLeftToTheDriver() async throws {
     let search = "学习 & q=other + % #"
-    let page = try await client().clipboard(token: "session", search: search)
+    let driver = PassthroughClipboardDriver()
+    AccountProtocol.clipboardQuery = "unset"
+    let page = try await client().clipboard(token: "session", search: search, e2e: driver.e2e())
     XCTAssertTrue(page.enabled)
-    XCTAssertEqual(page.items.first?.text, search)
+    XCTAssertEqual(page.items.map(\.text), [search])
+    XCTAssertNil(AccountProtocol.clipboardQuery)
+    XCTAssertEqual((driver.inputs.first?["start"] as? [String: Any])?["search"] as? String, search)
     try await client().setClipboardEnabled(false, token: "session")
     try await client().deleteClipboard(token: "session")
   }
@@ -427,7 +438,7 @@ final class BackendAccountClientTests: XCTestCase {
     let session = BackendAccountSession(api: client, storage: storage,
                                         refreshLock: BackendProcessRefreshLock())
 
-    let page = try await client.clipboard(session: session)
+    let page = try await client.clipboard(e2e: PassthroughClipboardDriver().e2e(), session: session)
     XCTAssertTrue(page.enabled)
   }
 
@@ -483,7 +494,7 @@ final class BackendAccountClientTests: XCTestCase {
   func testClipboardSearchRejectsOversizedAndUnsafeValues() async throws {
     for search in [String(repeating: "a", count: 1025), "safe\u{0007}query"] {
       do {
-        _ = try await client().clipboard(token: "session", search: search)
+        _ = try await client().clipboard(token: "session", search: search, e2e: PassthroughClipboardDriver().e2e())
         XCTFail("unsafe search")
       } catch let error as BackendAccountClient.Failure {
         XCTAssertEqual(error.status, 400)
@@ -491,9 +502,10 @@ final class BackendAccountClientTests: XCTestCase {
     }
   }
   func testClipboardRejectsOversizedUTF16AndUnsafeID() async throws {
-    do { _ = try await client().addClipboard(String(repeating: "😀", count: 2001), token: "session"); XCTFail("too long") }
+    let e2e = PassthroughClipboardDriver().e2e()
+    do { _ = try await client().addClipboard(String(repeating: "😀", count: 2001), token: "session", e2e: e2e); XCTFail("too long") }
     catch let error as BackendAccountClient.Failure { XCTAssertEqual(error.status, 400) }
-    do { _ = try await client().addClipboard("safe\u{0007}text", token: "session"); XCTFail("control character") }
+    do { _ = try await client().addClipboard("safe\u{0007}text", token: "session", e2e: e2e); XCTFail("control character") }
     catch let error as BackendAccountClient.Failure { XCTAssertEqual(error.status, 400) }
     do { try await client().deleteClipboard(id: "../auth/logout", token: "session"); XCTFail("unsafe id") }
     catch let error as BackendAccountClient.Failure { XCTAssertEqual(error.status, 400) }
@@ -502,16 +514,17 @@ final class BackendAccountClientTests: XCTestCase {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MalformedClipboardProtocol.self]
     let client = BackendAccountClient(configuration: configuration)
-    for search in ["bad-id", "bad-text", "bad-time"] {
+    for mode in ["bad-id", "bad-text", "bad-time"] {
+      MalformedClipboardProtocol.mode = mode
       do {
-        _ = try await client.clipboard(token: "session", search: search)
-        XCTFail("malformed clipboard item accepted: \(search)")
+        _ = try await client.clipboard(token: "session", e2e: PassthroughClipboardDriver().e2e())
+        XCTFail("malformed clipboard item accepted: \(mode)")
       } catch let error as BackendAccountClient.Failure {
         XCTAssertEqual(error.status, 0)
       }
     }
     do {
-      _ = try await client.addClipboard("fixture", token: "session")
+      _ = try await client.addClipboard("fixture", token: "session", e2e: PassthroughClipboardDriver().e2e())
       XCTFail("malformed added clipboard item accepted")
     } catch let error as BackendAccountClient.Failure {
       XCTAssertEqual(error.status, 0)
