@@ -48,9 +48,8 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；社区的词包与回复模板（「账号与同步」页「我的内容」的几行）；云词库和云剪贴板面板；以及屏幕键盘、语音输入和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：社区的词包与回复模板（「账号与同步」页「我的内容」的几行）；云词库和云剪贴板面板；以及屏幕键盘、语音输入和手写面板本身。社区皮肤和社区插件是「主题」「插件」页自己的标签，不在这里。
 namespace shell_links {
-inline constexpr ShellTarget skin{"", "skin"};
 // The shared app's community page, which on Windows holds only the dictionary packs and reply templates; the 我的内容 rows of 账号与同步 open it. The route names no gallery view, so it opens on the community home.
 inline constexpr ShellTarget community{"", "community"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
@@ -61,7 +60,7 @@ inline constexpr ShellTarget cloud_clipboard{"cloud-clipboard", ""};
 inline constexpr ShellTarget voice_panel{"voice", ""};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
-inline constexpr std::array<ShellTarget, 7> all{{skin, community, voice_panel, keyboard_panel,
+inline constexpr std::array<ShellTarget, 6> all{{community, voice_panel, keyboard_panel,
                                                  handwriting_panel, cloud_dictionary,
                                                  cloud_clipboard}};
 } // namespace shell_links
@@ -71,7 +70,7 @@ struct RouteAlias {
   std::string_view page;
 };
 
-// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。本窗口没有社区页，社区皮肤在共享应用的主题页上，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页（Windows 不提供，见 README），`chat` 打开 AI 辅助。
+// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。本窗口没有单独的社区页，社区皮肤是主题页的一个标签，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页（Windows 不提供，见 README），`chat` 打开 AI 辅助。
 inline constexpr std::array<RouteAlias, 22> route_aliases{{
     {"account", "account"},
     {"chat", "ai"},

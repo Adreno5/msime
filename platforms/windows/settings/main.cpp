@@ -3,6 +3,9 @@
 
 #include <shellapi.h>
 #include <shobjidl_core.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
 #include "../common/StateDirectory.h"
 #undef GetCurrentTime
 #undef GetObject
@@ -26,11 +29,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "CandidatePalette.h"
 #include "CandidateWindowStyle.h"
+#include "CommunityPageModel.h"
 #include "GameProcessList.h"
 #include "PluginPageModel.h"
 #include "PreferencePath.h"
@@ -1979,6 +1984,518 @@ SkinScan read_skin_catalog(std::filesystem::path const &root) {
   return scan;
 }
 
+// ---- 社区 ----
+
+namespace cm = msime::settings::community;
+
+// 一次 msime_client_community 请求：账号目录与「账号与同步」页相同（共享应用登录的那一份会话），皮肤根目录是状态目录下的 skins，插件的状态根目录是状态目录本身，与 msime_client_plugins 相同。读不到本机的应用数据目录时没有会话可用。会阻塞网络，只在 UI 线程之外调用。
+Response community_call(JsonObject const &action) {
+  const auto directory = account_directory();
+  if (directory.empty())
+    return {"{\"ok\":false,\"error\":\"community_storage\"}", false};
+  JsonObject request;
+  request.SetNamedValue(L"directory", JsonValue::CreateStringValue(hstring(directory.wstring())));
+  if (const auto legacy = legacy_account_directory(); !legacy.empty())
+    request.SetNamedValue(L"legacy_directory",
+                          JsonValue::CreateStringValue(hstring(legacy.wstring())));
+  if (const auto state = state_directory(); state.is_absolute()) {
+    request.SetNamedValue(L"skins_directory",
+                          JsonValue::CreateStringValue(hstring((state / L"skins").wstring())));
+    request.SetNamedValue(L"state_root", JsonValue::CreateStringValue(hstring(state.wstring())));
+  }
+  request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
+  const auto body = utf8(request.Stringify());
+  return take_response(
+      msime_client_community(reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+}
+
+JsonObject community_action(wchar_t const *operation) {
+  JsonObject action;
+  action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+  return action;
+}
+
+// 一次失败的社区请求：error 是社区或打包的错误码，detail 是插件打包时违反的那条规则（可能没有）。
+struct CommunityFailure {
+  std::wstring code, detail;
+};
+
+CommunityFailure community_failure(Response const &response) {
+  CommunityFailure failure;
+  try {
+    const auto object = JsonObject::Parse(text(response.text));
+    failure.code = named_string(object, L"error");
+    failure.detail = named_string(object, L"detail");
+  } catch (...) {
+  }
+  return failure;
+}
+
+// The `value` of an answer, or null when it cannot be read.
+JsonValue community_value(Response const &response) {
+  try {
+    return JsonObject::Parse(text(response.text))
+        .GetNamedValue(L"value", JsonValue::CreateNullValue());
+  } catch (...) {
+    return JsonValue::CreateNullValue();
+  }
+}
+
+// 发布的 id：随机的 UUID（共享页的 randomUuid），小写、带连字符。
+std::wstring random_uuid() {
+  GUID guid{};
+  if (FAILED(CoCreateGuid(&guid)))
+    return {};
+  wchar_t buffer[40] = {};
+  swprintf_s(buffer, L"%08lx-%04hx-%04hx-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1,
+             guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+             guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+  return buffer;
+}
+
+// 社区里的一款候选窗口皮肤（client-core 的 CandidateSkinItem，共享页的 CommunityCandidateSkin）。
+struct CommunitySkinItem {
+  std::wstring id, package_id, name, description, author, version;
+  std::wstring license_code, license_assets, license_source;
+  double size = 0, file_count = 0, downloads = 0, rating_count = 0, rating_average = 0;
+  bool owned = false;
+  int64_t my_rating = 0;
+  // public 或 private；早于私有皮肤的服务端不返回，都是公开的。
+  std::wstring visibility = L"public";
+  // 只有自己的作品带审核状态，removed 显示「已下架」。
+  std::wstring moderation;
+  // 发布分类；早于分类功能的服务端不返回，为空。
+  std::wstring category;
+};
+
+// 社区里的一个插件（client-core 的 CommunityPlugin）。
+struct CommunityPluginItem {
+  std::wstring id, kind, plugin_id, name, description, author, version, license;
+  double size = 0, downloads = 0, rating_count = 0, rating_average = 0;
+  bool owned = false;
+  int64_t my_rating = 0;
+  std::wstring moderation;
+};
+
+void parse_community_item(JsonObject const &object, CommunitySkinItem &skin) {
+  skin.id = named_string(object, L"id");
+  skin.package_id = named_string(object, L"package_id");
+  skin.name = named_string(object, L"name");
+  skin.description = named_string(object, L"description");
+  skin.author = named_string(object, L"author");
+  skin.version = named_string(object, L"version");
+  const auto license = object.GetNamedValue(L"license", JsonValue::CreateNullValue());
+  if (license.ValueType() == JsonValueType::Object) {
+    const auto fields = license.GetObject();
+    skin.license_code = named_string(fields, L"code");
+    skin.license_assets = named_string(fields, L"assets");
+    skin.license_source = named_string(fields, L"source");
+  }
+  skin.size = named_number(object, L"size").value_or(0);
+  skin.file_count = named_number(object, L"file_count").value_or(0);
+  skin.downloads = named_number(object, L"downloads").value_or(0);
+  skin.rating_count = named_number(object, L"rating_count").value_or(0);
+  skin.rating_average = named_number(object, L"rating_average").value_or(0);
+  const auto owned = object.GetNamedValue(L"owned", JsonValue::CreateNullValue());
+  skin.owned = owned.ValueType() == JsonValueType::Boolean && owned.GetBoolean();
+  skin.my_rating = named_count(object, L"my_rating");
+  if (named_string(object, L"visibility") == L"private")
+    skin.visibility = L"private";
+  skin.moderation = named_string(object, L"moderation");
+  skin.category = named_string(object, L"category");
+}
+
+void parse_community_item(JsonObject const &object, CommunityPluginItem &plugin) {
+  plugin.id = named_string(object, L"id");
+  plugin.kind = named_string(object, L"kind");
+  plugin.plugin_id = named_string(object, L"plugin_id");
+  plugin.name = named_string(object, L"name");
+  plugin.description = named_string(object, L"description");
+  plugin.author = named_string(object, L"author");
+  plugin.version = named_string(object, L"version");
+  plugin.license = named_string(object, L"license");
+  plugin.size = named_number(object, L"size").value_or(0);
+  plugin.downloads = named_number(object, L"downloads").value_or(0);
+  plugin.rating_count = named_number(object, L"rating_count").value_or(0);
+  plugin.rating_average = named_number(object, L"rating_average").value_or(0);
+  const auto owned = object.GetNamedValue(L"owned", JsonValue::CreateNullValue());
+  plugin.owned = owned.ValueType() == JsonValueType::Boolean && owned.GetBoolean();
+  plugin.my_rating = named_count(object, L"my_rating");
+  plugin.moderation = named_string(object, L"moderation");
+}
+
+// 一个作品的回答（detail、publish、set_visibility、set_category），读不出来时为空。
+template <typename Item> std::optional<Item> community_item(Response const &response) {
+  const auto value = community_value(response);
+  if (!response.ok || value.ValueType() != JsonValueType::Object)
+    return std::nullopt;
+  Item item;
+  parse_community_item(value.GetObject(), item);
+  if (item.id.empty())
+    return std::nullopt;
+  return item;
+}
+
+// 图库读到的一页：items 之外还有它从哪个 offset 读起，和宿主略过的本机装不了的条目数（只有插件有），下一页从它们后面读起。
+template <typename Item> struct CommunityListPage {
+  bool ok = false;
+  CommunityFailure failure;
+  std::vector<Item> items;
+  bool has_more = false;
+  size_t offset = 0;
+  size_t skipped = 0;
+};
+
+// useCommunityGallery 读一页时最多再往后读几页被宿主整页略过的条目，余下的留给「加载更多」。
+constexpr int community_max_skipped_pages = 5;
+
+// 读图库的一页。整页都被略过却还有下一页时，在工作线程上接着读，最多五页，免得列表看起来是空的而后面还有能装的。`filter` 是候选窗皮肤的分类或插件的类型，空着就是全部。
+template <typename Item>
+CommunityListPage<Item> read_community_page(size_t offset, std::wstring const &search, bool mine,
+                                            std::optional<std::wstring> const &filter) {
+  constexpr bool skins = std::is_same_v<Item, CommunitySkinItem>;
+  CommunityListPage<Item> page;
+  page.offset = offset;
+  for (int extra = 0;; ++extra) {
+    auto action = community_action(skins ? L"candidate_skin_list" : L"plugin_list");
+    action.SetNamedValue(L"offset", JsonValue::CreateNumberValue(static_cast<double>(page.offset)));
+    action.SetNamedValue(L"search", JsonValue::CreateStringValue(hstring(search)));
+    action.SetNamedValue(L"mine", JsonValue::CreateBooleanValue(mine));
+    if (filter)
+      action.SetNamedValue(skins ? L"category" : L"kind",
+                           JsonValue::CreateStringValue(hstring(*filter)));
+    const auto response = community_call(action);
+    const auto value = community_value(response);
+    if (!response.ok || value.ValueType() != JsonValueType::Object) {
+      page.ok = false;
+      page.failure = community_failure(response);
+      if (page.failure.code.empty())
+        page.failure.code = L"community_unavailable";
+      return page;
+    }
+    const auto object = value.GetObject();
+    page.items.clear();
+    for (auto const &entry : named_objects(object, skins ? L"skins" : L"plugins")) {
+      Item item;
+      parse_community_item(entry, item);
+      if (!item.id.empty())
+        page.items.push_back(std::move(item));
+    }
+    const auto more = object.GetNamedValue(L"has_more", JsonValue::CreateNullValue());
+    page.has_more = more.ValueType() == JsonValueType::Boolean && more.GetBoolean();
+    page.skipped = static_cast<size_t>(std::max<int64_t>(named_count(object, L"skipped"), 0));
+    page.ok = true;
+    if (extra >= community_max_skipped_pages || !page.items.empty() || !page.has_more ||
+        page.skipped == 0)
+      return page;
+    page.offset += page.skipped;
+  }
+}
+
+// 「发布皮肤」和装皮肤前要知道的本机皮肤：只要 id，与 msime_client_skin_catalog 的扫描相同，但不读图片、不解析配色。读不到时为空。读目录，只在 UI 线程之外调用。
+std::optional<std::vector<std::wstring>> read_skin_ids(std::filesystem::path const &root) {
+  const auto path = root.is_absolute() ? path_utf8(root) : std::string();
+  if (path.empty())
+    return std::nullopt;
+  const auto response = take_response(
+      msime_client_skin_catalog(reinterpret_cast<const uint8_t *>(path.data()), path.size()));
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    std::vector<std::wstring> ids;
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    for (auto const &item : value.GetNamedArray(L"packages"))
+      if (item.ValueType() == JsonValueType::Object)
+        if (auto id = json_text(item.GetObject(), L"id"); !id.empty())
+          ids.push_back(std::move(id));
+    return ids;
+  } catch (hresult_error const &) {
+    return std::nullopt;
+  }
+}
+
+// 一张皮肤图片解码成 Direct2D 位图；读不到、不是位图（SVG）或解码失败时为空，预览里就不画这一部分。
+com_ptr<ID2D1Bitmap> decode_preview_image(IWICImagingFactory *factory, ID2D1RenderTarget *target,
+                                          std::vector<SkinImageBytes> const &images,
+                                          std::wstring const &key, D2D1_SIZE_F &size) {
+  for (auto const &image : images) {
+    if (image.key != key || image.bytes.empty() || image.content_type == "image/svg+xml")
+      continue;
+    com_ptr<IWICStream> stream;
+    com_ptr<IWICBitmapDecoder> decoder;
+    com_ptr<IWICBitmapFrameDecode> frame;
+    com_ptr<IWICFormatConverter> converter;
+    com_ptr<ID2D1Bitmap> bitmap;
+    if (FAILED(factory->CreateStream(stream.put())) ||
+        FAILED(stream->InitializeFromMemory(const_cast<BYTE *>(image.bytes.data()),
+                                            static_cast<DWORD>(image.bytes.size()))) ||
+        FAILED(factory->CreateDecoderFromStream(stream.get(), nullptr,
+                                                WICDecodeMetadataCacheOnDemand, decoder.put())) ||
+        FAILED(decoder->GetFrame(0, frame.put())) ||
+        FAILED(factory->CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(frame.get(), GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapDitherTypeNone, nullptr, 0,
+                                     WICBitmapPaletteTypeCustom)) ||
+        FAILED(target->CreateBitmapFromWicBitmap(converter.get(), nullptr, bitmap.put())))
+      return nullptr;
+    size = bitmap->GetSize();
+    return size.width > 0 && size.height > 0 ? bitmap : nullptr;
+  }
+  return nullptr;
+}
+
+// 把画好的预览编码成 PNG 或 JPEG（quality 是 JPEG 的质量）。
+std::optional<std::vector<uint8_t>> encode_preview(IWICImagingFactory *factory, IWICBitmap *bitmap,
+                                                   GUID const &format, float quality) {
+  com_ptr<IStream> stream;
+  if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, stream.put())))
+    return std::nullopt;
+  com_ptr<IWICBitmapEncoder> encoder;
+  com_ptr<IWICBitmapFrameEncode> frame;
+  com_ptr<IPropertyBag2> properties;
+  if (FAILED(factory->CreateEncoder(format, nullptr, encoder.put())) ||
+      FAILED(encoder->Initialize(stream.get(), WICBitmapEncoderNoCache)) ||
+      FAILED(encoder->CreateNewFrame(frame.put(), properties.put())))
+    return std::nullopt;
+  if (format == GUID_ContainerFormatJpeg && properties) {
+    PROPBAG2 option{};
+    option.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+    VARIANT value;
+    VariantInit(&value);
+    value.vt = VT_R4;
+    value.fltVal = quality;
+    properties->Write(1, &option, &value);
+  }
+  UINT width = 0, height = 0;
+  bitmap->GetSize(&width, &height);
+  WICPixelFormatGUID pixel = format == GUID_ContainerFormatJpeg ? GUID_WICPixelFormat24bppBGR
+                                                                : GUID_WICPixelFormat32bppBGRA;
+  if (FAILED(frame->Initialize(properties.get())) || FAILED(frame->SetSize(width, height)) ||
+      FAILED(frame->SetPixelFormat(&pixel)) || FAILED(frame->WriteSource(bitmap, nullptr)) ||
+      FAILED(frame->Commit()) || FAILED(encoder->Commit()))
+    return std::nullopt;
+  STATSTG stat{};
+  HGLOBAL global = nullptr;
+  if (FAILED(stream->Stat(&stat, STATFLAG_NONAME)) ||
+      FAILED(GetHGlobalFromStream(stream.get(), &global)))
+    return std::nullopt;
+  const auto *data = static_cast<uint8_t const *>(GlobalLock(global));
+  if (!data)
+    return std::nullopt;
+  std::vector<uint8_t> bytes(data, data + static_cast<size_t>(stat.cbSize.QuadPart));
+  GlobalUnlock(global);
+  return bytes;
+}
+
+// The community's preview limit (`MAX_PREVIEW_BYTES` in client-core).
+constexpr size_t skin_preview_limit = 256 * 1024;
+
+// renderSkinPreview（skin-preview-render.ts）：给没有预览图的已装皮肤画一张。皮肤支持浅色时画浅色（多数卡片在浅色页面上），配色是 resolve() 给这款包的；有装饰图时先画装饰带，再画按包的圆角和最小宽度的候选窗口，铺上背景图，写上拼音和设置预览里的头五个候选，第一个选中；每 dip 两个像素。PNG 超过 256 KiB 时改用质量 0.85 的 JPEG，仍超过时失败。在工作线程上调用。
+std::optional<std::vector<uint8_t>> render_skin_preview(SkinPackage const &skin,
+                                                        std::vector<SkinImageBytes> const &images) {
+  const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  struct Uninitialize {
+    bool active;
+    ~Uninitialize() {
+      if (active)
+        CoUninitialize();
+    }
+  } uninitialize{SUCCEEDED(apartment)};
+  auto has = [&skin](wchar_t const *theme) {
+    return std::find(skin.themes.begin(), skin.themes.end(), theme) != skin.themes.end();
+  };
+  const bool light = has(L"light") || !has(L"dark");
+  const auto &palette = light ? skin.light : skin.dark;
+  constexpr float scale = 2, padding = 16, card_height = 68;
+  const bool decorated =
+      skin.decoration_top > 0 && skin.decoration_width > 0 && !skin.decoration_image.empty();
+  const float card_width = static_cast<float>(std::max(skin.min_width, 340.0));
+  const float radius = static_cast<float>(skin.corner_radius.value_or(8));
+
+  com_ptr<IWICImagingFactory> wic;
+  com_ptr<ID2D1Factory> d2d;
+  com_ptr<IDWriteFactory> dwrite;
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(wic.put()))) ||
+      FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.put())) ||
+      FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                 reinterpret_cast<::IUnknown **>(dwrite.put()))))
+    return std::nullopt;
+
+  // 装饰图读不出来时整条装饰带都不画，卡片从上边距开始，与共享页一样；所以先用一个临时的目标解码图片，量出高度再建画布。
+  auto draw = [&](float band, bool measure_only, com_ptr<ID2D1Bitmap> *decoration_out)
+      -> std::optional<std::vector<uint8_t>> {
+    const auto width = static_cast<UINT>(std::lround((card_width + padding * 2) * scale));
+    const auto height = static_cast<UINT>(std::lround((band + card_height + padding * 2) * scale));
+    com_ptr<IWICBitmap> bitmap;
+    com_ptr<ID2D1RenderTarget> target;
+    const auto properties = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+    if (FAILED(wic->CreateBitmap(width, height, GUID_WICPixelFormat32bppPBGRA,
+                                 WICBitmapCacheOnLoad, bitmap.put())) ||
+        FAILED(d2d->CreateWicBitmapRenderTarget(bitmap.get(), properties, target.put())))
+      return std::nullopt;
+    D2D1_SIZE_F decoration_size{}, background_size{};
+    auto decoration =
+        decorated ? decode_preview_image(wic.get(), target.get(), images,
+                                         skin_image_key(skin.id, skin.decoration_image),
+                                         decoration_size)
+                  : nullptr;
+    if (measure_only) {
+      *decoration_out = decoration;
+      return std::vector<uint8_t>{};
+    }
+    auto background = skin.background_image.empty()
+                          ? nullptr
+                          : decode_preview_image(wic.get(), target.get(), images,
+                                                 skin_image_key(skin.id, skin.background_image),
+                                                 background_size);
+    auto color = [](msime::windows::CandidateColor const &value) {
+      return D2D1::ColorF(value.r, value.g, value.b, value.a);
+    };
+    auto solid = [&target](D2D1_COLOR_F const &value) {
+      com_ptr<ID2D1SolidColorBrush> paint;
+      target->CreateSolidColorBrush(value, paint.put());
+      return paint;
+    };
+    auto format = [&dwrite](float size) {
+      com_ptr<IDWriteTextFormat> text_format;
+      dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size,
+                               L"zh-CN", text_format.put());
+      if (text_format) {
+        text_format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        text_format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+      }
+      return text_format;
+    };
+    auto layout = [&dwrite](std::wstring_view value, IDWriteTextFormat *text_format) {
+      com_ptr<IDWriteTextLayout> text_layout;
+      if (text_format)
+        dwrite->CreateTextLayout(value.data(), static_cast<UINT32>(value.size()), text_format,
+                                 4096, 40, text_layout.put());
+      return text_layout;
+    };
+    auto advance = [](IDWriteTextLayout *text_layout) {
+      DWRITE_TEXT_METRICS metrics{};
+      if (text_layout)
+        text_layout->GetMetrics(&metrics);
+      return metrics.widthIncludingTrailingWhitespace;
+    };
+    // textBaseline = "middle"：文字的中线落在 y 上。
+    auto text_at = [&target](IDWriteTextLayout *text_layout, float x, float y,
+                             ID2D1SolidColorBrush *paint) {
+      if (text_layout && paint)
+        target->DrawTextLayout(D2D1::Point2F(x, y - 20), text_layout, paint);
+    };
+
+    target->BeginDraw();
+    target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+    target->Clear(light ? D2D1::ColorF(0xE9EDF3) : D2D1::ColorF(0x16181D));
+    if (decoration) {
+      const float decoration_width = static_cast<float>(skin.decoration_width);
+      const float x = skin.decoration_align == L"left" ? padding + radius
+                      : skin.decoration_align == L"center"
+                          ? padding + (card_width - decoration_width) / 2
+                          : padding + card_width - radius - decoration_width;
+      target->DrawBitmap(decoration.get(),
+                         D2D1::RectF(x, padding, x + decoration_width, padding + band));
+    }
+    const float top = padding + band;
+    const auto card = D2D1::RoundedRect(
+        D2D1::RectF(padding, top, padding + card_width, top + card_height), radius, radius);
+    if (auto paint = solid(color(palette.surface)))
+      target->FillRoundedRectangle(card, paint.get());
+    if (background) {
+      com_ptr<ID2D1RoundedRectangleGeometry> clip;
+      com_ptr<ID2D1Layer> layer;
+      if (SUCCEEDED(d2d->CreateRoundedRectangleGeometry(card, clip.put())) &&
+          SUCCEEDED(target->CreateLayer(nullptr, layer.put()))) {
+        target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.get()), layer.get());
+        // fitted()：cover 和 contain 按比例放大或缩小后居中，stretch 铺满。
+        float x = 0, y = 0, w = card_width, h = card_height;
+        if (skin.background_fit != L"stretch") {
+          const float ratio =
+              skin.background_fit == L"contain"
+                  ? std::min(card_width / background_size.width, card_height / background_size.height)
+                  : std::max(card_width / background_size.width,
+                             card_height / background_size.height);
+          w = background_size.width * ratio;
+          h = background_size.height * ratio;
+          x = (card_width - w) / 2;
+          y = (card_height - h) / 2;
+        }
+        target->DrawBitmap(background.get(),
+                           D2D1::RectF(padding + x, top + y, padding + x + w, top + y + h),
+                           static_cast<float>(skin.background_opacity));
+        target->PopLayer();
+      }
+    }
+    if (palette.border.a > 0)
+      if (auto paint = solid(color(palette.border)))
+        target->DrawRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(padding + 0.5f, top + 0.5f, padding + card_width - 0.5f,
+                                          top + card_height - 0.5f),
+                              radius, radius),
+            paint.get(), 1);
+
+    const auto label_format = format(12), body_format = format(13), candidate_format = format(16);
+    {
+      auto pinyin = layout(L"ni'mf", body_format.get());
+      auto paint = solid(color(palette.translation.value_or(palette.number)));
+      text_at(pinyin.get(), padding + 12, top + 18, paint.get());
+    }
+    // 一排横向的候选，第一个选中，就像打字时看到的那样。
+    static constexpr std::array<std::wstring_view, 5> samples{L"你们", L"你", L"尼", L"妮", L"泥"};
+    float x = padding + 8;
+    const float row_top = top + 32;
+    constexpr float row_height = 28;
+    for (size_t index = 0; index < samples.size(); ++index) {
+      const auto label_text = std::to_wstring(index + 1);
+      auto label = layout(label_text, label_format.get());
+      auto candidate = layout(samples[index], candidate_format.get());
+      const float label_width = advance(label.get());
+      const float cell = label_width + 4 + advance(candidate.get()) + 16;
+      if (x + cell > padding + card_width - 8)
+        break;
+      const bool selected = index == 0;
+      if (selected)
+        if (auto paint = solid(color(palette.selected)))
+          target->FillRoundedRectangle(
+              D2D1::RoundedRect(D2D1::RectF(x, row_top, x + cell, row_top + row_height),
+                                std::min(6.0f, radius), std::min(6.0f, radius)),
+              paint.get());
+      // 选中行的颜色 alpha 为 0 表示沿用未选中时的颜色。
+      const auto number_color = selected && palette.selected_number.a > 0 ? palette.selected_number
+                                                                     : palette.number;
+      const auto text_color = selected && palette.selected_text.a > 0 ? palette.selected_text
+                                                                : palette.text;
+      auto number_paint = solid(color(number_color));
+      auto text_paint = solid(color(text_color));
+      text_at(label.get(), x + 8, row_top + row_height / 2, number_paint.get());
+      text_at(candidate.get(), x + 8 + label_width + 4, row_top + row_height / 2,
+              text_paint.get());
+      x += cell + 4;
+    }
+    if (FAILED(target->EndDraw()))
+      return std::nullopt;
+    target = nullptr;
+    auto png = encode_preview(wic.get(), bitmap.get(), GUID_ContainerFormatPng, 1);
+    if (png && png->size() <= skin_preview_limit)
+      return png;
+    auto jpeg = encode_preview(wic.get(), bitmap.get(), GUID_ContainerFormatJpeg, 0.85f);
+    if (jpeg && jpeg->size() <= skin_preview_limit)
+      return jpeg;
+    return std::nullopt;
+  };
+
+  com_ptr<ID2D1Bitmap> decoration;
+  if (decorated && !draw(0, true, &decoration))
+    return std::nullopt;
+  return draw(decoration ? static_cast<float>(skin.decoration_top) : 0, false, nullptr);
+}
+
 // ---- 打字统计 ----
 
 namespace typing = msime::settings::typing;
@@ -2811,6 +3328,15 @@ private:
       reset_statistics_page();
     if (id == "plugins" && id != current_page_)
       enter_plugins_page();
+    // 社区图库与共享外壳一样随页面挂上和卸下：离开时作废在途的回答，回来时从头读起。标签停在哪一边跨页面保留。
+    if (current_page_ == "plugins" && id != current_page_ && plugin_community_view_)
+      leave_plugin_community();
+    if (id == "plugins" && id != current_page_ && plugin_community_view_)
+      enter_plugin_community();
+    if (current_page_ == "themes" && id != current_page_ && skin_community_view_)
+      leave_skin_community();
+    if (id == "themes" && id != current_page_ && skin_community_view_)
+      enter_skin_community();
     // 账号页与共享页一样每次进入都重新读状态；离开时结束等待中的 Google 登录，在途的回答作废。
     if (current_page_ == "account" && id != current_page_)
       leave_account_page();
@@ -3854,7 +4380,8 @@ private:
       build_shell_page(*model, page);
       return;
     }
-    if (has_preview(id) && preview_visible_ && !indexing_)
+    // 社区皮肤图库顶替主题页的设置，上面不画预览。
+    if (has_preview(id) && preview_visible_ && !indexing_ && !(id == "themes" && skin_community_view_))
       page.Children().Append(make_preview());
     if (id == "themes")
       build_themes_page(page);
@@ -5352,6 +5879,25 @@ private:
 
   // 共享设置「主题」页（packages/ui/src/settings/pages/skin-page.tsx）在 Windows 上的样子：页首说明，内置主题卡片，皮肤包卡片（skin/external-skins.tsx 的 ExternalSkinCard）和两种明暗各用哪款皮肤的说明，「外观」组，「更多皮肤」组的「外部皮肤」一行（ExternalSkinDirectoryRow），「自定义主题」组的七个候选颜色取色器（candidate-colors-section.tsx），以及各界面的单独明暗。规则在 ThemeSkinModel.h。Windows 不是触屏键盘设计的宿主，没有「我的皮肤」编辑器；发布到社区和社区皮肤库仍在共享应用里。
   void build_themes_page(StackPanel const &page) {
+    // 搜索选中「社区皮肤」时打开图库，选中本页别的设置时回到「我的皮肤」。
+    if (!indexing_ && !focus_row_.empty()) {
+      const bool community = focus_row_ == L"社区皮肤";
+      if (community != skin_community_view_) {
+        skin_community_view_ = community;
+        if (community)
+          enter_skin_community();
+        else
+          leave_skin_community();
+      }
+    }
+    const bool community = skin_community_view_ && !indexing_;
+    community_tabs(page, L"皮肤来源", L"我的皮肤", L"社区皮肤",
+                   L"浏览、安装和发布候选窗口皮肤", community,
+                   [this](bool shown) { set_skin_view(shown); });
+    if (community) {
+      build_skin_community(page);
+      return;
+    }
     if (!indexing_ && skins_stale_)
       scan_skins(!skins_scanned_);
     const auto current = document_.String(L"global_theme", L"system");
@@ -5413,6 +5959,13 @@ private:
       note.Margin(Thickness{4, 10, 4, 0});
       page.Children().Append(note);
     }
+    // 从卡片发布的结果（共享页的 published）。
+    if (!skin_published_notice_.empty() && !indexing_) {
+      auto note = make_text(skin_published_notice_, 12, palette_.sub);
+      note.Margin(Thickness{4, 6, 4, 0});
+      A11y::SetLiveSetting(note, Automation::Peers::AutomationLiveSetting::Polite);
+      page.Children().Append(note);
+    }
 
     auto look = add_group(page, L"外观");
     segment_row(look, 0xE706, L"颜色模式", L"深色、浅色或跟随 Windows 的应用模式",
@@ -5427,9 +5980,6 @@ private:
 
     auto more = add_group(page, L"更多皮肤");
     external_skins_row(more);
-    shell_row(more, 0xE716, L"社区皮肤",
-              L"在水杉输入法应用的「主题 › 社区皮肤」中浏览、安装和发布候选窗口皮肤", L"浏览",
-              nav::shell_links::skin);
 
     auto colors = add_group(page, L"自定义主题");
     record(L"自定义主题", L"候选颜色取色器");
@@ -5664,7 +6214,7 @@ private:
     });
   }
 
-  // 一张皮肤包卡片（ExternalSkinCard）：标题带上卡片画的明暗和「使用中」，说明、槽位、id · 版本 · 作者，开关和「预览浅色 / 预览深色」，以及按 resolve() 给这款包的配色画的横排、竖排两个候选窗口，带上包的圆角、最小宽度、背景图和装饰图。悬浮工具栏的预览要用包的 CSS 画，这里不画，与内置主题的卡片一致。
+  // 一张皮肤包卡片（ExternalSkinCard）：标题带上卡片画的明暗和「使用中」，说明、槽位、id · 版本 · 作者，开关、「预览浅色 / 预览深色」和「发布到社区」，以及按 resolve() 给这款包的配色画的横排、竖排两个候选窗口，带上包的圆角、最小宽度、背景图和装饰图。悬浮工具栏的预览要用包的 CSS 画，这里不画，与内置主题的卡片一致。
   FrameworkElement make_skin_card(SkinPackage const &skin, bool selected, bool active_dark,
                                   std::wstring const &layout) {
     const auto slot = theme_slot(skin.base);
@@ -5736,6 +6286,10 @@ private:
       toggle.VerticalAlignment(VerticalAlignment::Center);
       actions.Children().Append(toggle);
     }
+    // 「发布到社区」：打开发布对话框，先选中这一款。
+    auto publish = button_control(L"发布到社区", [this, id = skin.id] { open_skin_publish(id, true); });
+    publish.VerticalAlignment(VerticalAlignment::Center);
+    actions.Children().Append(publish);
     texts.Children().Append(actions);
     if (skin_image_failed(skin.id, skin.decoration_image) ||
         skin_image_failed(skin.id, skin.background_image)) {
@@ -5960,6 +6514,2321 @@ private:
           skins_open_failed_ = !opened;
           redraw_themes();
         });
+  }
+
+  // ---- 社区皮肤与社区插件 ----
+
+  // 共享外壳在桌面上给「主题」和「插件」两页顶上各放一对标签（index.tsx 的「皮肤来源」「插件来源」）：「我的皮肤」「我的插件」是本页的设置，「社区皮肤」「社区插件」换成社区图库（community-candidate-skins.tsx 的 CommunityCandidateSkinsPage、community-plugins.tsx 的 CommunityPluginsPage）。图库挂上时读第一页，候选窗皮肤还和账号的皮肤库同步一次（candidate-skin-sync.tsx）；离开页面或切回本页设置就卸下，下次从头读起。浏览、详情、安装、评分、举报、作者改公开范围和分类、下架都在页面里；发布是对话框（candidate-skin-publish-dialog.tsx、CommunityPluginPublishDialog），皮肤还能从「我的皮肤」里各自的卡片发布。所有社区操作经 msime_client_community，用「账号与同步」页同一个账号会话，都在工作线程上；文案和规则在 CommunityPageModel.h。
+
+  // 一个图库的状态（共享页 useCommunityGallery 和 useCommunityInstallState 的组件状态）。owner 在挂上和卸下时递增，作废在途的回答；list_request、detail_request 作废同一种更早的请求。
+  template <typename Item> struct Gallery {
+    std::vector<Item> items;
+    bool has_more = false;
+    bool list_busy = true;
+    bool detail_busy = false;
+    bool action_busy = false;
+    std::wstring error;
+    bool sign_in = false;
+    std::optional<Item> selected;
+    std::wstring notice;
+    bool mine = false;
+    bool confirm_unpublish = false;
+    uint64_t owner = 0;
+    uint64_t list_request = 0;
+    uint64_t detail_request = 0;
+    size_t next_offset = 0;
+    std::wstring active_search;
+    bool active_mine = false;
+    // 搜索框里正在输入的词，「搜索」后才成为 active_search。
+    std::wstring search;
+    bool installed = false;
+    bool confirm_replace = false;
+    // CommunityReportSection 的表单。
+    bool report_open = false;
+    std::wstring report_reason;
+    std::wstring report_detail;
+  };
+
+  // 一张社区皮肤预览图：解码好的图片，或读取失败；都没有时还在读。
+  struct CommunityPreview {
+    ImageSource image{nullptr};
+    bool failed = false;
+  };
+
+  template <typename Item> static constexpr bool skin_item = std::is_same_v<Item, CommunitySkinItem>;
+
+  template <typename Item> Gallery<Item> &gallery_for() {
+    if constexpr (skin_item<Item>)
+      return skin_gallery_;
+    else
+      return plugin_gallery_;
+  }
+
+  // 图库的出错说明：皮肤用 candidateSkinMessage，插件用 communityPluginMessage。
+  template <typename Item>
+  static std::wstring gallery_message(CommunityFailure const &failure, bool publishing = false) {
+    if constexpr (skin_item<Item>)
+      return cm::candidate_skin_message(failure.code, publishing);
+    else
+      return cm::plugin_message(failure.code, failure.detail, publishing);
+  }
+
+  template <typename Item> void redraw_gallery() {
+    if constexpr (skin_item<Item>)
+      redraw_themes();
+    else
+      redraw_plugins();
+  }
+
+  // 共享页的 fail：说明出错，未登录时给「去登录」。
+  template <typename Item> void gallery_fail(CommunityFailure const &failure) {
+    auto &gallery = gallery_for<Item>();
+    gallery.error = gallery_message<Item>(failure);
+    gallery.sign_in = cm::needs_sign_in(failure.code);
+  }
+
+  // 共享页的 openAccountLogin：去「账号与同步」页登录。
+  void open_account_login() { navigate("account", true); }
+
+  // ---- 标签 ----
+
+  // 页首的一对来源标签。「社区皮肤」「社区插件」进搜索索引，选中这样的结果时打开图库，选中本页的其他设置时回到本页。
+  void community_tabs(StackPanel const &page, std::wstring const &name, std::wstring const &mine,
+                      std::wstring const &community, std::wstring const &detail, bool shown,
+                      std::function<void(bool)> choose) {
+    record(community, detail);
+    auto tabs = segmented_control(
+        name, {{L"mine", mine}, {L"community", community}}, shown ? L"community" : L"mine",
+        [choose = std::move(choose)](std::wstring const &value) { choose(value == L"community"); },
+        true, false);
+    tabs.HorizontalAlignment(HorizontalAlignment::Left);
+    tabs.Margin(Thickness{0, 0, 0, 12});
+    mark_search_target(community, tabs);
+    page.Children().Append(tabs);
+  }
+
+  void set_skin_view(bool community) {
+    if (community == skin_community_view_)
+      return;
+    skin_community_view_ = community;
+    if (community)
+      enter_skin_community();
+    else
+      leave_skin_community();
+    queue_refresh();
+  }
+
+  void set_plugin_view(bool community) {
+    if (community == plugin_community_view_)
+      return;
+    plugin_community_view_ = community;
+    if (community) {
+      // 切到社区插件时关上打开的视图，下次回来从列表开始。
+      plugin_view_ = PluginView::list;
+      plugin_pending_focus_.clear();
+      enter_plugin_community();
+    } else {
+      leave_plugin_community();
+      // 社区里装的插件要在「我的插件」里列出来：回来时重读目录。
+      plugins_stale_ = true;
+    }
+    queue_refresh();
+  }
+
+  // 图库挂上：从头读第一页。皮肤图库还和账号的皮肤库同步一次。
+  template <typename Item> void reset_gallery() {
+    auto &gallery = gallery_for<Item>();
+    const auto owner = gallery.owner + 1;
+    gallery = Gallery<Item>{};
+    gallery.owner = owner;
+  }
+
+  void enter_skin_community() {
+    reset_gallery<CommunitySkinItem>();
+    skin_category_request_.reset();
+    skin_category_active_.reset();
+    skin_category_shown_.reset();
+    // 读失败的预览图留在缓存里显示「预览图加载失败」，重新挂上图库时再试。
+    std::erase_if(community_previews_, [](auto const &entry) { return entry.second.failed; });
+    gallery_list<CommunitySkinItem>(L"", false, false);
+    run_skin_sync();
+  }
+
+  void leave_skin_community() {
+    ++skin_gallery_.owner;
+    skin_gallery_.action_busy = false;
+  }
+
+  void enter_plugin_community() {
+    reset_gallery<CommunityPluginItem>();
+    plugin_kind_request_.reset();
+    plugin_kind_shown_.reset();
+    gallery_list<CommunityPluginItem>(L"", false, false);
+  }
+
+  void leave_plugin_community() {
+    ++plugin_gallery_.owner;
+    plugin_gallery_.action_busy = false;
+  }
+
+  // ---- 读取 ----
+
+  // 共享页的 requestList：从第一页读（append 为假）或接着读下一页。`then` 收到 false 只在这是最新的一次请求而且失败了，列表照旧；成功或被更新的请求取代时收到 true。
+  template <typename Item>
+  void gallery_list(std::wstring const &query, bool append, bool mine,
+                    std::function<void(bool)> then = nullptr) {
+    auto &gallery = gallery_for<Item>();
+    const auto owner = gallery.owner;
+    const auto request = ++gallery.list_request;
+    const size_t offset = append ? gallery.next_offset : 0;
+    gallery.list_busy = true;
+    gallery.error.clear();
+    gallery.sign_in = false;
+    redraw_gallery<Item>();
+    std::optional<std::wstring> filter;
+    if constexpr (skin_item<Item>)
+      filter = skin_category_request_;
+    else
+      filter = plugin_kind_request_;
+    run_worker<CommunityListPage<Item>>(
+        [offset, query, mine, filter] {
+          return read_community_page<Item>(offset, query, mine, filter);
+        },
+        [this, owner, request, append, query, mine,
+         then = std::move(then)](CommunityListPage<Item> &page) {
+          auto &current = gallery_for<Item>();
+          if (owner != current.owner)
+            return;
+          if (request != current.list_request) {
+            if (then)
+              then(true);
+            return;
+          }
+          current.list_busy = false;
+          if (!page.ok) {
+            gallery_fail<Item>(page.failure);
+            if (!append)
+              current.mine = current.active_mine;
+            redraw_gallery<Item>();
+            if (then)
+              then(false);
+            return;
+          }
+          if (append) {
+            // appendUniqueById：只加还没有的。
+            for (auto &item : page.items)
+              if (std::none_of(current.items.begin(), current.items.end(),
+                               [&item](Item const &listed) { return listed.id == item.id; }))
+                current.items.push_back(item);
+          } else {
+            current.items = page.items;
+            current.active_search = query;
+            current.active_mine = mine;
+          }
+          current.next_offset = page.offset + page.items.size() + page.skipped;
+          current.has_more = page.has_more;
+          redraw_gallery<Item>();
+          if (then)
+            then(true);
+        });
+  }
+
+  // 共享页的 open：先显示列表里的那一项，再读详情换上。
+  template <typename Item> void gallery_open(Item const &item) {
+    auto &gallery = gallery_for<Item>();
+    const auto owner = gallery.owner;
+    const auto request = ++gallery.detail_request;
+    gallery.selected = item;
+    gallery.detail_busy = true;
+    gallery.error.clear();
+    gallery.sign_in = false;
+    gallery.notice.clear();
+    gallery.confirm_unpublish = false;
+    gallery.report_open = false;
+    gallery.report_reason.clear();
+    gallery.report_detail.clear();
+    redraw_gallery<Item>();
+    auto action = community_action(skin_item<Item> ? L"candidate_skin_detail" : L"plugin_detail");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(item.id)));
+    run_host([action] { return community_call(action); },
+             [this, owner, request](Response const &response) {
+               auto &current = gallery_for<Item>();
+               if (owner != current.owner || request != current.detail_request)
+                 return;
+               if (auto value = community_item<Item>(response))
+                 current.selected = std::move(*value);
+               else
+                 gallery_fail<Item>(community_failure(response));
+               current.detail_busy = false;
+               redraw_gallery<Item>();
+             });
+  }
+
+  // 共享页的 closeDetail（连同 useCommunityInstallState 的那部分）：操作进行中时不能返回。
+  template <typename Item> void gallery_close() {
+    auto &gallery = gallery_for<Item>();
+    if (gallery.action_busy)
+      return;
+    ++gallery.detail_request;
+    gallery.selected.reset();
+    gallery.detail_busy = false;
+    gallery.error.clear();
+    gallery.sign_in = false;
+    gallery.confirm_unpublish = false;
+    gallery.installed = false;
+    gallery.confirm_replace = false;
+    gallery.report_open = false;
+    redraw_gallery<Item>();
+  }
+
+  // 共享页的 runAction：同一时间只有一个；开始时清掉出错说明（clear_notice 时连提示也清掉）。
+  template <typename Item> bool gallery_begin(bool clear_notice) {
+    auto &gallery = gallery_for<Item>();
+    if (gallery.action_busy || !gallery.selected)
+      return false;
+    gallery.action_busy = true;
+    gallery.sign_in = false;
+    gallery.error.clear();
+    if (clear_notice)
+      gallery.notice.clear();
+    redraw_gallery<Item>();
+    return true;
+  }
+
+  // 操作结束；失败时说明出错（ignore 为真的那种除外）。
+  template <typename Item>
+  void gallery_end(std::optional<CommunityFailure> const &failure = std::nullopt) {
+    auto &gallery = gallery_for<Item>();
+    gallery.action_busy = false;
+    if (failure) {
+      gallery.error = gallery_message<Item>(*failure);
+      gallery.sign_in = cm::needs_sign_in(failure->code);
+    }
+    redraw_gallery<Item>();
+  }
+
+  // 一次图库操作：在工作线程上调用，回到 UI 线程时图库还是同一个才交给 `done`。
+  template <typename Item>
+  void gallery_call(std::function<Response()> call, std::function<void(Response const &)> done) {
+    const auto owner = gallery_for<Item>().owner;
+    run_host(std::move(call), [this, owner, done = std::move(done)](Response const &response) {
+      if (owner == gallery_for<Item>().owner)
+        done(response);
+    });
+  }
+
+  // rateSelected：评分后重读详情，显示「已评分」。
+  template <typename Item> void gallery_rate(int stars) {
+    if (!gallery_begin<Item>(false))
+      return;
+    const auto id = gallery_for<Item>().selected->id;
+    gallery_call<Item>(
+        [id, stars] {
+          auto rate = community_action(skin_item<Item> ? L"candidate_skin_rate" : L"plugin_rate");
+          rate.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          rate.SetNamedValue(L"stars", JsonValue::CreateNumberValue(stars));
+          auto rated = community_call(rate);
+          if (!rated.ok)
+            return rated;
+          auto detail =
+              community_action(skin_item<Item> ? L"candidate_skin_detail" : L"plugin_detail");
+          detail.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          return community_call(detail);
+        },
+        [this, stars](Response const &response) {
+          auto item = community_item<Item>(response);
+          if (!item) {
+            gallery_end<Item>(community_failure(response));
+            return;
+          }
+          auto &gallery = gallery_for<Item>();
+          gallery.selected = std::move(*item);
+          gallery.notice = L"已评分：" + std::to_wstring(stars) + L" 星。";
+          gallery_end<Item>();
+        });
+  }
+
+  // unpublishSelected：下架后回到列表，说明结果，从第一页重读；重读完操作才结束。
+  template <typename Item> void gallery_unpublish(std::wstring message) {
+    if (!gallery_begin<Item>(false))
+      return;
+    const auto id = gallery_for<Item>().selected->id;
+    gallery_call<Item>(
+        [id] {
+          auto action =
+              community_action(skin_item<Item> ? L"candidate_skin_unpublish" : L"plugin_delete");
+          action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          return community_call(action);
+        },
+        [this, message = std::move(message)](Response const &response) {
+          if (!response.ok) {
+            gallery_end<Item>(community_failure(response));
+            return;
+          }
+          auto &gallery = gallery_for<Item>();
+          ++gallery.detail_request;
+          gallery.selected.reset();
+          gallery.confirm_unpublish = false;
+          gallery.installed = false;
+          gallery.confirm_replace = false;
+          gallery.notice = message;
+          gallery_list<Item>(gallery.active_search, false, gallery.active_mine,
+                             [this](bool) { gallery_end<Item>(); });
+        });
+  }
+
+  // reportSelected：举报被接受后关上表单，显示「已收到举报」。
+  template <typename Item> void gallery_report() {
+    auto &gallery = gallery_for<Item>();
+    if (gallery.report_reason.empty() || !gallery_begin<Item>(true))
+      return;
+    JsonObject action = community_action(L"report");
+    action.SetNamedValue(L"kind",
+                         JsonValue::CreateStringValue(skin_item<Item> ? L"candidate-skins" : L"plugins"));
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(gallery.selected->id)));
+    action.SetNamedValue(L"reason", JsonValue::CreateStringValue(hstring(gallery.report_reason)));
+    action.SetNamedValue(L"detail",
+                         JsonValue::CreateStringValue(hstring(cm::trim(gallery.report_detail))));
+    gallery_call<Item>([action] { return community_call(action); },
+                       [this](Response const &response) {
+                         if (!response.ok) {
+                           gallery_end<Item>(community_failure(response));
+                           return;
+                         }
+                         auto &current = gallery_for<Item>();
+                         current.notice = std::wstring(cm::reported_notice);
+                         current.report_open = false;
+                         current.report_reason.clear();
+                         current.report_detail.clear();
+                         gallery_end<Item>();
+                       });
+  }
+
+  // ---- 皮肤图库的操作 ----
+
+  // useCandidateSkinSync：本机皮肤目录与账号的皮肤库同步一次；进行中又要同步时，这次结束后再来一次。下载或删除了本机的皮肤时「我的皮肤」重扫目录。未登录时 Rust 在读会话这一步就结束，不发请求；失败不说明。
+  void run_skin_sync() {
+    if (skin_sync_running_) {
+      skin_sync_queued_ = true;
+      return;
+    }
+    skin_sync_running_ = true;
+    skin_sync_queued_ = false;
+    run_host([] { return community_call(community_action(L"candidate_skin_sync")); },
+             [this](Response const &response) {
+               skin_sync_running_ = false;
+               const auto value = community_value(response);
+               if (response.ok && value.ValueType() == JsonValueType::Object) {
+                 const auto report = value.GetObject();
+                 if (!named_strings(report, L"downloaded").empty() ||
+                     !named_strings(report, L"deleted_local").empty()) {
+                   skins_stale_ = true;
+                   // 已经切回「我的皮肤」时现在就重扫。
+                   if (!skin_community_view_)
+                     redraw_themes();
+                 }
+               }
+               if (skin_sync_queued_ && skin_community_view_ && current_page_ == "themes")
+                 run_skin_sync();
+               skin_sync_queued_ = false;
+             });
+  }
+
+  // 一键安装：先看本机有没有同名的皮肤，有就先问（省下一次约 3 MB 的下载）；看不了时由安装自己的 candidate_skin_exists 拦住覆盖。装好后「我的皮肤」重扫，再同步一次皮肤库。
+  void install_community_skin(bool replace) {
+    auto &gallery = skin_gallery_;
+    if (!gallery.selected)
+      return;
+    gallery.installed = false;
+    if (!gallery_begin<CommunitySkinItem>(true))
+      return;
+    const auto target = *gallery.selected;
+    struct Outcome {
+      bool exists = false;
+      Response response;
+    };
+    const auto owner = gallery.owner;
+    run_worker<Outcome>(
+        [target, replace, root = skins_root()] {
+          Outcome outcome;
+          if (!replace) {
+            if (const auto ids = read_skin_ids(root);
+                ids && std::find(ids->begin(), ids->end(), target.package_id) != ids->end()) {
+              outcome.exists = true;
+              return outcome;
+            }
+          }
+          auto action = community_action(L"candidate_skin_install");
+          action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(target.id)));
+          action.SetNamedValue(L"replace", JsonValue::CreateBooleanValue(replace));
+          outcome.response = community_call(action);
+          return outcome;
+        },
+        [this, owner](Outcome &outcome) {
+          // 皮肤已经写进目录时，即使图库已经换了，「我的皮肤」也该重扫。
+          if (outcome.response.ok)
+            skins_stale_ = true;
+          if (owner != skin_gallery_.owner)
+            return;
+          if (outcome.exists) {
+            skin_gallery_.confirm_replace = true;
+            gallery_end<CommunitySkinItem>();
+            return;
+          }
+          if (!outcome.response.ok) {
+            const auto failure = community_failure(outcome.response);
+            if (failure.code == L"candidate_skin_exists") {
+              skin_gallery_.confirm_replace = true;
+              gallery_end<CommunitySkinItem>();
+            } else {
+              gallery_end<CommunitySkinItem>(failure);
+            }
+            return;
+          }
+          skin_gallery_.confirm_replace = false;
+          skin_gallery_.installed = true;
+          gallery_end<CommunitySkinItem>();
+          run_skin_sync();
+        });
+  }
+
+  // 作者把自己的皮肤改成公开或私有。
+  void change_community_skin_visibility(std::wstring visibility) {
+    if (!gallery_begin<CommunitySkinItem>(true))
+      return;
+    auto action = community_action(L"candidate_skin_set_visibility");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(skin_gallery_.selected->id)));
+    action.SetNamedValue(L"visibility", JsonValue::CreateStringValue(hstring(visibility)));
+    gallery_call<CommunitySkinItem>(
+        [action] { return community_call(action); },
+        [this, visibility](Response const &response) {
+          auto item = community_item<CommunitySkinItem>(response);
+          if (!item) {
+            gallery_end<CommunitySkinItem>(community_failure(response));
+            return;
+          }
+          replace_selected_skin(std::move(*item));
+          skin_gallery_.notice = visibility == L"public"
+                                     ? L"已公开，其他用户现在可以下载这款皮肤。"
+                                     : L"已设为私有，只有你能看到这款皮肤。";
+          gallery_end<CommunitySkinItem>();
+        });
+  }
+
+  // 作者改自己作品的发布分类。
+  void change_community_skin_category(std::wstring category) {
+    if (!gallery_begin<CommunitySkinItem>(true))
+      return;
+    auto action = community_action(L"candidate_skin_set_category");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(skin_gallery_.selected->id)));
+    action.SetNamedValue(L"category", JsonValue::CreateStringValue(hstring(category)));
+    gallery_call<CommunitySkinItem>(
+        [action] { return community_call(action); },
+        [this, category](Response const &response) {
+          auto item = community_item<CommunitySkinItem>(response);
+          if (!item) {
+            gallery_end<CommunitySkinItem>(community_failure(response));
+            return;
+          }
+          replace_selected_skin(std::move(*item));
+          skin_gallery_.notice = L"已改为「" + cm::category_label(category) + L"」分类。";
+          gallery_end<CommunitySkinItem>();
+        });
+  }
+
+  // replaceSelected：详情和列表里的那一项一起换。
+  void replace_selected_skin(CommunitySkinItem updated) {
+    for (auto &item : skin_gallery_.items)
+      if (item.id == updated.id)
+        item = updated;
+    skin_gallery_.selected = std::move(updated);
+  }
+
+  // 分类筛选（useCommunitySkinCategoryFilter）：换分类后从第一页重读；第一页读失败时列表和 offset 还是上一次成功的分类的，分类也退回去，否则「加载更多」会在旧分类的 offset 上接新分类的页。
+  void change_skin_category(std::optional<std::wstring> next) {
+    if (next == skin_category_request_)
+      return;
+    const auto previous = skin_category_active_;
+    skin_category_request_ = next;
+    skin_category_shown_ = next;
+    gallery_list<CommunitySkinItem>(
+        skin_gallery_.active_search, false, skin_gallery_.active_mine,
+        [this, next, previous](bool listed) {
+          if (skin_category_request_ != next)
+            return;
+          if (listed) {
+            skin_category_active_ = next;
+          } else {
+            skin_category_request_ = previous;
+            skin_category_shown_ = previous;
+            redraw_themes();
+          }
+        });
+  }
+
+  // 插件类型筛选：与皮肤分类一样，第一页读失败时类型退回去。
+  void change_plugin_kind(std::optional<std::wstring> next) {
+    const auto previous = plugin_kind_request_;
+    if (next == previous)
+      return;
+    plugin_kind_request_ = next;
+    plugin_kind_shown_ = next;
+    gallery_list<CommunityPluginItem>(
+        plugin_gallery_.active_search, false, plugin_gallery_.active_mine,
+        [this, next, previous](bool listed) {
+          if (!listed && plugin_kind_request_ == next) {
+            plugin_kind_request_ = previous;
+            plugin_kind_shown_ = previous;
+            redraw_plugins();
+          }
+        });
+  }
+
+  // 一键安装插件：同 kind 同 id 的包会被整个替换，所以先问；读不了本机目录时照常安装，与从本机 .zip 导入一样。
+  void install_community_plugin(bool replace) {
+    auto &gallery = plugin_gallery_;
+    if (!gallery.selected)
+      return;
+    gallery.installed = false;
+    if (!gallery_begin<CommunityPluginItem>(true))
+      return;
+    const auto target = *gallery.selected;
+    struct Outcome {
+      bool exists = false;
+      Response response;
+    };
+    const auto owner = gallery.owner;
+    run_worker<Outcome>(
+        [target, replace] {
+          Outcome outcome;
+          if (!replace) {
+            if (const auto catalog = plugin_catalog(plugin_catalog_call()))
+              for (auto const &pack : catalog->packages)
+                if (pack.kind == target.kind && pack.id == target.plugin_id) {
+                  outcome.exists = true;
+                  return outcome;
+                }
+          }
+          auto action = community_action(L"plugin_install");
+          action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(target.id)));
+          action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(target.kind)));
+          action.SetNamedValue(L"plugin_id", JsonValue::CreateStringValue(hstring(target.plugin_id)));
+          outcome.response = community_call(action);
+          return outcome;
+        },
+        [this, owner](Outcome &outcome) {
+          if (outcome.response.ok)
+            plugins_stale_ = true;
+          if (owner != plugin_gallery_.owner)
+            return;
+          if (outcome.exists) {
+            plugin_gallery_.confirm_replace = true;
+            gallery_end<CommunityPluginItem>();
+            return;
+          }
+          if (!outcome.response.ok) {
+            gallery_end<CommunityPluginItem>(community_failure(outcome.response));
+            return;
+          }
+          plugin_gallery_.confirm_replace = false;
+          plugin_gallery_.installed = true;
+          gallery_end<CommunityPluginItem>();
+        });
+  }
+
+  // ---- 预览图 ----
+
+  // 社区皮肤的预览图：每款读一次，卡片和详情共用（共享页的 loadPreview）；最多留 16 张，再加上当前列表里的那些，免得列表一重画就把刚读到的又读一遍。读到后就地换上正在显示它的卡片，不重画整页。
+  void show_community_preview(Border const &host, std::wstring const &id, std::wstring const &name) {
+    community_preview_views_.emplace(id, make_weak(host));
+    auto found = community_previews_.find(id);
+    if (found == community_previews_.end()) {
+      community_previews_.emplace(id, CommunityPreview{});
+      community_preview_order_.push_back(id);
+      trim_community_previews();
+      load_community_preview(id);
+      fill_community_preview(host, CommunityPreview{}, name);
+      return;
+    }
+    // 最近用过的排到最后。
+    std::erase(community_preview_order_, id);
+    community_preview_order_.push_back(id);
+    fill_community_preview(host, found->second, name);
+  }
+
+  void trim_community_previews() {
+    const size_t capacity = 16 + skin_gallery_.items.size();
+    while (community_preview_order_.size() > capacity) {
+      community_previews_.erase(community_preview_order_.front());
+      community_preview_order_.erase(community_preview_order_.begin());
+    }
+  }
+
+  void fill_community_preview(Border const &host, CommunityPreview const &preview,
+                              std::wstring const &name) {
+    if (preview.image) {
+      Image image;
+      image.Source(preview.image);
+      image.Stretch(Stretch::Uniform);
+      image.MaxHeight(220);
+      A11y::SetName(image, hstring(name + L" 预览"));
+      host.Child(image);
+      return;
+    }
+    auto status = make_text(preview.failed ? L"预览图加载失败" : L"正在读取预览…", 12, palette_.sub);
+    status.HorizontalAlignment(HorizontalAlignment::Center);
+    status.VerticalAlignment(VerticalAlignment::Center);
+    host.Child(status);
+  }
+
+  // 读一张预览图：宿主回答 PNG 或 JPEG 的 data: 地址（类型和文件头已校验），解码后交给正在显示它的卡片。
+  void load_community_preview(std::wstring const &id) {
+    auto action = community_action(L"candidate_skin_preview");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+    run_host([action] { return community_call(action); },
+             [this, id](Response const &response) {
+               std::wstring url;
+               if (const auto value = community_value(response);
+                   response.ok && value.ValueType() == JsonValueType::Object)
+                 url = named_string(value.GetObject(), L"dataUrl");
+               decode_community_preview(id, std::move(url));
+             });
+  }
+
+  fire_and_forget decode_community_preview(std::wstring id, std::wstring url) {
+    auto strong = get_strong();
+    ImageSource source{nullptr};
+    const auto comma = url.find(L',');
+    if (url.starts_with(L"data:") && comma != std::wstring::npos) {
+      try {
+        const auto buffer = Windows::Security::Cryptography::CryptographicBuffer::
+            DecodeFromBase64String(hstring(url.substr(comma + 1)));
+        Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+        co_await stream.WriteAsync(buffer);
+        stream.Seek(0);
+        Imaging::BitmapImage bitmap;
+        co_await bitmap.SetSourceAsync(stream);
+        source = bitmap;
+      } catch (hresult_error const &) {
+        source = nullptr;
+      }
+    }
+    if (closed_)
+      co_return;
+    const auto found = community_previews_.find(id);
+    if (found == community_previews_.end())
+      co_return;
+    found->second.image = source;
+    found->second.failed = !source;
+    std::wstring name;
+    for (auto const &item : skin_gallery_.items)
+      if (item.id == id)
+        name = item.name;
+    if (skin_gallery_.selected && skin_gallery_.selected->id == id)
+      name = skin_gallery_.selected->name;
+    const auto [first, last] = community_preview_views_.equal_range(id);
+    for (auto it = first; it != last; ++it)
+      if (auto host = it->second.get())
+        fill_community_preview(host, found->second, name);
+  }
+
+  // ---- 图库的界面 ----
+
+  // 出错说明（CommunityErrorAlert）：未登录时后面跟一个「去登录」。
+  void community_error(StackPanel const &panel, std::wstring const &message, bool sign_in,
+                       std::function<void()> login) {
+    StackPanel line;
+    line.Orientation(Orientation::Horizontal);
+    line.Spacing(8);
+    auto words = make_text(message, 13, danger_color());
+    words.VerticalAlignment(VerticalAlignment::Center);
+    words.MaxWidth(560);
+    A11y::SetLiveSetting(words, Automation::Peers::AutomationLiveSetting::Assertive);
+    line.Children().Append(words);
+    if (sign_in && login)
+      line.Children().Append(button_control(L"去登录", std::move(login)));
+    line.Margin(Thickness{4, 4, 4, 8});
+    panel.Children().Append(line);
+  }
+
+  // 完成一个操作后的说明（CommunityActionNotice）。
+  void community_notice(StackPanel const &panel, std::wstring const &message) {
+    auto words = make_text(message, 13, palette_.accent);
+    A11y::SetLiveSetting(words, Automation::Peers::AutomationLiveSetting::Polite);
+    words.Margin(Thickness{4, 4, 4, 8});
+    panel.Children().Append(words);
+  }
+
+  // 一行带强调色的主按钮。
+  FrameworkElement primary_button(std::wstring const &label, std::function<void()> click,
+                                  bool enabled = true) {
+    auto button = button_control(label, std::move(click), enabled).as<Button>();
+    make_primary(button);
+    return button;
+  }
+
+  // 一排按下其中一个的筛选按钮（「全部」加各个分类或类型），选中的是主按钮。
+  void community_filter(StackPanel const &panel, std::wstring const &name,
+                        std::vector<std::pair<std::optional<std::wstring>, std::wstring>> const &choices,
+                        std::optional<std::wstring> const &current,
+                        std::function<void(std::optional<std::wstring>)> choose) {
+    VariableSizedWrapGrid row;
+    row.Orientation(Orientation::Horizontal);
+    row.Margin(Thickness{0, 4, 0, 8});
+    for (auto const &[value, label] : choices) {
+      const bool on = value == current;
+      auto button = button_control(label, [choose, value] { choose(value); }).as<Button>();
+      button.Margin(Thickness{0, 0, 8, 8});
+      if (on) {
+        make_primary(button);
+        A11y::SetItemStatus(button, L"已选择");
+      }
+      row.Children().Append(button);
+    }
+    A11y::SetName(row, hstring(name));
+    panel.Children().Append(row);
+  }
+
+  // 搜索框和「搜索」按钮（CommunitySearchForm）：最多 128 个字，回车或「搜索」从第一页读这个词。
+  template <typename Item> void community_search(StackPanel const &panel, std::wstring const &label) {
+    TextBox box;
+    box.Width(320);
+    box.PlaceholderText(hstring(label));
+    box.Text(hstring(gallery_for<Item>().search));
+    A11y::SetName(box, hstring(label));
+    box.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      const auto input = sender.as<TextBox>();
+      const std::wstring typed(input.Text().c_str());
+      const auto bounded = cm::bounded_graphemes(typed, cm::search_limit);
+      gallery_for<Item>().search = bounded;
+      if (bounded != typed) {
+        input.Text(hstring(bounded));
+        input.SelectionStart(static_cast<int32_t>(bounded.size()));
+      }
+    });
+    auto submit = [this] {
+      auto &gallery = gallery_for<Item>();
+      gallery_list<Item>(gallery.search, false, gallery.active_mine);
+    };
+    box.KeyDown([submit](Inspectable const &, Input::KeyRoutedEventArgs const &args) {
+      if (args.Key() == Windows::System::VirtualKey::Enter) {
+        args.Handled(true);
+        submit();
+      }
+    });
+    StackPanel row;
+    row.Orientation(Orientation::Horizontal);
+    row.Spacing(8);
+    row.Margin(Thickness{0, 0, 0, 8});
+    row.Children().Append(box);
+    row.Children().Append(button_control(L"搜索", submit));
+    panel.Children().Append(row);
+  }
+
+  // 图库的标题（CommunityGalleryHeading）：标题和说明，右边是「全部 / 我的作品」和发布按钮。
+  template <typename Item>
+  void community_heading(StackPanel const &panel, std::wstring const &title, std::wstring const &note,
+                         std::wstring const &scope_name, std::wstring const &all_label,
+                         std::wstring const &publish_label, std::function<void()> publish) {
+    Grid heading;
+    heading.ColumnSpacing(16);
+    ColumnDefinition text_column;
+    text_column.Width(GridLength{1, GridUnitType::Star});
+    ColumnDefinition action_column;
+    action_column.Width(GridLength{1, GridUnitType::Auto});
+    heading.ColumnDefinitions().Append(text_column);
+    heading.ColumnDefinitions().Append(action_column);
+    StackPanel texts;
+    texts.Spacing(2);
+    auto head = make_text(title, 20, palette_.text);
+    head.FontWeight(Windows::UI::Text::FontWeight{600});
+    texts.Children().Append(head);
+    texts.Children().Append(make_text(note, 12, palette_.sub));
+    heading.Children().Append(texts);
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    actions.VerticalAlignment(VerticalAlignment::Center);
+    const bool mine = gallery_for<Item>().mine;
+    actions.Children().Append(segmented_control(
+        scope_name, {{L"all", all_label}, {L"mine", L"我的作品"}}, mine ? L"mine" : L"all",
+        [this](std::wstring const &value) {
+          auto &gallery = gallery_for<Item>();
+          gallery.mine = value == L"mine";
+          gallery_list<Item>(gallery.active_search, false, gallery.mine);
+        },
+        true, false));
+    actions.Children().Append(primary_button(publish_label, std::move(publish)));
+    Grid::SetColumn(actions, 1);
+    heading.Children().Append(actions);
+    heading.Margin(Thickness{0, 8, 0, 8});
+    panel.Children().Append(heading);
+  }
+
+  // 卡片的网格（CommunityGalleryGrid）：整张卡片是一个按钮，点开详情。
+  VariableSizedWrapGrid community_grid(double width, double height) {
+    VariableSizedWrapGrid grid;
+    grid.Orientation(Orientation::Horizontal);
+    grid.ItemWidth(width + 12);
+    grid.ItemHeight(height + 12);
+    return grid;
+  }
+
+  Button community_card(std::wstring const &name, StackPanel const &body, double width,
+                        double height, std::function<void()> open) {
+    Button card;
+    card.Width(width);
+    card.Height(height);
+    card.Padding(Thickness{12, 12, 12, 12});
+    card.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    card.VerticalContentAlignment(VerticalAlignment::Top);
+    card.Background(brush(palette_.card));
+    card.BorderBrush(brush(palette_.stroke));
+    card.BorderThickness(Thickness{1, 1, 1, 1});
+    card.CornerRadius(CornerRadius{6, 6, 6, 6});
+    card.Content(body);
+    A11y::SetName(card, hstring(name));
+    card.Click([open = std::move(open)](Inspectable const &, RoutedEventArgs const &) { open(); });
+    return card;
+  }
+
+  TextBlock card_line(std::wstring const &value, double size, Color const &color, int lines = 1) {
+    auto line = make_text(value, size, color);
+    line.TextTrimming(TextTrimming::CharacterEllipsis);
+    line.MaxLines(lines);
+    return line;
+  }
+
+  // CommunityCardMetrics：下载量和评分。
+  TextBlock card_metrics(double downloads, double rating_count, double rating_average) {
+    return card_line(L"↓ " + cm::zh_number(downloads) + L"    ☆ " +
+                         cm::rating(rating_count, rating_average),
+                     12, palette_.sub);
+  }
+
+  // 加载更多（CommunityGalleryLoadMore）和读取中的一句。
+  template <typename Item> void community_load_more(StackPanel const &panel, std::wstring const &loading) {
+    auto &gallery = gallery_for<Item>();
+    if (gallery.has_more) {
+      auto more = button_control(L"加载更多", [this] {
+        auto &current = gallery_for<Item>();
+        gallery_list<Item>(current.active_search, true, current.active_mine);
+      }, !gallery.list_busy);
+      more.HorizontalAlignment(HorizontalAlignment::Center);
+      more.Margin(Thickness{0, 8, 0, 0});
+      panel.Children().Append(more);
+    }
+    if (gallery.list_busy) {
+      auto status = make_text(loading, 13, palette_.sub);
+      status.HorizontalAlignment(HorizontalAlignment::Center);
+      status.Margin(Thickness{0, 8, 0, 0});
+      A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+      panel.Children().Append(status);
+    }
+  }
+
+  // 空列表的一句（CommunityNotice）。
+  void community_empty(StackPanel const &panel, std::wstring const &message) {
+    auto words = make_text(message, 13, palette_.sub);
+    words.Margin(Thickness{4, 8, 4, 8});
+    panel.Children().Append(words);
+  }
+
+  // ---- 详情 ----
+
+  // 详情的外框（CommunityDetailFrame）：「← 社区」、出错说明和放内容的卡片。返回卡片里的那一列。
+  template <typename Item> StackPanel community_detail_frame(StackPanel const &page) {
+    auto &gallery = gallery_for<Item>();
+    auto back = button_control(L"← 社区", [this] { gallery_close<Item>(); }, !gallery.action_busy)
+                    .as<Button>();
+    A11y::SetName(back, L"返回社区");
+    back.HorizontalAlignment(HorizontalAlignment::Left);
+    page.Children().Append(back);
+    if (!gallery.error.empty())
+      community_error(page, gallery.error, gallery.sign_in, [this] { open_account_login(); });
+    StackPanel body;
+    body.Spacing(10);
+    body.Padding(Thickness{25, 18, 25, 18});
+    auto card = make_card();
+    card.Margin(Thickness{0, 8, 0, 0});
+    card.Child(body);
+    page.Children().Append(card);
+    return body;
+  }
+
+  // 标题、作者一行、「我的作品」和「已下架」标记、说明（CommunityDetailHeader）。
+  void community_detail_header(StackPanel const &body, std::wstring const &title,
+                               std::wstring const &note, bool owned,
+                               std::wstring const &moderation, std::wstring const &owned_label,
+                               std::wstring const &description) {
+    StackPanel heading;
+    heading.Orientation(Orientation::Horizontal);
+    heading.Spacing(10);
+    auto name = make_text(title, 20, palette_.text);
+    name.FontWeight(Windows::UI::Text::FontWeight{600});
+    heading.Children().Append(name);
+    auto badge = [this, &heading](std::wstring const &label, std::wstring const &tip) {
+      Border mark;
+      mark.Padding(Thickness{8, 2, 8, 2});
+      mark.CornerRadius(CornerRadius{10, 10, 10, 10});
+      mark.BorderBrush(brush(palette_.stroke));
+      mark.BorderThickness(Thickness{1, 1, 1, 1});
+      mark.VerticalAlignment(VerticalAlignment::Center);
+      mark.Child(make_text(label, 12, palette_.sub));
+      if (!tip.empty())
+        ToolTipService::SetToolTip(mark, box_value(hstring(tip)));
+      heading.Children().Append(mark);
+    };
+    if (owned)
+      badge(owned_label, L"");
+    // 审核只显示「已下架」，不说原因，也不显示待审。
+    if (owned && moderation == L"removed")
+      badge(L"已下架", L"已被管理员下架，其他用户看不到这个作品");
+    body.Children().Append(heading);
+    if (!note.empty())
+      body.Children().Append(make_text(note, 13, palette_.sub));
+    if (!description.empty()) {
+      auto text_block = make_text(description, 14, palette_.text);
+      text_block.IsTextSelectionEnabled(true);
+      body.Children().Append(text_block);
+    }
+  }
+
+  // 下载、评分、我的评分、读取中和操作结果（CommunityDetailStatus）。
+  template <typename Item> void community_detail_status(StackPanel const &body, std::wstring const &loading) {
+    auto &gallery = gallery_for<Item>();
+    auto const &item = *gallery.selected;
+    body.Children().Append(make_text(
+        cm::rating_metrics(item.downloads, L"下载", item.rating_count, item.rating_average), 13,
+        palette_.sub));
+    if (item.my_rating > 0)
+      body.Children().Append(
+          make_text(L"我的评分：" + std::to_wstring(item.my_rating) + L" 星", 13, palette_.sub));
+    if (gallery.detail_busy) {
+      auto status = make_text(loading, 13, palette_.sub);
+      A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+      body.Children().Append(status);
+    }
+    if (!gallery.notice.empty())
+      community_notice(body, gallery.notice);
+  }
+
+  // 一段确认（CommunityConfirmation）：说明，危险的确认按钮和「取消」。
+  void community_confirmation(StackPanel const &body, std::wstring const &name,
+                              std::wstring const &message, std::wstring const &confirm_label,
+                              bool busy, std::function<void()> confirm, std::function<void()> cancel) {
+    StackPanel panel;
+    panel.Spacing(10);
+    panel.Padding(Thickness{16, 12, 16, 12});
+    panel.Children().Append(make_text(message, 13, palette_.text));
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    auto yes = button_control(confirm_label, std::move(confirm), !busy).as<Button>();
+    yes.Foreground(brush(danger_color()));
+    actions.Children().Append(yes);
+    actions.Children().Append(button_control(L"取消", std::move(cancel), !busy));
+    panel.Children().Append(actions);
+    Border frame;
+    frame.BorderBrush(brush(danger_color()));
+    frame.BorderThickness(Thickness{1, 1, 1, 1});
+    frame.CornerRadius(CornerRadius{4, 4, 4, 4});
+    frame.Child(panel);
+    A11y::SetName(frame, hstring(name));
+    body.Children().Append(frame);
+  }
+
+  // 评分、作者的下架和确认（CommunityModerationSection）。
+  template <typename Item>
+  void community_moderation(StackPanel const &body, bool unpublishable, std::wstring const &unpublish_label,
+                            std::wstring const &confirm_name, std::wstring const &message,
+                            std::wstring const &done) {
+    auto &gallery = gallery_for<Item>();
+    auto const &item = *gallery.selected;
+    if (!item.owned) {
+      StackPanel rating;
+      rating.Spacing(6);
+      rating.Children().Append(make_text(L"我的评分（安装后可评，可重新选择）", 12, palette_.sub));
+      StackPanel stars;
+      stars.Orientation(Orientation::Horizontal);
+      stars.Spacing(6);
+      for (int value = 1; value <= 5; ++value) {
+        auto button = button_control(std::to_wstring(value) + L" 星",
+                                     [this, value] { gallery_rate<Item>(value); },
+                                     !gallery.action_busy)
+                          .as<Button>();
+        A11y::SetName(button, hstring(L"评 " + std::to_wstring(value) + L" 星"));
+        stars.Children().Append(button);
+      }
+      rating.Children().Append(stars);
+      A11y::SetName(rating, L"我的评分");
+      body.Children().Append(rating);
+    }
+    if (item.owned && unpublishable) {
+      auto button = button_control(unpublish_label, [this] {
+        gallery_for<Item>().confirm_unpublish = true;
+        redraw_gallery<Item>();
+      }, !gallery.action_busy).as<Button>();
+      button.Foreground(brush(danger_color()));
+      body.Children().Append(button);
+    }
+    if (gallery.confirm_unpublish)
+      community_confirmation(
+          body, confirm_name, message, L"确认下架", gallery.action_busy,
+          [this, done] { gallery_unpublish<Item>(done); },
+          [this] {
+            gallery_for<Item>().confirm_unpublish = false;
+            redraw_gallery<Item>();
+          });
+  }
+
+  // 别人的作品下面的「举报」（CommunityReportSection）：从固定的原因里选一个，补充说明可不填。
+  template <typename Item> void community_report(StackPanel const &body) {
+    auto &gallery = gallery_for<Item>();
+    if (!gallery.report_open) {
+      auto button = button_control(L"举报", [this] {
+        gallery_for<Item>().report_open = true;
+        redraw_gallery<Item>();
+      }, !gallery.action_busy).as<Button>();
+      button.Foreground(brush(danger_color()));
+      body.Children().Append(button);
+      return;
+    }
+    StackPanel form;
+    form.Spacing(8);
+    form.Padding(Thickness{16, 12, 16, 12});
+    form.Children().Append(make_text(L"请选择举报原因", 13, palette_.text));
+    for (auto const reason : cm::report_reasons) {
+      RadioButton choice;
+      choice.Content(box_value(hstring(reason)));
+      choice.GroupName(L"community-report-reason");
+      choice.IsChecked(gallery.report_reason == reason);
+      choice.IsEnabled(!gallery.action_busy);
+      choice.Checked([this, value = std::wstring(reason)](Inspectable const &, RoutedEventArgs const &) {
+        gallery_for<Item>().report_reason = value;
+        redraw_gallery<Item>();
+      });
+      form.Children().Append(choice);
+    }
+    TextBox detail;
+    detail.Header(box_value(L"补充说明（选填）"));
+    detail.AcceptsReturn(true);
+    detail.TextWrapping(TextWrapping::Wrap);
+    detail.MinHeight(72);
+    detail.MaxLength(static_cast<int32_t>(cm::report_detail_limit));
+    detail.Text(hstring(gallery.report_detail));
+    detail.IsEnabled(!gallery.action_busy);
+    A11y::SetName(detail, L"举报补充说明");
+    detail.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      gallery_for<Item>().report_detail = std::wstring(sender.as<TextBox>().Text().c_str());
+    });
+    form.Children().Append(detail);
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    auto submit = button_control(L"提交举报", [this] { gallery_report<Item>(); },
+                                 !gallery.action_busy && !gallery.report_reason.empty())
+                      .as<Button>();
+    submit.Foreground(brush(danger_color()));
+    actions.Children().Append(submit);
+    actions.Children().Append(button_control(L"取消", [this] {
+      auto &current = gallery_for<Item>();
+      current.report_open = false;
+      current.report_reason.clear();
+      current.report_detail.clear();
+      redraw_gallery<Item>();
+    }, !gallery.action_busy));
+    form.Children().Append(actions);
+    Border frame;
+    frame.BorderBrush(brush(palette_.stroke));
+    frame.BorderThickness(Thickness{1, 1, 1, 1});
+    frame.CornerRadius(CornerRadius{4, 4, 4, 4});
+    frame.Child(form);
+    A11y::SetName(frame, L"举报作品");
+    body.Children().Append(frame);
+  }
+
+  // 一键安装（CommunityInstallButton）。
+  template <typename Item> FrameworkElement community_install_button(std::function<void()> install) {
+    auto &gallery = gallery_for<Item>();
+    auto button = primary_button(gallery.action_busy ? L"正在安装…" : L"一键安装", std::move(install),
+                                 !gallery.action_busy && !gallery.detail_busy && !gallery.confirm_replace);
+    button.HorizontalAlignment(HorizontalAlignment::Left);
+    return button;
+  }
+
+  // ---- 社区皮肤 ----
+
+  void build_skin_community(StackPanel const &page) {
+    if (skin_gallery_.selected) {
+      build_skin_community_detail(page);
+      return;
+    }
+    community_preview_views_.clear();
+    community_search<CommunitySkinItem>(page, L"搜索候选窗口皮肤");
+    community_heading<CommunitySkinItem>(
+        page, L"社区皮肤", L"为输入候选窗口换一身新装，安装后在「我的皮肤」中启用",
+        L"候选窗口皮肤范围", L"全部", L"发布我的皮肤", [this] { open_skin_publish(L"", false); });
+    std::vector<std::pair<std::optional<std::wstring>, std::wstring>> categories{
+        {std::nullopt, L"全部"}};
+    for (auto const &item : cm::skin_categories)
+      categories.emplace_back(std::wstring(item.value), std::wstring(item.label));
+    community_filter(page, L"候选窗口皮肤分类", categories, skin_category_shown_,
+                     [this](std::optional<std::wstring> next) { change_skin_category(next); });
+    auto &gallery = skin_gallery_;
+    if (!gallery.error.empty())
+      community_error(page, gallery.error, gallery.sign_in, [this] { open_account_login(); });
+    if (!gallery.notice.empty())
+      community_notice(page, gallery.notice);
+    if (gallery.error.empty() && !gallery.list_busy && gallery.items.empty())
+      community_empty(page, gallery.mine ? L"你的皮肤库里还没有候选窗口皮肤。"
+                                         : L"暂时没有匹配的候选窗口皮肤。");
+    constexpr double width = 232, height = 252;
+    auto grid = community_grid(width, height);
+    for (auto const &skin : gallery.items) {
+      StackPanel body;
+      body.Spacing(4);
+      Border stage;
+      stage.Height(120);
+      stage.CornerRadius(CornerRadius{4, 4, 4, 4});
+      stage.Background(brush(palette_.subtle2));
+      show_community_preview(stage, skin.id, skin.name);
+      body.Children().Append(stage);
+      auto title = card_line(skin.name, 14, palette_.text);
+      title.FontWeight(Windows::UI::Text::FontWeight{600});
+      body.Children().Append(title);
+      body.Children().Append(card_line(cm::card_author(cm::category_label(skin.category), skin.author,
+                                                       skin.owned, skin.visibility == L"private",
+                                                       skin.moderation == L"removed"),
+                                       12, palette_.sub));
+      body.Children().Append(card_metrics(skin.downloads, skin.rating_count, skin.rating_average));
+      if (const auto assets = cm::trim(skin.license_assets); !assets.empty())
+        body.Children().Append(card_line(L"素材授权 " + assets, 12, palette_.sub));
+      grid.Children().Append(community_card(L"查看候选窗口皮肤 " + skin.name, body, width, height,
+                                            [this, skin] { gallery_open(skin); }));
+    }
+    page.Children().Append(grid);
+    community_load_more<CommunitySkinItem>(page, L"正在读取候选窗口皮肤…");
+  }
+
+  void build_skin_community_detail(StackPanel const &page) {
+    community_preview_views_.clear();
+    auto &gallery = skin_gallery_;
+    auto const selected = *gallery.selected;
+    auto body = community_detail_frame<CommunitySkinItem>(page);
+    Border stage;
+    stage.MinHeight(96);
+    stage.CornerRadius(CornerRadius{4, 4, 4, 4});
+    stage.Background(brush(palette_.subtle2));
+    stage.Padding(Thickness{8, 8, 8, 8});
+    show_community_preview(stage, selected.id, selected.name);
+    body.Children().Append(stage);
+    community_detail_header(
+        body, selected.name,
+        cm::join_dot({cm::category_label(selected.category), selected.author,
+                      selected.version.empty() ? L"" : L"v" + selected.version}),
+        selected.owned, selected.moderation,
+        selected.visibility == L"private" ? L"私有" : L"我的作品", selected.description);
+    if (const auto license = cm::license_line(selected.license_assets, selected.license_code,
+                                              selected.license_source);
+        !license.empty())
+      body.Children().Append(make_text(license, 13, palette_.sub));
+    community_detail_status<CommunitySkinItem>(body, L"正在读取皮肤详情…");
+    if (gallery.installed) {
+      community_notice(body, L"已安装到外部皮肤。");
+      auto enable = primary_button(L"去启用", [this] { set_skin_view(false); });
+      enable.HorizontalAlignment(HorizontalAlignment::Left);
+      body.Children().Append(enable);
+    } else {
+      body.Children().Append(community_install_button<CommunitySkinItem>(
+          [this] { install_community_skin(false); }));
+    }
+    if (gallery.confirm_replace)
+      community_confirmation(
+          body, L"确认替换皮肤",
+          L"已存在同名皮肤“" + selected.package_id + L"”，安装会整体替换它。", L"替换安装",
+          gallery.action_busy, [this] { install_community_skin(true); },
+          [this] {
+            skin_gallery_.confirm_replace = false;
+            redraw_themes();
+          });
+    if (selected.owned) {
+      const bool is_private = selected.visibility == L"private";
+      auto visibility = button_control(
+          is_private ? L"公开" : L"设为私有",
+          [this, is_private] { change_community_skin_visibility(is_private ? L"public" : L"private"); },
+          !gallery.action_busy && !gallery.detail_busy);
+      visibility.HorizontalAlignment(HorizontalAlignment::Left);
+      body.Children().Append(visibility);
+      body.Children().Append(skin_category_select(
+          L"修改分类", selected.category.empty() ? L"other" : selected.category,
+          !gallery.action_busy && !gallery.detail_busy,
+          [this](std::wstring const &next) { change_community_skin_category(next); }));
+    }
+    community_moderation<CommunitySkinItem>(
+        body, selected.visibility == L"public", L"下架这款皮肤", L"确认下架皮肤",
+        L"下架后其他用户无法再下载，下载数和评分会清空；本地皮肤会保留并以私有方式同步。只想不让别人看到，可以改用“设为私有”。确定下架“" +
+            selected.name + L"”吗？",
+        L"已下架这款皮肤；其他用户将无法再下载。本地皮肤会保留，并在下次同步时作为私有皮肤存回你的皮肤库。");
+    if (!selected.owned)
+      community_report<CommunitySkinItem>(body);
+  }
+
+  // 分类下拉框（CommunitySkinCategorySelect），发布对话框和作者改分类共用。
+  FrameworkElement skin_category_select(std::wstring const &name, std::wstring const &current,
+                                        bool enabled, std::function<void(std::wstring const &)> choose) {
+    std::vector<Option> options;
+    for (auto const &item : cm::skin_categories)
+      options.push_back({std::wstring(item.value), std::wstring(item.label)});
+    auto combo = select_control(name, std::move(options), current, std::move(choose), enabled, false)
+                     .as<ComboBox>();
+    combo.Header(box_value(L"分类"));
+    combo.HorizontalAlignment(HorizontalAlignment::Left);
+    return combo;
+  }
+
+  // ---- 社区插件 ----
+
+  void build_plugin_community(StackPanel const &page) {
+    if (plugin_gallery_.selected) {
+      build_plugin_community_detail(page);
+      return;
+    }
+    community_search<CommunityPluginItem>(page, L"搜索插件");
+    community_heading<CommunityPluginItem>(
+        page, L"社区插件",
+        L"音效、音乐、指令表、特效、短语表、辅助码表、单词本与符号集，安装后在「我的插件」中选用",
+        L"插件范围", L"全部插件", L"发布我的插件", [this] { open_plugin_publish(); });
+    std::vector<std::pair<std::optional<std::wstring>, std::wstring>> kinds{{std::nullopt, L"全部"}};
+    for (auto const kind : cm::plugin_kinds)
+      kinds.emplace_back(std::wstring(kind), pg::kind_label(kind));
+    community_filter(page, L"插件类型", kinds, plugin_kind_shown_,
+                     [this](std::optional<std::wstring> next) { change_plugin_kind(next); });
+    auto &gallery = plugin_gallery_;
+    if (!gallery.error.empty())
+      community_error(page, gallery.error, gallery.sign_in, [this] { open_account_login(); });
+    if (!gallery.notice.empty())
+      community_notice(page, gallery.notice);
+    if (gallery.error.empty() && !gallery.list_busy && gallery.items.empty())
+      community_empty(page, cm::plugin_empty_notice(
+                                gallery.has_more,
+                                !gallery.active_search.empty() || plugin_kind_shown_.has_value(),
+                                gallery.mine, true));
+    constexpr double width = 232, height = 132;
+    auto grid = community_grid(width, height);
+    for (auto const &plugin : gallery.items) {
+      StackPanel body;
+      body.Spacing(4);
+      auto title = card_line(plugin.name, 14, palette_.text);
+      title.FontWeight(Windows::UI::Text::FontWeight{600});
+      body.Children().Append(title);
+      body.Children().Append(card_line(cm::card_author(pg::kind_label(plugin.kind), plugin.author,
+                                                       plugin.owned, false,
+                                                       plugin.moderation == L"removed"),
+                                       12, palette_.sub));
+      if (!plugin.description.empty())
+        body.Children().Append(card_line(plugin.description, 12, palette_.sub, 2));
+      body.Children().Append(card_metrics(plugin.downloads, plugin.rating_count, plugin.rating_average));
+      grid.Children().Append(community_card(L"查看插件 " + plugin.name, body, width, height,
+                                            [this, plugin] { gallery_open(plugin); }));
+    }
+    page.Children().Append(grid);
+    community_load_more<CommunityPluginItem>(page, L"正在读取插件…");
+  }
+
+  void build_plugin_community_detail(StackPanel const &page) {
+    auto &gallery = plugin_gallery_;
+    auto const selected = *gallery.selected;
+    auto body = community_detail_frame<CommunityPluginItem>(page);
+    community_detail_header(body, selected.name,
+                            cm::join_dot({pg::kind_label(selected.kind), selected.author,
+                                          selected.version.empty() ? L"" : L"v" + selected.version}),
+                            selected.owned, selected.moderation, L"我的作品", selected.description);
+    body.Children().Append(make_text(
+        cm::join_dot({selected.plugin_id, selected.license.empty() ? L"" : L"授权 " + selected.license,
+                      cm::megabytes(selected.size)}),
+        13, palette_.sub));
+    community_detail_status<CommunityPluginItem>(body, L"正在读取插件详情…");
+    if (gallery.installed)
+      community_notice(body, L"已安装到插件目录，可在「我的插件」中选用。");
+    else
+      body.Children().Append(community_install_button<CommunityPluginItem>(
+          [this] { install_community_plugin(false); }));
+    if (gallery.confirm_replace)
+      community_confirmation(body, L"确认替换插件",
+                             L"已安装同 id 的" + pg::kind_label(selected.kind) + L"“" +
+                                 selected.plugin_id + L"”，安装会整体替换它。",
+                             L"替换安装", gallery.action_busy,
+                             [this] { install_community_plugin(true); },
+                             [this] {
+                               plugin_gallery_.confirm_replace = false;
+                               redraw_plugins();
+                             });
+    community_moderation<CommunityPluginItem>(
+        body, true, L"下架这个插件", L"确认下架插件",
+        L"下架后其他用户无法再下载，下载数和评分会清空；已安装的插件会保留。确定下架“" + selected.name +
+            L"”吗？",
+        L"已下架这个插件；其他用户将无法再下载。已安装的插件会保留。");
+    if (!selected.owned)
+      community_report<CommunityPluginItem>(body);
+  }
+
+  // ---- 发布 ----
+
+  // 发布对话框里名称、说明和权利确认（CommunityPublicationMetadataFields）。名称最多 32 个字，说明最多 280 个字；改了名称或说明就是另一次发布，换一个发布 id。输入时不重画对话框，只更新主按钮能不能按。
+  void publication_fields(StackPanel const &form, std::wstring &name, std::wstring &description,
+                          bool &agreed, std::wstring &publication_id, bool busy,
+                          std::wstring const &name_label, std::wstring const &name_a11y,
+                          std::wstring const &description_label, std::wstring const &description_a11y,
+                          std::wstring const &agreement, std::wstring const &agreement_a11y,
+                          std::function<void()> changed, std::function<void()> submit) {
+    TextBox name_box;
+    name_box.Header(box_value(hstring(name_label)));
+    name_box.MaxLength(static_cast<int32_t>(cm::name_limit));
+    name_box.Text(hstring(name));
+    name_box.IsEnabled(!busy);
+    A11y::SetName(name_box, hstring(name_a11y));
+    name_box.TextChanged([&name, &publication_id, changed](Inspectable const &sender,
+                                                           TextChangedEventArgs const &) {
+      const auto input = sender.as<TextBox>();
+      const std::wstring typed(input.Text().c_str());
+      const auto bounded = cm::bounded_graphemes(typed, cm::name_limit);
+      if (bounded == name)
+        return;
+      publication_id = random_uuid();
+      name = bounded;
+      if (bounded != typed)
+        input.Text(hstring(bounded));
+      changed();
+    });
+    // handleCommunityPublishKeyDown：在输入框里按回车就是发布。
+    name_box.KeyDown([submit](Inspectable const &, Input::KeyRoutedEventArgs const &args) {
+      if (args.Key() == Windows::System::VirtualKey::Enter) {
+        args.Handled(true);
+        submit();
+      }
+    });
+    form.Children().Append(name_box);
+    TextBox description_box;
+    description_box.Header(box_value(hstring(description_label)));
+    description_box.AcceptsReturn(true);
+    description_box.TextWrapping(TextWrapping::Wrap);
+    description_box.MinHeight(92);
+    description_box.MaxLength(static_cast<int32_t>(cm::description_limit));
+    description_box.Text(hstring(description));
+    description_box.IsEnabled(!busy);
+    A11y::SetName(description_box, hstring(description_a11y));
+    description_box.TextChanged([&description, &publication_id, changed](
+                                    Inspectable const &sender, TextChangedEventArgs const &) {
+      const std::wstring typed(sender.as<TextBox>().Text().c_str());
+      if (typed == description)
+        return;
+      publication_id = random_uuid();
+      description = typed;
+      changed();
+    });
+    form.Children().Append(description_box);
+    CheckBox agree;
+    auto words = make_text(agreement, 13, palette_.text);
+    agree.Content(words);
+    agree.IsChecked(agreed);
+    agree.IsEnabled(!busy);
+    A11y::SetName(agree, hstring(agreement_a11y));
+    agree.Click([&agreed, changed](Inspectable const &sender, RoutedEventArgs const &) {
+      const auto state = sender.as<CheckBox>().IsChecked();
+      agreed = state && state.Value();
+      changed();
+    });
+    form.Children().Append(agree);
+  }
+
+  // 发布对话框的外框：标题、内容可以滚动，「取消」和一个随状态变的主按钮。主按钮按下时对话框不关，由操作自己在成功后关上；忙的时候「取消」和 Esc 都关不上。
+  ContentDialog publish_dialog(std::wstring const &title, std::function<bool()> busy,
+                               std::function<void()> primary) {
+    ContentDialog dialog;
+    dialog.Title(box_value(hstring(title)));
+    dialog.CloseButtonText(L"取消");
+    dialog.DefaultButton(ContentDialogButton::None);
+    dialog.XamlRoot(root_.XamlRoot());
+    dialog.RequestedTheme(palette_.dark ? ElementTheme::Dark : ElementTheme::Light);
+    dialog.Closing([busy](ContentDialog const &, ContentDialogClosingEventArgs const &args) {
+      if (busy())
+        args.Cancel(true);
+    });
+    dialog.PrimaryButtonClick([primary = std::move(primary)](
+                                  ContentDialog const &, ContentDialogButtonClickEventArgs const &args) {
+      args.Cancel(true);
+      primary();
+    });
+    return dialog;
+  }
+
+  // 对话框里的一段出错说明，未登录时后面是「去登录」：先关上对话框再去「账号与同步」。
+  void dialog_error(StackPanel const &form, std::wstring const &message, bool sign_in,
+                    weak_ref<ContentDialog> const &dialog) {
+    if (message.empty())
+      return;
+    community_error(form, message, sign_in, [this, dialog] {
+      if (auto shown = dialog.get())
+        shown.Hide();
+      open_account_login();
+    });
+  }
+
+  // 一段说明加按钮的框（共享页 style.confirmation 的 role=alert）。
+  Border dialog_alert(std::vector<std::wstring> const &lines,
+                      std::vector<FrameworkElement> const &buttons = {}) {
+    StackPanel panel;
+    panel.Spacing(8);
+    panel.Padding(Thickness{12, 10, 12, 10});
+    for (auto const &line : lines)
+      panel.Children().Append(make_text(line, 13, palette_.text));
+    if (!buttons.empty()) {
+      StackPanel actions;
+      actions.Orientation(Orientation::Horizontal);
+      actions.Spacing(8);
+      for (auto const &button : buttons)
+        actions.Children().Append(button);
+      panel.Children().Append(actions);
+    }
+    Border frame;
+    frame.BorderBrush(brush(danger_color()));
+    frame.BorderThickness(Thickness{1, 1, 1, 1});
+    frame.CornerRadius(CornerRadius{4, 4, 4, 4});
+    frame.Child(panel);
+    A11y::SetLiveSetting(frame, Automation::Peers::AutomationLiveSetting::Assertive);
+    return frame;
+  }
+
+  // ---- 发布候选窗口皮肤 ----
+
+  // CandidateSkinPublishDialog 的状态。generation 在打开和关上时递增，作废在途的回答；pack_request 作废更早的打包检查。packages 和 images 是打开时扫到的本机皮肤，生成预览图时要用它们的配色和图片。
+  struct SkinPublish {
+    uint64_t generation = 0;
+    bool from_card = false;
+    std::vector<SkinPackage> packages;
+    std::vector<SkinImageBytes> images;
+    std::vector<std::pair<std::wstring, std::wstring>> options;
+    bool options_loading = false;
+    std::wstring skin_id;
+    bool has_pack = false;
+    std::wstring suggested_name, license_code, license_assets, license_source;
+    double file_count = 0, size = 0;
+    std::wstring pack_error, pack_code;
+    bool pack_loading = false;
+    uint64_t pack_request = 0;
+    bool drawing = false, draw_failed = false;
+    std::wstring license_choice = std::wstring(cm::asset_licenses[0].value);
+    std::wstring custom_license;
+    bool writing_license = false, license_failed = false;
+    std::wstring name, description;
+    bool agreed = false;
+    std::wstring publication_id;
+    std::wstring visibility = L"public";
+    std::wstring category = L"other";
+    std::wstring error;
+    bool sign_in = false;
+    bool open_failed = false;
+    bool busy = false;
+    std::wstring named_skin;
+    std::function<void()> refresh;
+    std::function<void()> update_button;
+    weak_ref<ContentDialog> dialog;
+  };
+
+  // 打开「发布候选窗口皮肤」。从「我的皮肤」的卡片打开时先选中那一款；从图库打开时选第一款。
+  fire_and_forget open_skin_publish(std::wstring initial, bool from_card) {
+    if (dialog_open_ || skin_publish_.refresh)
+      co_return;
+    auto strong = get_strong();
+    const auto generation = skin_publish_.generation + 1;
+    skin_publish_ = SkinPublish{};
+    auto &state = skin_publish_;
+    state.generation = generation;
+    state.from_card = from_card;
+    state.skin_id = initial;
+    if (!initial.empty())
+      state.options.emplace_back(initial, initial);
+    state.options_loading = true;
+    state.publication_id = random_uuid();
+    if (from_card)
+      skin_published_notice_.clear();
+
+    ScrollViewer scroller;
+    scroller.MaxHeight(560);
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(460);
+    form.Padding(Thickness{0, 0, 12, 0});
+    scroller.Content(form);
+    auto dialog = publish_dialog(L"发布候选窗口皮肤", [this] { return skin_publish_.busy; },
+                                 [this] { skin_publish_primary(); });
+    dialog.Content(scroller);
+    A11y::SetName(dialog, L"发布候选窗口皮肤");
+    const auto weak_dialog = make_weak(dialog);
+    const auto weak_form = make_weak(form);
+    state.dialog = weak_dialog;
+    state.update_button = [this, weak_dialog] {
+      if (auto shown = weak_dialog.get())
+        update_skin_publish_button(shown);
+    };
+    state.refresh = [this, weak_dialog, weak_form] {
+      // 在控件自己的事件里不拆掉它：放到这次事件之后再重建。
+      DispatcherQueue().TryEnqueue([this, weak_dialog, weak_form] {
+        auto shown = weak_dialog.get();
+        auto content = weak_form.get();
+        if (shown && content && skin_publish_.refresh)
+          build_skin_publish(content, shown);
+      });
+    };
+    build_skin_publish(form, dialog);
+    load_skin_publish_options(generation);
+    if (!initial.empty())
+      load_skin_pack();
+    co_await show_dialog(dialog);
+    ++skin_publish_.generation;
+    skin_publish_.refresh = nullptr;
+    skin_publish_.update_button = nullptr;
+    skin_publish_.busy = false;
+  }
+
+  // 本机的皮肤：发布的选项，生成预览图时也用它们。读不到时说明，并保留已有的选项。
+  void load_skin_publish_options(uint64_t generation) {
+    run_worker<SkinScan>([root = skins_root()] { return read_skin_catalog(root); },
+                         [this, generation](SkinScan &scan) {
+                           auto &state = skin_publish_;
+                           if (generation != state.generation)
+                             return;
+                           state.options_loading = false;
+                           if (!scan.ok) {
+                             state.error = L"读取本地皮肤失败，请重试。";
+                             state.sign_in = false;
+                           } else {
+                             state.packages = std::move(scan.packages);
+                             state.images = std::move(scan.images);
+                             state.options.clear();
+                             for (auto const &skin : state.packages)
+                               state.options.emplace_back(skin.id, skin.name);
+                             const auto previous = state.skin_id;
+                             if (previous.empty() ||
+                                 std::none_of(state.options.begin(), state.options.end(),
+                                              [&previous](auto const &option) {
+                                                return option.first == previous;
+                                              }))
+                               state.skin_id = state.options.empty() ? L"" : state.options.front().first;
+                             if (state.skin_id != previous)
+                               load_skin_pack();
+                           }
+                           if (state.refresh)
+                             state.refresh();
+                         });
+  }
+
+  // 换了皮肤、公开范围或刚补了预览图和授权时重新检查皮肤包（不上传）；检查前的勾选和发布 id 作废。第一次检查这款皮肤时用它建议的名字填上名称，之后只换公开范围时保留用户输入的名称。
+  void load_skin_pack() {
+    auto &state = skin_publish_;
+    const auto request = ++state.pack_request;
+    const auto generation = state.generation;
+    state.has_pack = false;
+    state.pack_error.clear();
+    state.pack_code.clear();
+    state.draw_failed = false;
+    state.license_failed = false;
+    state.agreed = false;
+    state.publication_id = random_uuid();
+    if (state.skin_id.empty()) {
+      state.pack_loading = false;
+      if (state.refresh)
+        state.refresh();
+      return;
+    }
+    state.pack_loading = true;
+    if (state.refresh)
+      state.refresh();
+    auto action = community_action(L"candidate_skin_pack_preview");
+    action.SetNamedValue(L"skin_id", JsonValue::CreateStringValue(hstring(state.skin_id)));
+    action.SetNamedValue(L"visibility", JsonValue::CreateStringValue(hstring(state.visibility)));
+    run_host([action] { return community_call(action); },
+             [this, request, generation, skin_id = state.skin_id](Response const &response) {
+               auto &current = skin_publish_;
+               if (generation != current.generation || request != current.pack_request)
+                 return;
+               current.pack_loading = false;
+               const auto value = community_value(response);
+               if (response.ok && value.ValueType() == JsonValueType::Object) {
+                 const auto pack = value.GetObject();
+                 current.has_pack = true;
+                 current.suggested_name = named_string(pack, L"suggestedName");
+                 current.file_count = named_number(pack, L"fileCount").value_or(0);
+                 current.size = named_number(pack, L"size").value_or(0);
+                 const auto license = pack.GetNamedValue(L"license", JsonValue::CreateNullValue());
+                 if (license.ValueType() == JsonValueType::Object) {
+                   const auto fields = license.GetObject();
+                   current.license_code = named_string(fields, L"code");
+                   current.license_assets = named_string(fields, L"assets");
+                   current.license_source = named_string(fields, L"source");
+                 }
+                 if (current.named_skin != skin_id) {
+                   current.named_skin = skin_id;
+                   current.name = cm::bounded_graphemes(current.suggested_name, cm::name_limit);
+                 }
+               } else {
+                 const auto failure = community_failure(response);
+                 current.pack_error = cm::candidate_skin_message(failure.code);
+                 current.pack_code = failure.code;
+               }
+               if (current.refresh)
+                 current.refresh();
+             });
+  }
+
+  // 没有预览图的已装皮肤（社区要用预览图展示它）：带装饰却没有自己图片的包用装饰当预览，画一张会改掉它的样子，宿主也会拒绝，这种不给生成。
+  SkinPackage const *previewless_skin() const {
+    auto const &state = skin_publish_;
+    if (state.pack_code != L"candidate_skin_preview_required")
+      return nullptr;
+    for (auto const &skin : state.packages)
+      if (skin.id == state.skin_id &&
+          !(skin.decoration_top > 0 && skin.decoration_width > 0 && skin.decoration_image.empty()))
+        return &skin;
+    return nullptr;
+  }
+
+  bool skin_licenseless() const {
+    return skin_publish_.pack_code == L"candidate_skin_license_required" &&
+           !skin_publish_.skin_id.empty();
+  }
+
+  std::wstring skin_license_value() const {
+    auto const &state = skin_publish_;
+    return state.license_choice == L"other" ? cm::trim(state.custom_license) : state.license_choice;
+  }
+
+  bool skin_publish_ready() const {
+    auto const &state = skin_publish_;
+    const auto fields = cm::publish_fields(state.name, state.description);
+    return state.has_pack && !state.pack_loading && fields.name_valid && fields.description_valid &&
+           state.agreed;
+  }
+
+  // 主按钮：缺素材授权时是「使用此授权并继续」，其余打包问题时没有主按钮，否则是发布。
+  void update_skin_publish_button(ContentDialog const &dialog) {
+    auto const &state = skin_publish_;
+    if (!state.pack_error.empty() && skin_licenseless()) {
+      dialog.PrimaryButtonText(state.writing_license ? L"正在写入…" : L"使用此授权并继续");
+      dialog.IsPrimaryButtonEnabled(!state.writing_license &&
+                                    cm::asset_license_valid(skin_license_value()));
+    } else if (state.pack_error.empty()) {
+      dialog.PrimaryButtonText(state.busy                       ? L"正在发布…"
+                               : state.visibility == L"public" ? L"公开发布"
+                                                               : L"保存到我的皮肤库");
+      dialog.IsPrimaryButtonEnabled(!state.busy && skin_publish_ready());
+    } else {
+      dialog.PrimaryButtonText(L"");
+    }
+  }
+
+  void skin_publish_primary() {
+    if (!skin_publish_.pack_error.empty() && skin_licenseless())
+      write_skin_license();
+    else if (skin_publish_.pack_error.empty())
+      submit_skin_publish();
+  }
+
+  // 「打开目录」：打开皮肤目录，打不开时在对话框里说明。
+  void open_skin_publish_directory() {
+    const auto generation = skin_publish_.generation;
+    skin_publish_.open_failed = false;
+    run_worker<bool>(
+        [root = skins_root()] {
+          if (root.empty())
+            return false;
+          std::error_code error;
+          std::filesystem::create_directories(root, error);
+          return std::filesystem::is_directory(root, error);
+        },
+        [this, generation, root = skins_root()](bool &ready) {
+          const bool opened =
+              ready && reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", root.c_str(),
+                                                               nullptr, nullptr,
+                                                               SW_SHOWNORMAL)) > 32;
+          if (generation != skin_publish_.generation)
+            return;
+          skin_publish_.open_failed = !opened;
+          if (skin_publish_.refresh)
+            skin_publish_.refresh();
+        });
+  }
+
+  // 「生成预览图」：按皮肤自己的配色和图片画一张，写进皮肤文件夹并加进清单，再重新检查。
+  void draw_skin_preview() {
+    auto &state = skin_publish_;
+    const auto *skin = previewless_skin();
+    if (!skin || state.drawing)
+      return;
+    state.drawing = true;
+    state.draw_failed = false;
+    const auto generation = state.generation;
+    const auto request = state.pack_request;
+    struct Drawn {
+      bool ok = false;
+      SkinScan scan;
+    };
+    run_worker<Drawn>(
+        [skin = *skin, images = state.images, root = skins_root()] {
+          Drawn drawn;
+          const auto bytes = render_skin_preview(skin, images);
+          if (!bytes)
+            return drawn;
+          const auto buffer = Windows::Security::Cryptography::CryptographicBuffer::CreateFromByteArray(
+              array_view<uint8_t const>(bytes->data(), bytes->data() + bytes->size()));
+          auto action = community_action(L"candidate_skin_add_preview");
+          action.SetNamedValue(L"skin_id", JsonValue::CreateStringValue(hstring(skin.id)));
+          action.SetNamedValue(L"image", JsonValue::CreateStringValue(
+                                             Windows::Security::Cryptography::CryptographicBuffer::
+                                                 EncodeToBase64String(buffer)));
+          if (!community_call(action).ok)
+            return drawn;
+          drawn.ok = true;
+          drawn.scan = read_skin_catalog(root);
+          return drawn;
+        },
+        [this, generation, request](Drawn &drawn) {
+          auto &current = skin_publish_;
+          if (generation != current.generation)
+            return;
+          current.drawing = false;
+          if (request != current.pack_request) {
+            if (current.refresh)
+              current.refresh();
+            return;
+          }
+          if (!drawn.ok) {
+            current.draw_failed = true;
+            if (current.refresh)
+              current.refresh();
+            return;
+          }
+          if (drawn.scan.ok) {
+            current.packages = std::move(drawn.scan.packages);
+            current.images = std::move(drawn.scan.images);
+          }
+          // 预览图已经写进皮肤目录：「我的皮肤」下次显示时重扫。
+          skins_stale_ = true;
+          load_skin_pack();
+        });
+    if (state.refresh)
+      state.refresh();
+  }
+
+  // 「使用此授权并继续」：把选的素材授权写进 skin.toml，再重新检查。
+  void write_skin_license() {
+    auto &state = skin_publish_;
+    const auto value = skin_license_value();
+    if (!skin_licenseless() || !cm::asset_license_valid(value) || state.writing_license)
+      return;
+    state.writing_license = true;
+    state.license_failed = false;
+    const auto generation = state.generation;
+    const auto request = state.pack_request;
+    auto action = community_action(L"candidate_skin_add_license");
+    action.SetNamedValue(L"skin_id", JsonValue::CreateStringValue(hstring(state.skin_id)));
+    action.SetNamedValue(L"assets", JsonValue::CreateStringValue(hstring(value)));
+    run_host([action] { return community_call(action); },
+             [this, generation, request](Response const &response) {
+               auto &current = skin_publish_;
+               if (generation != current.generation)
+                 return;
+               current.writing_license = false;
+               if (request != current.pack_request) {
+                 if (current.refresh)
+                   current.refresh();
+                 return;
+               }
+               if (!response.ok) {
+                 current.license_failed = true;
+                 if (current.refresh)
+                   current.refresh();
+                 return;
+               }
+               skins_stale_ = true;
+               load_skin_pack();
+             });
+    if (state.refresh)
+      state.refresh();
+  }
+
+  // 发布：同一次发布重试时沿用发布 id，服务端据此去重。
+  void submit_skin_publish() {
+    auto &state = skin_publish_;
+    if (state.busy || !skin_publish_ready() || state.skin_id.empty())
+      return;
+    state.busy = true;
+    state.error.clear();
+    state.sign_in = false;
+    const auto fields = cm::publish_fields(state.name, state.description);
+    auto action = community_action(L"candidate_skin_publish");
+    action.SetNamedValue(L"skin_id", JsonValue::CreateStringValue(hstring(state.skin_id)));
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(state.publication_id)));
+    action.SetNamedValue(L"name", JsonValue::CreateStringValue(hstring(fields.name)));
+    action.SetNamedValue(L"description", JsonValue::CreateStringValue(hstring(fields.description)));
+    action.SetNamedValue(L"visibility", JsonValue::CreateStringValue(hstring(state.visibility)));
+    action.SetNamedValue(L"category", JsonValue::CreateStringValue(hstring(state.category)));
+    const auto generation = state.generation;
+    run_host([action] { return community_call(action); },
+             [this, generation](Response const &response) {
+               auto &current = skin_publish_;
+               if (generation != current.generation)
+                 return;
+               current.busy = false;
+               auto published = community_item<CommunitySkinItem>(response);
+               if (!published) {
+                 const auto failure = community_failure(response);
+                 current.error = cm::candidate_skin_message(failure.code, true);
+                 current.sign_in = cm::needs_sign_in(failure.code);
+                 if (current.refresh)
+                   current.refresh();
+                 return;
+               }
+               skin_published(*published, current.from_card);
+             });
+    if (state.refresh)
+      state.refresh();
+  }
+
+  // 发布成功：关上对话框。从卡片发布的在「我的皮肤」的卡片下说明；从图库发布的在图库里说明并从第一页重读。
+  void skin_published(CommunitySkinItem const &published, bool from_card) {
+    const auto message = published.visibility == L"private" ? L"已保存到你的皮肤库，仅自己可见。"
+                                                            : L"已发布到社区。";
+    const auto dialog = skin_publish_.dialog;
+    ++skin_publish_.generation;
+    skin_publish_.refresh = nullptr;
+    skin_publish_.update_button = nullptr;
+    if (auto shown = dialog.get())
+      shown.Hide();
+    if (from_card) {
+      skin_published_notice_ = message;
+      redraw_themes();
+      return;
+    }
+    skin_gallery_.notice = message;
+    gallery_list<CommunitySkinItem>(skin_gallery_.active_search, false, skin_gallery_.active_mine);
+  }
+
+  void build_skin_publish(StackPanel const &form, ContentDialog const &dialog) {
+    auto &state = skin_publish_;
+    form.Children().Clear();
+    dialog_error(form, state.error, state.sign_in, make_weak(dialog));
+    if (state.options_loading)
+      form.Children().Append(make_text(L"正在读取本地皮肤…", 13, palette_.sub));
+    if (!state.options_loading && state.options.empty())
+      form.Children().Append(make_text(
+          L"还没有可发布的外部皮肤，请先把皮肤文件夹放进皮肤目录，再在「主题」的外部皮肤中刷新。", 13,
+          palette_.sub));
+    if (!state.options.empty()) {
+      std::vector<Option> options;
+      for (auto const &[id, name] : state.options)
+        options.push_back({id, cm::local_option_label(name, id)});
+      auto combo = select_control(L"发布皮肤", std::move(options), state.skin_id,
+                                  [this](std::wstring const &id) {
+                                    if (id == skin_publish_.skin_id)
+                                      return;
+                                    skin_publish_.skin_id = id;
+                                    load_skin_pack();
+                                  },
+                                  !state.busy, false)
+                       .as<ComboBox>();
+      combo.Header(box_value(L"发布皮肤"));
+      combo.MinWidth(320);
+      form.Children().Append(combo);
+    }
+    StackPanel audience;
+    audience.Spacing(4);
+    audience.Children().Append(make_text(L"谁可以看到", 13, palette_.text));
+    for (auto const &[value, label] : {std::pair<std::wstring, std::wstring>{L"public", L"公开（所有人可下载）"},
+                                       {L"private", L"仅自己可见"}}) {
+      RadioButton choice;
+      choice.Content(box_value(hstring(label)));
+      choice.GroupName(L"candidate-skin-visibility");
+      choice.IsChecked(state.visibility == value);
+      choice.IsEnabled(!state.busy);
+      choice.Checked([this, value](Inspectable const &, RoutedEventArgs const &) {
+        if (skin_publish_.visibility == value)
+          return;
+        skin_publish_.visibility = value;
+        load_skin_pack();
+      });
+      audience.Children().Append(choice);
+    }
+    form.Children().Append(audience);
+    if (state.pack_loading)
+      form.Children().Append(make_text(L"正在检查皮肤包…", 13, palette_.sub));
+    const auto *previewless = previewless_skin();
+    const bool licenseless = skin_licenseless();
+    auto open_button = [this](bool enabled) {
+      return button_control(L"打开目录", [this] { open_skin_publish_directory(); }, enabled);
+    };
+    if (!state.pack_error.empty() && previewless) {
+      std::vector<std::wstring> lines{
+          L"这款皮肤还没有预览图，社区要用它展示皮肤。可以按皮肤自己的配色和图片生成一张，保存到皮肤文件夹后继续发布。"};
+      if (state.draw_failed)
+        lines.emplace_back(L"生成预览图失败，请重试，或自己在 skin.toml 中用 preview 指定一张图片。");
+      auto draw = button_control(state.drawing ? L"正在生成…" : L"生成预览图",
+                                 [this] { draw_skin_preview(); }, !state.drawing)
+                      .as<Button>();
+      make_primary(draw);
+      form.Children().Append(dialog_alert(lines, {open_button(!state.drawing), draw}));
+      if (state.open_failed)
+        form.Children().Append(make_text(L"无法打开皮肤目录，请重试。", 13, danger_color()));
+    }
+    if (!state.pack_error.empty() && licenseless) {
+      StackPanel license;
+      license.Spacing(4);
+      license.Children().Append(make_text(L"素材授权", 13, palette_.text));
+      license.Children().Append(make_text(
+          L"公开发布需要注明别人可以怎样使用皮肤里的图片，选择后会写入 skin.toml。", 12, palette_.sub));
+      std::vector<std::pair<std::wstring, std::wstring>> choices;
+      for (auto const &item : cm::asset_licenses)
+        choices.emplace_back(std::wstring(item.value), std::wstring(item.label));
+      choices.emplace_back(L"other", L"其他");
+      for (auto const &[value, label] : choices) {
+        RadioButton choice;
+        choice.Content(box_value(hstring(label)));
+        choice.GroupName(L"candidate-skin-asset-license");
+        choice.IsChecked(state.license_choice == value);
+        choice.IsEnabled(!state.writing_license);
+        choice.Checked([this, value](Inspectable const &, RoutedEventArgs const &) {
+          if (skin_publish_.license_choice == value)
+            return;
+          skin_publish_.license_choice = value;
+          if (skin_publish_.refresh)
+            skin_publish_.refresh();
+        });
+        license.Children().Append(choice);
+      }
+      if (state.license_choice == L"other") {
+        TextBox custom;
+        custom.PlaceholderText(L"例如：仅限个人使用，不得转售");
+        custom.Text(hstring(state.custom_license));
+        custom.IsEnabled(!state.writing_license);
+        A11y::SetName(custom, L"其他素材授权");
+        auto warning = make_text(L"授权说明太长，请控制在 40 个汉字以内。", 12, danger_color());
+        auto show_warning = [warning = make_weak(warning)](std::wstring const &value) {
+          if (auto line = warning.get())
+            line.Visibility(!cm::trim(value).empty() && !cm::asset_license_valid(value)
+                                ? Visibility::Visible
+                                : Visibility::Collapsed);
+        };
+        show_warning(state.custom_license);
+        custom.TextChanged([this, show_warning](Inspectable const &sender, TextChangedEventArgs const &) {
+          skin_publish_.custom_license = std::wstring(sender.as<TextBox>().Text().c_str());
+          show_warning(skin_publish_.custom_license);
+          if (skin_publish_.update_button)
+            skin_publish_.update_button();
+        });
+        license.Children().Append(custom);
+        license.Children().Append(warning);
+      }
+      if (state.license_failed)
+        license.Children().Append(make_text(
+            L"写入授权失败，请重试，或在 skin.toml 的 [license] 中自己填写 assets。", 12, danger_color()));
+      form.Children().Append(license);
+    }
+    if (!state.pack_error.empty() && !previewless && !licenseless) {
+      form.Children().Append(dialog_alert({state.pack_error}, {open_button(true)}));
+      if (state.open_failed)
+        form.Children().Append(make_text(L"无法打开皮肤目录，请重试。", 13, danger_color()));
+    }
+    if (state.has_pack) {
+      form.Children().Append(make_text(cm::zh_number(state.file_count) + L" 个文件 · " +
+                                           cm::megabytes(state.size) + L" / " +
+                                           std::wstring(cm::skin_package_limit),
+                                       13, palette_.sub));
+      auto license = make_text(
+          cm::license_line(state.license_assets, state.license_code, state.license_source), 13,
+          palette_.sub);
+      A11y::SetName(license, L"皮肤授权");
+      form.Children().Append(license);
+      publication_fields(
+          form, state.name, state.description, state.agreed, state.publication_id, state.busy,
+          L"皮肤名称", L"发布皮肤名称", L"设计说明", L"发布设计说明",
+          state.visibility == L"public" ? L"我拥有发布所用素材的权利，并同意其他用户按上述授权免费下载使用"
+                                        : L"我拥有上传所用素材的权利",
+          L"确认拥有发布素材权利",
+          [this] {
+            if (skin_publish_.update_button)
+              skin_publish_.update_button();
+          },
+          [this] { submit_skin_publish(); });
+      form.Children().Append(skin_category_select(L"发布分类", state.category, !state.busy,
+                                                  [this](std::wstring const &next) {
+                                                    // 分类也是这次发布的内容，换了分类就是另一次发布。
+                                                    skin_publish_.publication_id = random_uuid();
+                                                    skin_publish_.category = next;
+                                                  }));
+      form.Children().Append(make_text(cm::skin_publish_warning, 12, palette_.sub));
+    }
+    update_skin_publish_button(dialog);
+  }
+
+  // ---- 发布插件 ----
+
+  // CommunityPluginPublishDialog 的状态：本机可发布的插件（内置的不算）、选中的那个、打包检查的结果和表单。
+  struct PluginPublish {
+    uint64_t generation = 0;
+    struct Choice {
+      std::wstring key, kind, label, id, name;
+    };
+    std::vector<Choice> options;
+    bool options_loading = true;
+    std::wstring selection;
+    bool has_pack = false;
+    std::wstring version, license;
+    double file_count = 0, size = 0;
+    std::wstring pack_error;
+    bool pack_loading = false;
+    uint64_t pack_request = 0;
+    std::wstring name, description;
+    bool agreed = false;
+    std::wstring publication_id;
+    std::wstring error;
+    bool sign_in = false;
+    bool busy = false;
+    std::function<void()> refresh;
+    std::function<void()> update_button;
+    weak_ref<ContentDialog> dialog;
+  };
+
+  PluginPublish::Choice const *chosen_plugin() const {
+    for (auto const &option : plugin_publish_.options)
+      if (option.key == plugin_publish_.selection)
+        return &option;
+    return nullptr;
+  }
+
+  fire_and_forget open_plugin_publish() {
+    if (dialog_open_ || plugin_publish_.refresh)
+      co_return;
+    auto strong = get_strong();
+    const auto generation = plugin_publish_.generation + 1;
+    plugin_publish_ = PluginPublish{};
+    plugin_publish_.generation = generation;
+    plugin_publish_.publication_id = random_uuid();
+
+    ScrollViewer scroller;
+    scroller.MaxHeight(560);
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(460);
+    form.Padding(Thickness{0, 0, 12, 0});
+    scroller.Content(form);
+    auto dialog = publish_dialog(L"发布插件", [this] { return plugin_publish_.busy; },
+                                 [this] { submit_plugin_publish(); });
+    dialog.Content(scroller);
+    A11y::SetName(dialog, L"发布插件");
+    const auto weak_dialog = make_weak(dialog);
+    const auto weak_form = make_weak(form);
+    plugin_publish_.dialog = weak_dialog;
+    plugin_publish_.update_button = [this, weak_dialog] {
+      if (auto shown = weak_dialog.get())
+        update_plugin_publish_button(shown);
+    };
+    plugin_publish_.refresh = [this, weak_dialog, weak_form] {
+      DispatcherQueue().TryEnqueue([this, weak_dialog, weak_form] {
+        auto shown = weak_dialog.get();
+        auto content = weak_form.get();
+        if (shown && content && plugin_publish_.refresh)
+          build_plugin_publish(content, shown);
+      });
+    };
+    build_plugin_publish(form, dialog);
+    run_host(plugin_catalog_call, [this, generation](Response const &response) {
+      auto &state = plugin_publish_;
+      if (generation != state.generation)
+        return;
+      state.options_loading = false;
+      if (auto catalog = plugin_catalog(response)) {
+        state.options.clear();
+        for (auto const &pack : catalog->packages) {
+          if (pack.builtin)
+            continue;
+          state.options.push_back({pack.kind + L"/" + pack.id, pack.kind, pg::pack_kind_label(pack),
+                                   pack.id, pack.name});
+        }
+        const auto previous = state.selection;
+        if (previous.empty() || !chosen_plugin())
+          state.selection = state.options.empty() ? L"" : state.options.front().key;
+        if (state.selection != previous)
+          load_plugin_pack();
+      } else {
+        state.error = L"读取本地插件失败，请重试。";
+        state.sign_in = false;
+      }
+      if (state.refresh)
+        state.refresh();
+    });
+    co_await show_dialog(dialog);
+    ++plugin_publish_.generation;
+    plugin_publish_.refresh = nullptr;
+    plugin_publish_.update_button = nullptr;
+    plugin_publish_.busy = false;
+  }
+
+  // 换了插件就重新打包检查（不上传），用它建议的名称和说明填上表单；勾选和发布 id 作废。
+  void load_plugin_pack() {
+    auto &state = plugin_publish_;
+    const auto request = ++state.pack_request;
+    const auto generation = state.generation;
+    state.has_pack = false;
+    state.pack_error.clear();
+    state.agreed = false;
+    state.publication_id = random_uuid();
+    const auto *chosen = chosen_plugin();
+    if (!chosen) {
+      state.pack_loading = false;
+      return;
+    }
+    state.pack_loading = true;
+    auto action = community_action(L"plugin_pack_preview");
+    action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(chosen->kind)));
+    action.SetNamedValue(L"plugin_id", JsonValue::CreateStringValue(hstring(chosen->id)));
+    run_host([action] { return community_call(action); },
+             [this, request, generation](Response const &response) {
+               auto &current = plugin_publish_;
+               if (generation != current.generation || request != current.pack_request)
+                 return;
+               current.pack_loading = false;
+               const auto value = community_value(response);
+               if (response.ok && value.ValueType() == JsonValueType::Object) {
+                 const auto pack = value.GetObject();
+                 current.has_pack = true;
+                 current.version = named_string(pack, L"version");
+                 current.license = named_string(pack, L"license");
+                 current.file_count = named_number(pack, L"fileCount").value_or(0);
+                 current.size = named_number(pack, L"size").value_or(0);
+                 current.name = cm::bounded_graphemes(named_string(pack, L"suggestedName"), cm::name_limit);
+                 current.description = named_string(pack, L"suggestedDescription");
+               } else {
+                 const auto failure = community_failure(response);
+                 current.pack_error = cm::plugin_message(failure.code, failure.detail);
+               }
+               if (current.refresh)
+                 current.refresh();
+             });
+  }
+
+  bool plugin_publish_ready() const {
+    auto const &state = plugin_publish_;
+    const auto fields = cm::publish_fields(state.name, state.description);
+    return state.has_pack && !state.pack_loading && fields.name_valid && fields.description_valid &&
+           state.agreed;
+  }
+
+  void update_plugin_publish_button(ContentDialog const &dialog) {
+    auto const &state = plugin_publish_;
+    if (state.pack_error.empty()) {
+      dialog.PrimaryButtonText(state.busy ? L"正在发布…" : L"公开发布");
+      dialog.IsPrimaryButtonEnabled(!state.busy && plugin_publish_ready());
+    } else {
+      dialog.PrimaryButtonText(L"");
+    }
+  }
+
+  void submit_plugin_publish() {
+    auto &state = plugin_publish_;
+    const auto *chosen = chosen_plugin();
+    if (state.busy || !plugin_publish_ready() || !chosen)
+      return;
+    state.busy = true;
+    state.error.clear();
+    state.sign_in = false;
+    const auto fields = cm::publish_fields(state.name, state.description);
+    auto action = community_action(L"plugin_publish");
+    action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(chosen->kind)));
+    action.SetNamedValue(L"plugin_id", JsonValue::CreateStringValue(hstring(chosen->id)));
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(state.publication_id)));
+    action.SetNamedValue(L"name", JsonValue::CreateStringValue(hstring(fields.name)));
+    action.SetNamedValue(L"description", JsonValue::CreateStringValue(hstring(fields.description)));
+    const auto generation = state.generation;
+    run_host([action] { return community_call(action); },
+             [this, generation](Response const &response) {
+               auto &current = plugin_publish_;
+               if (generation != current.generation)
+                 return;
+               current.busy = false;
+               if (!community_item<CommunityPluginItem>(response)) {
+                 const auto failure = community_failure(response);
+                 current.error = cm::plugin_message(failure.code, failure.detail, true);
+                 current.sign_in = cm::needs_sign_in(failure.code);
+                 if (current.refresh)
+                   current.refresh();
+                 return;
+               }
+               const auto dialog = current.dialog;
+               ++current.generation;
+               current.refresh = nullptr;
+               current.update_button = nullptr;
+               if (auto shown = dialog.get())
+                 shown.Hide();
+               plugin_gallery_.notice = L"已发布到社区。";
+               gallery_list<CommunityPluginItem>(plugin_gallery_.active_search, false,
+                                                 plugin_gallery_.active_mine);
+             });
+    if (state.refresh)
+      state.refresh();
+  }
+
+  void build_plugin_publish(StackPanel const &form, ContentDialog const &dialog) {
+    auto &state = plugin_publish_;
+    form.Children().Clear();
+    dialog_error(form, state.error, state.sign_in, make_weak(dialog));
+    if (state.options_loading)
+      form.Children().Append(make_text(L"正在读取本地插件…", 13, palette_.sub));
+    if (!state.options_loading && state.options.empty())
+      form.Children().Append(make_text(
+          L"还没有可发布的插件。内置插件不能发布，请先在「我的插件」中导入自己的音效包、音乐包、指令表、特效包、短语表、辅助码表、单词本或符号集。",
+          13, palette_.sub));
+    if (!state.options.empty()) {
+      std::vector<Option> options;
+      for (auto const &option : state.options)
+        options.push_back({option.key, option.label + L" · " + cm::local_option_label(option.name, option.id)});
+      auto combo = select_control(L"发布插件", std::move(options), state.selection,
+                                  [this](std::wstring const &key) {
+                                    if (key == plugin_publish_.selection)
+                                      return;
+                                    plugin_publish_.selection = key;
+                                    load_plugin_pack();
+                                    if (plugin_publish_.refresh)
+                                      plugin_publish_.refresh();
+                                  },
+                                  !state.busy, false)
+                       .as<ComboBox>();
+      combo.Header(box_value(L"发布插件"));
+      combo.MinWidth(320);
+      form.Children().Append(combo);
+    }
+    if (state.pack_loading)
+      form.Children().Append(make_text(L"正在检查插件…", 13, palette_.sub));
+    if (!state.pack_error.empty())
+      form.Children().Append(dialog_alert({state.pack_error}));
+    if (state.has_pack) {
+      form.Children().Append(make_text(
+          cm::join_dot({L"v" + state.version, state.license.empty() ? L"" : L"授权 " + state.license,
+                        cm::zh_number(state.file_count) + L" 个文件",
+                        cm::megabytes(state.size) + L" / " + std::wstring(cm::plugin_archive_limit)}),
+          13, palette_.sub));
+      publication_fields(
+          form, state.name, state.description, state.agreed, state.publication_id, state.busy,
+          L"名称", L"发布插件名称", L"说明", L"发布插件说明",
+          L"我拥有插件中音频与文字的发布权利，并同意其他用户按包内授权免费下载使用", L"确认拥有发布内容权利",
+          [this] {
+            if (plugin_publish_.update_button)
+              plugin_publish_.update_button();
+          },
+          [this] { submit_plugin_publish(); });
+      form.Children().Append(make_text(cm::plugin_publish_warning, 12, palette_.sub));
+    }
+    update_plugin_publish_button(dialog);
   }
 
   // ---- 候选颜色 ----
@@ -10146,7 +13015,7 @@ private:
 
   // ---- 插件 ----
 
-  // 共享的「插件」页（packages/ui/src/settings/pages/plugins-page.tsx 和 plugins-section.tsx）在 Windows 上的「我的插件」：列表（plugin-list-view.tsx）先是「声音与效果」和「@ 名单」两个入口，再是按八类分组的已安装插件和缺失的选择，然后是「导入插件」和「无法载入的插件」；点一行在原处打开它的视图（plugin-sound-effects-view.tsx、plugin-mentions-view.tsx、plugin-detail-view.tsx），视图头上的「我的插件」回到列表。Windows 宿主的能力全为真（播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集），辅助码表随版本（与「输入」页的辅助码组同一个条件）。插件目录、导入、删除和名单都经 msime_client_plugins，与 Tauri 的 desktop_plugins.rs 同一份 client-core 规则；内置声音包取 Server 状态目录下的 sound-packs。规则和文案在 PluginPageModel.h。所有读写都在工作线程上。「社区插件」标签不在这里。
+  // 共享的「插件」页（packages/ui/src/settings/pages/plugins-page.tsx 和 plugins-section.tsx）在 Windows 上的「我的插件」：列表（plugin-list-view.tsx）先是「声音与效果」和「@ 名单」两个入口，再是按八类分组的已安装插件和缺失的选择，然后是「导入插件」和「无法载入的插件」；点一行在原处打开它的视图（plugin-sound-effects-view.tsx、plugin-mentions-view.tsx、plugin-detail-view.tsx），视图头上的「我的插件」回到列表。Windows 宿主的能力全为真（播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集），辅助码表随版本（与「输入」页的辅助码组同一个条件）。插件目录、导入、删除和名单都经 msime_client_plugins，与 Tauri 的 desktop_plugins.rs 同一份 client-core 规则；内置声音包取 Server 状态目录下的 sound-packs。规则和文案在 PluginPageModel.h。所有读写都在工作线程上。页首的「社区插件」标签见「社区皮肤与社区插件」一节。
 
   enum class PluginView { list, pack, missing, sound_effects, mentions };
   enum class PluginCatalogState { loading, loaded, failed };
@@ -10695,6 +13564,8 @@ private:
   void build_plugins_page(StackPanel const &page) {
     if (indexing_) {
       // 搜索既能找到列表上的入口，也能找到「声音与效果」里的设置；记下后者的标题，选中这样的结果时打开那个视图。
+      community_tabs(page, L"插件来源", L"我的插件", L"社区插件", L"浏览、安装和发布插件", false,
+                     [](bool) {});
       build_plugin_list(page);
       const auto first = search_index_.size();
       StackPanel scratch;
@@ -10706,9 +13577,26 @@ private:
     }
     plugin_mentions_warning_ = nullptr;
     plugin_mentions_save_ = nullptr;
+    // 搜索选中「社区插件」时打开图库，选中「我的插件」里的设置时回到列表。
+    if (!focus_row_.empty()) {
+      const bool community = focus_row_ == L"社区插件";
+      if (community != plugin_community_view_) {
+        plugin_community_view_ = community;
+        if (community)
+          enter_plugin_community();
+        else
+          leave_plugin_community();
+      }
+    }
+    community_tabs(page, L"插件来源", L"我的插件", L"社区插件", L"浏览、安装和发布插件",
+                   plugin_community_view_, [this](bool shown) { set_plugin_view(shown); });
+    if (plugin_community_view_) {
+      build_plugin_community(page);
+      return;
+    }
     if (plugins_stale_)
       load_plugins();
-    if (!focus_row_.empty()) {
+    if (!focus_row_.empty() && focus_row_ != L"社区插件") {
       const bool sound = plugin_sound_titles_.contains(focus_row_);
       plugin_view_ = sound ? PluginView::sound_effects : PluginView::list;
       plugin_opened_from_ = sound ? L"sound-effects" : L"";
@@ -14552,6 +17440,26 @@ private:
   std::set<std::wstring> skin_image_failures_;
   std::map<std::wstring, std::pair<bool, bool>> skin_preview_overrides_;
   bool color_picker_open_ = false;
+  // 从「我的皮肤」的卡片发布后，卡片下面的那一句。
+  std::wstring skin_published_notice_;
+
+  // 「社区皮肤」「社区插件」两个标签：停在哪一边（跨页面保留，与共享外壳的 skinView、pluginView 一样）、两个图库、皮肤的分类筛选（正在请求的、上次成功列出的、按钮上显示的）和插件的类型筛选、预览图的缓存和正在显示它们的卡片、皮肤库同步是否在进行或排着下一次，以及两个发布对话框的状态。
+  bool skin_community_view_ = false;
+  bool plugin_community_view_ = false;
+  Gallery<CommunitySkinItem> skin_gallery_;
+  Gallery<CommunityPluginItem> plugin_gallery_;
+  std::optional<std::wstring> skin_category_request_;
+  std::optional<std::wstring> skin_category_active_;
+  std::optional<std::wstring> skin_category_shown_;
+  std::optional<std::wstring> plugin_kind_request_;
+  std::optional<std::wstring> plugin_kind_shown_;
+  std::map<std::wstring, CommunityPreview> community_previews_;
+  std::vector<std::wstring> community_preview_order_;
+  std::multimap<std::wstring, weak_ref<Border>> community_preview_views_;
+  bool skin_sync_running_ = false;
+  bool skin_sync_queued_ = false;
+  SkinPublish skin_publish_;
+  PluginPublish plugin_publish_;
 
   // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
   enum class FontCatalogStatus { idle, loading, ready, failed };
