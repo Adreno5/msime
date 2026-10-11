@@ -590,6 +590,11 @@ pub(crate) const IMPORTS: [ImportSpec; 15] = [
     ),
 ];
 
+/// 白名单里全部 import 的名字和所属能力（`None` 表示不需要能力），按 ABI 的顺序。作者文档和 SDK 的一致性测试按它核对。
+pub fn imports() -> impl Iterator<Item = (&'static str, Option<Capability>)> {
+    IMPORTS.iter().map(|spec| (spec.name, spec.capability))
+}
+
 /// 按名字找白名单里的 import。
 pub(crate) fn import_spec(name: &str) -> Option<&'static ImportSpec> {
     IMPORTS.iter().find(|spec| spec.name == name)
