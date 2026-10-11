@@ -51,6 +51,8 @@ pub enum TouchKeyboardLayout {
     TwentySixKey,
     NineKey,
     Handwriting,
+    /// 全拼 14 键：QWERTY 上相邻两个字母一个键（L、M 单独一键），按组消歧，与九键共用九宫格会话。只配全拼。
+    FourteenKey,
 }
 
 /// 触屏九宫格数字层的排列。桌面宿主原样保留、不使用。
@@ -404,11 +406,13 @@ pub enum TouchKeyboardScheme {
     Stroke,
     /// 注音 9 键：数字键 1-0 各承载几个注音符号（US 6,009,444 FIG.1 的分组），声调键 ˉ ˊ ˇ ˋ ˙ 结束一个音节，与大千注音一样输出繁体（`InputScheme::Zhuyin` 配 `TouchKeyboardLayout::NineKey`）。
     ZhuyinNineKey,
+    /// 全拼 14 键（`InputScheme::Quanpin` 配 `TouchKeyboardLayout::FourteenKey`）。默认不启用，由用户在「添加语言」或全拼的布局选择里打开。
+    FourteenKey,
 }
 
 impl TouchKeyboardScheme {
     /// Every touch scheme in picker order. Schemes are appended, never reordered.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Quanpin,
         Self::NineKey,
         Self::Xiaohe,
@@ -426,9 +430,10 @@ impl TouchKeyboardScheme {
         Self::Tibetan,
         Self::Stroke,
         Self::ZhuyinNineKey,
+        Self::FourteenKey,
     ];
 
-    /// 新装时键盘显示的方案：只有中文方案（拼音、双拼、五笔和手写）。日文（9 键和 26 键）、韩文、粤拼、注音（大千和 9 键）、越南文、藏文和笔画都由用户自己在「添加语言」里打开：日文词典和语言词库在 Android 上按需下载，默认不启用它们，新装用户就不会看到一个还没有词典的键盘。
+    /// 新装时键盘显示的方案：只有中文方案（拼音、双拼、五笔和手写）。日文（9 键和 26 键）、韩文、粤拼、注音（大千和 9 键）、越南文、藏文和笔画都由用户自己在「添加语言」里打开：日文词典和语言词库在 Android 上按需下载，默认不启用它们，新装用户就不会看到一个还没有词典的键盘。全拼 14 键也不默认启用：它是全拼的另一种键面，由用户在全拼的布局选择或「添加语言」里打开。
     ///
     /// 只用于新装：还没有偏好文件、状态目录也没有被以前的版本准备过的时候（见 `PreferencesStore` 读不到文件时的处理）。已有的文档没存列表时按 [`Self::LEGACY_DEFAULT_ENABLED`]，存过列表的照旧按它保存的列表。
     pub const DEFAULT_ENABLED: [Self; 8] = [
@@ -1520,6 +1525,9 @@ pub struct LocalModePreferences {
     /// The `@` mode also offers China's provinces, cities and counties from the Engine's built-in table, after the user's own names. Off by default, and only meaningful while `mention` is on.
     #[serde(default)]
     pub mention_places: bool,
+    /// 「Shift+字母进入快捷模式」总开关：关掉后没有组字时 Shift+U/T/K/E/M/J/Y/R/V 不进入快捷模式，照常打出大写字母，上面各模式自己的开关保留原值。默认开，和以前的行为一样；缺这个键的旧文档读作开。
+    #[serde(default = "enabled_by_default")]
+    pub shift_letter_entry: bool,
 }
 
 impl Default for LocalModePreferences {
@@ -1537,6 +1545,7 @@ impl Default for LocalModePreferences {
             command: false,
             mention: false,
             mention_places: false,
+            shift_letter_entry: true,
         }
     }
 }
@@ -1862,6 +1871,9 @@ pub struct KeybindingPreferences {
     /// macOS 的 Option+Shift+H、Windows 和 Android 的 Alt+Shift+H 切换全半角。macOS 从上线起就无条件占用这个组合键，所以默认开：这个偏好是把组合键还给应用，而不是打开一个原本关着的功能。没有这个组合键的宿主忽略它。
     #[serde(default = "enabled_by_default")]
     pub toggle_fullwidth_option_shift_h: bool,
+    /// 单按 Caps Lock 切换中英文：按下后在 300 毫秒内松开、期间没有别的键，算一次轻点，切换输入法自己的中英文模式，并把大写锁定撤回关闭；按住更久照常打开大写锁定。大写锁定已经开着时按它照常关掉，不切换。默认关；只有声明 `HostCapabilities::caps_lock_language_switch` 的宿主读它。
+    #[serde(default)]
+    pub switch_language_caps_lock: bool,
 }
 
 impl Default for KeybindingPreferences {
@@ -1873,6 +1885,7 @@ impl Default for KeybindingPreferences {
             switch_language_ctrl_alt_space: true,
             toggle_character_set_ctrl_shift_f: true,
             toggle_fullwidth_option_shift_h: true,
+            switch_language_caps_lock: false,
         }
     }
 }

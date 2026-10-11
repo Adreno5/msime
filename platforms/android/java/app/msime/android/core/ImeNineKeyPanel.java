@@ -131,12 +131,12 @@ final class ImeNineKeyPanel {
         return button;
     }
 
-    /** 当前是否该画三栏：九键字母键面上的全拼正在组字。 */
+    /** 当前是否该画三栏：九键或 14 键字母键面上的全拼正在组字。 */
     boolean eligible() {
         JSONObject view = s.view;
         if (s.session == 0 || view == null) return false;
         return NineKeyPanelPolicy.threeColumn(
-            s.displayedTouchLayout(view) == MSIMEInputService.QUANPIN_NINE_KEY_LAYOUT,
+            s.displayedTouchLayout(view),
             s.keyboardLayer == KeyboardLayout.Layer.LETTERS,
             !"none".equals(InputViewValuePolicy.textOr(view, "local_mode", "none")),
             !InputViewValuePolicy.editingText(view).isEmpty());
@@ -259,7 +259,8 @@ final class ImeNineKeyPanel {
         mode = NineKeyPanelPolicy.Mode.SPELLING;
         renderedGeneration = -1;
         if (candidateGrid != null) candidateGrid.reset();
-        if (!ViewPolicy.isGone(root)) ViewPolicy.hide(root);
+        // 键盘视图建好之前（onStartInput 经 stop 走到这里）面板还没有 root；isGone 对 null 为假，不先判空 hide 就会在每次弹出键盘前崩溃。
+        if (root != null && !ViewPolicy.isGone(root)) ViewPolicy.hide(root);
         if (filterResetPending || !filtered()) return;
         // 同一代只清一次：清除的响应会再走到这里，引擎万一没清掉也不会每次重画都再发一遍。
         long generation = CandidateGlossPolicy.strictOr(s.view.opt("generation"), -1);

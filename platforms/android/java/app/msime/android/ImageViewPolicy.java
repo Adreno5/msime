@@ -56,7 +56,7 @@ public final class ImageViewPolicy {
         button.setImageDrawable(icon);
         setTint(button, tint);
         button.setScaleType(ImageView.ScaleType.CENTER);
-        ViewPolicy.setBackground(button, DrawablePolicy.ripple(context));
+        ViewPolicy.setBackground(button, ViewPolicy.ripple(context));
         button.setContentDescription(description);
         ViewPolicy.setInteractive(button, true);
         ViewPolicy.bindOptionalClick(button, action);
@@ -64,6 +64,12 @@ public final class ImageViewPolicy {
         button.setLayoutParams(ViewPolicy.newSquareParamsPx(size));
         ViewPolicy.setSymmetricPadding(button, size / 5, size / 5);
         return button;
+    }
+
+    /** Create the muted, accessibility-hidden chevron used by navigable rows. */
+    public static ImageView chevron(Context context, @ColorInt int tint) {
+        ImageView view = decorative(context, app.msime.android.R.drawable.ms_w1_a2_chevron, tint);
+        return view;
     }
 
     private static void hideFromAccessibility(View view) {

@@ -2222,9 +2222,10 @@ int wmain(int argc, wchar_t **argv) {
                 shown && shown->lease.token == view->lease.token &&
                 shown->lease.epoch == view->lease.epoch &&
                 same_ticket(shown->lease.transport, view->lease.transport) &&
-                shown->y != invalid_candidate_anchor_y && (shown->x != 0 || shown->y != 0)) {
+                shown->caret_anchor_known) {
               const long line = MulDiv(20, static_cast<int>(GetDpiForSystem()), USER_DEFAULT_SCREEN_DPI);
-              caret = HudRect{shown->x, shown->y - line, shown->x + 1, shown->y};
+              caret = HudRect{shown->caret_anchor_x, shown->caret_anchor_y - line,
+                              shown->caret_anchor_x + 1, shown->caret_anchor_y};
             }
           mode_hud->show(*view->chinese, caret, foreground);
         }

@@ -19,7 +19,12 @@ def main() -> None:
         errors.append(f"{RESPONSE}: 缺少共享转写文本边界方法")
     if "AiProviderResponse.boundedText(value, MAX_TRANSCRIPT)" not in http:
         errors.append(f"{HTTP}: 没有调用共享转写文本边界方法")
-    if "AiProviderResponse.boundedText(value, HttpAsrPolicy.MAX_TRANSCRIPT)" not in doubao:
+    # 豆包可以直接调用共享边界方法，也可以整段委托给 HTTP 识别的 strictText（它内部就是同一个边界方法）。
+    doubao_shared = (
+        "AiProviderResponse.boundedText(value, HttpAsrPolicy.MAX_TRANSCRIPT)",
+        "return HttpAsrPolicy.strictText(value);",
+    )
+    if not any(call in doubao for call in doubao_shared):
         errors.append(f"{DOUBAO}: 没有调用共享转写文本边界方法")
     if "TextPolicy.codePointLength(text) <= MAX_TRANSCRIPT" in http:
         errors.append(f"{HTTP}: 仍保留重复的转写文本边界逻辑")

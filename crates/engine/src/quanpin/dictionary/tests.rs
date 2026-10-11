@@ -177,6 +177,80 @@ fn fuzzy_cache_key_hash_checks_rules_and_segmentation() {
     assert!(!fuzzy_cache_key_matches(&cached, 0x7ff, "niha"));
 }
 
+#[test]
+fn fuzzy_row_cache_hit_checks_the_full_key_without_allocating() {
+    let mut cache = FifoCache::new(2);
+    let typed = "zan'hao";
+    cache.insert(
+        fuzzy_row_cache_hash(fuzzy_rule::Z_ZH, 32, typed),
+        CachedFuzzyRows {
+            rules: fuzzy_rule::Z_ZH,
+            limit: 32,
+            typed: typed.to_owned(),
+            rows: Vec::new(),
+        },
+    );
+    let fixture = Fixture::new();
+    let database = PinyinDatabase::open(&fixture.database());
+    let paths = vec![vec!["zhan".to_owned(), "hao".to_owned()]];
+
+    assert!(fuzzy_row_cache_key_matches(
+        cache
+            .get_ref(&fuzzy_row_cache_hash(fuzzy_rule::Z_ZH, 32, typed))
+            .unwrap(),
+        fuzzy_rule::Z_ZH,
+        32,
+        typed,
+    ));
+    assert!(!fuzzy_row_cache_key_matches(
+        cache
+            .get_ref(&fuzzy_row_cache_hash(fuzzy_rule::Z_ZH, 32, typed))
+            .unwrap(),
+        fuzzy_rule::Z_ZH,
+        64,
+        typed,
+    ));
+
+    let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+        assert!(
+            cached_fuzzy_rows(&database, &mut cache, &paths, fuzzy_rule::Z_ZH, 32, typed,)
+                .is_empty()
+        );
+    });
+    assert_eq!(allocations, 0, "模糊行缓存热命中仍重建了查询键");
+}
+
+#[test]
+fn fuzzy_row_cache_hash_collision_requeries_instead_of_returning_wrong_rows() {
+    let fixture = Fixture::new();
+    fixture.insert("zhan'hao", "战好", 10);
+    let database = PinyinDatabase::open(&fixture.database());
+    let typed = "zan'hao";
+    let paths = vec![vec!["zhan".to_owned(), "hao".to_owned()]];
+    let mut cache = FifoCache::new(2);
+    cache.insert(
+        fuzzy_row_cache_hash(fuzzy_rule::Z_ZH, 32, typed),
+        CachedFuzzyRows {
+            rules: fuzzy_rule::Z_ZH,
+            limit: 32,
+            typed: "zan'he".to_owned(),
+            rows: vec![DictRow {
+                key: "wrong".to_owned(),
+                value: "错误哨兵".to_owned(),
+                weight: 999,
+            }],
+        },
+    );
+
+    let rows = cached_fuzzy_rows(&database, &mut cache, &paths, fuzzy_rule::Z_ZH, 32, typed);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.value.as_str())
+            .collect::<Vec<_>>(),
+        ["战好"]
+    );
+}
+
 fn contains(items: &[WordItem], word: &str) -> bool {
     items.iter().any(|item| item.word == word)
 }
@@ -697,7 +771,7 @@ fn online_rows_land_in_the_series_slot_the_query_used() {
         &ai,
         CandidateSource::AiSuggestion
     ));
-    // A second cloud answer replaces the first and keeps the AI block at index 2.
+    // 第二次云回答替换掉第一次，AI 座位仍在下标 2；第二条 AI 候选排在最后（#6888）。
     assert!(dictionary.insert_online_words(
         "nihao",
         "ni'hao",
@@ -706,7 +780,8 @@ fn online_rows_land_in_the_series_slot_the_query_used() {
         CandidateSource::CloudSuggestion
     ));
     let listed = query(&mut dictionary, "nihao", "ni'hao", NONE);
-    assert_eq!(words(&listed[..4]), ["你好", "妮好", "智能甲", "智能乙"]);
+    assert_eq!(words(&listed[..3]), ["你好", "妮好", "智能甲"]);
+    assert_eq!(listed.last().unwrap().word, "智能乙");
     assert!(!contains(&listed, "倪好"));
 
     let two = vec!["一".to_string(), "二".to_string()];
@@ -1164,7 +1239,10 @@ fn fuzzy_candidate_rows_reuse_the_first_typed_reading_string() {
     let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
         let _ = dictionary.fuzzy_candidates("zong'guo", options);
     });
-    assert_eq!(allocations, 39, "模糊候选重复复制了首个读音: {allocations}");
+    assert_eq!(
+        allocations, 35,
+        "模糊候选重复复制了首个读音或查询键: {allocations}"
+    );
 }
 
 #[test]

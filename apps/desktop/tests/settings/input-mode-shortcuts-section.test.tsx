@@ -267,3 +267,53 @@ test("missing optional HUD preference does not affect shortcut toggle rendering"
 
   expect((screen.getByLabelText("切换中英文") as HTMLSelectElement).value).toBe("shift");
 });
+
+test("the Caps Lock language switch is offered only where the host implements it", () => {
+  const onChange = vi.fn();
+  renderLanguageSwitch({}, onChange);
+  expect(screen.queryByRole("switch", { name: /Caps Lock/ })).toBeNull();
+  cleanup();
+
+  render(
+    <InputModeShortcutsSection
+      keybindings={keybindings}
+      onChange={onChange}
+      showModeSwitchShortcuts
+      macos={false}
+      showFullwidthChord={false}
+      windows
+      capsLockLanguageSwitch
+    />,
+  );
+  const caps = screen.getByRole("switch", { name: /单按 Caps Lock 切换中英文/ });
+  // 缺省为关；打开它只写这一个键，不改动已选的切换键。
+  expect((caps as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(caps);
+  expect(onChange).toHaveBeenCalledWith({ switch_language_caps_lock: true });
+  expect((screen.getByLabelText("切换中英文") as HTMLSelectElement).value).toBe("shift");
+  expect(screen.getByText(/300 毫秒内松开/)).toBeTruthy();
+});
+
+test("the Caps Lock language switch names each desktop's limitation", () => {
+  for (const [macos, linux, note] of [
+    [true, false, /使用大写锁定键切换 ABC/],
+    [false, true, /只在 X11 会话中可用/],
+  ] as const) {
+    render(
+      <InputModeShortcutsSection
+        keybindings={{ ...keybindings, switch_language_caps_lock: true }}
+        onChange={vi.fn()}
+        showModeSwitchShortcuts
+        macos={macos}
+        linux={linux}
+        showFullwidthChord={false}
+        windows={false}
+        capsLockLanguageSwitch
+      />,
+    );
+    const caps = screen.getByRole("switch", { name: /单按 Caps Lock 切换中英文/ });
+    expect((caps as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(note)).toBeTruthy();
+    cleanup();
+  }
+});

@@ -30,6 +30,7 @@ use crate::user_dictionary::typo_profile::PersonalTypoProfile;
 use crate::vietnamese::{
     InputMethod as VietnameseInputMethod, ToneStyle as VietnameseToneStyle, VietnameseScheme,
 };
+use crate::wubi::scheme::PINYIN_LOOKUP_PREFIX;
 use crate::zhuyin::scheme::{ListCandidate, ZhuyinKey, ZhuyinScheme};
 
 // 混输拼音回退的短批次直接扫描已有词，避免为一次合并创建临时哈希表。
@@ -552,6 +553,7 @@ impl ImeSession {
         if let Some(wubi) = scratch.as_wubi_mut() {
             wubi.set_mixed_pinyin_allowed(self.wubi_options.mixed_pinyin);
             wubi.set_extended_length_allowed(self.wubi_options.mixed_pinyin);
+            wubi.set_pinyin_lookup_allowed(!self.wubi_options.mixed_pinyin);
         }
         scratch.set_raw_input(raw, raw_with_cases);
         let built = self.prepare_request(&scratch);
@@ -793,6 +795,12 @@ impl ImeSession {
 
     /// Query the request's provider and, for wubi with mixed pinyin, append the quanpin rows for the same letters (ime_session.cpp:333-368). The quanpin request gets the session switches and the autocorrect suppression, so a correction the user refused by committing raw stays refused when the same letters arrive through mixed Wubi. A pinyin tail skips the wubi table: those letters are the rest of a spelling, not a code.
     fn decode(&mut self, request: &QueryRequest) -> Decoded {
+        if let Some((raw, raw_with_cases)) = self.pinyin_lookup_spelling(request) {
+            return Decoded {
+                candidates: self.query_pinyin_lookup(raw, raw_with_cases),
+                wubi_table_answered: false,
+            };
+        }
         let pinyin_tail = request.scheme == SchemeType::Wubi
             && self.wubi_options.mixed_pinyin
             && self.pinyin_tail;
@@ -836,10 +844,48 @@ impl ImeSession {
         }
     }
 
+    /// 五笔请求是临时拼音反查时，去掉引导键 `z` 之后的拼音原文（不带大小写的和带大小写的）。混输关闭时五笔码里不会出现 `z`，所以以 `z` 开头的五笔请求只能来自反查；混输打开时 `z` 是拼音字母，没有反查。
+    fn pinyin_lookup_spelling<'a>(&self, request: &'a QueryRequest) -> Option<(&'a str, &'a str)> {
+        if request.scheme != SchemeType::Wubi || self.wubi_options.mixed_pinyin {
+            return None;
+        }
+        let raw = request
+            .raw_input
+            .strip_prefix(char::from(PINYIN_LOOKUP_PREFIX))?;
+        let raw_with_cases = request.raw_input_with_cases.get(1..).unwrap_or(raw);
+        Some((raw, raw_with_cases))
+    }
+
+    /// 反查只查全拼词库，不查五笔码表：`z` 后面的字母是拼音，不是五笔码。全拼请求带上会话的开关和自动纠错抑制，与混输的拼音回退一致；同一个词只留第一行。
+    fn query_pinyin_lookup(&mut self, raw: &str, raw_with_cases: &str) -> Vec<WordItem> {
+        self.mixed_pinyin_scheme.set_raw_input(raw, raw_with_cases);
+        let mut request = std::mem::take(&mut self.mixed_pinyin_request);
+        self.mixed_pinyin_scheme.build_request_into(&mut request);
+        self.apply_request_options(&mut request);
+        self.apply_autocorrect_suppression(&mut request);
+        let mut rows = if request.valid {
+            self.registry.query(&request)
+        } else {
+            Vec::new()
+        };
+        self.mixed_pinyin_request = request;
+        retain_unique_pinyin_rows(&mut rows);
+        rows
+    }
+
+    /// 当前组字是五笔的临时拼音反查（`z` 引导）。
+    pub fn wubi_pinyin_lookup_active(&self) -> bool {
+        self.scheme
+            .as_wubi()
+            .is_some_and(|wubi| wubi.in_pinyin_lookup())
+    }
+
     fn bind_wubi_scheme(&mut self) {
         let mixed_pinyin = self.wubi_options.mixed_pinyin;
         if let Some(wubi) = self.scheme.as_wubi_mut() {
             wubi.set_mixed_pinyin_allowed(mixed_pinyin);
+            // 混输打开时 `z` 已经是拼音字母，引导反查只在混输关闭时有意义。
+            wubi.set_pinyin_lookup_allowed(!mixed_pinyin);
         }
     }
 }

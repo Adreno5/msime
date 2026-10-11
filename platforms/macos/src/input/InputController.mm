@@ -76,6 +76,9 @@
 #include "../core/TypingStatistics.h"
 #include "../core/DiagnosticLog.h"
 #include "../../../../shared/input/EnglishModeOutput.h"
+#include "../../../../shared/input/CapsLockTap.h"
+#import <IOKit/hidsystem/IOHIDLib.h>
+#import <IOKit/hidsystem/IOHIDParameter.h>
 #include <atomic>
 #include <memory>
 
@@ -278,11 +281,17 @@ static BOOL MSIMEStrictUnsignedIntegerValue(id value, NSUInteger *result) {
     return YES;
 }
 
+// 视图里的 `source` 是 Engine 的 CandidateSource（AiSuggestion = 3），不是 apply 接口的来源编号（0 云、1 AI）；按 1 判断会把用户词库的词当成 AI 候选，候选里有用户词时就跳过 AI 缓存（#6888）。AI 座位上的占位行（12）不算 AI 候选，缓存的回答照样替换它。
 static BOOL MSIMEViewContainsAICandidate(NSDictionary *view) {
     for (NSDictionary *candidate in view[@"candidates"])
         if ([candidate isKindOfClass:NSDictionary.class] &&
-            MSIMEStrictInteger(candidate[@"source"], -1) == 1) return YES;
+            MSIMEStrictInteger(candidate[@"source"], -1) == 3) return YES;
     return NO;
+}
+
+// Engine CandidateSource::AiPending：AI 座位上的占位行。
+static BOOL MSIMECandidateIsAIPlaceholder(NSDictionary *candidate) {
+    return [candidate isKindOfClass:NSDictionary.class] && MSIMEStrictInteger(candidate[@"source"], -1) == 12;
 }
 
 static msime::mac::TypingSource MSIMEResolveTypingSource(NSDictionary *context, NSDictionary *view,
@@ -818,6 +827,31 @@ static BOOL MSIMECapsLockFreshUppercaseBypass(NSEvent *event, NSDictionary *view
     NSArray *candidates = [view[@"candidates"] isKindOfClass:NSArray.class] ? view[@"candidates"] : @[];
     return editing.length == 0 && candidates.count == 0;
 }
+// ---- 单按 Caps Lock 切换中英文 ----
+// 把大写锁定撤回关闭。IOHIDSetModifierLockState 走 IOHIDSystem 的参数连接；在 macOS 27 上实测，一个既没有「输入监控」也没有「辅助功能」授权的进程照样能改动锁定状态，IOHIDCheckAccess 前后都停在「未询问」，也不弹授权框，所以输入法不需要为它申请权限。
+static bool MSIMEReleaseSystemCapsLock() {
+    io_service_t service = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching(kIOHIDSystemClass));
+    if (!service) return false;
+    io_connect_t connect = 0;
+    const kern_return_t opened = IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, &connect);
+    IOObjectRelease(service);
+    if (opened != KERN_SUCCESS) return false;
+    const bool released = IOHIDSetModifierLockState(connect, kIOHIDCapsLockState, false) == KERN_SUCCESS;
+    IOServiceClose(connect);
+    return released;
+}
+// Caps Lock 只在锁定状态改变时报一次 FlagsChanged，没有松开事件，只能问 HID 系统它是否还按着；这个查询不需要权限（ModifierTap.h 用的是同一个）。
+static bool MSIMECapsLockPhysicallyHeld() {
+    return CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, 0x39) != false;
+}
+// 和 NSEvent.timestamp 同一个开机后时钟，单位毫秒。
+static std::int64_t MSIMEUptimeMilliseconds() {
+    return static_cast<std::int64_t>(llround(NSProcessInfo.processInfo.systemUptime * 1000.0));
+}
+// 测试换成合成的：单测不能改动跑测试那台机器的真实大写锁定，也没有人真的按着键。
+static bool (*MSIMECapsLockRelease)() = &MSIMEReleaseSystemCapsLock;
+static bool (*MSIMECapsLockKeyHeld)() = &MSIMECapsLockPhysicallyHeld;
+static std::int64_t (*MSIMECapsLockNow)() = &MSIMEUptimeMilliseconds;
 static NSString *MSIMEChinesePunctuationForSmart(unichar character) {
     switch (character) {
     case ',': return @"，";
@@ -1149,6 +1183,9 @@ static NSImage *MSIMECandidateLogoImage() {
     // The ASCII punctuation key behind the transition about to be applied, or 0. Set only on the punctuation-key routes and consumed by the next apply:, so pairing can read the last mark of a commit that finished a composition (`nihao(` gives `你好（`) without ever rewriting a candidate that merely ends in a mark.
     unichar _punctuationKeyInFlight;
     MSIMEModifierTap _modifierTap;
+    // 单按 Caps Lock 切换中英文：大写锁定打开的那一刻布防，轮询到松开时认定是轻点还是长按。
+    msime::input::CapsLockTap _capsLockTap;
+    NSTimer *_capsLockTapTimer;
     MSIMEVoiceHoldShortcut _voiceHoldShortcut;
     uint64_t _voiceHoldGeneration;
     BOOL _voiceHoldStarting;
@@ -1879,6 +1916,9 @@ static NSImage *MSIMECandidateLogoImage() {
         // poison this query identity. A later render may observe corrected
         // settings and should be allowed to construct a fresh request.
         _aiQuery = nil;
+        // 这次发不出请求：AI 座位上的占位行不能一直等下去，换成「—」（#6888）。已经换过时 applied 为 NO，不会再触发渲染。
+        NSDictionary *resolved = [_session resolveOnlineCandidatesForSource:1 query:online error:nil];
+        if (MSIMEStrictBoolean(resolved[@"applied"])) [self apply:resolved];
         return;
     }
     NSArray *items = @[ @{ @"text": @"ai", @"request": descriptor,
@@ -1914,9 +1954,14 @@ static NSImage *MSIMECandidateLogoImage() {
                     ? @{ @"online": [postOnline copy], @"config": [postConfig copy] } : nil;
                 [current apply:transition];
             } else {
-                // Empty or rejected provider results remain eligible for a later
-                // render after the local candidate generation is rebuilt.
-                current->_aiQuery = nil;
+                // 回答为空、失败或被拒：AI 座位上的占位行换成「—」，留到组字变化为止，后面的候选不挪位（#6888）。同一组字不再重发：查询身份留着，组字一变它就不相等了。
+                NSDictionary *resolved = [session resolveOnlineCandidatesForSource:1 query:query[@"online"] error:nil];
+                if (MSIMEStrictBoolean(resolved[@"applied"])) {
+                    [current apply:resolved];
+                } else {
+                    // 没有占位行可换（AI 座位没开）时照旧：等本地候选重建后的下一次渲染再试。
+                    current->_aiQuery = nil;
+                }
             }
         }];
         [owner->_aiBatch start];
@@ -3116,6 +3161,80 @@ static __weak MSIMEInputController *MSIMEFocusedController;
 - (void)syncCapsLock {
     if (_session) [_session setCapsLockEnabled:_capsLock error:nil];
 }
+- (void)adoptCapsLockState:(BOOL)capsLock {
+    if (_capsLock == capsLock) return;
+    _capsLock = capsLock;
+    [self syncCapsLock];
+    [self refreshFloatingToolbarState];
+}
+- (void)cancelCapsLockTap {
+    _capsLockTap.reset();
+    [_capsLockTapTimer invalidate];
+    _capsLockTapTimer = nil;
+}
+// 失焦、换会话等外部重置打断了待定的轻点：大写锁定按实际状态报告，不再切换。
+- (void)abandonCapsLockTap {
+    const bool pending = _capsLockTap.armed();
+    [self cancelCapsLockTap];
+    if (pending) [self adoptCapsLockState:([NSEvent modifierFlags] & NSEventModifierFlagCapsLock) != 0];
+}
+// 返回 YES 表示这次大写锁定打开可能是一次轻点：先不报告给会话和工具栏，等 pollCapsLockTap 认定。
+- (BOOL)observeCapsLockTap:(NSEvent *)event capsLock:(BOOL)capsLock sender:(id)sender {
+    if (event.type == NSEventTypeFlagsChanged && event.keyCode == 0x39) {
+        [self cancelCapsLockTap];
+        // 只有大写锁定从关变开才可能是轻点；开着时按它是关掉大写锁定，照常处理，不切换。
+        if (!capsLock || _capsLock || !sender || !_appearance.capsLockTapShortcut) return NO;
+        const NSEventModifierFlags others = NSEventModifierFlagShift | NSEventModifierFlagControl |
+            NSEventModifierFlagOption | NSEventModifierFlagCommand | NSEventModifierFlagFunction;
+        _capsLockTap.press(MSIMECapsLockNow(), true, false, (event.modifierFlags & others) != 0);
+        if (!_capsLockTap.armed()) return NO;
+        __weak MSIMEInputController *weakSelf = self;
+        _capsLockTapTimer = [NSTimer scheduledTimerWithTimeInterval:0.01 repeats:YES block:^(NSTimer *timer) {
+            (void)timer;
+            [weakSelf pollCapsLockTap];
+        }];
+        return YES;
+    }
+    // 按着 Caps Lock 又按了别的键，是在用大写锁定打字：不再算轻点，大写锁定由调用方照常报告。
+    if (_capsLockTap.armed() && (event.type == NSEventTypeKeyDown || event.type == NSEventTypeFlagsChanged))
+        [self cancelCapsLockTap];
+    return NO;
+}
+// 定时器调用，测试也直接调用它来推进合成的时钟和按键状态。
+- (void)pollCapsLockTap {
+    if (!_capsLockTap.armed()) {
+        [self cancelCapsLockTap];
+        return;
+    }
+    const std::int64_t now = MSIMECapsLockNow();
+    if (MSIMECapsLockKeyHeld()) {
+        if (!_capsLockTap.heldTooLong(now)) return;
+        // 按住超过分界：用户要的是大写锁定，补报给会话和工具栏。
+        [self cancelCapsLockTap];
+        [self adoptCapsLockState:YES];
+        return;
+    }
+    const bool tap = _capsLockTap.release(now);
+    [self cancelCapsLockTap];
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (!tap || !_activeClient || !MSIMECapsLockRelease()) {
+        [self adoptCapsLockState:YES];
+        return;
+    }
+    [self toggleInputModeFromModifierTap];
+}
+// 单按 Shift、Control 或 Caps Lock 切换中英文。
+//
+// A tap during a composition sends out the letters that were typed, not the highlighted candidate. Reaching for Shift mid-word is how a word the dictionary does not carry - a name, a command, an acronym - gets out without losing what was already typed; finishing the composition instead commits the Chinese candidate, which is the opposite of what was asked for.
+//
+// Commit first, then switch: switching rebuilds the input session, and the other order loses the letters still being composed. setEnglishInputMode: finishes any composition of its own, which is a no-op once this has run.
+- (void)toggleInputModeFromModifierTap {
+    if ([_view[@"editing_text"] length] && _session && _activeClient) {
+        NSDictionary *raw = [_session command:MSIME_COMMIT_RAW error:nil];
+        if (raw) [self apply:raw];
+    }
+    [self setEnglishInputMode:!_appearance.englishMode];
+}
 - (void)syncCharacterWidth {
     if (!_session) return;
     NSDictionary *view = [_session setCharacterWidthFull:_appearance.runtimeFullWidthInput error:nil];
@@ -3679,6 +3798,7 @@ static __weak MSIMEInputController *MSIMEFocusedController;
     return (!MSIMEVoiceProviderSocket() && [provider.lowercaseString isEqual:@"doubao"]) || [self usesLocalModelVoice];
 }
 - (void)dealloc {
+    [_capsLockTapTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
     [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
@@ -4354,6 +4474,7 @@ static __weak MSIMEInputController *MSIMEFocusedController;
     [self cancelCandidateTranslations];
     [self cancelCloudCandidates];
     _modifierTap.reset();
+    [self abandonCapsLockTap];
     _preferenceLoadState.reset();
     if (_activeClient) {
         NSDictionary *finished = [_session command:MSIME_FINISH_COMPOSITION error:nil];
@@ -4390,6 +4511,7 @@ static __weak MSIMEInputController *MSIMEFocusedController;
     [self resetCandidateAnchor];
     [self claimCandidatePanel];
     _modifierTap.reset();
+    [self abandonCapsLockTap];
     [super activateServer:sender];
     [self ensureAppearance];
     msime_macos_diagnostic_write("focus_in");
@@ -4549,6 +4671,7 @@ static NSString *const MSIMECloudConsentMessage =
     [self cancelCandidateTranslations];
     [self cancelCloudCandidates];
     _modifierTap.reset();
+    [self abandonCapsLockTap];
     _requestedPageSize = 0;
     _preferenceLoadState.reset();
     _focusPending = YES;
@@ -4978,6 +5101,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     [self cancelCloudCandidates];
     [self discardGlossSensePage];
     _modifierTap.reset();
+    [self abandonCapsLockTap];
     MSIMESetBackendSelectionObservation([NSNotificationCenter defaultCenter], self, @selector(handwritingCandidateSelected:), NO);
     _preferenceLoadState.reset();
     // A focus-out is the reference's ClientSuspended, which never changes floating-toolbar visibility: the toolbar keeps this controller as its owner and stays on screen until the next activateServer: hands it on or the user selects another input source.
@@ -5350,15 +5474,12 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     if (nativeEvent && CGEventGetIntegerValueField(nativeEvent, kCGEventSourceUserData) == MSIMEVoiceCommitEventTag) return NO;
     if (event.type != NSEventTypeKeyDown && event.type != NSEventTypeKeyUp && event.type != NSEventTypeFlagsChanged) return NO;
     const BOOL capsLock = (event.modifierFlags & NSEventModifierFlagCapsLock) != 0;
-    if (_capsLock != capsLock) {
-        _capsLock = capsLock;
-        [self syncCapsLock];
-        [self refreshFloatingToolbarState];
-    }
+    if (![self observeCapsLockTap:event capsLock:capsLock sender:sender]) [self adoptCapsLockState:capsLock];
     if (!sender) {
         _voicePermissionToken = nil;
         [_voiceOverlay dismissFailure];
         _modifierTap.reset();
+        [self abandonCapsLockTap];
         _voiceHoldShortcut.reset();
         _backspaceHoldArmed = NO;
         [self clearSmartPunctuationSpaceConversion];
@@ -5431,19 +5552,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     }
     if (voiceShortcut.consumed) return YES;
     if (_modifierTap.observe(event, _appearance.shiftTapShortcut, _appearance.controlTapShortcut)) {
-        // A tap during a composition sends out the letters that were typed, not the highlighted candidate.
-        // Reaching for Shift mid-word is how a word the dictionary does not carry - a name, a command, an
-        // acronym - gets out without losing what was already typed; finishing the composition instead
-        // commits the Chinese candidate, which is the opposite of what was asked for.
-        //
-        // Commit first, then switch: switching rebuilds the input session, and the other order loses the
-        // letters still being composed. setEnglishInputMode: finishes any composition of its own, which is
-        // a no-op once this has run.
-        if ([_view[@"editing_text"] length] && _session && _activeClient) {
-            NSDictionary *raw = [_session command:MSIME_COMMIT_RAW error:nil];
-            if (raw) [self apply:raw];
-        }
-        [self setEnglishInputMode:!_appearance.englishMode];
+        [self toggleInputModeFromModifierTap];
         return YES;
     }
     if (event.type != NSEventTypeKeyDown) return NO;
@@ -6707,6 +6816,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.toolTip = pageGeometry.tooltips[slot - 1];
         button.bordered = NO;
         button.candidateHighlighted = MSIMEStrictBoolean(candidate[@"highlighted"]);
+        button.candidatePending = MSIMECandidateIsAIPlaceholder(candidate);
         id fixed = candidate[@"fixed_position"];
         button.candidateFixed = MSIMEUnsignedCandidateIdentityValue(fixed) &&
             [fixed compare:@0] == NSOrderedDescending && [fixed compare:@255] != NSOrderedDescending;
@@ -6853,6 +6963,9 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.titleColor = button.candidateHighlighted ? SkinColor(tokens.selectedText) : SkinColor(tokens.text);
         // Windows fixed-position span overrides candidate text, not its number.
         if (button.candidateFixed) button.titleColor = [NSColor colorWithSRGBRed:55.0/255 green:154.0/255 blue:211.0/255 alpha:1];
+        // AI 占位行用次要色（序号的颜色）画，和真候选区分开。
+        if (button.candidatePending)
+            button.titleColor = button.candidateHighlighted ? SkinColor(tokens.selectedNumber) : SkinColor(tokens.number);
         // The translation is the theme's secondary colour, which always equals the number colour: the design draws a plain row's gloss in cSub (dc.html L2150, L2183), the theme's kb.sub or the platform's sub, and on the selected fill in candSelTr (dc.html L1533), the selected number's colour. A fixed-position row keeps the Windows renderer's rule instead, where the translation is a child of the candidate text and takes its fixed-position colour at reduced opacity.
         // A package's own translation colour is its secondary colour, drawn on every row as Windows does.
         if (tokens.translation) button.translationColor = SkinColor(*tokens.translation);

@@ -919,6 +919,22 @@ static napi_value ApplyOnlineCandidates(napi_env env, napi_callback_info info) {
         static_cast<uint8_t>(source)));
 }
 
+// AI 回答为空、失败或被拒：AI 座位上的占位行换成「—」（#6888）。
+static napi_value ResolveOnlineCandidates(napi_env env, napi_callback_info info) {
+    std::vector<napi_value> argv;
+    uint64_t handle = 0;
+    size_t source = 0;
+    std::string query;
+    if (!arguments(env, info, 3, argv) || !argumentHandle(env, argv[0], handle)
+            || !argumentText(env, argv[1], query) || !argumentIndex(env, argv[2], source)
+            || source > 1) {
+        return response(env, msime_client_resolve_online_candidates(0, nullptr, 0, 2));
+    }
+    return response(env, msime_client_resolve_online_candidates(
+        handle, reinterpret_cast<const uint8_t *>(query.data()), query.size(),
+        static_cast<uint8_t>(source)));
+}
+
 #define HANDLE_ENTRY(name, call)                                                                   \
     static napi_value name(napi_env env, napi_callback_info info) {                                 \
         std::vector<napi_value> argv;                                                               \
@@ -1010,6 +1026,32 @@ static napi_value SetNineKeyFilter(napi_env env, napi_callback_info info) {
     }
     return response(env, msime_client_set_nine_key_filter(handle, single_character,
         reinterpret_cast<const uint8_t *>(strokes.data()), strokes.size()));
+}
+
+// 换引擎的组码网格：0 关，1 九键，2 全拼 14 键。取值由 C ABI 校验，超出 uint8 的数在这里就拒绝，不截断成另一种网格。FLAG_ENTRY 只收布尔，所以单独写。
+static napi_value SetKeyGrid(napi_env env, napi_callback_info info) {
+    std::vector<napi_value> argv;
+    uint64_t handle = 0;
+    int32_t grid = 0;
+    if (!arguments(env, info, 2, argv) || !argumentHandle(env, argv[0], handle)
+            || napi_get_value_int32(env, argv[1], &grid) != napi_ok) {
+        return invalid(env, "Expected a session handle and a key grid");
+    }
+    if (grid < 0 || grid > 255) return invalid(env, "Key grid must fit in one byte");
+    return response(env, msime_client_set_key_grid(handle, static_cast<uint8_t>(grid)));
+}
+
+// 14 键的一键：送这一组的任一小写字母（约定是首字母），引擎归成组码。不属于当前网格时 C ABI 答 handled=false，这里只拒绝不是 ASCII 的值。
+static napi_value GridKey(napi_env env, napi_callback_info info) {
+    std::vector<napi_value> argv;
+    uint64_t handle = 0;
+    int32_t letter = 0;
+    if (!arguments(env, info, 2, argv) || !argumentHandle(env, argv[0], handle)
+            || napi_get_value_int32(env, argv[1], &letter) != napi_ok) {
+        return invalid(env, "Expected a session handle and an ASCII letter");
+    }
+    if (letter < 0 || letter > 127) return invalid(env, "Grid key must be ASCII");
+    return response(env, msime_client_grid_key(handle, static_cast<uint8_t>(letter)));
 }
 
 static napi_value SavePreferences(napi_env env, napi_callback_info info) {
@@ -1487,6 +1529,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         ENTRY("parseAiResponse", ParseAiResponse),
         ENTRY("applyCloudResponse", ApplyCloudResponse),
         ENTRY("applyOnlineCandidates", ApplyOnlineCandidates),
+        ENTRY("resolveOnlineCandidates", ResolveOnlineCandidates),
         ENTRY("personalDictionarySync", PersonalDictionarySync),
         ENTRY("personalDictionaryRequest", PersonalDictionaryRequest),
         ENTRY("dictionaryCollections", DictionaryCollections),
@@ -1503,10 +1546,12 @@ static napi_value Init(napi_env env, napi_value exports) {
         ENTRY("destroy", Destroy),
         ENTRY("focus", Focus),
         ENTRY("setNineKeyMode", SetNineKeyMode),
+        ENTRY("setKeyGrid", SetKeyGrid),
         ENTRY("setEnglishMode", SetEnglishMode),
         ENTRY("setCharacterWidth", SetCharacterWidth),
         ENTRY("setPrivateSession", SetPrivateSession),
         ENTRY("character", Character),
+        ENTRY("gridKey", GridKey),
         ENTRY("glide", Glide),
         ENTRY("punctuationWithContext", PunctuationWithContext),
         ENTRY("balancePairedPunctuationAfterAutoClose", BalancePairedPunctuationAfterAutoClose),

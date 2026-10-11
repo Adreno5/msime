@@ -3,7 +3,10 @@
 # 应用类挪进新的辅助类之后要把新类补进来；`check-host.sh` 会按这份清单编译一遍，漏了就在 PR 上失败。
 platforms/android/tests/device/core/EditorActivity.java
 platforms/android/tests/device/core/DeviceSmoke.java
+platforms/android/tests/device/core/ImageClipProvider.java
+platforms/android/tests/device/clipboard/ClipboardImageDeviceSmoke.java
 platforms/android/tests/device/candidate/CandidatePanelDeviceSmoke.java
+platforms/android/tests/device/candidate/AiPlaceholderDeviceSmoke.java
 platforms/android/tests/device/keyboard/MoreToolsDeviceSmoke.java
 platforms/android/tests/device/keyboard/EmojiPickerDeviceSmoke.java
 platforms/android/tests/device/keyboard/PairedPunctuationDeviceSmoke.java
@@ -11,6 +14,7 @@ platforms/android/tests/device/keyboard/ChineseHelpcodeDeviceSmoke.java
 platforms/android/tests/device/keyboard/MicrosoftShuangpinDeviceSmoke.java
 platforms/android/tests/device/keyboard/EmailSuffixDeviceSmoke.java
 platforms/android/tests/device/keyboard/NumberRowDeviceSmoke.java
+platforms/android/tests/device/keyboard/CaretCandidatesDeviceSmoke.java
 platforms/android/tests/device/voice/HandwritingDeviceSmoke.java
 platforms/android/tests/device/settings/PreferencesDeviceSmoke.java
 platforms/android/tests/device/keyboard/KeyboardHeightDeviceSmoke.java
@@ -18,6 +22,7 @@ platforms/android/tests/device/keyboard/FuzzyPinyinDeviceSmoke.java
 platforms/android/tests/device/candidate/CandidateGlossDeviceSmoke.java
 platforms/android/tests/device/keyboard/NineKeyEnglishDeviceSmoke.java
 platforms/android/tests/device/keyboard/NineKeyPanelDeviceSmoke.java
+platforms/android/tests/device/keyboard/FourteenKeyDeviceSmoke.java
 platforms/android/tests/device/settings/SettingsDeviceSmoke.java
 platforms/android/tests/device/settings/SettingsLifecycleSmoke.java
 platforms/android/tests/device/voice/TypingStatisticsDeviceSmoke.java

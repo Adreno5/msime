@@ -15,7 +15,8 @@ use std::time::Duration;
 struct Fixture {
     scheme: u8,
     dedicated_english: bool,
-    nine_key: bool,
+    /// 引擎的组码网格：九键的数字从 `character` 进来，14 键的字母从 `grid_key` 进来。
+    key_grid: Option<KeyGrid>,
     nine_key_spellings: Vec<String>,
     local_mode: String,
     words: Vec<String>,
@@ -548,6 +549,70 @@ fn voice_provider_rejects_events_without_generation_binding() {
 
 #[cfg(unix)]
 #[test]
+fn voice_provider_callback_cancellation_is_checked_before_connecting() {
+    let directory = private_tempdir();
+    let socket = directory.path().join("voice.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider = UnixSocketProvider::new(socket);
+    let mut cancelled = || true;
+    assert_eq!(
+        provider.voice_stream_with_options_diagnosed_with_callback(
+            "zh-cn",
+            7,
+            &Value::Null,
+            Some(&mut cancelled),
+            &mut |_, _| {},
+            None,
+            None,
+        ),
+        Err(None)
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "a cancelled voice request connected to the provider"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn voice_provider_callback_cancellation_interrupts_a_waiting_read() {
+    let directory = private_tempdir();
+    let socket = directory.path().join("voice.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(stream.try_clone().unwrap()),
+            &mut request,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = std::io::Write::write_all(&mut stream, b"\n");
+    });
+    let provider = UnixSocketProvider::new(socket);
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let probe_calls = calls.clone();
+    let mut cancelled = move || probe_calls.fetch_add(1, Ordering::Relaxed) >= 2;
+    assert_eq!(
+        provider.voice_stream_with_options_diagnosed_with_callback(
+            "zh-cn",
+            7,
+            &Value::Null,
+            Some(&mut cancelled),
+            &mut |_, _| {},
+            None,
+            None,
+        ),
+        Err(None)
+    );
+    assert!(calls.load(Ordering::Relaxed) >= 2);
+    server.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn voice_provider_rejects_unknown_event_types() {
     let directory = private_tempdir();
     let socket = directory.path().join("voice.sock");
@@ -819,12 +884,24 @@ impl InputEngine for Fixture {
         Ok(true)
     }
     fn set_nine_key_enabled(&mut self, enabled: bool) -> Result<(), RuntimeError> {
-        self.nine_key = enabled;
+        self.set_key_grid(enabled.then_some(KeyGrid::NineKey))
+    }
+    fn set_key_grid(&mut self, grid: Option<KeyGrid>) -> Result<(), RuntimeError> {
+        self.key_grid = grid;
         self.nine_key_spellings.clear();
         Ok(())
     }
+    /// 14 键的组码照原样记成字母，拼写条给两个读音，和九键的数字一样。
+    fn grid_key(&mut self, letter: u8) -> Result<EngineResult, RuntimeError> {
+        if self.key_grid != Some(KeyGrid::FourteenKey) || !letter.is_ascii_lowercase() {
+            return Ok(empty_result(false));
+        }
+        self.text.push(letter as char);
+        self.nine_key_spellings = vec!["ni".into(), "bi".into()];
+        Ok(empty_result(true))
+    }
     fn choose_nine_key_spelling(&mut self, index: usize) -> Result<EngineResult, RuntimeError> {
-        if !self.nine_key || index >= self.nine_key_spellings.len() {
+        if self.key_grid.is_none() || index >= self.nine_key_spellings.len() {
             return Ok(empty_result(false));
         }
         self.text = self.nine_key_spellings[index].clone();
@@ -859,7 +936,10 @@ impl InputEngine for Fixture {
         }
         Ok(EngineSnapshot {
             scheme: self.scheme,
-            nine_key: self.nine_key,
+            nine_key: self.key_grid == Some(KeyGrid::NineKey),
+            key_grid: self.key_grid,
+            // 这里只有网格的按键会给出拼写条，硬件字母和 `command` 都不会，所以拼写条非空就是网格在组字。
+            grid_composing: self.key_grid.is_some() && !self.nine_key_spellings.is_empty(),
             nine_key_spellings: self.nine_key_spellings.clone(),
             nine_key_reading: String::new(),
             nine_key_single_character: false,
@@ -907,7 +987,7 @@ impl InputEngine for Fixture {
         })
     }
     fn character(&mut self, value: u8, _shift: bool) -> Result<EngineResult, RuntimeError> {
-        if self.nine_key && (b'2'..=b'9').contains(&value) {
+        if self.key_grid == Some(KeyGrid::NineKey) && (b'2'..=b'9').contains(&value) {
             self.text.push(value as char);
             self.nine_key_spellings = vec!["ni".into(), "mi".into()];
             return Ok(empty_result(true));
@@ -1182,7 +1262,7 @@ fn runtime() -> Runtime<Fixture> {
         Fixture {
             scheme: 0,
             dedicated_english: false,
-            nine_key: false,
+            key_grid: None,
             nine_key_spellings: Vec::new(),
             local_mode: "none".into(),
             words: (0..12).map(|n| format!("candidate-{n}")).collect(),
@@ -1234,7 +1314,7 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
             Fixture {
                 scheme: 0,
                 dedicated_english: false,
-                nine_key: false,
+                key_grid: None,
                 nine_key_spellings: Vec::new(),
                 local_mode: "none".into(),
                 words: words.iter().map(|word| (*word).into()).collect(),
@@ -1284,8 +1364,7 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
             .collect::<Vec<_>>(),
         vec!["本地", "云一", "云二", "AI"]
     );
-    // With a cloud candidate present English sits after AI, and a second English candidate waits
-    // behind the seated ones rather than displacing anything.
+    // 有云候选时英文排在 AI 后面，第二条英文候选排在已入座的候选之后，不挤占任何位置。AI 的座位只坐第一条，第二条排在整个列表最后（#6888）。
     assert_eq!(
         seated(
             &["AI 一", "AI 二", "英一", "英二", "云", "本地"],
@@ -1294,7 +1373,51 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
         .into_iter()
         .map(|(text, _)| text)
         .collect::<Vec<_>>(),
-        vec!["本地", "云", "AI 一", "AI 二", "英一", "英二"]
+        vec!["本地", "云", "AI 一", "英一", "英二", "AI 二"]
+    );
+
+    // AI 占位行（来源 12）和 AI 候选坐同一个座位；回答到达后其余候选的位置一个都不变。
+    let texts = |rows: Vec<(String, String)>| -> Vec<String> {
+        rows.into_iter().map(|(text, _)| text).collect()
+    };
+    let pending = texts(seated(
+        &["本地一", "本地二", "…", "本地三", "英一", "😀"],
+        vec![0, 0, 12, 0, 4, 6],
+    ));
+    assert_eq!(pending, ["本地一", "英一", "…", "😀", "本地二", "本地三"]);
+    let answered = texts(seated(
+        &[
+            "本地一",
+            "本地二",
+            "AI 一",
+            "本地三",
+            "英一",
+            "😀",
+            "AI 二",
+            "AI 三",
+        ],
+        vec![0, 0, 3, 0, 4, 6, 3, 3],
+    ));
+    assert_eq!(
+        answered,
+        [
+            "本地一",
+            "英一",
+            "AI 一",
+            "😀",
+            "本地二",
+            "本地三",
+            "AI 二",
+            "AI 三"
+        ]
+    );
+    // 后到的云候选只让出它自己的一格，占位行仍紧跟在云候选后面。
+    assert_eq!(
+        texts(seated(
+            &["本地一", "云", "…", "本地二", "英一"],
+            vec![0, 2, 12, 0, 4]
+        )),
+        ["本地一", "云", "…", "英一", "本地二"]
     );
 }
 
@@ -1357,7 +1480,7 @@ fn promoted_english_candidate_keeps_the_first_seat_with_cloud_and_ai() {
             Fixture {
                 scheme: 0,
                 dedicated_english: false,
-                nine_key: false,
+                key_grid: None,
                 nine_key_spellings: Vec::new(),
                 local_mode: "none".into(),
                 words: words.iter().map(|word| (*word).into()).collect(),
@@ -1481,7 +1604,7 @@ fn a_chosen_phrase_piece_waits_for_the_rest_of_the_phrase() {
             Fixture {
                 scheme: 0,
                 dedicated_english: false,
-                nine_key: false,
+                key_grid: None,
                 nine_key_spellings: Vec::new(),
                 local_mode: "none".into(),
                 words: vec!["海滩".into(), "跑步".into()],
@@ -1583,7 +1706,7 @@ fn a_phrase_piece_survives_the_reading_being_deleted() {
         Fixture {
             scheme: 0,
             dedicated_english: false,
-            nine_key: false,
+            key_grid: None,
             nine_key_spellings: Vec::new(),
             local_mode: "none".into(),
             words: vec!["海滩".into(), "跑步".into()],
@@ -2001,7 +2124,7 @@ fn candidate_codes_follow_candidates_in_page_and_complete_snapshots() {
         Fixture {
             scheme: 2,
             dedicated_english: false,
-            nine_key: false,
+            key_grid: None,
             nine_key_spellings: Vec::new(),
             local_mode: "none".into(),
             words: vec!["甲".into(), "乙".into()],
@@ -2623,6 +2746,160 @@ fn nine_key_mode_owns_digits_and_spelling_choices_are_generation_scoped() {
     ));
 }
 
+/// 14 键与九键共用拼写条和分词键：选拼写不会被当成过期请求，`'` 不变成中文引号；但数字不是 14 键的输入，照常是选词键。`View::key_grid` 说出网格，`nine_key` 只表示九键。
+#[test]
+fn fourteen_key_shares_the_spelling_strip_and_separator_while_digits_still_pick() {
+    let mut runtime = runtime();
+    runtime.focus(true).unwrap();
+    assert_eq!(runtime.view().key_grid, "none");
+    runtime.set_key_grid(Some(KeyGrid::FourteenKey)).unwrap();
+    let view = runtime.view();
+    assert_eq!(view.key_grid, "fourteen_key");
+    assert!(!view.nine_key);
+
+    let typed = runtime.dispatch(Action::GridKey(b'b')).unwrap();
+    assert!(typed.handled && typed.commit.is_none());
+    assert_eq!(typed.view.nine_key_spellings, ["ni", "bi"]);
+    let separator = runtime
+        .dispatch(Action::Character {
+            value: b'\'',
+            shift: false,
+        })
+        .unwrap();
+    assert!(!separator.handled && separator.commit.is_none());
+    let selected = runtime
+        .dispatch(Action::ChooseNineKeySpelling(NineKeySpellingId {
+            session: separator.view.session,
+            generation: separator.view.generation,
+            index: 0,
+        }))
+        .unwrap();
+    assert!(selected.handled && selected.view.editing_text == "ni");
+    let picked = runtime
+        .dispatch(Action::Character {
+            value: b'2',
+            shift: false,
+        })
+        .unwrap();
+    assert_eq!(picked.commit.as_deref(), Some("candidate-1"));
+
+    // 九键下 `GridKey` 不处理；关掉网格后 `View::key_grid` 回到 none。
+    runtime.set_key_grid(Some(KeyGrid::NineKey)).unwrap();
+    assert_eq!(runtime.view().key_grid, "nine_key");
+    assert!(runtime.view().nine_key);
+    assert!(!runtime.dispatch(Action::GridKey(b'b')).unwrap().handled);
+    // 14 键开着时关九键，网格也要真的关掉。
+    runtime.set_key_grid(Some(KeyGrid::FourteenKey)).unwrap();
+    runtime.set_nine_key_enabled(false).unwrap();
+    assert_eq!(runtime.view().key_grid, "none");
+}
+
+/// 退格收回 14 键里的一次选词：读音是组码字母，要从 `grid_key` 打回网格，从 `character` 进就成了全拼 26 键的组字，之后 14 键的键全都不处理。同一个 14 键布局下用硬件键盘打的 26 键组字，照样从 `character` 打回去。
+#[test]
+fn retreating_a_fourteen_key_selection_types_the_codes_back_on_the_grid() {
+    let start = |grid_keys: bool| {
+        let mut runtime = runtime();
+        runtime.set_phrase_preedit(true);
+        runtime.focus(true).unwrap();
+        runtime.set_key_grid(Some(KeyGrid::FourteenKey)).unwrap();
+        runtime.engine.remaining_after_select = Some("g".into());
+        for &letter in b"bug" {
+            let typed = if grid_keys {
+                runtime.dispatch(Action::GridKey(letter))
+            } else {
+                runtime.dispatch(Action::Character {
+                    value: letter,
+                    shift: false,
+                })
+            };
+            assert!(typed.unwrap().handled);
+        }
+        let first = runtime.view().candidates[0].id;
+        let held = runtime.dispatch(Action::Select(first)).unwrap();
+        assert_eq!(held.view.phrase_prefix, "candidate-0");
+        assert_eq!(held.view.editing_text, "g");
+        runtime
+    };
+
+    let mut grid = start(true);
+    let restored = grid.dispatch(Action::Command(Command::Backspace)).unwrap();
+    assert!(restored.handled && restored.commit.is_none());
+    assert_eq!(restored.view.key_grid, "fourteen_key");
+    assert_eq!(restored.view.editing_text, "bu");
+    assert!(restored.view.phrase_prefix.is_empty());
+    assert_eq!(restored.view.nine_key_spellings, ["ni", "bi"]);
+
+    let mut hardware = start(false);
+    let restored = hardware
+        .dispatch(Action::Command(Command::Backspace))
+        .unwrap();
+    assert_eq!(restored.view.editing_text, "bu");
+    assert!(restored.view.nine_key_spellings.is_empty());
+}
+
+/// 14 键的原样上屏是结束组字，从宿主高亮的那一行开始，与 `Finish` 相同：重排后用户看到的首位不一定是引擎的首位。九键的原样上屏照旧交给引擎上屏数字。
+#[test]
+fn fourteen_key_commit_raw_finishes_from_the_highlighted_row() {
+    let mut runtime = runtime();
+    runtime.focus(true).unwrap();
+    runtime.set_key_grid(Some(KeyGrid::FourteenKey)).unwrap();
+    for &letter in b"bu" {
+        runtime.dispatch(Action::GridKey(letter)).unwrap();
+    }
+    runtime.dispatch(Action::NextCandidate).unwrap();
+    let committed = runtime
+        .dispatch(Action::Command(Command::CommitRaw))
+        .unwrap();
+    assert_eq!(
+        committed.commit.as_deref(),
+        Some("candidate-1-remaining-segments")
+    );
+    assert!(committed.view.editing_text.is_empty());
+
+    runtime.set_key_grid(Some(KeyGrid::NineKey)).unwrap();
+    for &digit in b"64" {
+        runtime
+            .dispatch(Action::Character {
+                value: digit,
+                shift: false,
+            })
+            .unwrap();
+    }
+    let raw = runtime
+        .dispatch(Action::Command(Command::CommitRaw))
+        .unwrap();
+    assert!(raw.commit.is_none(), "{:?}", raw.commit);
+}
+
+/// 九键要求方案能打九键，14 键只给全拼；组字中不能换网格。
+#[test]
+fn key_grid_checks_the_scheme_and_the_composition() {
+    let mut runtime = runtime();
+    runtime.focus(true).unwrap();
+    type_key(&mut runtime);
+    for grid in [None, Some(KeyGrid::NineKey), Some(KeyGrid::FourteenKey)] {
+        assert!(matches!(
+            runtime.set_key_grid(grid),
+            Err(RuntimeError::CompositionActive)
+        ));
+    }
+    runtime.dispatch(Action::Command(Command::Cancel)).unwrap();
+    runtime.engine.scheme = msime_engine::SchemeType::Shuangpin as u8;
+    runtime.refresh().unwrap();
+    for grid in [Some(KeyGrid::NineKey), Some(KeyGrid::FourteenKey)] {
+        assert!(matches!(
+            runtime.set_key_grid(grid),
+            Err(RuntimeError::InvalidNineKeyScheme)
+        ));
+    }
+    runtime.engine.scheme = msime_engine::SchemeType::Zhuyin as u8;
+    runtime.refresh().unwrap();
+    assert!(matches!(
+        runtime.set_key_grid(Some(KeyGrid::FourteenKey)),
+        Err(RuntimeError::InvalidNineKeyScheme)
+    ));
+}
+
 #[test]
 fn unavailable_numeric_slot_does_not_jump_back_to_first_page() {
     let mut runtime = runtime();
@@ -3212,6 +3489,7 @@ fn real_engine_options(root: &std::path::Path) -> msime_engine::host::EngineOpti
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
@@ -4664,7 +4942,7 @@ fn withholding_runtime(offered: usize, withheld: usize, page_size: u8) -> Runtim
         Fixture {
             scheme: 0,
             dedicated_english: false,
-            nine_key: false,
+            key_grid: None,
             nine_key_spellings: Vec::new(),
             local_mode: "none".into(),
             words: (0..offered).map(|n| format!("candidate-{n}")).collect(),
@@ -7007,4 +7285,125 @@ fn the_sentence_is_corrected_in_place_and_committed_whole() {
         .unwrap();
     assert_eq!(entered.commit.as_deref(), Some("我去北京"));
     assert_eq!(entered.diagnostic, None);
+}
+
+/// 读音 ni 有六个本地候选的真 Engine，开着 AI 座位。
+fn ai_seat_runtime(root: &std::path::Path) -> Runtime {
+    let dictionaries = root.join("dictionaries");
+    std::fs::create_dir_all(&dictionaries).unwrap();
+    rusqlite::Connection::open(dictionaries.join(msime_engine::assets::MAIN_DICTIONARY))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);\
+             INSERT INTO tbl_1_n VALUES('ni','n','你',100),('ni','n','拟',90),('ni','n','妮',80),\
+             ('ni','n','倪',70),('ni','n','泥',60),('ni','n','尼',50);",
+        )
+        .unwrap();
+    let mut session = msime_engine::host::Session::new(&real_engine_options(root)).unwrap();
+    assert!(session.set_ai_seat(true));
+    let mut runtime = Runtime::new(session, 9).unwrap();
+    runtime.focus(true).unwrap();
+    runtime
+}
+
+/// #6888：真 Engine 上的 AI 座位。占位行（来源 12）在回答到达前占住座位，数字键选它什么都不上屏，回答到达后同一页上别的候选一个都不挪位。
+#[test]
+fn the_ai_seat_holds_still_through_the_answer_and_its_digit_commits_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runtime = ai_seat_runtime(directory.path());
+    type_characters(&mut runtime, "ni");
+    let before = runtime.view();
+    let seat = before
+        .candidates
+        .iter()
+        .position(|candidate| candidate.source == 12)
+        .expect("an AI placeholder");
+    assert_eq!(before.candidates[seat].text, "…");
+
+    let digit = runtime
+        .dispatch(Action::Character {
+            value: b'1' + u8::try_from(seat).unwrap(),
+            shift: false,
+        })
+        .unwrap();
+    assert!(digit.handled);
+    assert_eq!(digit.commit, None);
+    assert_eq!(digit.view.editing_text, "ni");
+
+    let mut query = runtime.online_query().unwrap().unwrap();
+    query.ai_assistant =
+        Some(serde_json::from_value(json!({"enabled": true, "candidate_limit": 3})).unwrap());
+    assert!(runtime
+        .apply_online_candidates(
+            &query,
+            &["合成一".into(), "合成二".into(), "合成三".into()],
+            1
+        )
+        .unwrap());
+    let after = runtime.view();
+    assert_eq!(after.candidates[seat].text, "合成一");
+    assert_eq!(after.candidates[seat].source, 3);
+    for (index, candidate) in before.candidates.iter().enumerate() {
+        if index != seat {
+            assert_eq!(after.candidates[index].text, candidate.text, "seat {index}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_ai_answer_leaves_a_dash_in_the_seat_until_the_composition_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runtime = ai_seat_runtime(directory.path());
+    type_characters(&mut runtime, "ni");
+    let query = runtime.online_query().unwrap().unwrap();
+    let texts = |runtime: &Runtime| -> Vec<String> {
+        runtime
+            .view()
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.text)
+            .collect()
+    };
+    let pending = texts(&runtime);
+    let generation = runtime.generation();
+    assert!(!runtime
+        .resolve_online_candidates_owned(query.clone(), 0)
+        .unwrap());
+    assert!(runtime
+        .resolve_online_candidates_owned(query.clone(), 1)
+        .unwrap());
+    assert!(runtime.generation() > generation);
+    let resolved = texts(&runtime);
+    let seat = pending.iter().position(|text| text == "…").unwrap();
+    assert_eq!(resolved[seat], "—");
+    assert_eq!(resolved.len(), pending.len());
+
+    type_characters(&mut runtime, "h");
+    runtime
+        .dispatch(Action::Command(Command::Backspace))
+        .unwrap();
+    assert_eq!(texts(&runtime), pending);
+    assert!(!runtime.resolve_online_candidates_owned(query, 1).unwrap());
+}
+
+/// #6888：重排模型不拿 AI 候选和它的占位行比较。在线座位总会把它们放回 AI 座位，若让它们参与，回答一到就可能抢走本来要提到首位的本地候选，本地候选的次序随之改变。
+#[test]
+fn the_reranker_never_weighs_ai_rows_or_their_placeholder() {
+    use msime_engine::ordering::{rerank_pick, ParallelOrderRows};
+    let mut reranker = Reranker::new(std::sync::Arc::new(favouring_model(
+        &['寒', '韓', '漢'],
+        &['漢'],
+    )));
+    let texts: Vec<String> = ["寒", "韓", "漢"].map(str::to_owned).to_vec();
+    let answers = vec![true; 3];
+    let corrected = vec![false; 3];
+    for (source, expected) in [(LATTICE_SOURCE, Some(2)), (3, None), (12, None)] {
+        let sources = vec![LATTICE_SOURCE, LATTICE_SOURCE, source];
+        let rows = ParallelOrderRows::new(&texts, &sources, &answers, &corrected);
+        assert_eq!(
+            rerank_pick(&mut reranker, "", 0, true, &rows),
+            expected,
+            "source {source}"
+        );
+    }
 }

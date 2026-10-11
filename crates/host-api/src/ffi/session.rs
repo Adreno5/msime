@@ -77,17 +77,18 @@ pub unsafe extern "C" fn msime_client_create(options: *const u8, length: usize) 
         .ok_or_else(|| "dictionary maintenance busy".to_owned())?;
         let mut engine = Session::new(&options).map_err(|e| e.to_string())?;
         // Gate on the scheme actually run, as `apply_pending` does, so a preferred scheme that fell back to Quanpin starts in the same mode a rebuild would give it.
-        let default_nine_key =
-            layout_starts_nine_key(SchemeType::from_u8(options.scheme), &applied);
-        if default_nine_key {
+        let default_key_grid = layout_key_grid(SchemeType::from_u8(options.scheme), &applied);
+        if default_key_grid.is_some() {
             engine
-                .set_nine_key_enabled(true)
+                .set_key_grid(default_key_grid)
                 .map_err(|e| e.to_string())?;
         }
         // Places in `@` mode start off in every engine, so the session carries the preference over itself, as `apply_pending` does on a rebuild.
         engine
             .set_mention_places(applied.local_modes.mention_places)
             .map_err(|e| e.to_string())?;
+        // AI 请求发得出去时，可以问 AI 的组字先在 AI 座位上放占位行，回答到达时不挪动其他候选（#6888）。会话密钥要等 `msime_client_set_ai_credential` 才到，到时再重算。
+        engine.set_ai_seat(ai_seat_ready(&applied.ai_assistant, None));
         // 默认输入状态 says which state a new focus session starts in, and the
         // host applies it as its own English passthrough - letters go straight
         // to the document, with no session involved. It is not the Engine's
@@ -142,7 +143,7 @@ pub unsafe extern "C" fn msime_client_create(options: *const u8, length: usize) 
                     english_mode: false,
                     caps_lock: false,
                     page_size_override: None,
-                    nine_key_override: None,
+                    key_grid_override: None,
                     statistics_private: false,
                     ai_credential: None,
                     ai_provider_cache,

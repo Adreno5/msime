@@ -44,7 +44,7 @@ https://inputtools.google.com/request?text=ni%20hao&itc=zh-t-i0-pinyin&num=1&ie=
 
 ### 候选翻译（默认不联网）
 
-`candidate_translations` 默认 `true`，支持腾讯机器翻译（`https://tmt.tencentcloudapi.com`）、小牛翻译（`https://api.niutrans.com/v2/text/translate`）和自定义端点。三者都要求你在设置里填入自己的 API 凭据，默认全为空字符串——**没有凭据就不会发出请求**，开关为真也一样。发送内容是待翻译的候选词。代码在 `crates/client-core/src/credential/translation.rs`。
+`candidate_translations` 默认 `true`，支持腾讯机器翻译（`https://tmt.tencentcloudapi.com`）、小牛翻译（`https://api.niutrans.com/v2/text/translate`）和自定义端点。三者都要求你在设置里填入自己的 API 凭据，默认全为空字符串——**没有凭据就不会发出请求**，开关为真也一样。发送内容是待翻译的候选词。代码在 `crates/client-core/src/credential/translation.rs`。自定义端点的主机名恰好是 `api.deepl.com` 或 `api-free.deepl.com`（https、默认端口）时，按 DeepL v2 格式带上你填的密钥发给 DeepL：密钥以 `:fx` 结尾的发往 `https://api-free.deepl.com/v2/translate`，其余发往 `https://api.deepl.com/v2/translate`，与你填的是两个 DeepL 主机中的哪一个无关；这种地址没有密钥时不发。其他自定义端点原样使用你填的地址。请求由 `crates/client-core/src/translation.rs` 的 `custom_translation_request` 构造，Linux provider（`platforms/linux/scripts/msime-linux-online-provider`）照写的一份由 `shared/contracts/custom-translation/cases.json` 的共享用例约束。
 
 macOS、iOS、Android 和 Linux 另提供「水杉账号」（`translation_account`）：选择它后，会把当前页的中文候选词（包括本地已有释义的）连同目标语言代码 POST 到 `https://api.msime.app/v1/translate`。请求带账号令牌：macOS 与 Android 在你已登录时用登录的账号，否则（以及 iOS 上始终）用安装后首次启动时注册的本机匿名账号（见[账号与同步](#账号与同步需要登录)）。所有平台新装和「恢复默认设置」都不选它，只有你显式选择才发送；已有配置文件里存着选择的，升级沿用，缺这个字段的按未选择处理。不想发送，在设置的翻译服务里改选别的服务或「不使用在线翻译」，或关掉候选翻译。你自己的服务优先：候选翻译关闭、小牛或自定义服务已启用、或腾讯已启用且两项凭据都可用时，都不走水杉账号。共享层把这个判定算成翻译查询里的 `translation_account` 字段（`crates/host-api/src/ffi/providers.rs`），各宿主只在它为真时发请求。Windows、HarmonyOS 没有这条路径。没有选择任何服务时不发出候选翻译请求。
 

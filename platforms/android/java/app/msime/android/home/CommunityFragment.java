@@ -1,5 +1,9 @@
 package app.msime.android.home;
 
+import app.msime.android.LayoutPolicy;
+
+import app.msime.android.DimensionPolicy;
+
 import app.msime.android.TextPolicy;
 import app.msime.android.ViewPolicy;
 import app.msime.android.core.InputViewValuePolicy;
@@ -66,6 +70,7 @@ public final class CommunityFragment extends Fragment {
     @Nullable private CommunityRequest.Category category;
     private boolean loading;
     private boolean hasMore;
+    private long requestGeneration;
     // 预览按用户自己的布局画。读不到就按 26 键，那是默认值。
     private boolean nineKey;
 
@@ -246,6 +251,7 @@ public final class CommunityFragment extends Fragment {
         if (view == null) return;
         // Only paging defers to a request already in flight. A new tab or a new search must go out even mid-load, or switching tabs while the first page is arriving does nothing at all; the reply that was already on its way is discarded below by the same check.
         if (loading && !fresh) return;
+        long request = ++requestGeneration;
         loading = true;
         if (fresh) {
             hasMore = false;
@@ -268,8 +274,8 @@ public final class CommunityFragment extends Fragment {
                 return new LoadedPage(page, before, java.util.Objects.equals(before, after));
             },
             loaded -> {
-                // The tab, the search or the category may have moved on while this page was in flight. A stale answer must not write over what the user is now looking at, and must not clear the flag belonging to the request that replaced it.
-                if (segment != kind || requested != section || !term.equals(search)
+                // 同一筛选条件也可能连续请求；旧结果不能填入新列表或清掉新请求的加载状态。
+                if (request != requestGeneration || segment != kind || requested != section || !term.equals(search)
                         || filter != requestCategory()) {
                     return;
                 }
@@ -320,8 +326,7 @@ public final class CommunityFragment extends Fragment {
         View view = getView();
         if (view == null) return;
         TextView state = view.findViewById(R.id.community_state);
-        state.setText(message);
-        ViewPolicy.setVisibilityForText(state, message);
+        ViewPolicy.setTextAndVisibility(state, message);
         ViewPolicy.setVisible(view.findViewById(R.id.community_retry), retryable);
     }
 
@@ -459,9 +464,9 @@ public final class CommunityFragment extends Fragment {
     /** 举报：one of the fixed reasons and an optional detail, sent with this device's account (the anonymous one counts). */
     private void report(CommunityCatalog.Item item) {
         Context context = requireContext();
-        int padding = Ui.dp(context, 20);
-        LinearLayout form = Ui.column(context);
-        ViewPolicy.setPadding(form, padding, Ui.dp(context, 8), padding, 0);
+        int padding = DimensionPolicy.pixels(context, 20);
+        LinearLayout form = LayoutPolicy.column(context);
+        ViewPolicy.setPadding(form, padding, DimensionPolicy.pixels(context, 8), padding, 0);
         RadioGroup reasons = new RadioGroup(context);
         for (String reason : CommunityRequest.REPORT_REASONS) {
             RadioButton choice = new RadioButton(context);

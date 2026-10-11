@@ -10461,6 +10461,176 @@ private:
 
   // ---- 输入 ----
 
+  // One text's codes in the 86 and 98 tables, as `wubi_codes` answers them, short codes first.
+  struct WubiTextCodes {
+    std::wstring text;
+    std::vector<std::wstring> wubi86, wubi98;
+  };
+
+  struct WubiCodeLookup {
+    std::optional<WubiTextCodes> phrase;
+    std::vector<WubiTextCodes> characters;
+    bool truncated = false;
+  };
+
+  // 五笔查码, as the shared page's WubiCodeLookupSection (packages/ui/src/settings/wubi-code-lookup-section.tsx): the text goes to the dictionary request `wubi_codes`, read-only, and every distinct character (and the whole text as one word) is listed with its 86 and 98 codes, short codes first.
+  void build_wubi_code_lookup(StackPanel const &page) {
+    auto group = add_group(page, L"五笔查码");
+    TextBox input;
+    input.AcceptsReturn(true);
+    input.TextWrapping(TextWrapping::Wrap);
+    input.MinHeight(64);
+    // The host refuses text over 4096 bytes; a thousand characters, even four-byte extension ones, stay inside it.
+    input.MaxLength(1000);
+    input.PlaceholderText(L"例如：水杉输入法");
+    input.Text(hstring(wubi_lookup_text_));
+    A11y::SetName(input, L"要查五笔编码的文字");
+    Button search;
+    search.Content(box_value(L"查码"));
+    search.Height(32);
+    search.Padding(Thickness{16, 0, 16, 0});
+    const auto searchable = [this] {
+      return !wubi_lookup_busy_ &&
+             wubi_lookup_text_.find_first_not_of(L" \t\r\n") != std::wstring::npos;
+    };
+    search.IsEnabled(searchable());
+    input.TextChanged([this, searchable, weak_search = make_weak(search)](
+                          Inspectable const &sender, TextChangedEventArgs const &) {
+      wubi_lookup_text_ = std::wstring(sender.as<TextBox>().Text().c_str());
+      if (auto button = weak_search.get())
+        button.IsEnabled(searchable());
+    });
+    search.Click([this](Inspectable const &, RoutedEventArgs const &) { lookup_wubi_codes(); });
+
+    StackPanel below;
+    below.Spacing(8);
+    below.Margin(Thickness{61, 0, 25, 16});
+    below.Children().Append(input);
+    below.Children().Append(search);
+    if (!wubi_lookup_error_.empty())
+      below.Children().Append(make_text(wubi_lookup_error_, 12, palette_.text));
+    if (wubi_lookup_) {
+      std::vector<WubiTextCodes> rows;
+      if (wubi_lookup_->phrase)
+        rows.push_back(*wubi_lookup_->phrase);
+      rows.insert(rows.end(), wubi_lookup_->characters.begin(), wubi_lookup_->characters.end());
+      if (rows.empty())
+        below.Children().Append(make_text(L"没有可以查的汉字。", 12, palette_.sub));
+      else
+        below.Children().Append(wubi_code_table(rows));
+      if (wubi_lookup_->truncated)
+        below.Children().Append(make_text(
+            L"字太多，只列出了前 " + std::to_wstring(wubi_lookup_->characters.size()) + L" 个不同的字。",
+            12, palette_.sub));
+    }
+    add_row(group, 0xE721, L"查汉字的五笔编码",
+            L"输入或粘贴汉字，列出每个字的 86 和 98 五笔编码，简码在前、全码在后。打字时也能查：五笔拼音混输关闭时先按 z 再打拼音，候选后面标着它的五笔编码。",
+            nullptr, below);
+  }
+
+  // The result table: 文字, then the 86 and 98 columns, the chosen table marked （当前）; a table without the text's codes shows —.
+  FrameworkElement wubi_code_table(std::vector<WubiTextCodes> const &rows) {
+    Grid table;
+    table.ColumnSpacing(16);
+    table.RowSpacing(6);
+    for (auto width : {GridLength{1, GridUnitType::Auto}, GridLength{1, GridUnitType::Star},
+                       GridLength{1, GridUnitType::Star}}) {
+      ColumnDefinition column;
+      column.Width(width);
+      table.ColumnDefinitions().Append(column);
+    }
+    const auto profile = document_.String(L"wubi_profile", L"wubi86");
+    const auto place = [&table](FrameworkElement const &cell, int32_t row, int32_t column) {
+      Grid::SetRow(cell, row);
+      Grid::SetColumn(cell, column);
+      table.Children().Append(cell);
+    };
+    const auto add_row_definition = [&table] {
+      RowDefinition definition;
+      definition.Height(GridLength{1, GridUnitType::Auto});
+      table.RowDefinitions().Append(definition);
+    };
+    add_row_definition();
+    place(make_text(L"文字", 12, palette_.sub), 0, 0);
+    place(make_text(profile == L"wubi86" ? L"86 五笔（当前）" : L"86 五笔", 12, palette_.sub), 0, 1);
+    place(make_text(profile == L"wubi98" ? L"98 五笔（当前）" : L"98 五笔", 12, palette_.sub), 0, 2);
+    const auto joined = [](std::vector<std::wstring> const &codes) {
+      if (codes.empty())
+        return std::wstring(L"—");
+      std::wstring text;
+      for (auto const &code : codes)
+        text += (text.empty() ? L"" : L" ") + code;
+      return text;
+    };
+    int32_t row = 1;
+    for (auto const &item : rows) {
+      add_row_definition();
+      auto word = make_text(item.text, 14, palette_.text);
+      word.IsTextSelectionEnabled(true);
+      place(word, row, 0);
+      for (int32_t column = 1; column <= 2; ++column) {
+        auto codes = make_text(joined(column == 1 ? item.wubi86 : item.wubi98), 14, palette_.text);
+        codes.FontFamily(FontFamily(L"Consolas"));
+        codes.IsTextSelectionEnabled(true);
+        place(codes, row, column);
+      }
+      ++row;
+    }
+    return table;
+  }
+
+  // Only one lookup at a time: the button is disabled while one runs, so the answer is always for the last text sent.
+  void lookup_wubi_codes() {
+    if (wubi_lookup_busy_)
+      return;
+    const auto options = runtime_options_document();
+    if (!options) {
+      wubi_lookup_.reset();
+      wubi_lookup_error_ = L"查码失败，请稍后重试。";
+      render_page(true);
+      return;
+    }
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"wubi_codes"));
+    action.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(wubi_lookup_text_)));
+    wubi_lookup_busy_ = true;
+    wubi_lookup_error_.clear();
+    run_host(
+        [options = *options, body = utf8(action.Stringify())] {
+          return settings_dictionary_call(options, body);
+        },
+        [this](Response const &response) {
+          wubi_lookup_busy_ = false;
+          wubi_lookup_.reset();
+          try {
+            if (!response.ok)
+              throw std::runtime_error("wubi_codes refused");
+            const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+            const auto read = [](JsonObject const &object) {
+              WubiTextCodes codes{named_string(object, L"text"), {}, {}};
+              for (auto const &code : object.GetNamedArray(L"wubi86"))
+                codes.wubi86.emplace_back(code.GetString().c_str());
+              for (auto const &code : object.GetNamedArray(L"wubi98"))
+                codes.wubi98.emplace_back(code.GetString().c_str());
+              return codes;
+            };
+            WubiCodeLookup lookup;
+            const auto phrase = value.GetNamedValue(L"phrase", JsonValue::CreateNullValue());
+            if (phrase.ValueType() == JsonValueType::Object)
+              lookup.phrase = read(phrase.GetObject());
+            for (auto const &item : value.GetNamedArray(L"characters"))
+              lookup.characters.push_back(read(item.GetObject()));
+            lookup.truncated = value.GetNamedBoolean(L"truncated", false);
+            wubi_lookup_ = std::move(lookup);
+          } catch (...) {
+            wubi_lookup_error_ = L"查码失败，请稍后重试。";
+          }
+          if (!closed_ && current_page_ == "typing")
+            render_page(true);
+        });
+    render_page(true);
+  }
+
   void build_typing_page(StackPanel const &page) {
     const auto scheme = document_.String(L"scheme", MSIME_EDITION_DEFAULT_SCHEME_W);
     auto schemes = add_group(page, L"输入方案");
@@ -10511,6 +10681,8 @@ private:
                L"五笔输入达到四码且只有一个候选时，自动提交该候选。关闭后这个词留在候选列表里，用空格或数字键选它。",
                L"wubi_auto_commit_unique", true);
     }
+    if (scheme == L"wubi" || indexing_)
+      build_wubi_code_lookup(page);
 
     auto language = add_group(page, L"中英文");
     segment_row(language, 0xE774, L"默认中英文", L"新焦点会话开始时使用的中文或英文状态",
@@ -10654,6 +10826,10 @@ private:
                         }});
     }
     auto local = add_group(page, L"快捷模式");
+    // 总开关：关掉后没有输入时 Shift+字母照常打出大写字母，下面各模式的勾选保留原值；/ 和 @ 不经过它。
+    bool_row(local, 0xE8D3, L"Shift+字母进入快捷模式",
+             L"关掉后 Shift+字母照常打出大写字母，下面各模式的开关保留，/ 和 @ 不受影响",
+             L"local_modes.shift_letter_entry", true);
     add_row(local, 0xE945, L"快捷模式", L"用引导字母进入对应的输入模式；V、/、@ 只在拼音方案下没有输入时进入，/ 和 @ 还需中文标点", nullptr,
             checks_panel(std::move(checks), 250));
 
@@ -11358,6 +11534,10 @@ private:
                                  doc.SetBoolean(key, value == choice);
                              }, false);
                            }));
+    // 和上面的切换键互不排斥：Caps Lock 是另加的一个键。
+    bool_row(keys, 0xE8AB, L"单按 Caps Lock 切换中英文",
+             L"轻点（300 毫秒内松开）切换中英文，不打开大写锁定；按住更久照常打开大写锁定",
+             L"keybindings.switch_language_caps_lock", false);
     bool_row(keys, 0xE8C1, L"Ctrl+Shift+F 切换繁体输出", L"在简体与繁体输出之间切换",
              L"keybindings.toggle_character_set_ctrl_shift_f", true);
     bool_row(keys, 0xE8D3, L"Alt+Shift+H 切换全半角",
@@ -11366,7 +11546,7 @@ private:
 
     auto reset = add_group(page, L"");
     add_row(reset, 0xE72C, L"恢复默认快捷键",
-            L"切换中英文、Ctrl+Shift+F 和 Alt+Shift+H 恢复为默认设置",
+            L"切换中英文、Caps Lock、Ctrl+Shift+F 和 Alt+Shift+H 恢复为默认设置",
             button_control(L"恢复默认",
                            [this] {
                              change([](PreferencesDocument &doc) {
@@ -18010,6 +18190,11 @@ private:
   bool vocabulary_busy_ = false;
   bool vocabulary_revealed_ = false;
   std::wstring vocabulary_message_;
+  // 五笔查码: the text being looked up and the last answer, kept across redraws.
+  std::wstring wubi_lookup_text_;
+  bool wubi_lookup_busy_ = false;
+  std::optional<WubiCodeLookup> wubi_lookup_;
+  std::wstring wubi_lookup_error_;
   // A ContentDialog of this window is showing.
   bool dialog_open_ = false;
   // 辅助码方案下拉框的自定义码表和辅助码表插件（值是插件 id、标签是插件名）。自定义码表只请求一次；插件在进入「输入」页时标为过期，下一次绘制时重读，同一时间只有一次读取。

@@ -304,11 +304,11 @@ pub(crate) fn insert_expressive_rows(
     insert_mixed_rows(candidates, Vec::new(), emoji, kaomoji)
 }
 
-/// 首选之后；有云候选时在它之后，有 AI 候选时再往后一位。
+/// 首选之后；有云候选时在它之后，有 AI 候选或 AI 占位行时再往后一位。占位行和 AI 候选同样算，回答到达前后英文行的位置才不变（#6888）。
 fn priority_slot(candidates: &[WordItem]) -> usize {
     let (has_ai, has_cloud) = candidates.iter().fold((false, false), |(ai, cloud), item| {
         (
-            ai || item.source == CandidateSource::AiSuggestion,
+            ai || item.source.holds_ai_seat(),
             cloud || item.source == CandidateSource::CloudSuggestion,
         )
     });
@@ -689,6 +689,24 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(words(&with_ai), vec!["你", "云", "智", "Ni", "倪"]);
+    }
+
+    #[test]
+    fn the_ai_placeholder_holds_the_english_slot_like_an_ai_row() {
+        let with_row = |source: CandidateSource, word: &str| {
+            let mut list = chinese();
+            list.insert(2.min(list.len()), row(word, source));
+            insert_mixed_rows(
+                list,
+                vec![row("Ni", CandidateSource::EnglishDictionary)],
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        let pending = with_row(CandidateSource::AiPending, "…");
+        let answered = with_row(CandidateSource::AiSuggestion, "智");
+        let english = |list: &[WordItem]| list.iter().position(|item| item.word == "Ni");
+        assert_eq!(english(&pending), english(&answered));
     }
 
     #[test]

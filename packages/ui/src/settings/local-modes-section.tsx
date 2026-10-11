@@ -31,6 +31,8 @@ export type LocalModePreferences = {
   mention?: boolean;
   /** The @ mode also offers China's provinces, cities and counties from the built-in table, after the user's own names. Absent while off, like the three above. */
   mention_places?: boolean;
+  /** 「Shift+字母进入快捷模式」总开关。和上面几项相反，缺省读作开：早于它的文档里没有这个键。 */
+  shift_letter_entry?: boolean;
 };
 
 export const defaultLocalModes: LocalModePreferences = {
@@ -82,6 +84,19 @@ const localModeRows: readonly [LocalModeKey, string, string][] = [
     "中文模式下按 Shift+R，之后按日语罗马字处理。空格上屏首选；数字选词；上屏后回到中文",
   ],
 ];
+
+/** 从 Shift+字母进入的模式：总开关关掉时它们的开关保留原值，只是暂时不起作用。`/` 和 `@` 不在其中。 */
+const shiftLetterModes: ReadonlySet<LocalModeKey> = new Set<LocalModeKey>([
+  "unicode",
+  "date_time",
+  "quick_phrase",
+  "emoji",
+  "kaomoji",
+  "super_jianpin",
+  "temporary_english",
+  "temporary_japanese",
+  "expression",
+]);
 
 /** The modes a host has to route itself: digits that stay input in V, and the / and @ keys. Shown only where the host does (`HostCapabilities.plugin_triggers`). */
 const triggerModeRows: readonly [LocalModeKey, string, string][] = [
@@ -135,6 +150,8 @@ export interface LocalModesSectionProps {
   translationService?: boolean;
   /** 本版本带临时日文（`HostCapabilities.edition.temporary_japanese`）；为 false 时不列出临时日语开关。缺省为 true。 */
   temporaryJapanese?: boolean;
+  /** 显示「Shift+字母进入快捷模式」总开关（`HostCapabilities.shift_letter_entry_switch`，三个桌面宿主）。触屏键盘从菜单打开这些模式，不显示它。 */
+  shiftLetterEntrySwitch?: boolean;
   onChange: (preferences: LocalModePreferences) => void;
 }
 
@@ -146,8 +163,11 @@ export function LocalModesSection({
   mentions = false,
   translationService,
   temporaryJapanese = true,
+  shiftLetterEntrySwitch = false,
   onChange,
 }: LocalModesSectionProps) {
+  // 只有显示总开关的宿主才按它禁用各行：别的宿主上它永远是缺省的开。
+  const shiftLetterEntry = !shiftLetterEntrySwitch || (preferences.shift_letter_entry ?? true);
   const modeRows = temporaryJapanese
     ? localModeRows
     : localModeRows.filter(([key]) => key !== "temporary_japanese");
@@ -160,6 +180,14 @@ export function LocalModesSection({
     : modeRows;
   return (
     <GroupList title="快捷模式">
+      {shiftLetterEntrySwitch && (
+        <SwitchRow
+          title="Shift+字母进入快捷模式"
+          description="没有输入时按 Shift 加下面各模式的字母进入该模式。关掉后 Shift+字母照常打出大写字母，下面各模式的开关保留，/ 和 @ 不受影响"
+          checked={preferences.shift_letter_entry ?? true}
+          onChange={(checked) => onChange({ ...preferences, shift_letter_entry: checked })}
+        />
+      )}
       {rows.map(([key, label, description]) => (
         <SwitchRow
           key={key}
@@ -172,7 +200,10 @@ export function LocalModesSection({
                 : description
           }
           checked={preferences[key] ?? false}
-          disabled={key === "mention_places" && !preferences.mention}
+          disabled={
+            (key === "mention_places" && !preferences.mention) ||
+            (!shiftLetterEntry && shiftLetterModes.has(key))
+          }
           onChange={(checked) => onChange({ ...preferences, [key]: checked })}
         />
       ))}

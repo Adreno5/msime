@@ -23,7 +23,7 @@ import {
 } from './skin/GlobalTheme';
 import { KeyboardFormFactor } from './KeyboardFormFactor';
 import { AppEdition } from './AppEdition';
-import { KeyboardScheme, PreferenceMapping, SchemeDefinition } from './KeyboardScheme';
+import { KeyboardScheme, KeyGrid, PreferenceMapping, SchemeDefinition } from './KeyboardScheme';
 import { EditorPolicy, EditorTraits } from './input/EditorPolicy';
 import { EditEchoLedger } from './input/EditEchoLedger';
 import { JapaneseSpacePolicy } from './input/JapaneseSpacePolicy';
@@ -1165,9 +1165,8 @@ export class KeyboardSession implements HardwareKeyTarget {
   // Hardware events report this independently of the Engine's dedicated-English mode. The
   // floating toolbar uses it as the same high-priority status shown by the Windows presenter.
   private capsLock: boolean = false;
-  // The grid is the Engine's business too: it decides what a 2 means, and it only reads them as
-  // nine-key spellings once it has been told the grid is up.
-  private nineKeyMode: boolean = false;
+  // 网格也归引擎管：九键下它决定一个 2 是什么意思，14 键下它把一组字母解成拼音，都要先告诉它网格开着。取值见 `KeyGrid`。
+  private keyGrid: number = KeyGrid.NONE;
   // 还没读到 Engine 的视图时按本版本的默认方案算（full 是全拼）。
   private schemeName: string = AppEdition.current().defaultScheme;
   private profileName: string = 'xiaohe';
@@ -1549,7 +1548,8 @@ export class KeyboardSession implements HardwareKeyTarget {
   /** One mode of the global theme. A refused request draws the native tokens rather than failing the session. */
   private resolveTheme(preferences: PreparedPreferences, dark: boolean): ResolvedTheme | null {
     const request: ResolveThemeRequest = {
-      global_theme: preferences.global_theme,
+      // 固定明暗的主题在另一种明暗下按跟随系统解析，见 `GlobalTheme.fitsMode`。两种明暗于是不再一致，`fixedAppearance` 也就不再把各界面钉在那种明暗上。
+      global_theme: GlobalTheme.effectiveId(this.themeCatalog, preferences.global_theme, dark),
       custom_theme: preferences.custom_theme,
       dark: dark,
       layout: preferences.candidate_layout === 'horizontal' ? 'horizontal' : 'vertical',
@@ -1651,8 +1651,8 @@ export class KeyboardSession implements HardwareKeyTarget {
         ? preferences.word_character.keys : 'disabled';
       this.clearSmartPunctuationRepeat();
       this.toolbar = preferences.floating_toolbar;
-      this.nineKeyMode = preferences.touch_keyboard_layout === 'nine_key'
-        && preferences.scheme === 'quanpin';
+      this.keyGrid = KeyboardScheme.keyGrid(preferences.touch_keyboard_layout, preferences.scheme,
+        KeyboardFormFactor.isDesktop());
       this.soundPlayer.configure(KeyboardFormFactor.isDesktop()
         ? KeySoundPolicy.settings(preferences.plugins) : KEY_SOUNDS_OFF, stateRoot);
       this.musicPlayer.configure(KeyboardFormFactor.isDesktop()
@@ -1800,7 +1800,7 @@ export class KeyboardSession implements HardwareKeyTarget {
   private restartIdleSession(reason: string): void {
     const attached: inputMethodEngine.InputClient | undefined = this.inputClient;
     const english: boolean = this.englishMode;
-    const nineKey: boolean = this.nineKeyMode;
+    const keyGrid: number = this.keyGrid;
     const revision: number = this.preferencesRevision;
     const seedLight: AppThemeSeed | null = this.appThemeSeedLight;
     const seedDark: AppThemeSeed | null = this.appThemeSeedDark;
@@ -1811,12 +1811,12 @@ export class KeyboardSession implements HardwareKeyTarget {
       return;
     }
     this.englishMode = english;
-    this.nineKeyMode = nineKey;
+    this.keyGrid = keyGrid;
     if (attached !== undefined && this.inputClient === attached) {
       this.apply(client.focus(this.handle, true));
       this.refreshTypingEffects();
       this.applyView(client.setEnglishMode(this.handle, english));
-      this.applyView(client.setNineKeyMode(this.handle, nineKey));
+      this.applyView(client.setKeyGrid(this.handle, keyGrid));
     }
     // Any rebuild reads the document afresh, whatever it was for, so the surfaces follow whenever the stored preferences moved underneath it.
     if (this.preferencesRevision !== revision) {
@@ -1886,12 +1886,14 @@ export class KeyboardSession implements HardwareKeyTarget {
   keyboardSkin(dark: boolean): KeyboardSkin {
     this.refreshAppTheme(false);
     const seed: AppThemeSeed | null = this.appThemeSeed(dark);
-    const title: string = this.themeTitle(this.globalThemeId);
-    if (this.globalThemeId === 'custom' && this.customDesign !== null) {
+    // 面板按这个 id 标出选中的卡片：所选主题属于另一种明暗时，生效的是「跟随系统」。
+    const id: string = GlobalTheme.effectiveId(this.themeCatalog, this.globalThemeId, dark);
+    const title: string = this.themeTitle(id);
+    if (id === 'custom' && this.customDesign !== null) {
       return KeyboardSkin.fromDesign(title, this.customDesign, dark, seed);
     }
     const theme: ResolvedTheme | null = dark ? this.themeDark : this.themeLight;
-    return KeyboardSkin.fromTheme(this.globalThemeId, title, theme === null ? null : theme.keyboard, dark, seed);
+    return KeyboardSkin.fromTheme(id, title, theme === null ? null : theme.keyboard, dark, seed);
   }
 
   /** 某一模式解析出的季节种子；应用主题无法解析时为 `null`。 */
@@ -1987,7 +1989,10 @@ export class KeyboardSession implements HardwareKeyTarget {
     if (this.themeCatalog.length === 0) {
       return [this.keyboardSkin(dark)];
     }
-    return this.themeCatalog.map((entry: ThemeCatalogEntry): KeyboardSkin => {
+    // 只列当前明暗下能用的主题，见 `GlobalTheme.fitsMode`。
+    const offered: ThemeCatalogEntry[] = this.themeCatalog.filter((entry: ThemeCatalogEntry): boolean =>
+      GlobalTheme.fitsMode(entry.appearance, dark));
+    return offered.map((entry: ThemeCatalogEntry): KeyboardSkin => {
       if (entry.id === this.globalThemeId) {
         return this.keyboardSkin(GlobalTheme.surfaceDark(entry.appearance, dark));
       }
@@ -2703,14 +2708,15 @@ export class KeyboardSession implements HardwareKeyTarget {
     }
   }
 
-  setNineKey(enabled: boolean): void {
-    // This keyboard only offers the Engine's nine-key flag for quanpin — Japanese has its own kana grid, the Zhuyin keypad is Android-only, and the Engine answers "nine-key mode requires the quanpin or zhuyin scheme" for the rest. Asking anyway put a refusal in the log on every Japanese focus.
-    const wanted: boolean = enabled && this.schemeName === 'quanpin';
-    if (this.handle === 0 || this.nineKeyMode === wanted) {
+  /** 告诉引擎键面现在是哪种网格（`KeyGrid`），只在组字结束后调用。 */
+  setKeyGrid(grid: number): void {
+    // 这个键盘只给全拼开引擎的组码网格：日文有自己的假名九宫格，注音九键只有 Android 有，其余方案引擎会拒绝。照样去开的话，每次日文获得焦点都会在日志里留一条拒绝。
+    const wanted: number = this.schemeName === 'quanpin' ? grid : KeyGrid.NONE;
+    if (this.handle === 0 || this.keyGrid === wanted) {
       return;
     }
-    this.nineKeyMode = wanted;
-    this.applyView(client.setNineKeyMode(this.handle, wanted));
+    this.keyGrid = wanted;
+    this.applyView(client.setKeyGrid(this.handle, wanted));
   }
 
   /** Flips the composing language and reports the mode now in force. */
@@ -2991,7 +2997,7 @@ export class KeyboardSession implements HardwareKeyTarget {
       this.apply(client.focus(this.handle, true));
       this.refreshTypingEffects();
       this.applyView(client.setEnglishMode(this.handle, this.englishMode));
-      this.applyView(client.setNineKeyMode(this.handle, this.nineKeyMode));
+      this.applyView(client.setKeyGrid(this.handle, this.keyGrid));
     }
     this.reloadChangedPreferences();
     // 按键反馈和手写板设置是另一个文件，设置应用写它时不会推进偏好修订号，所以每次获得焦点都要读取，而不只在构建会话时读取。文件存在却读不到时保留上次的值，一次读取失败不能把隐私模式当成关闭。
@@ -3288,7 +3294,7 @@ export class KeyboardSession implements HardwareKeyTarget {
     const maintenance: boolean = decision.maintenance;
     const hadSession: boolean = this.handle !== 0;
     const english: boolean = this.englishMode;
-    const nineKey: boolean = this.nineKeyMode;
+    const keyGrid: number = this.keyGrid;
     if (maintenance && hadSession) {
       this.stop();
     }
@@ -3318,12 +3324,12 @@ export class KeyboardSession implements HardwareKeyTarget {
       if (maintenance && hadSession) {
         if (this.start(resources, stateRoot, this.systemDark)) {
           this.englishMode = english;
-          this.nineKeyMode = nineKey;
+          this.keyGrid = keyGrid;
           if (this.inputClient !== undefined) {
             this.apply(client.focus(this.handle, true));
             this.refreshTypingEffects();
             this.applyView(client.setEnglishMode(this.handle, english));
-            this.applyView(client.setNineKeyMode(this.handle, nineKey));
+            this.applyView(client.setKeyGrid(this.handle, keyGrid));
           }
         } else {
           KeyboardLog.error('dictionary maintenance left the session unavailable');
@@ -3402,6 +3408,34 @@ export class KeyboardSession implements HardwareKeyTarget {
       KeyboardLog.error(`composing key produced no composition: scheme=${this.schemeName}`
         + ` local=${this.localMode} english=${this.englishMode} candidates=${this.currentCandidates.length}`
         + ` shift=${shift} caps=${this.capsLock}`);
+    }
+    return consumed;
+  }
+
+  /**
+   * 14 键键面上的一键：`ascii` 是这一组的首字母，经 `msime_client_grid_key` 交给引擎，由它归成组码按网格解码。不走 `press()`：那条路给 26 键字母，会按 Shift 当辅助码、在双拼和英文直出里另有分支，而 14 键的一下是一组字母，不是其中某一个。
+   *
+   * 引擎不受理（26 键正在组字、专用英文或本地模式）时这一下不输入任何东西，与九键在这些情况下的数字键相同；键面在这些情况下本来也不画 14 键。
+   *
+   * 不组字的编辑框（数字、电话、日期这类不是文本的输入框）同样不输入：14 键的一下是一组字母，照字面写进去只能挑这一组的首字母，未必是用户要的那个。与 Android 相同（没有引擎会话时 `gridKey` 不处理）。密码、网址和邮箱框画 26 键（`EditorPolicy.prefersFullFace`），走不到这里。
+   */
+  pressGridKey(ascii: number): boolean {
+    this.clearSmartPunctuationRepeat();
+    if (!this.composes()) {
+      return false;
+    }
+    if (this.handle === 0) {
+      KeyboardLog.error('grid key ignored: no session');
+      return false;
+    }
+    this.tapFeedback();
+    const before: string = this.editing;
+    const handled: boolean = this.apply(client.gridKey(this.handle, ascii));
+    const consumed: boolean = handled || this.editing !== before;
+    if (!consumed) {
+      // 只记失败的形状，不记按键：hilog 能被工具读到，按了什么是用户的输入。
+      KeyboardLog.error(`grid key produced no composition: scheme=${this.schemeName}`
+        + ` local=${this.localMode} english=${this.englishMode} grid=${this.keyGrid}`);
     }
     return consumed;
   }
@@ -3968,6 +4002,8 @@ export class KeyboardSession implements HardwareKeyTarget {
   private onlineEpoch: number = 0;
   private readonly onlineRequests: Set<http.HttpRequest> = new Set<http.HttpRequest>();
   private onlineSignature: string = '';
+  /** 问过 AI 却没有结果、占位行已换成「—」的那次请求的签名：同一组字不再向 AI 发请求，只在本地把占位行再换成「—」；组字一变就清掉（#6888）。 */
+  private aiResolvedSignature: string = '';
   private translationTimer: number = -1;
   private translationEpoch: number = 0;
   private readonly translationRequests: Set<http.HttpRequest> = new Set<http.HttpRequest>();
@@ -4197,11 +4233,13 @@ export class KeyboardSession implements HardwareKeyTarget {
     }
     const query: OnlineQuery | null = NativeReplyPolicy.successfulValue<OnlineQuery>(reply);
     if (query === null) {
+      this.aiResolvedSignature = '';
       this.invalidateOnlineProviders();
       return;
     }
     const signature: string = OnlineCandidatePolicy.signature(query);
     if (signature === this.onlineSignature) return;
+    if (signature !== this.aiResolvedSignature) this.aiResolvedSignature = '';
     this.invalidateOnlineProviders();
     this.onlineSignature = signature;
     const epoch: number = ++this.onlineEpoch;
@@ -4247,7 +4285,14 @@ export class KeyboardSession implements HardwareKeyTarget {
     if (epoch !== this.onlineEpoch || handle !== this.handle) return;
     const assistant = aiQuery.ai_assistant;
     if (assistant?.enabled === true && aiQuery.ai_eligible) {
-      complete = await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch) && complete;
+      // 这个组字问过 AI 而没有结果（云候选失败触发的重试走到这里）：不再发请求，只把占位行换成「—」。
+      const aiApplied: boolean = requestSignature !== this.aiResolvedSignature
+        && await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch);
+      // 向 AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位；同一组字不再问，所以不为 AI 释放签名，只有云候选失败才重试（#6888）。
+      if (!aiApplied) {
+        this.resolveAiSeat(handle, aiDocument, epoch);
+        if (epoch === this.onlineEpoch && handle === this.handle) this.aiResolvedSignature = requestSignature;
+      }
     }
     if (!complete) this.releaseOnlineSignatureIfCurrent(requestSignature, epoch, handle);
   }
@@ -4294,6 +4339,19 @@ export class KeyboardSession implements HardwareKeyTarget {
     } finally {
       this.onlineRequests.delete(request);
       request.destroy();
+    }
+  }
+
+  /** AI 座位上的占位行换成「—」；座位已经换过或没开时 Host API 答 applied:false，什么都不画。 */
+  private resolveAiSeat(handle: number, queryDocument: string, epoch: number): void {
+    if (epoch !== this.onlineEpoch || handle !== this.handle) return;
+    try {
+      const resolved: NativeReply<OnlineApplyValue> = JSON.parse(client.resolveOnlineCandidates(
+        handle, queryDocument, 1)) as NativeReply<OnlineApplyValue>;
+      if (resolved.ok === true && NativeReplyPolicy.hasValue(resolved.value)
+        && resolved.value.applied) this.render(resolved.value.view);
+    } catch (error) {
+      KeyboardLog.error(`AI seat unresolved: ${describeError(error)}`);
     }
   }
 
@@ -6198,7 +6256,7 @@ export class KeyboardSession implements HardwareKeyTarget {
 
   private typingSource(): string {
     return TypingStatisticsPolicy.source(this.schemeName, this.profileName, this.englishMode,
-      this.nineKeyMode, this.localMode);
+      this.keyGrid, this.localMode);
   }
 
   private clearSmartPunctuationRepeat(): void {

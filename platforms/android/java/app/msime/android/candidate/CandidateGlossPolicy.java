@@ -20,9 +20,10 @@ public final class CandidateGlossPolicy {
 
     /** Read a JSON integer without org.json's lossy numeric coercion. */
     public static long strictInteger(Object value) {
-        if (!(value instanceof Integer) && !(value instanceof Long))
+        Long parsed = JsonPolicy.strictLong(value);
+        if (parsed == null)
             throw new IllegalArgumentException("Expected JSON integer");
-        return ((Number) value).longValue();
+        return parsed;
     }
 
     /** Return a fallback for a missing or malformed protocol integer instead of coercing it. */
@@ -36,8 +37,9 @@ public final class CandidateGlossPolicy {
 
     /** Read a JSON string without org.json's implicit scalar-to-string coercion. */
     public static String strictString(Object value) {
-        if (!(value instanceof String)) throw new IllegalArgumentException("Expected JSON string");
-        return (String) value;
+        String parsed = JsonPolicy.strictString(value);
+        if (parsed == null) throw new IllegalArgumentException("Expected JSON string");
+        return parsed;
     }
 
     /** Whether an apply-translations response carries a typed JSON success flag. */

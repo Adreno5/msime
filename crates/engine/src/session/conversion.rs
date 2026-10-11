@@ -182,7 +182,10 @@ impl InputSession {
             return None;
         }
         let row = self.candidates().get(row_index)?;
-        if !self.selection_completes_composition(&row.pinyin, &row.word, row.scheme) {
+        // AI 占位行不是一句读法，不能从它进入改字。
+        if row.source == CandidateSource::AiPending
+            || !self.selection_completes_composition(&row.pinyin, &row.word, row.scheme)
+        {
             return None;
         }
         let mut edit = ConversionEdit::from_row(row)?;

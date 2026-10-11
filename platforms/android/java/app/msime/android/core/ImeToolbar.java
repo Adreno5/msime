@@ -112,6 +112,11 @@ final class ImeToolbar {
         preeditFrame.addView(s.preedit, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         candidateHeader.addView(preeditFrame, LayoutPolicy.weightedWrapParams(1));
+        // 14 键的拼音选择条挂在读音右边（ImeLayoutRows.attachReadingRowSpellings），不叠在候选行上；其他布局下收起，不占宽度。
+        s.readingSpellingSlot = new FrameLayout(s);
+        ViewPolicy.hide(s.readingSpellingSlot);
+        candidateHeader.addView(s.readingSpellingSlot, new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.MATCH_PARENT, 1));
         // 宿主提示通道：正常为空，只有准备中、失败或提示时才有文字。
         s.status = toolbarText(10);
         ViewPolicy.setMaxLinesEllipsized(s.status, 1);
@@ -291,15 +296,15 @@ final class ImeToolbar {
             s.pixels(KeyboardGeometry.DESIGN_TOOLBAR_ROW_HEIGHT_DP)));
     }
 
-    /** 有内容时显示「最近复制」并换上它的预览，没有时藏起来。 */
-    void updateRecentClipRow(String text) {
+    /** 有内容时显示「最近复制」并换上它的预览，没有时藏起来。`image` 为真时这一条是能发到当前输入框的图片（#6781），按钮写「发送复制的图片」，不显示缩略图：键盘在用户点发送之前不打开图片。 */
+    void updateRecentClipRow(String text, boolean image) {
         if (s.recentClipRow == null || s.recentClipButton == null) return;
-        boolean visible = text != null;
+        boolean visible = text != null || image;
         ViewPolicy.setVisible(s.recentClipRow, visible);
         if (!visible) return;
-        String preview = RecentClipboardSuggestion.preview(text);
+        String preview = image ? ClipboardImagePolicy.LABEL : RecentClipboardSuggestion.preview(text);
         if (!preview.contentEquals(s.recentClipButton.getText())) s.recentClipButton.setText(preview);
-        s.recentClipButton.setContentDescription("粘贴最近复制的内容：" + preview);
+        s.recentClipButton.setContentDescription(image ? "发送最近复制的图片" : "粘贴最近复制的内容：" + preview);
     }
 
     /** 内联键盘高度条：调整时替换整行工具栏。 */

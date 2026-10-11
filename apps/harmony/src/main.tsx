@@ -58,6 +58,7 @@ import {
   type VocabularyReviewClient,
   type VocabularyReviewStatus,
   type TypingStatisticsStatus,
+  type WubiCodeLookup,
   type LocalVoiceModelClient,
   type LocalVoiceModelList,
   type LocalVoiceModelProgress,
@@ -1115,6 +1116,9 @@ function makeClient(
     dismissFailure: async (request_id: string) => {
       dictionaryReply<{ applied: boolean }>({ operation: "dismiss_failure", request_id });
     },
+    // 只读码表，`DictionaryMaintenancePolicy` 把它当读操作：组字时也能查，不会停掉键盘会话。
+    wubiCodes: async (text: string) =>
+      dictionaryReply<WubiCodeLookup>({ operation: "wubi_codes", text }),
   };
   // 命名词库。导入要解析最多 16 MiB 的文本，所以走 startRequest 在原生工作线程上执行，并给足两分钟；其余操作只改几个小文件。
   const collectionsReply = async (action: Record<string, unknown>) =>

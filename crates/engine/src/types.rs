@@ -19,6 +19,8 @@ pub enum CandidateSource {
     Fallback = 9,
     /// A lattice path the keyboard (speed) sentence model picked.
     NeuralKeyboard = 11,
+    /// AI 候选的占位行（#6888）：会话开着 AI、当前组字可以问 AI 时，先占住 AI 候选的座位，回答到了由第一条 AI 候选替换；回答为空或失败时文字换成「—」，留到组字变化为止。它不能上屏、不学习、不计入统计，宿主把它画成暗色。
+    AiPending = 12,
 }
 
 impl CandidateSource {
@@ -35,12 +37,23 @@ impl CandidateSource {
             8 => Self::Generated,
             9 => Self::Fallback,
             11 => Self::NeuralKeyboard,
+            12 => Self::AiPending,
             _ => return None,
         })
     }
 
     pub fn is_online(self) -> bool {
         matches!(self, Self::CloudSuggestion | Self::AiSuggestion)
+    }
+
+    /// 坐 AI 座位的行：AI 候选和它的占位行。
+    pub fn holds_ai_seat(self) -> bool {
+        matches!(self, Self::AiSuggestion | Self::AiPending)
+    }
+
+    /// 由在线座位规则摆放的行：云候选、AI 候选和 AI 占位行。
+    pub fn takes_online_seat(self) -> bool {
+        self.is_online() || self == Self::AiPending
     }
 
     pub fn is_generated_or_fallback(self) -> bool {
@@ -1095,6 +1108,8 @@ pub struct LocalModeOptions {
     pub expression: bool,
     pub command: bool,
     pub mention: bool,
+    /// 总开关：没有组字时 Shift+字母（U/T/K/E/M/J/Y/R/V）能否进入对应的快捷模式。关掉后这些键照常打出大写字母，各模式自己的开关不变；`/` 和 `@` 不经过它。
+    pub shift_letter_entry: bool,
 }
 
 impl Default for LocalModeOptions {
@@ -1111,6 +1126,7 @@ impl Default for LocalModeOptions {
             expression: false,
             command: false,
             mention: false,
+            shift_letter_entry: true,
         }
     }
 }

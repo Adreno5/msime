@@ -13,6 +13,9 @@ pub const LATTICE_SOURCE: u8 = 8;
 /// `CandidateSource::QuickPhrase`, `Emoji` and `Kaomoji`: entries a keyword finds in a catalog, listed in the catalog's order. They are not readings of the key, so the reranker neither compares them nor promotes them: typing `kiss` in kaomoji mode had the model seat the catalog's 646th entry, `French Kiss!(*￣(￣　*)`, above its first.
 const CATALOG_SOURCES: [u8; 3] = [5, 6, 7];
 
+/// `CandidateSource::AiSuggestion` 和它的占位行 `AiPending`：在线座位规则（`normalize_online_slots`）总把它们放回 AI 座位，模型提它们也没用；更要紧的是，若让 AI 候选参与比较，它一到就可能抢走本来要提到首位的本地候选，回答到达时本地候选的次序就变了（#6888）。
+const AI_SEAT_SOURCES: [u8; 2] = [3, 12];
+
 /// 候选列表通常不超过一页；短列表的文本引用放在栈上，较大列表继续走堆缓冲。
 const SMALL_RERANK_TEXTS: usize = 128;
 
@@ -219,6 +222,7 @@ pub fn rerank_pick<'a, R: OrderRowSource<'a> + ?Sized>(
     let answers_key = |row: OrderRow<'a>| {
         row.answers_key
             && !CATALOG_SOURCES.contains(&row.source)
+            && !AI_SEAT_SOURCES.contains(&row.source)
             && (corrections_lead || !row.corrected)
     };
     // Only candidates that answer the key are scored, so they are the ones the window has to leave room for.

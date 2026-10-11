@@ -51,6 +51,11 @@ import { LocalVoiceModelAction, LocalVoiceModelPolicy } from '../keyboard/settin
 import { HTTP_ASR_CHAT_AUDIO, HttpAsrConfigurationPolicy } from '../keyboard/input/HttpAsrConfigurationPolicy';
 import { AiAuthenticationPolicy } from '../keyboard/settings/AiAuthenticationPolicy';
 import { AiEndpointPolicy } from '../keyboard/settings/AiEndpointPolicy';
+import {
+  CustomTranslationProbeDescriptor,
+  CustomTranslationProbePolicy,
+  CustomTranslationProbeRequest
+} from '../keyboard/settings/CustomTranslationProbePolicy';
 import { HarmonyTelemetry } from '../telemetry/Telemetry';
 import { TelemetryPolicy } from '../telemetry/TelemetryPolicy';
 import { NoticeItem, NoticePolicy } from '../notices/NoticePolicy';
@@ -463,25 +468,14 @@ interface ApiCredentialReply {
   value: ApiCredentialResult;
 }
 
-interface TranslationBody {
-  text: string;
-  source_lang: string;
-  target_lang: string;
+interface CustomTranslationProbeDescriptorReply {
+  ok: boolean;
+  value?: CustomTranslationProbeDescriptor | null;
 }
 
-interface TranslationValue {
-  text?: string;
-  translation?: string;
-  data?: string;
-}
-
-interface TranslationDocument {
-  code?: number | string;
-  error?: Object;
-  data?: string | TranslationValue | TranslationValue[];
-  translation?: string | TranslationValue | TranslationValue[];
-  result?: string | TranslationValue | TranslationValue[];
-  translations?: TranslationValue[];
+interface CustomTranslationProbeGlossReply {
+  ok: boolean;
+  value?: string | null;
 }
 
 interface ChatCredentialBody {
@@ -517,12 +511,6 @@ interface NiuTransDocument {
 
 interface ThinkingOptions {
   type: string;
-}
-
-interface CredentialHeaders {
-  Accept: string;
-  'Content-Type': string;
-  Authorization?: string;
 }
 
 interface AiModelHeaders {
@@ -2238,30 +2226,39 @@ class SettingsBridge {
     if (endpoint === null || (apiKey.length > 0 && !this.validCredentialSecret(apiKey, 4096))) {
       return this.credentialReply(false, '请填写有效的翻译接口地址和 API Key。');
     }
-    const body: TranslationBody = { text: '测试', source_lang: 'ZH', target_lang: 'EN' };
-    const headers: CredentialHeaders = {
-      Accept: 'application/json', 'Content-Type': 'application/json'
-    };
-    if (apiKey.length > 0) headers.Authorization = `Bearer ${apiKey}`;
+    // 与键盘同一个共享描述器：DeepL 官方地址换成 DeepL 的鉴权和正文，其余按 DeepLX 兼容格式，测试与实际翻译不会各说各的。
+    const probe: CustomTranslationProbeRequest = CustomTranslationProbePolicy.request(endpoint, apiKey);
+    let descriptor: CustomTranslationProbeDescriptor | null = null;
+    try {
+      const reply: CustomTranslationProbeDescriptorReply = JSON.parse(
+        client.customTranslationHttpRequest(JSON.stringify(probe))) as CustomTranslationProbeDescriptorReply;
+      descriptor = reply.ok === true && reply.value !== undefined ? reply.value : null;
+    } catch {
+      descriptor = null;
+    }
+    if (descriptor === null || this.validCredentialEndpoint(descriptor.url, true) === null) {
+      return this.credentialReply(false, '请填写有效的翻译接口地址和 API Key。');
+    }
+    const deepl: boolean = CustomTranslationProbePolicy.isDeepL(descriptor);
+    const headers: Record<string, string> = CustomTranslationProbePolicy.headers(descriptor);
     const request = http.createHttp();
     installNoRedirectGuard(request);
     try {
-      const response: http.HttpResponse = await request.request(endpoint, {
+      const response: http.HttpResponse = await request.request(descriptor.url, {
         method: http.RequestMethod.POST,
         header: headers,
         connectTimeout: 5000,
         readTimeout: 15000,
-        extraData: JSON.stringify(body)
+        extraData: JSON.stringify(descriptor.body)
       });
-      if (response.responseCode < 200 || response.responseCode >= 300
-        || typeof response.result !== 'string' || utf8Length(response.result) > 256 * 1024) {
-        return this.credentialReply(false, '测试失败：翻译服务未返回有效译文。');
+      if (!CustomTranslationProbePolicy.acceptsResponse(response.responseCode, response.result)) {
+        return this.credentialReply(false, CustomTranslationProbePolicy.failureMessage(deepl, response.responseCode));
       }
-      const document: TranslationDocument = JSON.parse(response.result) as TranslationDocument;
-      const translated: string | null = this.translationText(document);
-      return translated === null
-        ? this.credentialReply(false, '测试失败：翻译服务未返回有效译文。')
-        : this.credentialReply(true, '连接成功，翻译服务配置有效。');
+      const parsed: CustomTranslationProbeGlossReply = JSON.parse(
+        client.parseCustomTranslationResponse(response.result as string)) as CustomTranslationProbeGlossReply;
+      const translated: string | null = parsed.ok === true && typeof parsed.value === 'string' ? parsed.value : null;
+      if (translated !== null) return this.credentialReply(true, CustomTranslationProbePolicy.SUCCESS);
+      return this.credentialReply(false, CustomTranslationProbePolicy.failureMessage(deepl, response.responseCode));
     } catch (error) {
       KeyboardLog.error(`translation credential unavailable: ${describeError(error)}`);
       return this.credentialReply(false, '连接失败，请检查翻译接口地址、API Key 和网络。');
@@ -2620,29 +2617,6 @@ class SettingsBridge {
     bytes[offset + 1] = (value >>> 8) & 0xff;
     bytes[offset + 2] = (value >>> 16) & 0xff;
     bytes[offset + 3] = (value >>> 24) & 0xff;
-  }
-
-  private translationText(document: TranslationDocument): string | null {
-    if (document.error !== undefined) return null;
-    if (document.code !== undefined && document.code !== 200 && document.code !== '200') return null;
-    const values: Array<string | TranslationValue | TranslationValue[]> = [];
-    if (document.data !== undefined) values.push(document.data);
-    if (document.translation !== undefined) values.push(document.translation);
-    if (document.result !== undefined) values.push(document.result);
-    if (document.translations !== undefined) values.push(document.translations);
-    for (const value of values) {
-      if (typeof value === 'string' && value.trim().length > 0) return value.trim();
-      if (Array.isArray(value) && value.length > 0) {
-        const first: TranslationValue = value[0];
-        const text: string | undefined = first.text ?? first.translation ?? first.data;
-        if (text !== undefined && text.trim().length > 0) return text.trim();
-      } else if (typeof value === 'object' && value !== null) {
-        const objectValue: TranslationValue = value as TranslationValue;
-        const text: string | undefined = objectValue.text ?? objectValue.translation ?? objectValue.data;
-        if (text !== undefined && text.trim().length > 0) return text.trim();
-      }
-    }
-    return null;
   }
 
   private validCredentialEndpoint(value: string, allowHttp: boolean): string | null {

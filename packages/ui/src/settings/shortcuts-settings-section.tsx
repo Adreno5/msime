@@ -21,6 +21,8 @@ export interface ShortcutsSettingsSectionProps {
   showFullwidthChord: boolean;
   fullwidthChord: string;
   windows: boolean;
+  /** 显示「单按 Caps Lock 切换中英文」（`HostCapabilities.caps_lock_language_switch`）。 */
+  capsLockLanguageSwitch?: boolean;
   navigation: NavigationPreferences;
   /** 以词定字的设置，用来在「候选操作」里列出它占用的键；没有实体键的宿主不传。 */
   wordCharacter?: WordCharacterPreferences;
@@ -48,6 +50,7 @@ export function ShortcutsSettingsSection({
   showFullwidthChord,
   fullwidthChord,
   windows,
+  capsLockLanguageSwitch = false,
   navigation,
   wordCharacter,
   numberRowSelection,
@@ -78,6 +81,7 @@ export function ShortcutsSettingsSection({
         showFullwidthChord={showFullwidthChord}
         fullwidthChord={fullwidthChord}
         windows={windows}
+        capsLockLanguageSwitch={capsLockLanguageSwitch}
         harmonyPhone={harmonyPhone}
       />
       <CandidateShortcutsSection

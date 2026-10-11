@@ -39,6 +39,8 @@ pub enum Action {
     FixCandidatePosition(CandidateId, u8),
     ClearCandidatePosition(CandidateId),
     ChooseNineKeySpelling(NineKeySpellingId),
+    /// 14 键的一键，`a`–`z` 里这一组的任一字母（宿主约定送首字母）。不在 14 键下时不处理。
+    GridKey(u8),
     /// 九宫格候选的筛选：只留单字，以及首字笔顺的前缀（`hspnz`，空表示不按笔画）。没有九宫格组字时不处理。
     SetNineKeyFilter {
         single_character: bool,
@@ -67,6 +69,8 @@ pub enum Action {
 pub(crate) struct PhraseSelection {
     pub(crate) word_before: String,
     pub(crate) reading: String,
+    /// 选词时正在组字的网格；`None` 是 26 键组字。退格收回这次选词时按它把读音打回去：14 键的读音是组码字母，要从 `grid_key` 进，从 `character` 进会变成全拼 26 键的字母。
+    pub(crate) grid: Option<KeyGrid>,
 }
 
 pub struct Runtime<E: InputEngine = Session> {
@@ -391,6 +395,62 @@ impl Runtime<Session> {
         self.apply_online_candidates_snapshot(query, candidates, source, cloud_candidates, limit)
     }
 
+    /// 宿主为这个会话打开或关掉 AI 候选。打开时可以问 AI 的组字先在 AI 座位上放一行占位（来源 12，`CandidateSource::AiPending`），回答到达时由第一条 AI 候选替换，前后的候选都不挪位（#6888）。组字中途改变时立刻换一代并刷新。
+    pub fn set_ai_seat(&mut self, enabled: bool) -> Result<(), RuntimeError> {
+        if !self.engine.set_ai_seat(enabled) || self.is_idle() {
+            return Ok(());
+        }
+        self.advance()?;
+        self.refresh()
+    }
+
+    /// AI 回答为空、失败，或 `apply_online_candidates` 没有采用它时由宿主调用：这次查询的占位行换成「—」，留到组字变化为止，后面的候选不挪位。只认 AI（来源 1）；过期查询、没开 AI 的会话和已经坐着 AI 候选的座位返回 `Ok(false)`，列表不变。
+    pub fn resolve_online_candidates_owned(
+        &mut self,
+        query: OnlineQuery,
+        source: u8,
+    ) -> Result<bool, RuntimeError> {
+        if source != 1 || !query.ai_eligible {
+            return Ok(false);
+        }
+        if self.generation == u64::MAX {
+            return Err(RuntimeError::IdentityExhausted);
+        }
+        let OnlineQuery {
+            scheme,
+            generation,
+            identity,
+            query_text,
+            cache_key,
+            pinyin_segments,
+            cloud_eligible,
+            ai_eligible,
+            session_id,
+            ..
+        } = query;
+        let query = OnlineQuerySnapshot {
+            available: true,
+            scheme,
+            generation,
+            identity,
+            query_text,
+            cache_key,
+            pinyin_segments,
+            cloud_eligible,
+            ai_eligible,
+            session_id,
+        };
+        let resolved = self
+            .engine
+            .resolve_online_candidates(&query, source)
+            .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+        if resolved {
+            self.advance()?;
+            self.refresh()?;
+        }
+        Ok(resolved)
+    }
+
     /// Remove cached and visible rows for one online provider.
     pub fn clear_online_candidates(&mut self, source: u8) -> Result<(), RuntimeError> {
         if source > 1 {
@@ -682,6 +742,28 @@ impl<E: InputEngine> Runtime<E> {
         self.engine.pending_suffix()
     }
 
+    /// 换触屏的组码网格。九键要求方案能打九键（全拼、注音），14 键只给全拼，否则报 `InvalidNineKeyScheme`；组字中切换报 `CompositionActive`。
+    pub fn set_key_grid(&mut self, grid: Option<KeyGrid>) -> Result<(), RuntimeError> {
+        let scheme = scheme_type(self.cached.scheme);
+        let supported = match grid {
+            None => true,
+            Some(KeyGrid::NineKey) => scheme.is_some_and(SchemeType::nine_key),
+            Some(KeyGrid::FourteenKey) => scheme == Some(SchemeType::Quanpin),
+        };
+        if !supported {
+            return Err(RuntimeError::InvalidNineKeyScheme);
+        }
+        if !self.is_idle() {
+            return Err(RuntimeError::CompositionActive);
+        }
+        if self.cached.key_grid == grid {
+            return Ok(());
+        }
+        self.advance()?;
+        self.engine.set_key_grid(grid)?;
+        self.refresh()
+    }
+
     pub fn set_nine_key_enabled(&mut self, enabled: bool) -> Result<(), RuntimeError> {
         if enabled && !scheme_type(self.cached.scheme).is_some_and(SchemeType::nine_key) {
             return Err(RuntimeError::InvalidNineKeyScheme);
@@ -689,7 +771,8 @@ impl<E: InputEngine> Runtime<E> {
         if !self.is_idle() {
             return Err(RuntimeError::CompositionActive);
         }
-        if self.cached.nine_key == enabled {
+        // 比的是网格而不只是九键：14 键开着时关九键也要真的关掉网格。
+        if self.cached.key_grid == enabled.then_some(KeyGrid::NineKey) {
             return Ok(());
         }
         self.advance()?;
@@ -721,6 +804,7 @@ impl<E: InputEngine> Runtime<E> {
             chinese_text: scheme_type(self.cached.scheme).is_some_and(SchemeType::is_chinese),
             script_conversion: script_conversion(self.cached.scheme, &self.cached.local_mode),
             nine_key: self.cached.nine_key,
+            key_grid: key_grid_name(self.cached.key_grid),
             nine_key_spellings: self.cached.nine_key_spellings.clone(),
             nine_key_reading: self.cached.nine_key_reading.clone(),
             nine_key_single_character: self.cached.nine_key_single_character,
@@ -1201,7 +1285,12 @@ impl<E: InputEngine> Runtime<E> {
         // consumed, with its candidates, and the caret at its end.
         self.engine.command(Command::Cancel)?;
         for byte in selection.reading.bytes() {
-            self.engine.character(byte, byte.is_ascii_uppercase())?;
+            // 14 键的组码只认 `grid_key`；分词键 `'` 和九键的数字本来就从 `character` 进。
+            if selection.grid == Some(KeyGrid::FourteenKey) && byte != b'\'' {
+                self.engine.grid_key(byte)?;
+            } else {
+                self.engine.character(byte, byte.is_ascii_uppercase())?;
+            }
         }
         self.refresh()?;
         Ok(Some(self.transition(empty_result(true))))
@@ -1238,6 +1327,7 @@ impl<E: InputEngine> Runtime<E> {
                 self.phrase_selections.push(PhraseSelection {
                     word_before: self.phrase_prefix.clone(),
                     reading: consumed.to_owned(),
+                    grid: self.cached.key_grid.filter(|_| self.cached.grid_composing),
                 });
             }
             self.phrase_prefix.push_str(&result.commit);
@@ -1321,12 +1411,16 @@ impl<E: InputEngine> Runtime<E> {
     /// Only the online case is touched: with neither a cloud nor an AI candidate present the
     /// Engine already produces the fourth line, so there is nothing to rearrange and nothing to
     /// risk.
+    ///
+    /// AI 的座位只坐一行：第一条 AI 候选，回答到达之前是它的占位行（`CandidateSource::AiPending`）。同一批里多出来的 AI 候选排在整个列表最后，回答到达时座位前后已经显示的候选都不挪位（#6888）。
     fn normalize_online_slots(&mut self) -> bool {
         const CLOUD: u8 = 2;
         const AI: u8 = 3;
         const ENGLISH: u8 = 4;
         const EMOJI: u8 = 6;
         const KAOMOJI: u8 = 7;
+        const AI_PENDING: u8 = 12;
+        let is_ai = |source: u8| matches!(source, AI | AI_PENDING);
 
         let snapshot = &self.cached;
         let count = snapshot.candidates.len();
@@ -1343,7 +1437,7 @@ impl<E: InputEngine> Runtime<E> {
         if !snapshot
             .candidate_sources
             .iter()
-            .any(|source| *source == CLOUD || *source == AI)
+            .any(|source| *source == CLOUD || is_ai(*source))
         {
             return false;
         }
@@ -1353,7 +1447,8 @@ impl<E: InputEngine> Runtime<E> {
         // rest; dropping a candidate the user was offered is not an option here.
         //
         // The Engine never puts English first while a Chinese candidate exists, whatever its weight or pin, except for a word the user fixed at position 1 (`apply_candidate_positions`). An English candidate at index zero with locals present is that word. It keeps the first seat and the leading English seat is not filled a second time.
-        let is_local = |source: u8| !matches!(source, CLOUD | AI | ENGLISH | EMOJI | KAOMOJI);
+        let is_local =
+            |source: u8| !matches!(source, CLOUD | AI | AI_PENDING | ENGLISH | EMOJI | KAOMOJI);
         let first_source = |source: u8| {
             snapshot
                 .candidate_sources
@@ -1416,10 +1511,18 @@ impl<E: InputEngine> Runtime<E> {
         let single_kana = scheme_type(snapshot.scheme) == Some(SchemeType::JapaneseRomaji)
             && matches!((reading.next(), reading.next()), (Some(kana), None) if ('\u{3041}'..='\u{3096}').contains(&kana));
         let local_prefix = if single_kana { 2 } else { 1 };
+        // 坐 AI 座位的那一行，以及排到最后的其余 AI 候选。
+        let mut ai_rows = snapshot
+            .candidate_sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| is_ai(**source))
+            .map(|(index, _)| index);
+        let ai_seat = ai_rows.next();
         append_local(&mut order, 0, Some(local_prefix));
         if has_cloud {
             append_group(&mut order, CLOUD, 0, None);
-            append_group(&mut order, AI, 0, None);
+            order.extend(ai_seat);
         }
         if !promoted_english {
             if let Some(index) = first_english {
@@ -1427,7 +1530,7 @@ impl<E: InputEngine> Runtime<E> {
             }
         }
         if !has_cloud {
-            append_group(&mut order, AI, 0, None);
+            order.extend(ai_seat);
         }
         if let Some(index) = first_emoji {
             order.push(index);
@@ -1454,6 +1557,7 @@ impl<E: InputEngine> Runtime<E> {
             let seat = usize::from(snapshot.candidate_positions[index] - 1).min(order.len());
             order.insert(seat, index);
         }
+        order.extend(ai_rows);
         // A permutation or nothing: a missing or repeated index would silently drop a candidate.
         debug_assert_eq!(order.len(), count);
         if order.len() != count {
@@ -1568,10 +1672,12 @@ impl<E: InputEngine> Runtime<E> {
                 self.cached = EngineSnapshot {
                     scheme: 255,
                     nine_key: false,
+                    key_grid: None,
                     nine_key_spellings: Vec::new(),
                     nine_key_reading: String::new(),
                     nine_key_single_character: false,
                     nine_key_strokes: String::new(),
+                    grid_composing: false,
                     candidate_annotations: Vec::new(),
                     candidate_codes: Vec::new(),
                     candidate_sources: Vec::new(),
@@ -1812,7 +1918,8 @@ impl<E: InputEngine> Runtime<E> {
         if let Action::ChooseNineKeySpelling(id) = &action {
             if id.session != self.session
                 || id.generation != self.generation
-                || !self.cached.nine_key
+                // 九键和 14 键共用这一列拼写。
+                || self.cached.key_grid.is_none()
                 || id.index >= self.cached.nine_key_spellings.len()
             {
                 return Err(RuntimeError::StaleNineKeySpelling);
@@ -1944,8 +2051,8 @@ impl<E: InputEngine> Runtime<E> {
             }
             Action::Character { value, shift } => {
                 self.engine.character(value, shift).and_then(|result| {
-                    // The nine-key separator is a layout action, not Chinese quote punctuation.
-                    if !result.handled && self.cached.nine_key && value == b'\'' {
+                    // 九键和 14 键的分词键 `'` 是键面上的切分动作，不是中文引号标点。
+                    if !result.handled && self.cached.key_grid.is_some() && value == b'\'' {
                         return Ok(result);
                     }
                     if !result.handled && value.is_ascii_punctuation() {
@@ -1985,6 +2092,17 @@ impl<E: InputEngine> Runtime<E> {
             Action::Command(Command::ConversionLeft) if self.cached.conversion.is_empty() => self
                 .engine
                 .conversion_left_from(self.engine_index(self.highlighted)),
+            // 14 键的组码不是可上屏的字母，引擎把原样上屏当成结束组字、从它自己的首位取词；用户看到的首位可能是重排上来的另一行，所以与 `Finish` 一样从宿主高亮的那一行结束组字。
+            Action::Command(Command::CommitRaw)
+                if self.cached.grid_composing
+                    && self
+                        .cached
+                        .key_grid
+                        .is_some_and(|grid| !grid.offers_raw_key())
+                    && len > 0 =>
+            {
+                self.engine.finish(self.engine_index(self.highlighted))
+            }
             Action::Command(command) => self.engine.command(command),
             Action::SegmentBackspace => self.engine.segment_command(SegmentCommand::Backspace),
             Action::SegmentMoveLeft => self.engine.segment_command(SegmentCommand::MoveLeft),
@@ -2005,6 +2123,7 @@ impl<E: InputEngine> Runtime<E> {
                 .engine
                 .clear_candidate_position(self.engine_index(id.index)),
             Action::ChooseNineKeySpelling(id) => self.engine.choose_nine_key_spelling(id.index),
+            Action::GridKey(letter) => self.engine.grid_key(letter),
             Action::SetNineKeyFilter {
                 single_character,
                 ref strokes,
@@ -2111,6 +2230,15 @@ pub(crate) fn empty_result(handled: bool) -> EngineResult {
         has_commit: false,
         commit: String::new(),
         diagnostic: String::new(),
+    }
+}
+
+/// `View::key_grid` 的取值。
+fn key_grid_name(grid: Option<KeyGrid>) -> &'static str {
+    match grid {
+        None => "none",
+        Some(KeyGrid::NineKey) => "nine_key",
+        Some(KeyGrid::FourteenKey) => "fourteen_key",
     }
 }
 

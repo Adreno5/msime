@@ -87,10 +87,14 @@ for entry in \
     "CandidateGlossDeviceSmoke|Candidate gloss acceptance failed" \
     "NineKeyEnglishDeviceSmoke|Nine-key English acceptance failed" \
     "NineKeyPanelDeviceSmoke|Nine-key panel acceptance failed" \
+    "FourteenKeyDeviceSmoke|Fourteen-key acceptance failed" \
     "ChineseHelpcodeDeviceSmoke|Chinese helpcode acceptance failed" \
     "MicrosoftShuangpinDeviceSmoke|Microsoft double-pinyin acceptance failed" \
     "EmailSuffixDeviceSmoke|Email suffix acceptance failed" \
-    "NumberRowDeviceSmoke|Number row acceptance failed"
+    "NumberRowDeviceSmoke|Number row acceptance failed" \
+    "ClipboardImageDeviceSmoke|Clipboard image acceptance failed" \
+    "CaretCandidatesDeviceSmoke|Caret candidates acceptance failed" \
+    "AiPlaceholderDeviceSmoke|AI placeholder acceptance failed"
 do
   suite=${entry%%|*}
   if [[ " ${MSIME_DEVICE_SMOKE_SKIP:-} " == *" $suite "* ]]; then

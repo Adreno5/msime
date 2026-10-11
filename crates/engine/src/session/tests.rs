@@ -15,6 +15,7 @@ use crate::types::{
     CandidateEdge, CandidateSource, Command, FrequencyAdjustmentMode, FrequencyAdjustmentOptions,
     LocalInputMode, SchemeKey, SchemeSet, SchemeType, ShuangpinProfileKind,
 };
+use crate::KeyGrid;
 
 /// test_input_session.cpp:390-430 (fixture M), the rows the portable-selection, caret and edge cases read.
 const QUANPIN_FIXTURE: &str =
@@ -2260,6 +2261,63 @@ INSERT INTO tbl_1_n VALUES('ni','n','你',100),('ni','n','拟',90);",
     assert!(!words(&session).contains(&"云候选".to_owned()));
 }
 
+/// 14 键：组码只从 `grid_key` 进九宫格，组里任一字母都归成首字母；硬件键盘的字母照常走全拼，九宫格组字中不处理。
+#[test]
+fn fourteen_key_letters_enter_the_grid_only_through_grid_key() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session();
+    session.set_key_grid(Some(KeyGrid::FourteenKey));
+    assert!(session.character(b'q', false).handled);
+    assert!(!session.nine_key.active());
+    assert_eq!(session.snapshot().editing_text, "q");
+    // 26 键正在组字：`grid_key` 不处理，状态不变。
+    assert!(!session.grid_key(b'n').handled);
+    assert_eq!(session.snapshot().editing_text, "q");
+    session.command(Command::Cancel);
+
+    for letter in *b"nihao" {
+        assert!(session.grid_key(letter).handled);
+    }
+    assert!(session.nine_key.active());
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.editing_text, "bugao");
+    let candidates = words(&session);
+    assert!(candidates.contains(&"你好".to_owned()) && candidates.contains(&"不好".to_owned()));
+    // 九宫格组字中硬件字母和数字都不处理，`'` 切分。
+    assert!(!session.character(b'h', false).handled);
+    assert!(!session.character(b'6', false).handled);
+    assert!(!session.grid_key(b'1').handled);
+    assert!(!session.grid_key(b'A').handled);
+    assert_eq!(session.snapshot().editing_text, "bugao");
+    session.command(Command::Cancel);
+
+    // 九键下数字进九宫格，`grid_key` 不处理。
+    session.set_key_grid(Some(KeyGrid::NineKey));
+    assert!(!session.grid_key(b'n').handled);
+    assert!(session.character(b'6', false).handled);
+    assert!(session.nine_key.active());
+    session.command(Command::Cancel);
+
+    // 专用英文画全键盘，`grid_key` 不处理；14 键不打开英文九键。
+    session.set_key_grid(Some(KeyGrid::FourteenKey));
+    session.set_dedicated_english(true);
+    assert!(!session.grid_key(b'o').handled);
+    assert!(!session.nine_key.active());
+    session.set_dedicated_english(false);
+
+    // 全拼以外的方案没有 14 键。
+    session.switch_scheme(SchemeType::Shuangpin).unwrap();
+    assert!(!session.grid_key(b'o').handled);
+    session.switch_scheme(SchemeType::Quanpin).unwrap();
+    assert!(session.grid_key(b'o').handled);
+    session.command(Command::Cancel);
+
+    session.set_key_grid(None);
+    assert!(!session.grid_key(b'o').handled);
+    session.character(b'6', false);
+    assert!(!session.nine_key.active());
+}
+
 /// Loading a helpcode table drops the cached pinyin answers, online rows included, as the reference's keymap setters did (quanpin/engine.h:37-41); the golden ri_session_a_resources records the same sequence.
 #[test]
 fn a_new_helpcode_table_drops_the_online_rows_of_an_earlier_composition() {
@@ -2962,6 +3020,32 @@ fn disabled_local_modes_leave_the_key_to_the_host() {
     assert!(!session.character(b'Y', true).handled);
     assert!(!session.character(b'U', true).handled);
     assert!(session.character(b'K', true).handled);
+}
+
+#[test]
+fn shift_letter_entry_switch_off_types_every_capital() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.local_modes.shift_letter_entry = false;
+        options.local_modes.expression = true;
+        options.local_modes.command = true;
+    });
+    // 总开关关掉：每个入口字母都交还宿主打出大写，不进模式，也不留组字。
+    for letter in *b"UTKEMJYRV" {
+        let result = session.character(letter, true);
+        assert!(!result.handled, "{}", letter as char);
+        assert_eq!(session.input.local_mode, LocalInputMode::None);
+        assert!(!session.input.has_composition());
+    }
+    // 各模式自己的开关没被改动；`/` 不是 Shift+字母，照常打开指令模式。
+    assert!(session.input.local_mode_options.date_time);
+    assert!(session.character(b'/', false).handled);
+    assert_eq!(session.input.local_mode, LocalInputMode::Command);
+
+    // 对照：总开关开着时同一个键进入日期时间模式。
+    let mut session = fixture.session();
+    assert!(session.character(b'T', true).handled);
+    assert_eq!(session.input.local_mode, LocalInputMode::DateTime);
 }
 
 #[test]
@@ -6599,4 +6683,167 @@ fn the_conversion_starts_from_the_highlighted_row() {
     assert!(session.conversion_left_from(prefix).handled);
     assert!(session.snapshot().conversion.is_empty());
     assert_eq!(session.snapshot().caret_position, 10);
+}
+
+/// #6888 的 AI 座位：读音 ni 有四个本地候选。
+const AI_SEAT_FIXTURE: &str = "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);\
+INSERT INTO tbl_1_n VALUES('ni','n','你',100),('ni','n','拟',90),('ni','n','妮',80),('ni','n','倪',70);";
+
+fn sources(session: &Session) -> Vec<(String, CandidateSource)> {
+    session
+        .snapshot()
+        .candidates
+        .into_iter()
+        .map(|item| (item.word, item.source))
+        .collect()
+}
+
+fn ai_seat_session(fixture: &Fixture) -> Session {
+    let mut session = fixture.session();
+    assert!(session.set_ai_seat(true));
+    session
+}
+
+#[test]
+fn an_ai_seat_shows_a_placeholder_that_the_answer_replaces_in_place() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    assert_eq!(
+        sources(&session),
+        [
+            ("你".to_owned(), CandidateSource::Database),
+            ("拟".to_owned(), CandidateSource::Database),
+            ("…".to_owned(), CandidateSource::AiPending),
+            ("妮".to_owned(), CandidateSource::Database),
+            ("倪".to_owned(), CandidateSource::Database),
+        ]
+    );
+    let query = session.online_query().expect("a quanpin query");
+    let batch = ["智一", "智二", "智三"].map(str::to_owned);
+    assert!(session.apply_online_candidates(&query, &batch, CandidateSource::AiSuggestion));
+    // 座位上换成第一条 AI 候选，其他本地候选的位置不变，多出来的 AI 候选排在最后。
+    assert_eq!(
+        sources(&session),
+        [
+            ("你".to_owned(), CandidateSource::Database),
+            ("拟".to_owned(), CandidateSource::Database),
+            ("智一".to_owned(), CandidateSource::AiSuggestion),
+            ("妮".to_owned(), CandidateSource::Database),
+            ("倪".to_owned(), CandidateSource::Database),
+            ("智二".to_owned(), CandidateSource::AiSuggestion),
+            ("智三".to_owned(), CandidateSource::AiSuggestion),
+        ]
+    );
+}
+
+#[test]
+fn no_placeholder_without_ai_or_for_a_query_ai_cannot_answer() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut off = fixture.session();
+    type_text(&mut off, "ni");
+    assert!(!sources(&off)
+        .iter()
+        .any(|(_, source)| *source == CandidateSource::AiPending));
+
+    let mut session = ai_seat_session(&fixture);
+    // 只有声母的组字不是完整拼音，AI 不回答它。
+    type_text(&mut session, "n");
+    assert!(!session
+        .online_query()
+        .is_some_and(|query| query.ai_eligible));
+    assert!(!sources(&session)
+        .iter()
+        .any(|(_, source)| *source == CandidateSource::AiPending));
+    session.character(b'i', false);
+    assert_eq!(
+        session.snapshot().candidates[2].source,
+        CandidateSource::AiPending
+    );
+    // 组字中途关掉 AI，占位行立刻消失。
+    assert!(session.set_ai_seat(false));
+    assert!(!session.set_ai_seat(false));
+    assert_eq!(words(&session), ["你", "拟", "妮", "倪"]);
+}
+
+#[test]
+fn the_placeholder_never_commits() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let before = sources(&session);
+
+    let selected = session.select(2);
+    assert!(selected.handled);
+    assert_eq!(selected.commit, None);
+    let digit = session.candidate_key(b'3');
+    assert!(digit.handled);
+    assert_eq!(digit.commit, None);
+    assert!(!session.pin(2).handled);
+    assert!(!session.remove(2).handled);
+    assert!(!session.fix_position(2, 1).handled);
+    assert_eq!(session.snapshot().editing_text, "ni");
+    assert_eq!(sources(&session), before);
+
+    // 高亮停在占位行上收尾时，上屏的是首选。
+    let finished = session.finish(2);
+    assert_eq!(finished.commit.as_deref(), Some("你"));
+}
+
+#[test]
+fn an_empty_answer_turns_the_placeholder_into_a_dash_until_the_composition_changes() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::CloudSuggestion));
+    assert!(session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+    assert_eq!(
+        sources(&session)[2],
+        ("—".to_owned(), CandidateSource::AiPending)
+    );
+    assert_eq!(words(&session), ["你", "拟", "—", "妮", "倪"]);
+    // 同一次查询再解决一次什么都不变。
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+
+    // 组字变了，回到等待中。
+    session.command(Command::Backspace);
+    session.character(b'i', false);
+    assert_eq!(words(&session), ["你", "拟", "…", "妮", "倪"]);
+    // 上一次组字的查询过期了，不能把新组字的占位行解决掉。
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+    assert_eq!(words(&session)[2], "…");
+}
+
+#[test]
+fn an_answer_of_listed_words_only_resolves_the_seat() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(session.apply_online_candidates(
+        &query,
+        &["妮".to_owned()],
+        CandidateSource::AiSuggestion
+    ));
+    assert_eq!(words(&session), ["你", "拟", "—", "妮", "倪"]);
+}
+
+#[test]
+fn a_cloud_answer_does_not_move_the_ai_seat() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(session.apply_online_candidate(&query, "云", CandidateSource::CloudSuggestion));
+    assert_eq!(words(&session), ["你", "云", "…", "拟", "妮", "倪"]);
+    assert!(session.apply_online_candidates(
+        &query,
+        &["智一".to_owned(), "智二".to_owned()],
+        CandidateSource::AiSuggestion
+    ));
+    assert_eq!(
+        words(&session),
+        ["你", "云", "智一", "拟", "妮", "倪", "智二"]
+    );
 }

@@ -239,7 +239,7 @@ public final class DoubaoRecognizer {
             if (payloadText == null) return null;
             JSONObject document = new JSONObject(payloadText);
             JSONObject result = document.optJSONObject("result");
-            String text = result == null ? "" : DoubaoAsrPolicy.strictText(result.opt("text"));
+            String text = result == null ? "" : HttpAsrPolicy.strictText(result.opt("text"));
             Boolean last = JsonPolicy.strictBoolean(value.opt("last"));
             return last == null ? null : new Update(text, last);
         } catch (JSONException error) {

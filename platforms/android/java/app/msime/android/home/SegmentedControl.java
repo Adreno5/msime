@@ -1,5 +1,7 @@
 package app.msime.android.home;
 
+import app.msime.android.DimensionPolicy;
+
 import app.msime.android.ThemeColorPolicy;
 import android.content.Context;
 import android.graphics.Color;
@@ -36,9 +38,9 @@ public final class SegmentedControl extends LinearLayout {
         super(context, attrs);
         setOrientation(HORIZONTAL);
         ViewPolicy.setCenteredVertically(this);
-        int pad = Ui.dp(context, 2);
-        Ui.setSymmetricPaddingPx(this, pad);
-        GradientDrawable frame = DrawablePolicy.outlined(Color.TRANSPARENT, 9999f, Ui.dp(context, 1),
+        int pad = DimensionPolicy.pixels(context, 2);
+        ViewPolicy.setSymmetricPadding(this, pad);
+        GradientDrawable frame = DrawablePolicy.outlined(Color.TRANSPARENT, 9999f, DimensionPolicy.pixels(context, 1),
             ThemeColorPolicy.outline(context));
         setBackground(frame);
     }
@@ -51,11 +53,11 @@ public final class SegmentedControl extends LinearLayout {
         Context context = getContext();
         for (int i = 0; i < labels.size(); i++) {
             int index = i;
-            TextView segment = Ui.centeredSingleLineLabel(context, labels.get(i), Ui.TEXT_SEGMENT, 400,
+            TextView segment = ViewPolicy.centeredSingleLineLabel(context, labels.get(i), Ui.TEXT_SEGMENT, 400,
                 ThemeColorPolicy.subText(context));
-            Ui.setTextMinHeightDp(segment, context, 28);
+            ViewPolicy.setTextMinHeightDp(context, segment, 28);
             // 平分宽度时段宽已经定死、文字居中，左右内边距只会挤掉文字：AI 设计皮肤的「按键音效」五段在 360dp 宽的屏上每段约 63dp，左右各 12dp 后只剩 39dp，系统字号稍大就把「打字机」截成「打字札」（#6070）。按文字宽度排开时内边距决定段宽，保持 12dp。
-            Ui.setSymmetricPaddingDp(segment, context, fill ? 4 : 12, 4);
+            ViewPolicy.setSymmetricPaddingDp(context, segment, fill ? 4 : 12, 4);
             ViewPolicy.setInteractive(segment, true);
             ViewPolicy.bindClick(segment, () -> select(index, true));
             segment.setAccessibilityDelegate(new AccessibilityDelegate() {
@@ -69,7 +71,7 @@ public final class SegmentedControl extends LinearLayout {
             LayoutParams params = fill
                 ? new LayoutParams(0, LayoutParams.MATCH_PARENT, 1f)
                 : new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT);
-            if (i > 0) params.setMarginStart(Ui.dp(context, 2));
+            if (i > 0) params.setMarginStart(DimensionPolicy.pixels(context, 2));
             addView(segment, params);
             segments.add(segment);
         }
@@ -104,8 +106,8 @@ public final class SegmentedControl extends LinearLayout {
         for (int i = 0; i < segments.size(); i++) {
             TextView segment = segments.get(i);
             boolean on = i == index;
-            Ui.style(segment, Ui.TEXT_SEGMENT, on ? 500 : 400, on ? accent : sub);
-            ViewPolicy.setBackground(segment, Ui.pillRipple(context, on ? ThemeColorPolicy.accentSoft(context) : Color.TRANSPARENT));
+            ViewPolicy.style(segment, Ui.TEXT_SEGMENT, on ? 500 : 400, on ? accent : sub);
+            ViewPolicy.setBackground(segment, ViewPolicy.pillRipple(context, on ? ThemeColorPolicy.accentSoft(context) : Color.TRANSPARENT));
             ViewPolicy.setSelected(segment, on);
         }
         if (fromUser && changed && listener != null) listener.accept(index);

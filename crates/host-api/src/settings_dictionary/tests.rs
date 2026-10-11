@@ -621,4 +621,7 @@ fn dictionary_mutations_quiesce_but_reads_do_not() {
     assert!(!action_requires_quiesce(
         &serde_json::json!({"operation": "export"})
     ));
+    assert!(!action_requires_quiesce(
+        &serde_json::json!({"operation": "wubi_codes", "text": "你"})
+    ));
 }

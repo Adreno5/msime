@@ -73,6 +73,7 @@ impl InputSession {
             clone_candidate_rows(&self.prefix_candidates, &mut decoded);
         } else {
             clone_candidate_rows(self.engine.candidates(), &mut decoded);
+            self.reserve_ai_seat(&mut decoded);
         }
         self.personal_reranked = false;
         // 提交链起点没有上下文，候选偏好由词频设置负责。
@@ -203,7 +204,7 @@ impl InputSession {
         };
         let journal = self.journal_path();
         let journal_exists = journal.try_exists().unwrap_or(false);
-        if !journal_exists && !items.iter().any(|item| item.source.is_online()) {
+        if !journal_exists && !items.iter().any(|item| item.source.takes_online_seat()) {
             return;
         }
         let include_missing = self.engine.request().raw_input.len() == 1;

@@ -1083,11 +1083,11 @@ test.each(["harmony", "android", "ios"])("a %s phone has no 外部皮肤 row", a
   expect(screen.queryByRole("button", { name: "刷新皮肤" })).toBeNull();
 });
 
-// 手机的候选栏默认跟随键盘皮肤，候选颜色要打开「候选栏使用主题配色」才生效：开关关着时不显示取色器，打开后才显示。
+// 手机的候选栏默认跟随键盘皮肤，候选颜色要打开「候选栏使用主题配色」才生效：开关关着时不显示取色器，打开后才显示。只有 iOS 宿主提供这个开关；HarmonyOS 手机的皮肤页只有网格。
 test("a phone shows the candidate colours only while the strip follows the theme", async () => {
   for (const follows of [false, true]) {
     const mounted = openSkinPage({
-      host: testHost({ platform: "harmony", candidate_row_colors: true }),
+      host: testHost({ platform: "ios", candidate_row_colors: true }),
       mobileKeyboardFeedback: {
         load: vi.fn().mockResolvedValue({
           soundEnabled: true,

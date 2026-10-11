@@ -17,9 +17,24 @@ public final class TextPolicy {
             || (codePoint >= 'a' && codePoint <= 'z');
     }
 
+    /** Return whether a code point is one of the ten ASCII decimal digits. */
+    public static boolean isAsciiDigit(int codePoint) {
+        return codePoint >= '0' && codePoint <= '9';
+    }
+
     /** Return whether a code point is an ASCII Latin letter or decimal digit. */
     public static boolean isAsciiLetterOrDigit(int codePoint) {
-        return isAsciiLetter(codePoint) || (codePoint >= '0' && codePoint <= '9');
+        return isAsciiLetter(codePoint) || isAsciiDigit(codePoint);
+    }
+
+    /** Return whether text is a non-empty ASCII token made of letters, digits, hyphens and underscores. */
+    public static boolean validAsciiToken(String value, int minimumLength, int maximumLength) {
+        if (value == null || value.length() < minimumLength || value.length() > maximumLength) return false;
+        for (int index = 0; index < value.length(); index++) {
+            int codePoint = value.charAt(index);
+            if (!isAsciiLetterOrDigit(codePoint) && codePoint != '-' && codePoint != '_') return false;
+        }
+        return true;
     }
 
     /** Return whether text is exactly a fixed number of lower-case hexadecimal digits. */
@@ -181,6 +196,12 @@ public final class TextPolicy {
         return !blank(value);
     }
 
+    /** Return whether text is non-blank, Unicode-valid and within a code-point bound. */
+    public static boolean validBoundedText(String value, int maximumCodePoints) {
+        return hasText(value) && withinCodePoints(value, maximumCodePoints)
+            && !hasControlExceptWhitespace(value) && validUnicode(value);
+    }
+
     /** Return whether text is non-blank, valid Unicode, control-free and within a UTF-8 byte bound. */
     public static boolean boundedNonBlank(String value, int maxBytes) {
         return hasText(value) && utf8Length(value) <= maxBytes
@@ -221,7 +242,11 @@ public final class TextPolicy {
         return new String(Character.toChars(Character.codePointAt(value, 0)));
     }
 
-    /** Return the number of Unicode code points in text, or zero for null. */
+    /** Trim a name and return its first Unicode code point, or a fallback when empty. */
+    public static String trimmedInitial(CharSequence value, String fallback) {
+        return initial(trimmed(value == null ? null : value.toString()), fallback);
+    }
+
     public static int codePointLength(String value) {
         return value == null ? 0 : value.codePointCount(0, value.length());
     }

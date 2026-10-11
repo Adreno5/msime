@@ -30,7 +30,7 @@ use crate::tibetan::{SHAD, TSHEG};
 use crate::time::Instant;
 use crate::types::{
     CandidateSource, Command, CommandTableEntry, EnglishInputOptions, FrequencyAdjustmentOptions,
-    KeyResult, LocalInputMode, LocalModeOptions, MentionEntry, MixedExpressiveOptions,
+    KeyResult, LocalInputMode, LocalModeOptions, MentionEntry, MixedExpressiveOptions, OnlineQuery,
     QuickPhraseEntry, SchemeKey, SchemeType, WordItem, WubiInputOptions,
 };
 use crate::user_dictionary::ngram_store::PersonalNgramStore;
@@ -86,6 +86,10 @@ pub(super) struct InputSession {
     pub local_preedit: String,
     pub local_candidates: Vec<WordItem>,
     pub online_requests: OnlineRequestGuard,
+    /// 宿主为这个会话开着 AI 候选：可以问 AI 的组字先在 AI 座位上放占位行（#6888）。
+    pub ai_seat: bool,
+    /// 回答为空或失败的那次查询；它仍是当前查询时占位行显示「—」。
+    pub ai_seat_resolved: Option<OnlineQuery>,
     pub chain: CommitChain,
     pub personal_context: Arc<PersonalNgramStore>,
     pub typo_profile: Arc<PersonalTypoProfile>,
@@ -162,6 +166,8 @@ impl InputSession {
             local_preedit: String::new(),
             local_candidates: Vec::new(),
             online_requests: OnlineRequestGuard::new(),
+            ai_seat: false,
+            ai_seat_resolved: None,
             chain: CommitChain::default(),
             personal_context: PersonalNgramStore::for_journal(&journal),
             typo_profile: PersonalTypoProfile::shared(&journal),
@@ -1545,6 +1551,10 @@ impl InputSession {
 
     fn local_mode_for_entry(&self, value: u8) -> Option<LocalInputMode> {
         let options = self.local_mode_options;
+        // 总开关关掉时 Shift+字母一律不进模式，大写字母照常交给宿主输出。
+        if !options.shift_letter_entry {
+            return None;
+        }
         let (mode, enabled) = match value {
             b'U' => (LocalInputMode::Unicode, options.unicode),
             b'T' => (LocalInputMode::DateTime, options.date_time),
@@ -1729,6 +1739,13 @@ impl InputSession {
             self.local_mode,
             LocalInputMode::TemporaryEnglish | LocalInputMode::TemporaryJapanese
         ) && !raw.is_empty()
+        {
+            raw.remove(0);
+        }
+        // 五笔临时拼音反查的引导键 `z` 同样是标记：回车上屏的是键入的拼音。
+        if self.local_mode == LocalInputMode::None
+            && !self.dedicated_english
+            && self.engine.wubi_pinyin_lookup_active()
         {
             raw.remove(0);
         }

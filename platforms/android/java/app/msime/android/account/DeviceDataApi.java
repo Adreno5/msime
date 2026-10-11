@@ -6,9 +6,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.URL;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -325,13 +323,7 @@ public final class DeviceDataApi {
 
     /** 会话 id 只拼进路径，所以只认 1–128 个字母、数字、`-`、`_`。 */
     public static boolean validSessionId(String id) {
-        if (id == null || id.isEmpty() || id.length() > 128) return false;
-        for (int index = 0; index < id.length(); index++) {
-            char c = id.charAt(index);
-            boolean allowed = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_';
-            if (!allowed) return false;
-        }
-        return true;
+        return TextPolicy.validAsciiToken(id, 1, 128);
     }
 
     /** 数组长度检查独立出来供无 `org.json` 的宿主冒烟测试覆盖。 */
@@ -363,9 +355,7 @@ public final class DeviceDataApi {
 
     /** 给人看的相对时间：一分钟内「刚刚」，然后「N 分钟前」「N 小时前」「N 天前」；时间未知（0）时为空字符串。 */
     public static String relativeTime(long nowMillis, long thenMillis) {
-        if (thenMillis <= 0) return "";
-        long minutes = BoundsPolicy.nonNegative(nowMillis - thenMillis) / 60_000L;
-        return RelativeTimePolicy.minutesAgo(minutes);
+        return RelativeTimePolicy.millisAgo(nowMillis, thenMillis);
     }
 
     /** 导出文件名，与服务端 `Content-Disposition` 的写法一致。 */
@@ -375,12 +365,7 @@ public final class DeviceDataApi {
 
     /** RFC 3339 时间转 Unix 毫秒；读不出时为 0。 */
     static long instant(String value) {
-        if (value == null || value.isEmpty()) return 0L;
-        try {
-            return Instant.parse(value).toEpochMilli();
-        } catch (DateTimeParseException | ArithmeticException malformed) {
-            return 0L;
-        }
+        return RelativeTimePolicy.isoMillis(value);
     }
 
     private static Profile parseProfile(JSONObject root) throws CloudApi.Failure {
@@ -409,10 +394,8 @@ public final class DeviceDataApi {
 
     /** Data summary counters are JSON integers; reject coercion and negative values. */
     public static long strictCount(Object value) throws CloudApi.Failure {
-        if (!(value instanceof Integer) && !(value instanceof Long))
-            throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
-        long count = ((Number) value).longValue();
-        if (count < 0) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
+        Long count = JsonPolicy.nonNegativeLong(value);
+        if (count == null) throw new CloudApi.Failure(500, "invalid_response", "invalid data count", 0);
         return count;
     }
 

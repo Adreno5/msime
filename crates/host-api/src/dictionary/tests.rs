@@ -46,6 +46,7 @@ fn import_engine_options() -> msime_engine::host::EngineOptions {
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
@@ -1057,4 +1058,83 @@ fn an_unusable_envelope_is_still_rejected_outright() {
     assert!(parse_import(&Kind::Pinyin, "standard", "# only comments\n", None).is_err());
     // Every row unusable means nothing to import.
     assert!(parse_import(&Kind::Wubi, "windows", "abcde\t你好", None).is_err());
+}
+
+/// 五笔查码的请求文档：数据根里的工作词库带 86 和 98 两张五笔表。
+fn wubi_codes_request(directory: &Path, text: &str) -> Vec<u8> {
+    let root = directory.to_str().unwrap();
+    for name in ["user", "resources", "dictionaries"] {
+        std::fs::create_dir_all(directory.join(name)).unwrap();
+    }
+    for name in ["resources", "dictionaries"] {
+        let path = directory.join(name).join("msime-pinyin.db");
+        if path.exists() {
+            continue;
+        }
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE wubi86(key TEXT,value TEXT,weight INTEGER);
+                 INSERT INTO wubi86 VALUES('wq','你',200),('wqiy','你',100),('vbg','好',100),('wqvb','你好',300);
+                 CREATE TABLE wubi98(key TEXT,value TEXT,weight INTEGER);
+                 INSERT INTO wubi98 VALUES('wqiy','你',100),('vbg','好',100);",
+            )
+            .unwrap();
+    }
+    serde_json::to_vec(&json!({
+        "options": {
+            "api_version": 1,
+            "resources": format!("{root}/resources"),
+            "user_data": format!("{root}/user"),
+            "cache": format!("{root}/cache"),
+            "dictionaries": format!("{root}/dictionaries"),
+            "preferences": msime_client_core::preferences::Preferences::default(),
+            "preferences_directory": root,
+        },
+        "action": { "operation": "wubi_codes", "text": text },
+    }))
+    .unwrap()
+}
+
+#[test]
+fn wubi_codes_list_each_character_in_both_profiles_and_the_whole_word() {
+    let directory = tempfile::tempdir().unwrap();
+    let request = wubi_codes_request(directory.path(), "你好");
+    let before = tree(&directory.path().join("user"));
+    let expected = json!({
+        "phrase": { "text": "你好", "wubi86": ["wqvb"], "wubi98": [] },
+        "characters": [
+            { "text": "你", "wubi86": ["wq", "wqiy"], "wubi98": ["wqiy"] },
+            { "text": "好", "wubi86": ["vbg"], "wubi98": ["vbg"] },
+        ],
+        "truncated": false,
+    });
+    assert_eq!(dictionary_request_json(&request).unwrap(), expected);
+    // Android 的设置页把所有词库操作都送进个人词库队列的入口；查码在那里得到同一个回答，而且不排队。
+    assert_eq!(
+        personal_dictionary_request_json(&request).unwrap(),
+        expected
+    );
+    assert!(!directory.path().join("PersonalDictionary").exists());
+    assert_eq!(tree(&directory.path().join("user")), before);
+}
+
+#[test]
+fn wubi_codes_refuse_oversized_text_and_skip_what_is_not_han() {
+    let directory = tempfile::tempdir().unwrap();
+    let reply = dictionary_request_json(&wubi_codes_request(directory.path(), "a，你 b")).unwrap();
+    assert_eq!(reply["phrase"], serde_json::Value::Null);
+    assert_eq!(reply["characters"].as_array().unwrap().len(), 1);
+    assert_eq!(reply["characters"][0]["text"], "你");
+
+    let oversized = "你".repeat(MAX_WUBI_LOOKUP_TEXT / 3 + 1);
+    let request = wubi_codes_request(directory.path(), &oversized);
+    assert_eq!(
+        dictionary_request_json(&request).unwrap_err(),
+        "invalid wubi lookup"
+    );
+    assert_eq!(
+        personal_dictionary_request_json(&request).unwrap_err(),
+        "invalid wubi lookup"
+    );
 }

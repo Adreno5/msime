@@ -1,5 +1,7 @@
 package app.msime.android.home;
 
+import app.msime.android.DimensionPolicy;
+
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.ViewGroup;
@@ -61,7 +63,7 @@ public final class PhrasesPage extends DetailPage {
         for (CommonPhrasesStore.Phrase phrase : current.phrases()) {
             GroupCard.Row row = list.button(phrase.text(), null, "删除", () -> remove(phrase));
             // 点整行修改这一条（#5673）；行尾的「删除」按钮自己响应，不会连带打开修改框。
-            Ui.makeClickable(row.view(), requireContext(), () -> showEditDialog(phrase));
+            ViewPolicy.makeClickable(row.view(), requireContext(), () -> showEditDialog(phrase));
             row.view().setContentDescription(phrase.text() + "，点按修改");
         }
         if (!current.phrases().isEmpty()) list.footer("点一条常用语可以修改。");
@@ -102,8 +104,8 @@ public final class PhrasesPage extends DetailPage {
         ViewPolicy.setMinLines(field, 3);
         ViewPolicy.setMaxLines(field, 6);
         ViewPolicy.setTopStart(field);
-        int padding = Ui.dp(requireContext(), 10);
-        int horizontal = Ui.dp(requireContext(), 12);
+        int padding = DimensionPolicy.pixels(requireContext(), 10);
+        int horizontal = DimensionPolicy.pixels(requireContext(), 12);
         ViewPolicy.setPadding(field, horizontal, padding, horizontal, padding);
         ViewGroup.LayoutParams params = field.getLayoutParams();
         if (params != null) {

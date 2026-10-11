@@ -1,5 +1,7 @@
 package app.msime.android.home;
 
+import app.msime.android.DimensionPolicy;
+
 import app.msime.android.ImageViewPolicy;
 import app.msime.android.DrawablePolicy;
 import app.msime.android.ThemeColorPolicy;
@@ -30,15 +32,15 @@ public final class SearchPill extends LinearLayout {
         super(context, attrs);
         setOrientation(HORIZONTAL);
         ViewPolicy.setCenteredVertically(this);
-        Ui.setMinimumHeightDp(this, context, Ui.SEARCH_HEIGHT);
-        Ui.setHorizontalPaddingDp(this, context, 18);
+        ViewPolicy.setMinimumHeightDp(context, this, Ui.SEARCH_HEIGHT);
+        ViewPolicy.setHorizontalPaddingDp(context, this, 18);
         setBackground(DrawablePolicy.pill(ThemeColorPolicy.card(context)));
 
         ImageView glyph = ImageViewPolicy.decorative(context, R.drawable.ic_search, ThemeColorPolicy.subText(context));
-        int icon = Ui.dp(context, 16);
+        int icon = DimensionPolicy.pixels(context, 16);
         addView(glyph, new LayoutParams(icon, icon));
 
-        field = Ui.styledInput(context, Ui.TEXT_ROW_TITLE, 400, ThemeColorPolicy.text(context));
+        field = ViewPolicy.styledInput(context, Ui.TEXT_ROW_TITLE, 400, ThemeColorPolicy.text(context));
         ViewPolicy.clearBackground(field);
         ViewPolicy.clearPadding(field);
         ViewPolicy.setSingleLine(field);
@@ -46,8 +48,8 @@ public final class SearchPill extends LinearLayout {
         field.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         field.setHintTextColor(ThemeColorPolicy.subText(context));
         field.setHint("搜索");
-        LayoutParams params = new LayoutParams(0, Ui.dp(context, Ui.SEARCH_HEIGHT), 1f);
-        params.setMarginStart(Ui.dp(context, 14));
+        LayoutParams params = new LayoutParams(0, DimensionPolicy.pixels(context, Ui.SEARCH_HEIGHT), 1f);
+        params.setMarginStart(DimensionPolicy.pixels(context, 14));
         addView(field, params);
         // 点到胶囊的任何地方都把焦点交给输入框，而不只是那一行字。
         ViewPolicy.bindClick(this, field::requestFocus);
@@ -66,6 +68,6 @@ public final class SearchPill extends LinearLayout {
 
     /** 每次输入变化回调去掉首尾空白后的查询。 */
     public void setOnQueryChange(Consumer<String> listener) {
-        Ui.afterTextChanged(field, ignored -> listener.accept(query()));
+        ViewPolicy.afterTextChanged(field, ignored -> listener.accept(query()));
     }
 }
