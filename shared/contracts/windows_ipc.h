@@ -131,7 +131,7 @@ constexpr bool IsTerminalDeactivation(std::uint32_t event_type)
 }
 } // namespace FanyImePipeEventType
 
-// FieldTraits 事件的载荷。位值和 crates/host-api/include/msime_client.h 的 MSIME_TRAIT_SECURE、MSIME_TRAIT_ELEVATED 相同（platforms/windows/src/input/FieldTraitsPolicy.h 里有静态断言），这个头不依赖那份 C 头。
+// FieldTraits 事件的载荷。位值和 crates/host-api/include/msime_client.h 的 MSIME_TRAIT_SECURE、MSIME_TRAIT_ELEVATED 相同（platforms/windows/src/input/LifecyclePolicy.h 里有静态断言），这个头不依赖那份 C 头。
 namespace FanyImeFieldTraits
 {
 // 密码框：TIP 只能从「键盘停用或空上下文」认出它（KeyPressStatistics.h 的 ShouldCountKeyPress 用同一个判据），安全桌面（登录、UAC）也算。
