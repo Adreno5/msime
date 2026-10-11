@@ -782,6 +782,9 @@ bool CMetasequoiaIME::_QueueCapsLockTap(_In_ ITfContext *pContext, WPARAM wParam
     {
         return false;
     }
+    // 撤回的那一下带自注入标记，OnTestKeyDown 直接放行、不会再记大写锁定状态，所以在这里记成关。Server 的低级钩子也计入那一下，随后推来的状态同样是关。
+    Global::CapsLockEnabled.store(false, std::memory_order_relaxed);
+    _RequestLanguageBarCapsIconRefresh();
     // 和单按 Shift 走同一个切换：组字中先上屏原文再切换。
     BOOL queued = FALSE;
     (void)_QueueInputHotkey(pContext, Global::MetasequoiaIMEGuidImeModePreserveKey, &queued);

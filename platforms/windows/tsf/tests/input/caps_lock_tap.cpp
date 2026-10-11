@@ -84,6 +84,17 @@ void wiring(const std::string &root) {
           "Caps Lock is released before the language switches, and a failed release switches nothing");
     expect(sink, "inputs[0].ki.dwExtraInfo = CAPS_LOCK_SENDINPUT_EXTRA_INFO;", true,
            "the synthetic Caps Lock carries its marker");
+    // 撤回的那一下被 OnTestKeyDown 当作自注入放行，TIP 要自己把大写锁定记成关，否则语言栏一直显示大写锁定。
+    const auto stored = sink.find("Global::CapsLockEnabled.store(false, std::memory_order_relaxed);", release);
+    check(release != std::string::npos && stored != std::string::npos && stored < queue,
+          "a successful release records Caps Lock as off in the TIP");
+
+    // Server 的低级钩子要在跳过注入按键之前计入 Caps Lock，否则撤回的那一下漏掉，Server 报告的大写锁定从此反着。
+    const std::string hook = read(root + "/../src/input/MaintenanceHotkey.cpp");
+    const auto counted = hook.find("self->caps_.press()");
+    const auto skipped = hook.find("if (injected)\n    return CallNextHookEx");
+    check(counted != std::string::npos && skipped != std::string::npos && counted < skipped,
+          "the Server's hook counts the injected Caps Lock before skipping injected strokes");
 
     const std::string header = read(root + "/IME/MetasequoiaIME.h");
     expect(header, "extraInfo == CAPS_LOCK_SENDINPUT_EXTRA_INFO", true,

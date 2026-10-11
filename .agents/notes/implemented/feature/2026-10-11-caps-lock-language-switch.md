@@ -14,7 +14,7 @@ Status: implemented
 - 判定规则写在 `shared/input/CapsLockTap.h`，三个宿主共用：开关打开、按下前大写锁定是关的、按下时没有别的键或修饰键、按着期间没有按别的键、按下到松开不超过 `kCapsLockTapThresholdMs`（300 毫秒）才算轻点。大写锁定开着时按 Caps Lock 是关掉它，照常处理，不切换。单按 Shift、Control 的 500 毫秒窗口不变；Caps Lock 取更短的 300 毫秒，因为长按它是在要大写锁定，那一侧应该早点认定。
 - 认定为轻点后，宿主先撤回大写锁定，撤回成功才切换；切换走单按 Shift 的同一条路，组字中先上屏原文。撤不回时不切换，大写锁定照常生效。
 - macOS：系统只在锁定状态改变时报一次 FlagsChanged，没有松开事件。控制器在大写锁定从关变开时布防，并暂不把这次的大写锁定报告给会话和工具栏；每 10 毫秒用 `CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, 0x39)` 查键是否还按着。松开且在分界内就用 IOKit 的 `IOHIDSetModifierLockState(kIOHIDCapsLockState, false)` 撤回；按住超过分界、按着时打字或撤不回，就把大写锁定补报给会话。失焦、换会话等外部重置时按实际锁定状态报告。
-- Windows：TIP 在 `OnTestKeyDown` 的 Caps Lock 首次按下时布防（`GetKeyState` 这时还是按下前的状态），`_TrackModifierHotkeyArming` 遇到别的键按下时取消；`OnTestKeyUp` 和 `OnKeyUp` 认定后用 `SendInput` 再按一次 Caps Lock 撤回，合成事件带 `CAPS_LOCK_SENDINPUT_EXTRA_INFO`，按键处理和裸 Shift 钩子都放行，然后把切换排进延迟按键队列。松开事件不吃掉。
+- Windows：TIP 在 `OnTestKeyDown` 的 Caps Lock 首次按下时布防（`GetKeyState` 这时还是按下前的状态），`_TrackModifierHotkeyArming` 遇到别的键按下时取消；`OnTestKeyUp` 和 `OnKeyUp` 认定后用 `SendInput` 再按一次 Caps Lock 撤回，合成事件带 `CAPS_LOCK_SENDINPUT_EXTRA_INFO`，按键处理和裸 Shift 钩子都放行，然后把切换排进延迟按键队列。松开事件不吃掉。合成的那一下被 TIP 当作自注入放行，TIP 撤回成功后自己把 `Global::CapsLockEnabled` 记成关；Server 的低级钩子（`MaintenanceHotkey.cpp`）在跳过注入按键之前计入 Caps Lock，因为它记的锁定状态是每按下一次翻转一次，漏掉撤回的那一下，报告给工具栏和语言栏的大写锁定就从此反着，直到 Server 重启。
 - Linux：IBus 与 Fcitx5 按 `Caps_Lock` 符号认键，排除被 xkb 选项改成 `Caps_Lock` 的 Shift 键；按下事件带的是按下前的锁定状态，松开时认定。撤回用 libX11 的 `XkbLockModifiers`（`platforms/linux/src/system/CapsLockRelease.cpp`，X11 宏不流进宿主代码），只在 X11 会话里可用；`WAYLAND_DISPLAY` 有值或 `XDG_SESSION_TYPE=wayland` 时不布防。
 - 原生设置：macOS 设置窗口「按键」页、Windows 原生设置窗口「输入模式切换」组各加一行；Linux 的设置窗口就是共享设置页。
 
@@ -45,6 +45,6 @@ Status: implemented
 - `client-core`：`caps_lock_language_switch_defaults_off_and_persists_an_explicit_enable` 覆盖默认关、旧文档缺键、保存读回且不动其他切换键；`host_surface` 断言只有三个桌面宿主声明能力。
 - 共享设置页：`input-mode-shortcuts-section.test.tsx` 覆盖没有能力时不显示、缺省关、打开只写这一个键、macOS 与 Linux 的限制说明。
 - macOS CTest `shortcut` 的 `TestCapsLockTap` 用合成的时钟、按键状态和撤回函数驱动真实控制器：轻点切换且不报告大写锁定、撤回后系统的「关」不再切换、长按与两次轮询之间的慢松开都保留大写锁定、大写锁定开着时按下只是关掉、按着打字和组合键不切换、撤不回不切换、组字中先上屏原文、开关关掉时照常。原生设置的开关读写也在其中。
-- Windows：`msime-tsf-caps-lock-tap` 逐条钉住共享判定规则，并检查 TSF 接线（按下前状态、两个松开入口、先撤回后切换、合成事件标记、偏好键与缺省值），本机 clang 运行通过；`KeyEventSink.cpp` 用 MinGW 做过语法检查。WinUI 3 的原生设置窗口只能交给 Windows CI 编译。
+- Windows：`msime-tsf-caps-lock-tap` 逐条钉住共享判定规则，并检查 TSF 接线（按下前状态、两个松开入口、先撤回后切换、撤回后记成关、合成事件标记、Server 钩子在跳过注入按键之前计入 Caps Lock、偏好键与缺省值），本机 clang 运行通过；`windows-maintenance-hotkeys` 覆盖 `CapsLockTracker`：真实的一下加注入的一下之后报告关，之后的长按照常；`KeyEventSink.cpp` 用 MinGW 做过语法检查。WinUI 3 的原生设置窗口只能交给 Windows CI 编译。
 - Linux：`linux-caps-lock-tap` 覆盖判定规则和 X11/Wayland 会话判断；在 `build-container.sh` 的容器里编译两个宿主并跑 ctest。
 - 没有在任何平台上实机按 Caps Lock 验证：macOS 只验证了 IOKit 调用在无授权进程里可用，Windows 与 Linux 没有实机。
