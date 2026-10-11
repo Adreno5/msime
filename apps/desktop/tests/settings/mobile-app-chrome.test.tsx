@@ -173,7 +173,7 @@ test("Harmony appearance names only the surfaces the form factor actually has", 
   // The phone hides the physical-keyboard shortcut page everywhere, the sidebar included: a sidebar entry here was a button `selectPage` refused, and asserting the page's text passed only because the hidden fieldset stays in the DOM.
   expect(screen.queryByRole("button", { name: "快捷键" })).toBeNull();
 
-  // The per-surface theme overrides are in the 高级 group of 主题.
+  // 手机皮肤页只有网格，不提供各界面的明暗覆盖。
   cleanup();
   renderSettings(
     "harmony",
@@ -186,7 +186,7 @@ test("Harmony appearance names only the surfaces the form factor actually has", 
     "skin",
   );
   await settingsFormReady();
-  expect(screen.getByRole("combobox", { name: "候选栏主题" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "候选栏主题" })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "候选窗口主题" })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "悬浮工具栏主题" })).toBeNull();
 

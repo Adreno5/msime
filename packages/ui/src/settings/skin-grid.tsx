@@ -24,6 +24,8 @@ export type SkinGridCustomDesign = {
   /** 自定义主题是否用这个设计绘制键盘。 */
   selected: boolean;
   onSelect: () => void;
+  /** 再点一次已在使用的我的皮肤卡片时打开编辑器；HarmonyOS 手机的皮肤页没有别的「设计我的皮肤」入口。 */
+  onEdit?: () => void;
 };
 
 export interface SkinGridProps {
@@ -55,8 +57,10 @@ type Card = {
   /** 换装达人徽章把这张卡片计为什么。 */
   statisticsId: string;
   select: () => void;
-  /** 再点一次已在使用的卡片时做什么；没有时什么也不改。只有皮肤包卡片有：把它从所在的槽位取下。 */
+  /** 再点一次已在使用的卡片时做什么；没有时什么也不改。皮肤包卡片把它从所在的槽位取下，我的皮肤卡片打开编辑器。 */
   deselect?: () => void;
+  /** 再点一次是打开别处（编辑器），标题后画一个 ›。 */
+  opens?: boolean;
 };
 
 const grid = "grid grid-cols-2 gap-x-3.5 gap-y-[18px] px-1 pt-1";
@@ -96,7 +100,7 @@ function Check() {
   );
 }
 
-/** 按顺序排列的卡片：目录里的主题、我的皮肤，然后是外部皮肤包。皮肤包分浅色、深色两个槽位，所以最多同时选中两张皮肤包卡片；没有皮肤包在使用时，最多选中一张：自定义主题正在绘制其设计时的我的皮肤，否则是选中的主题。在有编辑器的宿主上，既没有皮肤包也没有设计的自定义主题没有自己的卡片；它的颜色在更多选项里编辑。 */
+/** 按顺序排列的卡片：目录里的主题、我的皮肤，然后是外部皮肤包。皮肤包分浅色、深色两个槽位，所以最多同时选中两张皮肤包卡片；没有皮肤包在使用时，最多选中一张：自定义主题正在绘制其设计时的我的皮肤，否则是选中的主题。在有编辑器的宿主上，既没有皮肤包也没有设计的自定义主题没有自己的卡片。 */
 function skinGridCards({
   themes,
   globalTheme,
@@ -168,6 +172,8 @@ function skinGridCards({
       design: customDesign.design,
       statisticsId: "custom",
       select: customDesign.onSelect,
+      deselect: customDesign.onEdit,
+      opens: Boolean(customDesign.onEdit),
     });
   for (const skin of packages)
     cards.push({
@@ -228,6 +234,11 @@ export function SkinGrid(props: SkinGridProps) {
                 <span className={caption(card.selected)}>
                   {card.selected && <Check />}
                   <span className="min-w-0 truncate">{card.title}</span>
+                  {card.selected && card.opens && (
+                    <span aria-hidden="true" className="opacity-60">
+                      ›
+                    </span>
+                  )}
                 </span>
               </>
             }

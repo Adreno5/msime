@@ -32,7 +32,7 @@ import {
   AiSkinGeneration,
   TouchKeyboardSkinEditor,
 } from "../../keyboard/touch-keyboard-skin-editor";
-import { GroupList, MoreOptions } from "../../core/platform-controls";
+import { GroupList } from "../../core/platform-controls";
 import { CandidateColorsSection } from "../candidate-colors-section";
 import { ThemeSettingsSection } from "../theme-settings-section";
 import { ScreenKeyboardSkinsSection } from "../screen-keyboard-skins-section";
@@ -243,14 +243,13 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
           theme={keyboardPreviewTheme}
           selected={customKeyboardSelected}
           customDesign={customTouchKeyboardSkin}
-          // 鸿蒙手机上编辑器在单独的视图里，这里的按钮只负责打开它，始终叫「设计我的皮肤」。
-          editorOpen={!phoneGrid && showTouchSkinEditor}
+          editorOpen={showTouchSkinEditor}
           // 卡片预览的是编辑器里的设计，所以选中它就保存那个设计；没有设计时自定义主题会画它基础主题的键盘。
           onSelect={() => onCustomKeyboardChange(customTouchKeyboardSkin)}
-          onToggleEditor={phoneGrid ? openEditor : () => setShowTouchSkinEditor((value) => !value)}
+          onToggleEditor={() => setShowTouchSkinEditor((value) => !value)}
         />
       )}
-      {client.customTouchKeyboardSkins && !phoneGrid && showTouchSkinEditor && (
+      {client.customTouchKeyboardSkins && showTouchSkinEditor && (
         <SettingsGroupBlock>
           <TouchKeyboardSkinEditor
             design={customTouchKeyboardSkin}
@@ -302,6 +301,8 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
                       selected: customKeyboardSelected,
                       // 卡片画的是编辑器里的设计，所以选中它就保存那个设计，与「自定义主题」下的「我的皮肤」卡片一致。
                       onSelect: () => onCustomKeyboardChange(customTouchKeyboardSkin),
+                      // 这页没有「更多选项」，选中后再点一次就是「设计我的皮肤」的入口。
+                      onEdit: openEditor,
                     }
                   : undefined
               }
@@ -310,15 +311,7 @@ export function SkinSettingsPage({ hidden = false }: { hidden?: boolean }) {
               onApplied={(id) => void client.typingStatistics?.recordSkin?.(id)}
               onOpenAi={aiSkins && customSkinLibrary ? openAi : undefined}
             />
-            {/* 设计里这页没有设置行；颜色模式、皮肤目录和社区入口、自定义主题和各界面的单独设置仍可在「更多选项」下找到。编辑器不在这个折叠区里，而是单独的视图（见下方 `TouchKeyboardSkinEditor fullScreen`）。 */}
-            <GroupList>
-              <MoreOptions>
-                {colourMode}
-                {moreSkins}
-                {customThemeGroup}
-                {advanced}
-              </MoreOptions>
-            </GroupList>
+            {/* 设计里这页没有设置行，只有网格。颜色模式和各界面的明暗覆盖不提供；在线皮肤在「社区」标签页；我的皮肤是网格里的卡片，选中后再点一次打开编辑器（`onEdit`），「我的 → 我的设计」也能进入。 */}
           </>
         ) : (
           <>
