@@ -121,7 +121,12 @@ do
     skipped_suites+=("$suite")
     continue
   fi
-  result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
+  if [[ "$suite" == WubiLookupDeviceSmoke ]]; then
+    # 它直接改偏好文件，再让设置进程读新配置；必须重新启动产品主进程。
+    result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
+  else
+    result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
+  fi
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "${entry#*|}" >&2; exit 1; }
 done
