@@ -3110,7 +3110,7 @@ final class NineKeyKeyboardTests: XCTestCase {
     XCTAssertNil(descendants(controller.view).first { $0.accessibilityIdentifier == "candidatePanelBack" })
   }
 
-  // MARK: - 数字键盘顺序
+  // MARK: - 九宫格数字顺序
 
   func testNumberKeypadOrderMapsGridPositions() {
     let phone = KeyboardLayoutPreference.NumberKeypadOrder.phone
@@ -3152,14 +3152,14 @@ final class NineKeyKeyboardTests: XCTestCase {
     XCTAssertEqual(try button("nineKey7", in: controller).accessibilityLabel, "7 PQRS")
   }
 
-  // MARK: - 26 键数字键盘
+  // MARK: - 26 键按 123
 
   func testTwentySixKeyNumberLayoutReadsTheDocumentAndOnlyAppliesToPhoneLetterKeys() {
     typealias Layout = KeyboardLayoutPreference.TwentySixKeyNumberLayout
     XCTAssertEqual(Layout.shared(in: nil), .row)
     XCTAssertEqual(Layout.shared(in: ["touch_twenty_six_key_number_layout": "abacus"]), .row)
     XCTAssertEqual(Layout.shared(in: ["touch_twenty_six_key_number_layout": "nine_key"]), .nineKey)
-    XCTAssertEqual(Layout.allCases.map(\.title), ["一行", "九宫格"])
+    XCTAssertEqual(Layout.allCases.map(\.title), ["数字一行", "九宫格"])
     XCTAssertTrue(KeyboardViewController.opensNineKeyDigitPad(layout: .nineKey, formFactor: .phone, letterKeys: true))
     XCTAssertFalse(KeyboardViewController.opensNineKeyDigitPad(layout: .row, formFactor: .phone, letterKeys: true))
     // iPad 全尺寸键盘保留一行的 123 页；九键、笔画、手写、假名和大千的字母层不是 26 键字母。
@@ -3167,7 +3167,7 @@ final class NineKeyKeyboardTests: XCTestCase {
     XCTAssertFalse(KeyboardViewController.opensNineKeyDigitPad(layout: .nineKey, formFactor: .phone, letterKeys: false))
   }
 
-  /// 选了九宫格后，全拼 26 键的 123 换成九键的数字层：标点栏、按数字键盘顺序排的 3×3、⌫ . ！ 和底行的 0；返回键回到 26 键字母，组字不受影响。
+  /// 选了九宫格后，全拼 26 键的 123 换成九键的数字层：标点栏、按九宫格数字顺序排的 3×3、⌫ . ！ 和底行的 0；返回键回到 26 键字母，组字不受影响。
   func testNineKeyNumberLayoutTurnsTheTwentySixKey123IntoTheDigitGrid() throws {
     let previousScheme = InputSchemePreference.scheme
     defer { InputSchemePreference.scheme = previousScheme }
