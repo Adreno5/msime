@@ -149,6 +149,13 @@ pub struct Runtime<E: InputEngine = Session> {
     pub(crate) composition_epoch: u64,
     /// 候选视图（列表、注释、来源、高亮、页、释义）每变一次加一。高亮移动和翻页在 refresh 之前就返回，所以单独计数。
     pub(crate) candidates_epoch: u64,
+    /// 脚本插件的候选变换，见 `transform` 模块。只在桌面编译。
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    pub(crate) plugins: crate::transform::PluginState,
 }
 
 /// `SchemeType::Korean`: Hangul syllables that compose in the preedit, with no Chinese punctuation; the only candidates are the composing syllable's Hanja, in the Engine's table order, once the host asks for them.
@@ -641,6 +648,12 @@ impl<E: InputEngine> Runtime<E> {
             selected_text: String::new(),
             composition_epoch: 0,
             candidates_epoch: 0,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            plugins: Default::default(),
         })
     }
 
@@ -700,12 +713,16 @@ impl<E: InputEngine> Runtime<E> {
         {
             return false;
         }
-        std::mem::swap(&mut self.reranker, &mut self.settled_reranker);
-        let mut moved = self.rerank();
+        // 脚本插件的操作只按候选身份重放，不运行脚本：停顿的时机不能透露给脚本。是否挪动按重放之后的座位比较。
+        let replayed = self.has_candidate_ops().then(|| self.seat_order());
         std::mem::swap(&mut self.reranker, &mut self.settled_reranker);
         // The same passes the fast path runs after its rerank, so the seats they fix stay fixed.
-        moved |= self.demote_runner_up_readings();
-        moved |= self.normalize_online_slots();
+        let mut moved = self.order_presentation();
+        std::mem::swap(&mut self.reranker, &mut self.settled_reranker);
+        if let Some(before) = replayed {
+            let marks_changed = self.transform_candidates();
+            moved = marks_changed || self.seat_order() != before;
+        }
         if moved {
             self.snapshot_valid = true;
             self.highlighted = 0;
@@ -798,12 +815,9 @@ impl<E: InputEngine> Runtime<E> {
     pub fn view(&self) -> View {
         let page = self.highlighted / self.page_size;
         let start = page * self.page_size;
-        let page_len = self
-            .cached
-            .candidates
-            .len()
-            .saturating_sub(start)
-            .min(self.page_size);
+        // 只认可见前缀：被插件隐藏的行在列表末尾，不进视图也不进分页。
+        let visible = self.visible_len();
+        let page_len = visible.saturating_sub(start).min(self.page_size);
         let mut candidates = Vec::with_capacity(page_len);
         candidates.extend(
             self.cached
@@ -851,7 +865,7 @@ impl<E: InputEngine> Runtime<E> {
             conversion_focus_end: self.cached.conversion_focus_end,
             page,
             page_size: self.page_size,
-            page_count: self.cached.candidates.len().div_ceil(self.page_size),
+            page_count: visible.div_ceil(self.page_size),
             candidate_list_open: self.cached.candidate_list_open,
             candidates,
         }
@@ -862,11 +876,7 @@ impl<E: InputEngine> Runtime<E> {
     /// [`View`].
     pub fn candidate_page_len(&self) -> usize {
         let start = (self.highlighted / self.page_size) * self.page_size;
-        self.cached
-            .candidates
-            .len()
-            .saturating_sub(start)
-            .min(self.page_size)
+        self.visible_len().saturating_sub(start).min(self.page_size)
     }
 
     /// The Engine scheme ordinal of the applied state, without materializing a [`View`].
@@ -892,12 +902,7 @@ impl<E: InputEngine> Runtime<E> {
     /// constructing display-only codes, annotations, IDs and highlight flags on every key.
     pub fn translation_candidates(&self) -> Option<TranslationCandidates> {
         let start = (self.highlighted / self.page_size) * self.page_size;
-        let page_len = self
-            .cached
-            .candidates
-            .len()
-            .saturating_sub(start)
-            .min(self.page_size);
+        let page_len = self.visible_len().saturating_sub(start).min(self.page_size);
         let mut candidates = Vec::with_capacity(page_len);
         candidates.extend(
             self.cached
@@ -952,11 +957,13 @@ impl<E: InputEngine> Runtime<E> {
 
     /// The generation as it stands, without asking the engine for more.
     fn all_candidates_cached(&self) -> CandidateSnapshot {
-        let mut candidates = Vec::with_capacity(self.cached.candidates.len());
+        let visible = self.visible_len();
+        let mut candidates = Vec::with_capacity(visible);
         candidates.extend(
             self.cached
                 .candidates
                 .iter()
+                .take(visible)
                 .enumerate()
                 .map(|(index, text)| self.candidate(index, text)),
         );
@@ -1011,6 +1018,12 @@ impl<E: InputEngine> Runtime<E> {
             translation: (!self.translations.is_empty())
                 .then(|| self.translations.get(text).cloned())
                 .flatten(),
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            script_annotation: self.script_annotation(index),
         }
     }
 
@@ -1195,7 +1208,7 @@ impl<E: InputEngine> Runtime<E> {
     /// Answers whether the arrivals filled the page the caller is already on, in which case paging
     /// has to stay put: advancing would step over the candidates that just showed up.
     fn expand_for_next_page(&mut self) -> Result<bool, RuntimeError> {
-        let len = self.cached.candidates.len();
+        let len = self.visible_len();
         if len == 0 {
             return Ok(false);
         }
@@ -1221,7 +1234,7 @@ impl<E: InputEngine> Runtime<E> {
     /// same query walks straight past it. The second condition mirrors the paging one: stepping into
     /// the partial last page fills it first, so it is never shown short and then grown.
     fn expand_for_next_candidate(&mut self) -> Result<(), RuntimeError> {
-        let len = self.cached.candidates.len();
+        let len = self.visible_len();
         if len == 0 {
             return Ok(());
         }
@@ -1245,9 +1258,9 @@ impl<E: InputEngine> Runtime<E> {
         }
         let snapshot = self.engine.snapshot()?;
         self.load_snapshot(snapshot);
-        self.rerank();
-        self.demote_runner_up_readings();
-        self.normalize_online_slots();
+        self.order_presentation();
+        // 派发类调用里的展开重新运行插件，其余（`all_candidates`）只重放。
+        self.transform_candidates();
         self.bump_candidates_epoch();
         Ok(true)
     }
@@ -1736,6 +1749,14 @@ impl<E: InputEngine> Runtime<E> {
         true
     }
 
+    /// 内置的呈现排序：逐键重排、整句读法降位、在线候选的座位。refresh、展开和落定重排三处都走这里，免得三处的步骤漂移。返回是否挪动了候选。
+    fn order_presentation(&mut self) -> bool {
+        let mut moved = self.rerank();
+        moved |= self.demote_runner_up_readings();
+        moved |= self.normalize_online_slots();
+        moved
+    }
+
     fn rerank(&mut self) -> bool {
         // 整句改字的候选是光标处一段的替换，按读音长短排好，不参与整句的重排。
         if !self.cached.conversion.is_empty() {
@@ -1879,9 +1900,9 @@ impl<E: InputEngine> Runtime<E> {
             }
         };
         let previous = std::mem::replace(&mut self.cached, snapshot);
-        self.rerank();
-        self.demote_runner_up_readings();
-        self.normalize_online_slots();
+        self.order_presentation();
+        // 派发类调用里的 refresh 重新运行插件，其余只重放；隐藏的行数和插件注释的变化也算候选视图的变化。
+        let plugin_marks_changed = self.transform_candidates();
         self.snapshot_valid = true;
         if self.cached.editing_text == previous.editing_text
             && self.cached.scheme == previous.scheme
@@ -1898,8 +1919,7 @@ impl<E: InputEngine> Runtime<E> {
             && self.cached.conversion == previous.conversion
             && self.cached.conversion_focus_start == previous.conversion_focus_start
         {
-            self.highlighted =
-                previous_highlight.min(self.cached.candidates.len().saturating_sub(1));
+            self.highlighted = previous_highlight.min(self.visible_len().saturating_sub(1));
         }
         let cached = &self.cached;
         if cached.preedit != previous.preedit
@@ -1915,6 +1935,7 @@ impl<E: InputEngine> Runtime<E> {
         }
         let cached = &self.cached;
         if had_translations
+            || plugin_marks_changed
             || self.highlighted != previous_highlight
             || cached.candidates != previous.candidates
             || cached.candidate_codes != previous.candidate_codes
@@ -2097,6 +2118,26 @@ impl<E: InputEngine> Runtime<E> {
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<Transition, RuntimeError> {
+        // 桌面上只有派发类调用运行脚本插件的候选变换，旁路调用只重放，见 `transform` 模块。
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
+        {
+            self.dispatch_live(action)
+        }
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )))]
+        {
+            self.dispatch_action(action)
+        }
+    }
+
+    pub(crate) fn dispatch_action(&mut self, action: Action) -> Result<Transition, RuntimeError> {
         // 每次调用都从空白开始，提前返回的路径（报错、失焦）也不会留下上一键的事实。
         self.facts = DispatchFacts::default();
         self.selected_text.clear();
@@ -2112,7 +2153,7 @@ impl<E: InputEngine> Runtime<E> {
         if let Action::SelectAnyCandidate(id) = &action {
             if id.session != self.session
                 || id.generation != self.generation
-                || id.index >= self.cached.candidates.len()
+                || id.index >= self.visible_len()
             {
                 return Err(RuntimeError::StaleCandidate);
             }
@@ -2128,7 +2169,7 @@ impl<E: InputEngine> Runtime<E> {
             if id.session != self.session
                 || id.generation != self.generation
                 || id.index < start
-                || id.index >= (start + self.page_size).min(self.cached.candidates.len())
+                || id.index >= (start + self.page_size).min(self.visible_len())
             {
                 return Err(RuntimeError::StaleCandidate);
             }
@@ -2162,7 +2203,8 @@ impl<E: InputEngine> Runtime<E> {
         if matches!(action, Action::LastCandidate) {
             self.expand_cached_candidates()?;
         }
-        let len = self.cached.candidates.len();
+        // 高亮、数字、空格和点选都只落在可见前缀里，被隐藏的行选不到。
+        let len = self.visible_len();
         let next_highlight = match &action {
             // Staying keeps the highlight exactly where it was: the page did not change, it only
             // stopped being short.
