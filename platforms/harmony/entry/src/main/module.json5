@@ -47,9 +47,7 @@
         }
       },
       {
-        // CoreSpeechKit opens the device microphone on behalf of the input method. The recognizer
-        // refuses to start without this sensitive permission; raw audio remains inside the system
-        // service and is never handed to the Engine or persisted by this module.
+        // The keyboard captures the microphone itself (HarmonyPcmCapture) for every recognizer: CoreSpeechKit in write-audio mode, Doubao, the HTTP providers and the on-device model. Raw audio is never handed to the Engine, written to disk or logged; it leaves the device only for the cloud service the user selected.
         "name": "ohos.permission.MICROPHONE",
         "reason": "$string:microphone_permission_reason",
         "usedScene": {

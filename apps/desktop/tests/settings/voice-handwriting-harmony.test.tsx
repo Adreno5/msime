@@ -4,6 +4,7 @@ import { saveSettingsNow, settingsFormReady } from "../support/settings-form";
 import { afterEach, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SettingsPage, type MobileKeyboardFeedback, type Snapshot } from "@msime/ui";
+import { doubaoServiceStatus } from "../../../../packages/ui/src/settings/voice-settings-content";
 
 afterEach(() => {
   cleanup();
@@ -242,7 +243,8 @@ test("the phone voice page keeps service details behind 服务配置", async () 
   }
   expect(within(page).getByRole("switch", { name: "提示音" })).toBeTruthy();
   const entry = screen.getByRole("button", { name: "服务配置" });
-  expect(entry.textContent).toContain("未填写");
+  // 出厂的豆包没有任何凭据，键盘实际用的是系统识别，要照实写出来。
+  expect(entry.textContent).toContain("未填写，暂用系统识别");
 
   const dialog = openServiceConfig();
   expect(within(dialog).getByLabelText("Doubao API Key")).toBeTruthy();
@@ -251,6 +253,26 @@ test("the phone voice page keeps service details behind 服务配置", async () 
   fireEvent.click(within(dialog).getByRole("button", { name: "返回" }));
   expect(await screen.findByRole("button", { name: "服务配置" })).toBeTruthy();
   expect(screen.queryByRole("dialog", { name: "服务配置" })).toBeNull();
+});
+
+// 豆包的状态与键盘的判断一致：密钥可以在分槽里；一项都没填是系统识别，填了一部分是没填完整。
+test("the Doubao service row tells unconfigured, partial and complete apart", () => {
+  const base = { enabled: true, language: "", asr_provider: "doubao" } as const;
+  expect(doubaoServiceStatus({ ...base })).toBe("未填写，暂用系统识别");
+  expect(doubaoServiceStatus({ ...base, asr_token: "fixture-key" })).toBe("已填写");
+  expect(doubaoServiceStatus({ ...base, asr_tokens: { doubao: "fixture-key" } })).toBe("已填写");
+  expect(doubaoServiceStatus({ ...base, asr_app_key: "fixture-app" })).toBe("未填写完整");
+  expect(
+    doubaoServiceStatus({ ...base, doubao_auth_mode: "legacy", asr_token: "fixture-key" }),
+  ).toBe("未填写完整");
+  expect(
+    doubaoServiceStatus({
+      ...base,
+      doubao_auth_mode: "legacy",
+      asr_token: "fixture-key",
+      asr_app_key: "fixture-app",
+    }),
+  ).toBe("已填写");
 });
 
 // 系统识别不用配置，不画「服务配置」。
