@@ -13,12 +13,7 @@ import { themeEntry } from "../theme/global-theme";
 import * as doc from "../settings/document-style";
 import * as account from "./account-style";
 import { AccountAvatar } from "./account-avatar";
-import {
-  accountProviderName,
-  isValidAccountName,
-  normalizeAccountName,
-  preferredAccountName,
-} from "./account-labels";
+import { accountProviderName, preferredAccountName } from "./account-labels";
 import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
 import { AccountNicknameField } from "./account-nickname-field";
@@ -39,6 +34,7 @@ import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
 import { useAccountRecoveryActions } from "./use-account-recovery-actions";
 import { useAccountSessionActions } from "./use-account-session-actions";
+import { useAccountRename } from "./use-account-rename";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
@@ -200,19 +196,18 @@ function MobileAccountProfilePage({
     perform,
     onClearedExpired: onSignedOut,
   });
-  const normalizedName = normalizeAccountName(name);
-  const validName = isValidAccountName(name);
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!validName) throw { code: "account_invalid" };
-      const updated = await client.rename(normalizedName);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+  const { normalizedName, validName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
       onProfileUpdated(updated);
       setName(updated.user.displayName);
       setNotice("昵称已更新。");
-    });
+    },
+  });
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
@@ -366,22 +361,21 @@ function HarmonyProfilePage({
     onSignedOut: (all) => onSignedOut(all ? "已退出所有设备" : "已退出登录"),
     onDeleted: () => onSignedOut("账号已注销"),
   });
-  const normalizedName = normalizeAccountName(name);
-  const validName = isValidAccountName(name);
-  const shownName = preferredAccountName(user);
-  const provider = profile?.providers[0];
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!validName) throw { code: "account_invalid" };
-      const updated = await client.rename(normalizedName);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+  const { normalizedName, validName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
       onProfileUpdated(updated);
       setName(updated.user.displayName);
       setRenaming(false);
       showToast("昵称已更新");
-    });
+    },
+  });
+  const shownName = preferredAccountName(user);
+  const provider = profile?.providers[0];
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
@@ -1103,6 +1097,17 @@ function AccountDetailsPage({
     setUser(value.user);
     setName(value.user.displayName);
   };
+  const { normalizedName, rename } = useAccountRename({
+    client,
+    name,
+    mounted,
+    clientGeneration,
+    perform,
+    onRenamed: (updated) => {
+      applyProfile(updated);
+      setNotice("昵称已更新。");
+    },
+  });
 
   const loadProfile = async (generation = clientGeneration.current) => {
     const value = await client.profile();
@@ -1161,17 +1166,6 @@ function AccountDetailsPage({
       if (!mounted.current || result.generation !== clientGeneration.current) return;
       setNotice("登录成功。");
       onLoginComplete?.();
-    });
-
-  const rename = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      const normalized = normalizeAccountName(name);
-      if (!isValidAccountName(name)) throw { code: "account_invalid" };
-      const updated = await client.rename(normalized);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      applyProfile(updated);
-      setNotice("昵称已更新。");
     });
 
   // Only the user and profile change: the nickname field keeps whatever is being typed in the dialog.
@@ -1776,7 +1770,7 @@ function AccountDetailsPage({
                   setEditingProfile(false);
                 }}
                 className={account.primary}
-                disabled={busy || normalizeAccountName(name) === user.displayName}
+                disabled={busy || normalizedName === user.displayName}
                 label="保存修改"
               />
               <ActionButton
