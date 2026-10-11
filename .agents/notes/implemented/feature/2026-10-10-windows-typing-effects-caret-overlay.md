@@ -6,7 +6,7 @@ Status: implemented
 
 macOS 的打字特效面板（`platforms/macos/src/input/TypingEffectPanel.mm`）在光标处迸出火花。Power Mode 的火花更多、更快，还会抖一下候选窗。特效包的颜色一键换一个，火花数照包里的 `particles`。连击徽标升档时弹一下。候选窗不在屏幕上时（刚上屏、交给应用的键），闪光改画在光标所在的行，徽标画在光标旁。Windows 只有候选卡片的闪光，`TypingEffectPolicy.h` 自己写着「没有粒子浮层」。火花和 Power Mode 都只是闪得更亮，特效包只用第一个颜色。连击数挤在拼音行里，候选窗一收起就什么都看不到。共享设置页因此对 Windows 打开了 `typingEffectsFlashOnly`，样式说明不敢提火花。
 
-按键音也少了一截。macOS 每个按键都出声，不管输入法处理没处理（`InputController.mm` 的 `playKeySound:`），连击也数这些键。Windows 的 TIP 只把输入法接手的键转给 Server，没有组字时的空格、回车、退格、数字和方向键直接交给应用，从不经过 `FocusedSession::configured_key`。所以开着音效包时这些键没有声音，连击也不算它们。
+按键音也少了一截。macOS 每个按键都出声，不管输入法处理没处理（`InputController.mm` 的 `reportKeyToLifecycle:`，接入生命周期核心前叫 `playKeySound:`），连击也数这些键。Windows 的 TIP 只把输入法接手的键转给 Server，没有组字时的空格、回车、退格、数字和方向键直接交给应用，从不经过 `FocusedSession::configured_key`。所以开着音效包时这些键没有声音，连击也不算它们。
 
 ## Decision
 
@@ -29,7 +29,7 @@ macOS 的打字特效面板（`platforms/macos/src/input/TypingEffectPanel.mm`�
 
 输入线程上 `FocusedSession::passthrough_key` 只认此刻以这个焦点令牌持有焦点、不在英文模式的会话，带 `MSIME_KEY_PASSTHROUGH` 交给生命周期核心（下一节）：和 Server 接手的键一样出按键音、计入连击，全屏应用在前台时不出声，但不开新的一轮，因为应用已经处理过这个键。
 
-**声音和特效的时机交给生命周期核心。** 桌面生命周期核心（[2026-10-11-desktop-lifecycle-core](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md)）的第 2 阶段里，Server 的每个会话一建好就调 `msime_client_set_lifecycle(FEEDBACK | HOST_HOLDS_PIECES)`（`src/input/LifecyclePolicy.h`），旧的 `key_sound`、`commit_sound`、`music_set_active` 和 `typing_effect`（事件 0-4）对它变成空操作，Server 也不再调。TIP 在应用进程里的宿主会话从不选择加入，也从不调用 `msime_client_set_lifecycle`、`msime_client_key`、`msime_client_set_field_traits`、`msime_client_set_active`，`tsf/tests/input/lifecycle_boundary.cpp` 按源码守着这一条。
+**声音和特效的时机交给生命周期核心。** 桌面生命周期核心（[2026-10-11-desktop-lifecycle-core](../../implemented/architecture/2026-10-11-desktop-lifecycle-core.md)）的第 2 阶段里，Server 的每个会话一建好就调 `msime_client_set_lifecycle(FEEDBACK | HOST_HOLDS_PIECES)`（`src/input/LifecyclePolicy.h`），旧的 `key_sound`、`commit_sound`、`music_set_active` 和 `typing_effect`（事件 0-4）对它变成空操作，Server 也不再调。TIP 在应用进程里的宿主会话从不选择加入，也从不调用 `msime_client_set_lifecycle`、`msime_client_key`、`msime_client_set_field_traits`、`msime_client_set_active`，`tsf/tests/input/lifecycle_boundary.cpp` 按源码守着这一条。
 
 - **按键**：`FocusedSession::configured_key` 先比较一次字段属性，变了先报，再调 `msime_client_key`，然后才把键交给引擎。按键音因此排在引擎处理之前。返回的打字特效照旧经 `TypingEffectSignal` 交给候选窗。自动重复带 `MSIME_KEY_REPEAT`。Ctrl/Alt 组合键和单独的修饰键没有按键类别，不调 `msime_client_key`，也就不开新的一轮；头文件的轮次契约要求每个物理按下都报，但没有「不出声的键」这种编码，第 3 阶段按轮计 fuel 时要回来补。鼠标点选和翻页先报 `MSIME_KEY_POINTER`。
 - **上屏**：上屏音由核心在派发时出，上屏特效取自派发回复的 `"feedback":{"typing_effect":N}`（`commit_feedback`），也在派发时发布；`record_commit` 只记统计，成就音是否静音看这次上屏前报给核心的字段属性。部分选词由 Server 暂存在前缀里（`HOST_HOLDS_PIECES`）：暂存的那一段还没进文档，核心不为它出上屏音，Server 也不画上屏特效（回复的 `committed_text` 为空，那次回复里为 0 的特效画出来会把连击徽标清零）；整段送出的那次上屏出一次声、画一次，和从前一样一次上屏一次提交音，只是时机从送达提前到派发。云候选、英文、快捷短语、表情、颜文字和整句（`CandidateCompletionPolicy.h`）是例外：选中后 Server 用 `MSIME_CANCEL` 丢掉剩下的读音、整段上屏，不暂存，可核心只看到「上屏了、读音还剩」，带着 `HOST_HOLDS_PIECES` 会把它当作暂存的一段，这次整段上屏就既不响也不画，还会用 0 把连击徽标清零；所以 `ServerSession::select` 在这次选词期间去掉这一位，选完恢复。Server 自己合成的上屏（Ctrl+Enter 和释义列的译文、以词定字退回到取首尾字）不是核心的上屏事件，不出声也不画；这些上屏（还有翻译页的选择）都改用命令 19 `MSIME_CANCEL_AFTER_HOST_COMMIT` 丢弃组字，生命周期里组字的结束原因记 HostCommit 而不是 Cancel；以词定字的回退还去掉那次派发回复里「没有上屏」的 feedback，免得合成的上屏被当成一次特效为 0 的上屏、把连击徽标清零。
