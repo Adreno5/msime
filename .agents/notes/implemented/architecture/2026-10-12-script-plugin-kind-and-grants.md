@@ -14,7 +14,7 @@ Status: implemented
 
 **清单规则按类型。** 桌面上先看版本：既不是 1 也不是 2 时照旧报"不支持这个 schema_version"（报错顺序与移动端一致）；再认类型；然后 `script` 必须写 2，其余 8 种仍只认 1。旧客户端和移动端在 `schema_version != 1` 处就拒绝 v2 包，服务端的 `community_plugin_archive.go` 同样只收 1 且拒绝非空 `permissions`。`permissions` 只对 `script` 放行：每项必须在 `Capability` 白名单里、不能重复，依赖必须一起申请，`rewrite_commit` 与 `read_composition` 不能同时申请；数据类插件照旧"插件不能申请权限，permissions 必须为空"。
 
-**`script_pack.rs`。** `[script]` 只有 4 个键：`abi`（只能是 1）、`module`（平铺的 `.wasm` 文件名）、`hooks`（非空、不重复的钩子名）、`memory_pages`（可选，1 到 64，默认 16）。模块按 `DataFile{max_bytes: 1 MiB, extension: "wasm"}` 登记，走现有的 `check_files`，文件数上限仍是 `MAX_PACK_FILES`。完整载入（导入、`validate`、`scan`）时读出模块，用 `msime_script_runtime::validate` 按 ABI v1 校验（只编译，不执行），所以 `msime-pack validate` 和导入天然是同一份校验。`load(root, id)` 给输入法进程用：清单和文件照常检查，模块读出来但不在这里编译，字节和内容哈希出自同一次读取，交给调用方的 `compile`（那就是同一份校验，不必先校验一遍再编译一遍）。
+**`script_pack.rs`。** `[script]` 只有 4 个键：`abi`（只能是 1）、`module`（平铺的 `.wasm` 文件名）、`hooks`（非空、不重复的钩子名）、`memory_pages`（可选，1 到 64，默认 16）。模块按 `DataFile{max_bytes: 256 KiB, extension: "wasm"}` 登记（上限由运行时的 `limits::MAX_MODULE_BYTES` 定，理由见沙箱运行时那篇），走现有的 `check_files`，文件数上限仍是 `MAX_PACK_FILES`。完整载入（导入、`validate`、`scan`）时读出模块，用 `msime_script_runtime::validate` 按 ABI v1 校验（只编译，不执行），所以 `msime-pack validate` 和导入天然是同一份校验。`load(root, id)` 给输入法进程用：清单和文件照常检查，模块读出来但不在这里编译，字节和内容哈希出自同一次读取，交给调用方的 `compile`（那就是同一份校验，不必先校验一遍再编译一遍）。
 
 **内容哈希。** `sha256("msime-script\0" ‖ len ‖ plugin.toml ‖ len ‖ 模块)`，`len` 是后一段的字节数、8 字节小端，64 位小写十六进制；说明文件不计入。前缀做域分隔，长度做段分隔，字节在两段之间挪动不会得到同一个哈希。哈希用的清单字节就是刚解析的那一份。
 
@@ -32,7 +32,7 @@ Status: implemented
 
 ## Testing
 
-- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过 1 MiB 被拒，恰好 1 MiB 可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
+- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过模块上限被拒，恰好上限可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
 - host-api 的 `plugins_boundary_lists_imports_removes_and_keeps_the_name_list` 断言目录命令不报脚本文件夹。
 - `cargo check -p msime-client-core -p msime-host-api --all-targets` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 上通过（编译期断言 `ALL.len() == 8` 随之成立），`cargo check -p msime-desktop --target aarch64-linux-android --lib` 通过；桌面上 `cargo clippy --all-targets -- -D warnings` 干净。
 - host-api 一侧的测试（授权的哈希绑定在输入法进程里同样生效：哈希对不上的条目从不运行；从磁盘上的包经后台编译线程走完整路径）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。
@@ -44,15 +44,15 @@ Status: implemented
 - **授权只按 id 记，不绑定哈希。** 最强的理由是包升级后用户不必重新授权。不用：导入一个同 id 的新版本就能继承旧版本的读写上屏能力，用户授权的是一份代码、运行的是另一份。
 - **导入或重新导入时直接删掉条目，而不是停用并保留旧哈希。** 最强的理由是状态更少，读取方不必处理"有条目但哈希对不上"。不用：授权页需要区分"从没授权过"和"授权过、但包已更新"，后者要提示重新授权。读取方本来就要核对哈希，留着旧哈希不增加任何判断。
 - **`load` 在读出模块时也校验一遍。** 最强的理由是任何拿到字节的调用方都确定这是合规模块。不用：输入法进程拿到字节后马上就要 `compile`，而 `compile` 就是那份校验；在后台编译线程上把同一个模块编译两遍，只是多花一倍时间。
-- **准入检查放到输入法进程加载时，授权写入不管。** 最强的理由是写入方拿不到真实的字节码大小，只能估算。不用：设计要求在授权和启用时拒绝，而不是让脚本在运行时争抢；用户在授权页上就该知道为什么开不了。估算按实测膨胀比 3.3 倍向上取整成 4 倍，偏保守；输入法进程加载时仍会按同一个函数再算一次。
+- **准入检查放到输入法进程加载时，授权写入不管。** 最强的理由是写入方拿不到真实的字节码大小，只能估算。不用：设计要求在授权和启用时拒绝，而不是让脚本在运行时争抢；用户在授权页上就该知道为什么开不了。估算按专门构造的模块实测到的膨胀上界记（每字节 128 倍加固定开销，见 [沙箱运行时](2026-10-12-script-runtime-sandbox.md)），输入法进程实例化时按同一个函数再记一次账。
 
 ## Consequences
 - 收益：移动端的类型集合、报错原文和依赖图逐字节不变；导入、`msime-pack validate` 和输入法加载走同一份模块校验；授权绑定在用户看过的那份内容上，换内容就作废。
 - 代价：`plugins.rs` 里多了一批按 cfg 分开的分支；授权文件有了第二种写入时机（导入和删包时在同一把锁里改条目）。
 - 在 macOS 的钥匙串 MAC 落地之前，授权文件可以被同一用户下的任何进程伪造；只有发布构建里 `scripts_enable` 恒为 false 挡着。第 5 阶段打开发布构建之前，三条对策（macOS MAC、Windows 提权窗口不跑脚本、Linux 与 Windows 把残余风险写进授权页）必须都已落地。
-- 准入检查的字节码按 4 倍估算。真实膨胀比因模块而异，访存密集的模块实测约 3.3 倍；如果有模块明显超出，输入法进程加载时按实际编译结果再查一次的那一层要兜住。8 个 1 MiB、64 页的模块正好超出总账，第 8 个会被拒绝。
-- `set` 每次启用都要读出其他已启用的包算总账，最多 8 个、每个至多 1 MiB，只在设置页操作时发生。
-- `scan` 现在会完整编译每个已安装的脚本包（dev 构建里 512 KiB 约 20 ms），设置页的目录命令在后台线程上跑，输入法进程的按键和 focus 路径不调用 `scan`。
+- 准入检查按编译膨胀的上界估算（每字节 128 倍加 256 KiB 固定开销，再加一份值栈），不是按普通代码的约 3.3 倍：产品里量不到真实值，没有"加载时按实际编译结果再查一次"的那一层。所以普通插件在总账里也记得偏多：几十 KiB 的插件每个约 5 MiB；256 KiB、64 页的模块约 36 MiB，同时只能启用一个。
+- `set` 每次启用都要读出其他已启用的包算总账，最多 8 个、每个至多 256 KiB，只在设置页操作时发生。
+- `scan` 现在会完整编译每个已安装的脚本包（dev 构建里 512 KiB 约 20 ms），设置页的目录命令在后台线程上跑，输入法进程的按键和 focus 路径不调用 `scan`。每次校验用一个随结果释放的 Engine，反复刷新目录不会越攒越多。
 - 导入命令不拦脚本包，设置页导入一个脚本包后的提示会写不出类型名（页面的类型表里没有 `script`），在第 5 阶段补上页面之前只影响开发构建里的自测。
 
 相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 提供本篇用到的 `Capability`、`Hook`、模块校验和 `limits`；数据类插件的门控与诊断见 [插件门控如实显示](../../implemented/bug-fix/2026-10-09-plugin-gates-and-wubi-table-modes.md)；社区可发布类型见 [特效包可分享](../../implemented/feature/2026-10-10-community-effect-packs-shareable.md)。
