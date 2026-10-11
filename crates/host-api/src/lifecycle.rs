@@ -518,15 +518,17 @@ fn rewritable(
             .selection
             .is_some_and(|selection| selection.how == SelectionHow::Edge)
         && context.flags & COMMIT_OBSERVE_ONLY == 0
-        && !(context.flags & HOST_HOLDS_PIECES != 0 && (context.pieces_held || partial(facts)))
+        && !held_piece(context.flags, facts)
+        && !(context.flags & HOST_HOLDS_PIECES != 0 && context.pieces_held)
         && context.ordinary_field()
 }
 
-/// 这次上屏是部分选词：选中的上屏了，读音还剩一段。
-fn partial(facts: DispatchFacts) -> bool {
-    facts
-        .selection
-        .is_some_and(|selection| selection.outcome == SelectionOutcome::Partial)
+/// 这次上屏是宿主暂存的一段：设着 `HOST_HOLDS_PIECES`，并且是部分选词（选中的上屏了，读音还剩一段）。这一段还没进文档：不可改写（[`rewritable`]），内置消费者也不为它出上屏音、不画上屏特效。补齐整个词的那次上屏不是这样的一段：它不可改写（看 [`Context::pieces_held`]），但整个词这时才写进文档，照常出声。
+fn held_piece(flags: u32, facts: DispatchFacts) -> bool {
+    flags & HOST_HOLDS_PIECES != 0
+        && facts
+            .selection
+            .is_some_and(|selection| selection.outcome == SelectionOutcome::Partial)
 }
 
 fn end_reason(call: Call, committed: bool) -> EndReason {
@@ -560,7 +562,7 @@ pub(crate) struct LifecycleState {
     scripts: Rc<RefCell<ScriptSet>>,
     /// 见 [`Context::pieces_held`]：设着 `HOST_HOLDS_PIECES` 时，这次组字里有部分选词上屏过，组字结束时清掉。
     pieces_held: bool,
-    /// 本次调用的上屏是宿主暂存的一段部分选词（HOST_HOLDS_PIECES 下 outcome 为 Partial），每次调用结束推导事件前重算。
+    /// 本次调用的上屏是宿主暂存的一段（见 [`held_piece`]），由 [`Self::begin_after`] 在每次调用结束、推导事件之前重算，内置消费者据此不为它出声、不画。
     held_piece: bool,
     /// 测试用的消费者：记录事件或故意 panic。
     #[cfg(test)]
@@ -751,23 +753,12 @@ impl LifecycleState {
         page: PageSample,
         texts: &CallTexts<'_>,
     ) -> u32 {
-        if !matches!(call, Call::Dispatch(_)) {
-            self.effect = 0;
-        }
-        self.held_piece = self.flags & HOST_HOLDS_PIECES != 0
-            && matches!(
-                facts.selection,
-                Some(SelectionFact {
-                    outcome: SelectionOutcome::Partial,
-                    ..
-                })
-            );
-        let context = self.context();
+        let context = self.begin_after(call, facts);
         let to_scripts = call != Call::SideChannel;
         derive(call, context, pre, post, facts, commit, page, |event| {
             self.consume(sound, event, context, to_scripts, texts);
         });
-        self.finish_call(sound, call, post, facts, commit.is_some())
+        self.finish_call(sound, call, post, commit.is_some())
     }
 
     /// 派发和 focus 的 transition 完成之后（全角转换之后）推导其余事件，并在 `before_commit` 和 `commit` 之间让脚本改写上屏的 body：改写后的 body 接上原来的 tail 写回 `transition.commit`，`commit` 事件带着改写后的字符数和 `rewritten`。runtime 在这之前已经按原文记下了引擎学习和 AI 上文，改写不回灌。返回本次的打字特效。
@@ -782,10 +773,7 @@ impl LifecycleState {
         transition: &mut msime_input_runtime::Transition,
         selected: Option<&str>,
     ) -> u32 {
-        if !matches!(call, Call::Dispatch(_)) {
-            self.effect = 0;
-        }
-        let context = self.context();
+        let context = self.begin_after(call, facts);
         let to_scripts = call != Call::SideChannel;
         let commit = CommitSample::of(transition);
         let page = PageSample::of(&transition.view);
@@ -817,7 +805,16 @@ impl LifecycleState {
         derive_rest(call, pre, post, facts, commit, rewritten, page, |event| {
             self.consume(sound, event, context, to_scripts, &texts);
         });
-        self.finish_call(sound, call, post, facts, commit.is_some())
+        self.finish_call(sound, call, post, commit.is_some())
+    }
+
+    /// 一次调用结束、推导事件之前，[`Self::after_texts`] 和 [`Self::after_rewriting`] 共用的入口：不是派发的调用清零特效（派发的特效在 `before_dispatch` 清零），重算这次的上屏是不是宿主暂存的一段，交出推导要看的会话设置。内置消费者在两条路径上看到的是同一份判断，派发走的是会改写上屏的那一条。
+    fn begin_after(&mut self, call: Call, facts: DispatchFacts) -> Context {
+        if !matches!(call, Call::Dispatch(_)) {
+            self.effect = 0;
+        }
+        self.held_piece = held_piece(self.flags, facts);
+        self.context()
     }
 
     /// 交给脚本的 `before_commit`；有插件改写了 body 时把它接上原来的 tail 写回 `transition.commit`，返回是否改写了。
@@ -879,13 +876,12 @@ impl LifecycleState {
         sound: &SessionSound,
         call: Call,
         post: Sample,
-        facts: DispatchFacts,
         committed: bool,
     ) -> u32 {
         // 宿主暂存的部分选词属于这次组字，组字结束（上屏补齐、取消、失焦）时一并清掉。
         self.pieces_held = self.flags & HOST_HOLDS_PIECES != 0
             && post.composing
-            && (self.pieces_held || (committed && partial(facts)));
+            && (self.pieces_held || (committed && self.held_piece));
         if call == Call::Destroy {
             self.release_music(sound);
         }
