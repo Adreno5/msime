@@ -2283,6 +2283,7 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 @property(nonatomic) NSUInteger applications;
 @end
 @implementation GlossArrivalSession
+- (NSDictionary *)hostOptions { return @{}; }
 - (NSDictionary *)translationQueryWithError:(NSError **)error {
     (void)error;
     return @{@"generation":@3, @"target_language":@"en"};
