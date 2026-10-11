@@ -12,7 +12,7 @@ int failures = 0;
 std::string read(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::fprintf(stderr, "FAIL: cannot open %s\n", path.string().c_str());
+        std::fprintf(stderr, "FAIL: cannot open %s\n", path.u8string().c_str());
         std::exit(EXIT_FAILURE);
     }
     std::ostringstream text;
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
         // 测试自己要写出这几个名字。
         if (!relative.empty() && *relative.begin() == "tests")
             continue;
-        const auto extension = entry.path().extension().string();
+        const auto extension = entry.path().extension().u8string();
         if (extension != ".cpp" && extension != ".h" && extension != ".hpp" && extension != ".def" && extension != ".rc")
             continue;
         ++scanned;
@@ -76,13 +76,13 @@ int main(int argc, char **argv) {
         for (const char *name : forbidden) {
             if (references(text, name)) {
                 std::fprintf(stderr, "FAIL: %s references %s; only the Server's session joins the lifecycle core\n",
-                             relative.string().c_str(), name);
+                             relative.u8string().c_str(), name);
                 ++failures;
             }
         }
     }
     if (scanned < 50) {
-        std::fprintf(stderr, "FAIL: only %zu TSF sources found under %s\n", scanned, root.string().c_str());
+        std::fprintf(stderr, "FAIL: only %zu TSF sources found under %s\n", scanned, root.u8string().c_str());
         ++failures;
     }
 
