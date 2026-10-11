@@ -73,6 +73,11 @@ void wiring(const std::string &root) {
     expect(sink, "const bool lockWasOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;", true,
            "the press reads the lock state from before the press");
     expect(sink, "_ArmCapsLockTap(lockWasOn);", true, "the first Caps Lock press arms the tap");
+    // 「按 SHIFT 键关闭 Caps Lock」时注入的 Caps Lock 关不掉大写锁定，SendInput 却报告成功，所以那里不布防。
+    expect(sink, "_IsKeyboardDisabled() && !CapsLockOffNeedsShift();", true,
+           "the tap is not armed when only Shift can turn Caps Lock off");
+    expect(sink, "L\"Keyboard Layout\", L\"Attributes\"", true, "the Shift-to-turn-off setting is read from the layout attributes");
+    expect(sink, "(attributes & KLF_SHIFTLOCK) != 0", true, "KLF_SHIFTLOCK is the bit that means Shift turns Caps Lock off");
     expect(sink, "_capsLockTap.interrupt();", true, "another key while Caps Lock is held cancels the tap");
     expect(sink, "if (_QueueCapsLockTap(pContext, wParam))", true, "the release queues the toggle");
     check(sink.find("if (_QueueCapsLockTap(pContext, wParam))") !=

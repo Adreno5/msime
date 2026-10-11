@@ -14,7 +14,7 @@ Status: implemented
 - 判定规则写在 `shared/input/CapsLockTap.h`，三个宿主共用：开关打开、按下前大写锁定是关的、按下时没有别的键或修饰键、按着期间没有按别的键、按下到松开不超过 `kCapsLockTapThresholdMs`（300 毫秒）才算轻点。大写锁定开着时按 Caps Lock 是关掉它，照常处理，不切换。单按 Shift、Control 的 500 毫秒窗口不变；Caps Lock 取更短的 300 毫秒，因为长按它是在要大写锁定，那一侧应该早点认定。
 - 认定为轻点后，宿主先撤回大写锁定，撤回成功才切换；切换走单按 Shift 的同一条路，组字中先上屏原文。撤不回时不切换，大写锁定照常生效。
 - macOS：系统只在锁定状态改变时报一次 FlagsChanged，没有松开事件。控制器在大写锁定从关变开时布防，并暂不把这次的大写锁定报告给会话和工具栏；每 10 毫秒用 `CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, 0x39)` 查键是否还按着。松开且在分界内就用 IOKit 的 `IOHIDSetModifierLockState(kIOHIDCapsLockState, false)` 撤回；按住超过分界、按着时打字或撤不回，就把大写锁定补报给会话。失焦、换会话等外部重置时按实际锁定状态报告。
-- Windows：TIP 在 `OnTestKeyDown` 的 Caps Lock 首次按下时布防（`GetKeyState` 这时还是按下前的状态），`_TrackModifierHotkeyArming` 遇到别的键按下时取消；`OnTestKeyUp` 和 `OnKeyUp` 认定后用 `SendInput` 再按一次 Caps Lock 撤回，合成事件带 `CAPS_LOCK_SENDINPUT_EXTRA_INFO`，按键处理和裸 Shift 钩子都放行，然后把切换排进延迟按键队列。松开事件不吃掉。合成的那一下被 TIP 当作自注入放行，TIP 撤回成功后自己把 `Global::CapsLockEnabled` 记成关；Server 的低级钩子（`MaintenanceHotkey.cpp`）在跳过注入按键之前计入 Caps Lock，因为它记的锁定状态是每按下一次翻转一次，漏掉撤回的那一下，报告给工具栏和语言栏的大写锁定就从此反着，直到 Server 重启。
+- Windows：TIP 在 `OnTestKeyDown` 的 Caps Lock 首次按下时布防（`GetKeyState` 这时还是按下前的状态），`_TrackModifierHotkeyArming` 遇到别的键按下时取消；`OnTestKeyUp` 和 `OnKeyUp` 认定后用 `SendInput` 再按一次 Caps Lock 撤回，合成事件带 `CAPS_LOCK_SENDINPUT_EXTRA_INFO`，按键处理和裸 Shift 钩子都放行，然后把切换排进延迟按键队列。松开事件不吃掉。系统设置成只有 Shift 能关掉大写锁定（`KLF_SHIFTLOCK`）时不布防。合成的那一下被 TIP 当作自注入放行，TIP 撤回成功后自己把 `Global::CapsLockEnabled` 记成关；Server 的低级钩子（`MaintenanceHotkey.cpp`）在跳过注入按键之前计入 Caps Lock，因为它记的锁定状态是每按下一次翻转一次，漏掉撤回的那一下，报告给工具栏和语言栏的大写锁定就从此反着，直到 Server 重启。
 - Linux：IBus 与 Fcitx5 按 `Caps_Lock` 符号认键，排除被 xkb 选项改成 `Caps_Lock` 的 Shift 键；按下事件带的是按下前的锁定状态，松开时认定。撤回用 libX11 的 `XkbLockModifiers`（`platforms/linux/src/system/CapsLockRelease.cpp`，X11 宏不流进宿主代码），只在 X11 会话里可用；`WAYLAND_DISPLAY` 有值或 `XDG_SESSION_TYPE=wayland` 时不布防。
 - 原生设置：macOS 设置窗口「按键」页、Windows 原生设置窗口「输入模式切换」组各加一行；Linux 的设置窗口就是共享设置页。
 
@@ -37,6 +37,7 @@ Status: implemented
   - Apple 键盘对很快的一下 Caps Lock 本身不打开大写锁定，系统也就不报事件，这样的一下不切换，需要稍微按实一点。没有在外接非 Apple 键盘上比较过。
   - macOS 打开了系统的「使用大写锁定键切换 ABC」时，轻点先被系统拿去切输入源；设置页说明里提示关掉它。
   - Windows 上不把裸修饰键松开交给 `ITfKeyEventSink` 的宿主（Word、mintty）可能同样收不到 Caps Lock 的松开，那里轻点照常是大写锁定；裸 Shift 的低级钩子没有扩展到 Caps Lock。
+  - Windows 打开了「要关闭 Caps Lock：按 SHIFT 键」（`HKCU\Keyboard Layout` 的 `Attributes` 带 `KLF_SHIFTLOCK`）时不布防，轻点照常是大写锁定。那个设置下再按一次 Caps Lock 关不掉大写锁定，注入的那一下也一样，而 `SendInput` 只报告事件进了输入队列，照样返回成功，TIP 会以为撤回了就切到英文、留着大写锁定。改为注入一下 Shift 来撤回能保住功能，但那是一次真实的裸 Shift，应用和别的输入法都会看到；读设置只在开关打开、按下 Caps Lock 时发生。没有在实机上验证这个设置对注入按键的效果，依据是注入按键和真实按键走同一条处理路径。Server 记的大写锁定在这个设置下本来就不准（按 Caps Lock 关不掉、按 Shift 关掉都没有计入），与本功能无关，未改。
   - Linux 只在 X11 会话里有效，构建时没找到 libX11 也不可用。
   - `switch_language_caps_lock` 在 `KeybindingPreferences` 里，结构带 `deny_unknown_fields`，早于它的设置应用或 `msime-mcp` 会拒读写过这个字段的文档；正式包里输入法和设置应用版本一致，和以往加键的处理相同。没有加进账号设置同步（同步只覆盖 Android 那组键，快捷键本来就不在其中）。
 
@@ -45,6 +46,6 @@ Status: implemented
 - `client-core`：`caps_lock_language_switch_defaults_off_and_persists_an_explicit_enable` 覆盖默认关、旧文档缺键、保存读回且不动其他切换键；`host_surface` 断言只有三个桌面宿主声明能力。
 - 共享设置页：`input-mode-shortcuts-section.test.tsx` 覆盖没有能力时不显示、缺省关、打开只写这一个键、macOS 与 Linux 的限制说明。
 - macOS CTest `shortcut` 的 `TestCapsLockTap` 用合成的时钟、按键状态和撤回函数驱动真实控制器：轻点切换且不报告大写锁定、撤回后系统的「关」不再切换、长按与两次轮询之间的慢松开都保留大写锁定、大写锁定开着时按下只是关掉、按着打字和组合键不切换、撤不回不切换、组字中先上屏原文、开关关掉时照常。原生设置的开关读写也在其中。
-- Windows：`msime-tsf-caps-lock-tap` 逐条钉住共享判定规则，并检查 TSF 接线（按下前状态、两个松开入口、先撤回后切换、撤回后记成关、合成事件标记、Server 钩子在跳过注入按键之前计入 Caps Lock、偏好键与缺省值），本机 clang 运行通过；`windows-maintenance-hotkeys` 覆盖 `CapsLockTracker`：真实的一下加注入的一下之后报告关，之后的长按照常；`KeyEventSink.cpp` 用 MinGW 做过语法检查。WinUI 3 的原生设置窗口只能交给 Windows CI 编译。
+- Windows：`msime-tsf-caps-lock-tap` 逐条钉住共享判定规则，并检查 TSF 接线（按下前状态、两个松开入口、先撤回后切换、撤回后记成关、`KLF_SHIFTLOCK` 时不布防、合成事件标记、Server 钩子在跳过注入按键之前计入 Caps Lock、偏好键与缺省值），本机 clang 运行通过；`windows-maintenance-hotkeys` 覆盖 `CapsLockTracker`：真实的一下加注入的一下之后报告关，之后的长按照常；`KeyEventSink.cpp` 用 MinGW 做过语法检查。WinUI 3 的原生设置窗口只能交给 Windows CI 编译。
 - Linux：`linux-caps-lock-tap` 覆盖判定规则和 X11/Wayland 会话判断；在 `build-container.sh` 的容器里编译两个宿主并跑 ctest。
 - 没有在任何平台上实机按 Caps Lock 验证：macOS 只验证了 IOKit 调用在无授权进程里可用，Windows 与 Linux 没有实机。

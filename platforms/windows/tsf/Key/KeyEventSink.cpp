@@ -425,6 +425,16 @@ bool IsKeyOtherThanCapsLockDown()
     return false;
 }
 
+// 「要关闭 Caps Lock：按 SHIFT 键」（KLF_SHIFTLOCK）打开时，再按一次 Caps Lock 关不掉大写锁定，注入的那一下也一样，SendInput 却照样报告成功。这时撤不回，所以不布防，轻点照常是大写锁定。这个设置存在 HKCU\Keyboard Layout 的 Attributes 里，只在开关打开时、每次按下 Caps Lock 读一次。
+bool CapsLockOffNeedsShift()
+{
+    DWORD attributes = 0;
+    DWORD size = sizeof(attributes);
+    return RegGetValueW(HKEY_CURRENT_USER, L"Keyboard Layout", L"Attributes", RRF_RT_REG_DWORD, nullptr, &attributes,
+                        &size) == ERROR_SUCCESS &&
+           (attributes & KLF_SHIFTLOCK) != 0;
+}
+
 // 撤回轻点打开的大写锁定：再按一次 Caps Lock，带上自己的标记，不会被当成又一次轻点。
 bool ReleaseCapsLockAfterTap()
 {
@@ -766,7 +776,8 @@ bool CMetasequoiaIME::_MatchModifierReleaseHotkey(WPARAM wParam, _Out_ GUID *hot
 
 void CMetasequoiaIME::_ArmCapsLockTap(bool lockWasOn)
 {
-    const bool enabled = FanyUtils::ReadConfiguredSwitchLanguageHotkeys().caps_lock && !_IsKeyboardDisabled();
+    const bool enabled =
+        FanyUtils::ReadConfiguredSwitchLanguageHotkeys().caps_lock && !_IsKeyboardDisabled() && !CapsLockOffNeedsShift();
     _capsLockTap.press(static_cast<std::int64_t>(GetTickCount64()), enabled, lockWasOn, IsKeyOtherThanCapsLockDown());
 }
 
