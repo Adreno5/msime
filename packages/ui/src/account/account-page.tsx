@@ -1438,9 +1438,6 @@ function AccountDetailsPage({
             )}
           </MeGroup>
         )}
-        <p className={account.meFooter}>
-          皮肤设计和打字统计保存在本机。只有你主动发布的作品会分享至社区；账号登录不会自动上传本地设计或输入记录。
-        </p>
         {loginShown && (
           <LoginSheet
             client={client}
@@ -1871,18 +1868,6 @@ function AccountDetailsPage({
             <MeRow title="重新查看新手引导" disabled={busy} onClick={onReplayOnboarding} />
           )}
         </GroupList>
-      )}
-      {mobile ? (
-        <section className={`${account.section} ${account.stack}`}>
-          <h2 className={account.heading}>本地数据与云端作品</h2>
-          <p className={account.note}>
-            皮肤设计和打字统计保存在本机。只有你主动发布的作品会分享至社区；账号登录不会自动上传本地设计或输入记录。
-          </p>
-        </section>
-      ) : (
-        <p className={account.footnote}>
-          皮肤设计和打字统计保存在本机。只有你主动发布的作品会分享至社区；账号登录不会自动上传本地设计或输入记录。
-        </p>
       )}
     </div>
   );
