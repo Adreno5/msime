@@ -2436,12 +2436,77 @@ fn translations_are_generation_scoped_and_exposed_on_candidates() {
         runtime.view().candidates[0].translation.as_deref(),
         Some("translated")
     );
+    assert!(runtime.apply_translations(
+        view.generation,
+        [("candidate-1".into(), "second-gloss".into())]
+    ));
+    assert_eq!(
+        runtime.view().candidates[0].translation.as_deref(),
+        Some("translated"),
+        "同代次部分回包不能清掉未回答词条的释义"
+    );
+    assert!(runtime.apply_translations(
+        view.generation,
+        [("candidate-0".into(), "updated-gloss".into())]
+    ));
+    assert_eq!(
+        runtime.view().candidates[0].translation.as_deref(),
+        Some("updated-gloss")
+    );
+    assert_eq!(
+        runtime.view().candidates[1].translation.as_deref(),
+        Some("second-gloss")
+    );
+    assert!(!runtime.apply_translations(view.generation - 1, []));
+    assert!(runtime.view().candidates[0].translation.is_some());
+    assert!(runtime.apply_translations(view.generation, []));
+    assert!(runtime
+        .view()
+        .candidates
+        .iter()
+        .all(|candidate| candidate.translation.is_none()));
+    assert!(runtime.apply_translations(
+        view.generation,
+        [("candidate-0".into(), "after-clear".into())]
+    ));
     runtime.dispatch(Action::Command(Command::Cancel)).unwrap();
     assert!(runtime
         .view()
         .candidates
         .iter()
         .all(|candidate| candidate.translation.is_none()));
+}
+
+#[test]
+fn translation_merges_do_not_accumulate_non_candidates() {
+    let mut runtime = runtime();
+    runtime.focus(true).unwrap();
+    let view = type_key(&mut runtime).view;
+    for (text, gloss, unrelated) in [
+        ("candidate-0", "first", "not-requested-0"),
+        ("candidate-1", "second", "not-requested-1"),
+    ] {
+        assert!(runtime.apply_translations(
+            view.generation,
+            [
+                (text.into(), gloss.into()),
+                (unrelated.into(), "unused".into())
+            ]
+        ));
+    }
+    assert_eq!(
+        runtime.view().candidates[0].translation.as_deref(),
+        Some("first")
+    );
+    assert_eq!(
+        runtime.view().candidates[1].translation.as_deref(),
+        Some("second")
+    );
+    assert_eq!(
+        runtime.translations.len(),
+        2,
+        "同代次合并不能积累请求外词条"
+    );
 }
 
 #[test]

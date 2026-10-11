@@ -12,6 +12,7 @@ pub(crate) use msime_engine::ordering::{
     reorders_candidates as runtime_reorders_candidates, LATTICE_SOURCE,
 };
 use msime_engine::SchemeType;
+use std::collections::HashSet;
 
 pub enum Action {
     ResetCache,
@@ -988,8 +989,7 @@ impl<E: InputEngine> Runtime<E> {
         Ok(true)
     }
 
-    /// Apply translations to the current candidate generation. Stale async
-    /// responses are ignored so a newer candidate window cannot be polluted.
+    /// 同代次非空释义合并，空数组显式清理；旧代次回包不能更新展示。
     pub fn apply_translations(
         &mut self,
         generation: u64,
@@ -1007,7 +1007,17 @@ impl<E: InputEngine> Runtime<E> {
                     .unwrap_or(false);
             }
         }
-        self.translations = translations;
+        if translations.is_empty() {
+            self.translations.clear();
+        } else {
+            let candidates: HashSet<&str> =
+                self.cached.candidates.iter().map(String::as_str).collect();
+            self.translations.extend(
+                translations
+                    .into_iter()
+                    .filter(|(text, _)| candidates.contains(text.as_str())),
+            );
+        }
         true
     }
 
@@ -1592,9 +1602,11 @@ impl<E: InputEngine> Runtime<E> {
     pub(crate) fn refresh_online_candidates(&mut self) -> Result<(), RuntimeError> {
         // 在线结果不改变组字，只保留前后都存在的词条释义；代次校验照旧。
         let mut translations = std::mem::take(&mut self.translations);
-        translations.retain(|text, _| self.cached.candidates.contains(text));
+        let before: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
+        translations.retain(|text, _| before.contains(text.as_str()));
         self.refresh()?;
-        translations.retain(|text, _| self.cached.candidates.contains(text));
+        let after: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
+        translations.retain(|text, _| after.contains(text.as_str()));
         self.translations = translations;
         Ok(())
     }

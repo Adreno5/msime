@@ -400,8 +400,8 @@ pub unsafe extern "C" fn msime_client_niutrans_translation_reply_failed(
     niutrans_translation::failed(unsafe { std::slice::from_raw_parts(body, length) })
 }
 
-/// Apply asynchronous candidate translations for an exact candidate generation.
-/// The buffer is a JSON array of `{text, translation}` objects and is not retained.
+/// 同代次非空候选释义合并，空数组主动清空；宿主异步无结果时跳过调用。
+/// 缓冲区为 `{text, translation}` 数组，本接口不保留它。
 ///
 /// # Safety
 /// `translations` must point to a readable UTF-8 buffer of `length` bytes and
