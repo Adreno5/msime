@@ -12021,9 +12021,9 @@ fn gloss_breakdown_request_lines_sentences_up_with_english_words() {
             )
         })
     };
-    // Nothing installed: an empty answer.
+    // Nothing installed: an empty answer, even for a sentence the learner phrases alone would half gloss (别 and 问 are listed, 我 is not).
     assert_eq!(
-        call(json!(["我喜欢你"]))["value"],
+        call(json!(["我喜欢你", "别问我"]))["value"],
         json!({"generation": 3, "breakdowns": []})
     );
 
