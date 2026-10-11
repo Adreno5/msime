@@ -496,6 +496,8 @@ public final class NativeClient {
     public static String resetCache(long session) {
         return TextPolicy.utf8(resetCacheRaw(session));
     }
+    /** Release process-level model caches after Android reports memory pressure. */
+    public static void releaseProcessCache() { releaseProcessCacheRaw(); }
     /**
      * Route punctuation through the runtime so Engine commits match the keyboard state.
      *
@@ -723,6 +725,7 @@ public final class NativeClient {
     private static native byte[] mobileVoiceConfigurationRaw(byte[] directory);
     private static native byte[] simplifiedToTraditionalRaw(byte[] text);
     private static native byte[] resetCacheRaw(long session);
+    private static native void releaseProcessCacheRaw();
     private static native byte[] setChinesePunctuationRaw(long session, boolean enabled);
     private static native byte[] setCharacterWidthRaw(long session, boolean fullwidth);
     private static native byte[] characterRaw(long session, int ascii, boolean shift);

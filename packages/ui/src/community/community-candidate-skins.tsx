@@ -15,7 +15,7 @@ import { CommunityDetailStatus } from "./community-detail-status";
 import { CommunityDetailFrame } from "./community-detail-frame";
 import { CommunityDetailHeader } from "./community-detail-header";
 import * as style from "./community-style";
-import { CommunitySearchForm } from "./community-search-form";
+import { CommunityGalleryHeader } from "./community-gallery-header";
 import { CommunityScopeButtons } from "./community-scope-buttons";
 import { CommunityModerationSection } from "./community-moderation-section";
 import {
@@ -32,7 +32,6 @@ import { CommunityReplaceConfirmation } from "./community-replace-confirmation";
 import { CommunityGalleryLoadMore } from "./community-gallery-load-more";
 import { CommunityGalleryFeedback } from "./community-gallery-feedback";
 import { CommunityActionNotice } from "./community-action-notice";
-import { CommunityGalleryHeading } from "./community-gallery-heading";
 import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { CommunityNotice } from "./community-notice";
@@ -304,7 +303,7 @@ export function CommunityCandidateSkinsPage({
     confirmUnpublish,
     activeSearch,
     setActionNotice,
-    setMineOnly,
+    changeMineOnly,
     setConfirmUnpublish,
     requestList,
     open,
@@ -528,13 +527,11 @@ export function CommunityCandidateSkinsPage({
 
   return (
     <CommunityPageShell>
-      <CommunitySearchForm
-        label="搜索候选窗口皮肤"
-        value={search}
-        onChange={setSearch}
-        onSubmit={() => void requestList(search, false)}
-      />
-      <CommunityGalleryHeading
+      <CommunityGalleryHeader
+        searchLabel="搜索候选窗口皮肤"
+        search={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={() => void requestList(search, false)}
         title="社区皮肤"
         note="为输入候选窗口换一身新装，安装后在「我的皮肤」中启用"
       >
@@ -543,10 +540,7 @@ export function CommunityCandidateSkinsPage({
           mineOnly={mineOnly}
           allLabel="全部"
           mineLabel="我的作品"
-          onMineOnlyChange={(nextMineOnly) => {
-            setMineOnly(nextMineOnly);
-            void requestList(activeSearch, false, nextMineOnly);
-          }}
+          onMineOnlyChange={changeMineOnly}
         />
         {localSkins && (
           <ActionButton
@@ -555,7 +549,7 @@ export function CommunityCandidateSkinsPage({
             label="发布我的皮肤"
           />
         )}
-      </CommunityGalleryHeading>
+      </CommunityGalleryHeader>
       <CommunitySkinCategoryFilter
         ariaLabel="候选窗口皮肤分类"
         value={categoryFilter.category}

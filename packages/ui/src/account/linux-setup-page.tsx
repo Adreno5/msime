@@ -1,3 +1,4 @@
+import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { useEffect, useRef, useState } from "react";
 import * as onboarding from "./onboarding-style";
 import { linuxSetupFailureMessage } from "./linux-setup-errors";
@@ -95,22 +96,16 @@ export function LinuxSetupPage({
           </p>
           {!done && !blocked && (
             <label className={onboarding.note}>
-              <input
-                type="checkbox"
-                checked={download}
-                disabled={busy}
-                onChange={(event) => setDownload(event.target.checked)}
-              />{" "}
+              <ControlledCheckbox checked={download} disabled={busy} onChange={setDownload} />{" "}
               词库不完整时从固定地址下载（首次约 170 MB）
             </label>
           )}
           {!done && !blocked && (
             <label className={onboarding.note}>
-              <input
-                type="checkbox"
+              <ControlledCheckbox
                 checked={cloudCandidates}
                 disabled={busy}
-                onChange={(event) => setCloudCandidates(event.target.checked)}
+                onChange={setCloudCandidates}
               />{" "}
               启用云候选：输入过程中把正在输入的拼写通过 HTTPS 发送给 Google 的 input-tools
               服务（inputtools.google.com），换回一条额外候选。已上屏的文本、词库内容和学习到的词频都不会发送。默认不启用，之后可在设置里更改。

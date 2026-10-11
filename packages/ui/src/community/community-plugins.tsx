@@ -23,7 +23,7 @@ import { CommunityDialogActions, CommunityDialogFrame } from "./community-dialog
 import { CommunityDetailStatus } from "./community-detail-status";
 import { CommunityDetailHeader } from "./community-detail-header";
 import * as style from "./community-style";
-import { CommunitySearchForm } from "./community-search-form";
+import { CommunityGalleryHeader } from "./community-gallery-header";
 import { CommunityModerationSection } from "./community-moderation-section";
 import { CommunityScopeButtons } from "./community-scope-buttons";
 import { CommunitySelectField } from "./community-select-field";
@@ -49,7 +49,6 @@ import { useAsyncActionRunner } from "../core/use-async-action";
 import { useCommunityPublicationDraft } from "./use-community-publication-draft";
 import { useAsyncGeneration } from "../settings/use-async-generation";
 import { CommunityActionNotice } from "./community-action-notice";
-import { CommunityGalleryHeading } from "./community-gallery-heading";
 import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { useCommunityInstallState } from "./community-install-state";
@@ -218,7 +217,7 @@ export function CommunityPluginsPage({
     confirmUnpublish,
     activeSearch,
     setActionNotice,
-    setMineOnly,
+    changeMineOnly,
     setConfirmUnpublish,
     requestList,
     open,
@@ -370,13 +369,11 @@ export function CommunityPluginsPage({
 
   return (
     <CommunityPageShell>
-      <CommunitySearchForm
-        label="搜索插件"
-        value={search}
-        onChange={setSearch}
-        onSubmit={() => void requestList(search, false)}
-      />
-      <CommunityGalleryHeading
+      <CommunityGalleryHeader
+        searchLabel="搜索插件"
+        search={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={() => void requestList(search, false)}
         title="社区插件"
         note="音效、音乐、指令表、特效、短语表、辅助码表、单词本与符号集，安装后在「我的插件」中选用"
       >
@@ -385,10 +382,7 @@ export function CommunityPluginsPage({
           mineOnly={mineOnly}
           allLabel="全部插件"
           mineLabel="我的作品"
-          onMineOnlyChange={(nextMineOnly) => {
-            setMineOnly(nextMineOnly);
-            void requestList(activeSearch, false, nextMineOnly);
-          }}
+          onMineOnlyChange={changeMineOnly}
         />
         {localPlugins && (
           <ActionButton
@@ -397,7 +391,7 @@ export function CommunityPluginsPage({
             label="发布我的插件"
           />
         )}
-      </CommunityGalleryHeading>
+      </CommunityGalleryHeader>
       <div className={style.kindFilter} role="group" aria-label="插件类型">
         <ActionButton
           action={() => changeKind(null)}
