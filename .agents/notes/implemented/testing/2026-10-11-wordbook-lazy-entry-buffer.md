@@ -23,3 +23,5 @@ Status: implemented
 ## Consequences
 
 空或仅含注释的单词本不再申请未使用的 20,000 条存储；有效单词本在首条有效记录出现时仍一次准备最大容量。解析结果和拒绝原因保持不变。
+
+[插件文本逐行借用迭代](../simplification/2026-10-11-plugin-data-lines-iterator.md)另行去掉共用行拆分的全文索引数组，与本决定约束的结果缓冲互补。

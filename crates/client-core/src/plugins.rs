@@ -711,16 +711,19 @@ pub(crate) fn valid_file_name(name: &str) -> bool {
         && !reserved
 }
 
-/// 数据文件按行切开：整个文件必须是 UTF-8（开头可以有 BOM），按 `\n` 分行，每行去掉一个行尾的 `\r`；其余位置的 `\r` 和别的控制字符一样留给各类型的行规则拒绝。返回从 1 开始的行号和行内容。
-pub(crate) fn data_lines<'a>(bytes: &'a [u8], name: &str) -> Result<Vec<(usize, &'a str)>, String> {
+/// 数据文件按行切开：整个文件必须是 UTF-8（开头可以有 BOM），按 `\n` 分行，每行去掉一个行尾的 `\r`；其余位置的 `\r` 和别的控制字符一样留给各类型的行规则拒绝。
+/// 先校验整个文件的编码，再按需产生从 1 开始的行号和借用行内容。
+pub(crate) fn data_lines<'a>(
+    bytes: &'a [u8],
+    name: &str,
+) -> Result<impl Iterator<Item = (usize, &'a str)> + 'a, String> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text = std::str::from_utf8(bytes).map_err(|_| format!("{name} 不是 UTF-8 编码"))?;
     Ok(text
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .enumerate()
-        .map(|(index, line)| (index + 1, line))
-        .collect())
+        .map(|(index, line)| (index + 1, line)))
 }
 
 /// The lower-case extension of a file name.
