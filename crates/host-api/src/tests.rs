@@ -10989,6 +10989,42 @@ fn phrase_tables_reach_the_quick_phrase_mode_from_the_plugins_directory() {
     assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
+/// K 模式开着、数据库短语又查不了（这里没有主词库文件 `msime-pinyin.db`，查询返回 `QUICK_PHRASE_UNAVAILABLE`）时设置页换了短语表：Engine 已换上新表，只是刷新打开的列表时返回了诊断。聚焦不因此失败，会话记下的戳就是磁盘上的现状，之后的聚焦看不到变动、不会再换一次表；新表照常生效，偏好更新重建 Engine 后仍是新表。
+#[test]
+fn a_phrase_table_that_cannot_refresh_the_open_list_does_not_fail_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    install_phrase_table(dir.path(), "office", &[("dh", "电话号码")]);
+    let mut preferences = chinese_preferences();
+    preferences.plugins.phrase_tables = vec!["office".into()];
+    let handle = plugin_host(dir.path(), preferences.clone());
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    // 停在 K 模式里，宿主没有先失焦就再次聚焦。
+    for (key, shift) in [(b'K', true), (b'd', false), (b'h', false)] {
+        let typed = read(msime_client_character(handle, key, shift));
+        assert_eq!(typed["ok"], true, "{typed}");
+    }
+    install_phrase_table(dir.path(), "office", &[("dh", "办公室电话")]);
+    let focused = read(msime_client_focus(handle, true));
+    assert_eq!(focused["ok"], true, "{focused}");
+    // 换表报错后戳照常更新：若戳停在旧表，这里重新盖的戳会与会话记下的不同，之后每次聚焦都会再换一次表、再报一次。
+    SESSIONS.with(|sessions| {
+        let sessions = sessions.borrow();
+        let session = &sessions[&handle];
+        let current = plugin_tables::PluginTables::stamp(
+            session.plugin_roots.installed.as_deref(),
+            &session.options,
+            &session.applied.plugins,
+        );
+        assert_eq!(current, session.plugin_tables);
+    });
+    read(msime_client_command(handle, 3));
+    assert_eq!(quick_phrase_candidates(handle, b"dh"), ["办公室电话"]);
+    preferences.local_modes.unicode = !preferences.local_modes.unicode;
+    assert_eq!(update(handle, 1, &preferences)["value"]["deferred"], false);
+    assert_eq!(quick_phrase_candidates(handle, b"dh"), ["办公室电话"]);
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
 fn install_helpcode_pack(root: &std::path::Path, id: &str, table: &str) {
     let pack = root.join("state/plugins/helpcode").join(id);
     std::fs::create_dir_all(&pack).unwrap();
