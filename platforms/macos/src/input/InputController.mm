@@ -2122,13 +2122,8 @@ static NSImage *MSIMECandidateLogoImage() {
         if (ownSnapshot) [self invalidateServiceSnapshots];
         return NO;
     }
-    if (!results.count) {
-        _translationAppliedGeneration = view[@"generation"];
-        [self synchronizeCandidateServices];
-        if (ownSnapshot) [self invalidateServiceSnapshots];
-        return YES;
-    }
-    // 应用非空释义使共享快照失效；下一次服务调度先获取最新查询和视图。
+    // Applying translations advances the Engine snapshot. Any enclosing service pass must
+    // fetch the new query/view before it asks another provider to synchronize.
     [self invalidateServiceSnapshots];
     uint64_t generation = 0;
     if (!MSIMEStrictUnsignedInteger(view[@"generation"], &generation)) return NO;

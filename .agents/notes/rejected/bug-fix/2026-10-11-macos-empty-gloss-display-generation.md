@@ -1,6 +1,6 @@
 # Agent Note: macOS 空译文以显示代次记账
 
-Status: proposed
+Status: rejected — 用户完全退出 macOS 宿主改动，本提案随全部 macOS 改动一起撤销、宿主恢复上游。
 
 ## Problem
 

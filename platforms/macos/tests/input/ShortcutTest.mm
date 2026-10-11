@@ -2283,20 +2283,16 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 @property(nonatomic) NSUInteger applications;
 @end
 @implementation GlossArrivalSession
-- (NSDictionary *)hostOptions { return @{}; }
-- (NSDictionary *)translationQueryWithError:(NSError **)error {
-    (void)error;
-    return @{@"generation":@3, @"target_language":@"en"};
-}
+- (NSDictionary *)translationQueryWithError:(NSError **)error { (void)error; return nil; }
 - (NSDictionary *)viewWithError:(NSError **)error {
     (void)error;
     NSMutableDictionary *candidate = [@{@"text":@"你", @"source":@4, @"id":@{@"session":@1, @"generation":@3, @"index":@0}} mutableCopy];
     if (self.translated) candidate[@"translation"] = @"you";
-    return @{@"session":@1, @"generation":@3, @"scheme":@0, @"editing_text":@"ni", @"preedit":@"ni", @"caret_position":@2, @"candidates":@[candidate]};
+    return @{@"session":@1, @"generation":@3, @"editing_text":@"ni", @"preedit":@"ni", @"caret_position":@2, @"candidates":@[candidate]};
 }
 - (NSDictionary *)applyTranslations:(NSArray *)translations generation:(uint64_t)generation error:(NSError **)error {
-    (void)error;
-    assert(generation == 3 && translations.count == 1);
+    (void)translations; (void)error;
+    assert(generation == 3);
     ++self.applications;
     self.translated = YES;
     return @{@"applied":@YES, @"view":[self viewWithError:nil]};
@@ -2321,19 +2317,11 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 @property(nonatomic) NSUInteger serviceSyncs;
 @end
 @implementation ServiceCountingController
-- (void)synchronizeCandidateServices {
-    ++self.serviceSyncs;
-    assert(self.serviceSyncs < 16);
-    [super synchronizeCandidateServices];
-}
+- (void)synchronizeCandidateServices { ++self.serviceSyncs; [super synchronizeCandidateServices]; }
 @end
 
 // A gloss changes what the card shows, never the composition. Its arrival must not write the marked text again: IMK services the next key inside that synchronous call, which is how a keystroke, reranking and all, came to run nested in every gloss arrival.
 static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appearance) {
-    const BOOL wasEnglish = appearance.englishMode;
-    const BOOL wasGloss = appearance.candidateEnglishGloss;
-    appearance.englishMode = NO;
-    appearance.candidateEnglishGloss = YES;
     ServiceCountingController *controller = [ServiceCountingController alloc];
     GlossArrivalSession *session = [GlossArrivalSession new];
     NestingClient *client = [NestingClient new];
@@ -2343,39 +2331,17 @@ static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appea
     [controller setValue:client forKey:@"activeClient"];
     [controller setValue:panel forKey:@"panel"];
     [controller setValue:[session viewWithError:nil] forKey:@"view"];
-    NSDictionary *request = [controller currentGlossRequest];
-    assert(request);
-    [controller setValue:request forKey:@"glossRequest"];
-    NSArray *gloss = @[@{@"text":@"你", @"translation":@"you"}];
-    [controller setValue:gloss forKey:@"glossResults"];
     [controller applyCandidateTranslationResults];
     assert(session.applications == 1 && client.markedWrites == 0);
     NSDictionary *view = [controller valueForKey:@"view"];
     assert([view[@"candidates"][0][@"translation"] isEqual:@"you"]);
-    // 空结果不应用、不改组字或卡片，离线未命中仍继续服务调度。
+    // The same gloss arriving again leaves the card as it is, but what depends on the answer still follows it: an offline lookup that found nothing for this page is what lets the online fallback start.
     const NSUInteger syncs = controller.serviceSyncs;
-    [controller setValue:@[] forKey:@"glossResults"];
     [controller applyCandidateTranslationResults];
-    assert(session.applications == 1 && client.markedWrites == 0 && [controller valueForKey:@"view"] == view);
+    assert(session.applications == 2 && client.markedWrites == 0 && [controller valueForKey:@"view"] == view);
     assert(controller.serviceSyncs == syncs + 1);
 
-    // 控制器仍显示上一代且缓存不属于当前请求时，空结果不改变显示视图，也不能递归调度服务。
-    NSMutableDictionary *staleView = [view mutableCopy];
-    staleView[@"generation"] = @2;
-    staleView[@"candidates"] = @[@{@"text":@"你", @"source":@4, @"translation":@"you",
-        @"id":@{@"session":@1, @"generation":@2, @"index":@0}}];
-    [controller setValue:staleView forKey:@"view"];
-    [controller setValue:gloss forKey:@"glossResults"];
-    [controller setValue:@{} forKey:@"glossRequest"];
-    controller.serviceSyncs = 0;
-    [controller applyCandidateTranslationResults];
-    assert([controller valueForKey:@"view"] == staleView);
-    assert([[controller valueForKey:@"translationAppliedGeneration"] isEqual:@2]);
-    assert(session.applications == 1 && client.markedWrites == 0 && controller.serviceSyncs == 1);
-    [controller setValue:request forKey:@"glossRequest"];
-
     // A gloss merged while an apply: is writing the marked text belongs to the same page; the transition finishing afterwards carries the page from before it and must not take the gloss away.
-    [controller setValue:gloss forKey:@"glossResults"];
     session.translated = NO;
     NSDictionary *untranslated = [session viewWithError:nil];
     [controller setValue:untranslated forKey:@"view"];
@@ -2383,8 +2349,6 @@ static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appea
     client.onMarkedText = ^{ [weakController applyCandidateTranslationResults]; };
     [controller apply:@{@"view":untranslated}];
     assert([[controller valueForKey:@"view"][@"candidates"][0][@"translation"] isEqual:@"you"]);
-    appearance.englishMode = wasEnglish;
-    appearance.candidateEnglishGloss = wasGloss;
 }
 
 // An apply: that writes marked text can have a newer key handled inside that call; the older transition finishing afterwards must not put its view back over the newer one.
@@ -8848,13 +8812,6 @@ int main(int argc, char **argv) {
         [NSApplication sharedApplication];
         // Each case drains its own pool. No run loop turns between cases, so under one outer pool every autoreleased preferences window lived to the end of main: about a hundred piled up, every later window paid for all of their notification observers and weak references, and the run grew quadratically until the sanitizer leg crossed its 240 s ceiling.
         if (argc == 2 && std::string(argv[1]) == "--translations") {
-            @autoreleasepool {
-                NSString *suite = [@"app.msime.test.empty-gloss." stringByAppendingString:NSUUID.UUID.UUIDString];
-                NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
-                MSIMEAppearancePreferences *appearance = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
-                TestGlossArrivalRedrawsOnlyTheCard(appearance);
-                MSIMERemoveTestPreferenceSuite(defaults, suite);
-            }
             @autoreleasepool { TestPreferenceLoadReusesCandidateServiceSnapshots(); }
             @autoreleasepool { TestCandidateServiceSnapshotsAreReused(); }
             @autoreleasepool { TestApplyCandidateTranslationSnapshotsAreReused(); }

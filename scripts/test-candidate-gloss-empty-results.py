@@ -7,20 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EmptyGlossResultWiring(unittest.TestCase):
-    def test_macos_empty_result_keeps_service_fallback(self):
-        source = (ROOT / "platforms/macos/src/input/InputController.mm").read_text()
-        body = source.split("- (BOOL)applyCandidateTranslationResults {", 1)[1]
-        body = body.split("- (void)stopAccountGloss {", 1)[0]
-        guard = body.index("if (!results.count) {")
-        apply = body.index("[_session applyTranslations:")
-        empty = body[guard:apply]
-        self.assertIn('_translationAppliedGeneration = view[@"generation"];', empty)
-        self.assertIn("[self synchronizeCandidateServices];", empty)
-        self.assertIn("return YES;", empty)
-        for method in ("appearanceChanged:", "applySharedToolbarPreferences:"):
-            clearing = source.split(f"- (void){method}", 1)[1].split("\n- (", 1)[0]
-            self.assertIn("applyTranslations:@[]", clearing, method)
-
     def test_android_empty_result_follows_offline_bookkeeping(self):
         source = (ROOT / "platforms/android/java/app/msime/android/core/MSIMEInputService.java").read_text()
         body = source.split("private void applyCandidateGlosses(", 1)[1]
