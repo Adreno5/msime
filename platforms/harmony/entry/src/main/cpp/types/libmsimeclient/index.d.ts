@@ -144,6 +144,10 @@ export const typingStatisticsEnabled: (directory: string) => number;
 export const vocabularyReview: (request: string) => Promise<string>;
 /** Locked mobile history operations; every mutation answers with the latest complete entry list. */
 export const mobileClipboardHistory: (request: string) => string;
+/**
+ * 云剪贴板端到端加密的 sans-IO 驱动（`msime_client_cloud_clipboard_e2e`），协议见 `docs/cloud-clipboard-e2e.md` 的「客户端驱动」。传入 `{start:{op,…},keystore,device_name}` 开始一个操作，或 `{resume:<上一步的 state>,response:{status,body}}` 交回上一步请求的响应；应答 `{ok:true,value}`，`value` 是 `{request:{method,path,body},state,keystore}`、`{done,keystore}` 或 `{error:{status,code},keystore}`。驱动不联网、不读写文件：请求由宿主带上登录凭据发出，`keystore` 由宿主保存。请求最大 2 MiB。
+ */
+export const cloudClipboardE2e: (request: string) => string;
 export const emojiCatalog: (query: string, resources: string) => string;
 export const candidateGlosses: (request: string, resources: string) => string;
 /** `{prefix,limit}` against the packaged English dictionary; no session, safe off the UI thread. */
