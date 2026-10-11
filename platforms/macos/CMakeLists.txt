@@ -335,7 +335,7 @@ set_tests_properties(secure-file-reader PROPERTIES TIMEOUT 30)
 set(MSIME_DESKTOP_CLOUD_PROVIDER_SOURCES
   ../../shared/backend/account/BackendAccountClient.swift ../../shared/backend/account/BackendAccountSession.swift
   ../../shared/backend/clients/BackendClipboardClient.swift src/backend/clipboard/BackendCloudClipboardProvider.swift
-  tests/clipboard/DesktopCloudClipboardProviderTest.swift)
+  src/backend/clipboard/BackendCloudClipboardDriver.swift tests/clipboard/DesktopCloudClipboardProviderTest.swift)
 list(TRANSFORM MSIME_DESKTOP_CLOUD_PROVIDER_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/desktop-cloud-provider-test"
   COMMAND "${MSIME_XCRUN}" swiftc -Onone -parse-as-library
