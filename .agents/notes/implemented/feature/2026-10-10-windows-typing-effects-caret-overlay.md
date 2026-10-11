@@ -6,7 +6,7 @@ Status: implemented
 
 macOS 的打字特效面板（`platforms/macos/src/input/TypingEffectPanel.mm`）在光标处迸出火花。Power Mode 的火花更多、更快，还会抖一下候选窗。特效包的颜色一键换一个，火花数照包里的 `particles`。连击徽标升档时弹一下。候选窗不在屏幕上时（刚上屏、交给应用的键），闪光改画在光标所在的行，徽标画在光标旁。Windows 只有候选卡片的闪光，`TypingEffectPolicy.h` 自己写着「没有粒子浮层」。火花和 Power Mode 都只是闪得更亮，特效包只用第一个颜色。连击数挤在拼音行里，候选窗一收起就什么都看不到。共享设置页因此对 Windows 打开了 `typingEffectsFlashOnly`，样式说明不敢提火花。
 
-按键音也少了一截。macOS 每个按键都出声，不管输入法处理没处理（`InputController.mm` 的 `playKeySound:`），连击也数这些键。Windows 的 TIP 只把输入法接手的键转给 Server，没有组字时的空格、回车、退格、数字和方向键直接交给应用，从不经过 `FocusedSession::configured_key`。所以开着音效包时这些键没有声音，连击也不算它们。
+按键音也少了一截。macOS 每个按键都出声，不管输入法处理没处理（`InputController.mm` 的 `reportKeyToLifecycle:`，接入生命周期核心前叫 `playKeySound:`），连击也数这些键。Windows 的 TIP 只把输入法接手的键转给 Server，没有组字时的空格、回车、退格、数字和方向键直接交给应用，从不经过 `FocusedSession::configured_key`。所以开着音效包时这些键没有声音，连击也不算它们。
 
 ## Decision
 
@@ -45,7 +45,7 @@ macOS 的打字特效面板（`platforms/macos/src/input/TypingEffectPanel.mm`�
 - **收益**：Windows 的火花、Power Mode、多色特效包、徽标弹跳和候选窗不在时的特效都和 macOS 一致；设置页的样式说明不再为 Windows 改写。没有组字时的空格、回车、退格、数字也出按键音、计入连击。数值集中在一个纯头文件里，主机上可以单测。
 - **代价与已知上限**：光标位置先取前台线程的系统光标（`InputModeHudWindow::system_caret`，只认每显示器 DPI 感知的窗口）。取不到时用最近一次组字的锚点往上估 20 个设备无关像素一行。不建系统光标的应用里，交给应用的键的火花落在上次组字的位置，不在真正的光标处。macOS 的火花是加法混合的软圆点贴图，这里用两层不同不透明度的圆近似。全屏应用在前台时卡片闪光仍照 Windows 原来的行为画，没有像 macOS 那样一并关掉。交给应用的键在 Server 卡住时最多晚到 250 毫秒，再晚就丢。以下几点只在 macOS 上做过 MinGW 语法检查和纯策略的本机测试，要在 Windows 真机上确认：浮层的点击穿透、层级、帧率和观感，交给应用的键的出声延迟。若真机上分层窗口每帧上传的开销明显，或者火花被候选窗以外的置顶窗口挡住，就要重访第一条备选。
 
-- **后续**：桌面生命周期核心（[2026-10-11-desktop-lifecycle-core](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md)）的第 2 阶段会让 Server 打开 `FEEDBACK`，按键音和按键特效改由 `msime_client_key` 驱动、移到引擎处理之前，上屏音和上屏特效改由核心的上屏事件驱动，音乐改走 `msime_client_set_active` 的所有者仲裁；本篇的浮层、调色板和 Aux 管道路径不变。
+- **后续**：桌面生命周期核心（[2026-10-11-desktop-lifecycle-core](../../implemented/architecture/2026-10-11-desktop-lifecycle-core.md)）的第 2 阶段会让 Server 打开 `FEEDBACK`，按键音和按键特效改由 `msime_client_key` 驱动、移到引擎处理之前，上屏音和上屏特效改由核心的上屏事件驱动，音乐改走 `msime_client_set_active` 的所有者仲裁；本篇的浮层、调色板和 Aux 管道路径不变。
 
 ## Verification
 

@@ -1178,9 +1178,11 @@ static NSImage *MSIMECandidateLogoImage() {
     // The closing mark for a pair this host opened itself from the `{` key, which the Engine commits as ASCII and so never names as an opening mark. Consumed by the next apply:.
     NSString *_hostOpenedClosing;
     NSNumber *_typingSourceOverride;
-    // Whether secure event input was on at the last key or activation. Nothing is played while it is, and background music waits for it to go off; see secureEventInputActive.
+    // 上一个键或激活时安全输入是否打开。打开时不画特效；声音和音乐由生命周期核心按 SECURE 属性关掉，见 secureEventInputActive 和 syncFieldTraits。
     BOOL _secureEventInput;
-    // Typing effects: whether the foreground application holds a full-screen display, and the answers of msime_client_typing_effect not yet drawn. The full-screen state walks the window list, so it is read on the main queue's next turn, never on a key: after activation, after a preference update, when the active space changes (an application entering or leaving native full screen), and at most once a second while keys arrive (a borderless full-screen window changes no space). Keys only record their answer here; drawing waits for the main queue's next turn so a key never waits on it, and keys arriving in between are drawn once with the latest count.
+    // 最后报告给会话的字段属性（MSIME_TRAIT_*），0 是还没报告过。会话新建时清零，之后每个键前比较一次，变了才报告。
+    uint32_t _fieldTraits;
+    // 打字特效：前台应用是否占着全屏，以及还没画出来的特效答复（按键来自 msime_client_key，上屏来自派发回复的 feedback）。全屏状态要遍历窗口列表，所以放到主队列的下一轮去读，从不在按键上读：激活后、偏好更新后、当前空间切换时（应用进出原生全屏），以及有按键时最多每秒一次（无边框的全屏窗口不切换空间）。按键只在这里记下答复；绘制等到主队列的下一轮，按键从不等它，其间到达的几个键只按最新的计数画一次。
     BOOL _typingEffectFullscreen;
     NSTimeInterval _typingEffectFullscreenCheckedAt;
     BOOL _typingEffectScheduled;
@@ -1788,7 +1790,8 @@ static NSImage *MSIMECandidateLogoImage() {
     [self discardGlossSensePage];
     [(id<MSIMETextClient>)sender insertText:sense replacementRange:NSMakeRange(NSNotFound, NSNotFound)];
     // The sense is the output; what was being composed goes away rather than following it out.
-    NSDictionary *cancelled = _session ? [_session command:MSIME_CANCEL error:nil] : nil;
+    // 文字是宿主自己写进文档的，用 MSIME_CANCEL_AFTER_HOST_COMMIT 丢弃组字：对会话同 MSIME_CANCEL，生命周期里结束原因记 HostCommit。
+    NSDictionary *cancelled = _session ? [_session command:MSIME_CANCEL_AFTER_HOST_COMMIT error:nil] : nil;
     if (cancelled) [self apply:cancelled];
     else [self renderCandidates];
     return YES;
@@ -1856,7 +1859,8 @@ static NSImage *MSIMECandidateLogoImage() {
     //
     // The reference commits the sense and clears its state, and the Linux hosts follow it with an
     // explicit MSIME_CANCEL after committing the text.
-    NSDictionary *cancelled = [_session command:MSIME_CANCEL error:nil];
+    // 这里用 MSIME_CANCEL_AFTER_HOST_COMMIT：对会话同 MSIME_CANCEL，生命周期里结束原因记 HostCommit，而不是用户取消。
+    NSDictionary *cancelled = [_session command:MSIME_CANCEL_AFTER_HOST_COMMIT error:nil];
     if (cancelled) [self apply:cancelled];
     return YES;
 }
@@ -4671,6 +4675,9 @@ static NSString *const MSIMECloudConsentMessage =
     } @catch (NSException *) { /* Never log input or client exception details. */ }
 }
 
+// 背景音乐在本进程某个控制器是当前输入法时播放。IMK 不保证上一个客户端的 deactivateServer: 先于下一个的 activateServer:，所以只有最后让音乐响起的控制器能停它。生命周期核心按会话记着真正的所有者，这里只决定哪个控制器在偏好更新、会话新建或重建之后重新报告激活。声明在 snapshotSessionReplaced: 和 prepareSession 之前，它们也读它。
+static __weak MSIMEInputController *MSIMEMusicOwner;
+
 - (void)snapshotSessionReplaced:(NSNotification *)notification {
     if (notification.object != _session) return;
     [self resetCandidateAnchor];
@@ -4685,6 +4692,8 @@ static NSString *const MSIMECloudConsentMessage =
         MSIMEApplyTransition(@{@"view": @{@"editing_text": @"", @"preedit": @"", @"caret_position": @0}}, (id<MSIMETextClient>)_activeClient);
     }
     _view = [_session viewWithError:nil] ?: @{};
+    // 旧会话销毁时核心已经关掉了它的音乐；包装层把生命周期位和字段属性恢复到了新会话上，激活状态由音乐跟随的控制器在这里重新报告。
+    if (MSIMEMusicOwner == self) [self claimBackgroundMusic];
     [self refreshFloatingToolbarState];
     [self hideCandidatePanel:"session_replaced"];
     [_keymapPanel orderOut:nil];
@@ -4776,9 +4785,6 @@ static NSString *MSIMESessionUnavailableReason(NSDictionary *options) {
     msime_macos_diagnostic_writef("session_unavailable reason=%s", reason.UTF8String);
 }
 
-// Background music plays while one controller of this process is the active input method. IMK does not promise that the previous client's deactivateServer: comes before the next one's activateServer:, so only the controller that last let music play may stop it. Declared ahead of prepareSession, which reads it too.
-static __weak MSIMEInputController *MSIMEMusicOwner;
-
 - (void)prepareSession {
     // The device's anonymous MSIME account is registered the first time the input method activates, so a new install has one before any feature asks for it. It runs once per process and returns at once when a signed-in or anonymous session is already saved; only the random identity is sent, never input.
     if (MSIMEEnsureAnonymousAccount != nullptr) MSIMEEnsureAnonymousAccount();
@@ -4802,6 +4808,10 @@ static __weak MSIMEInputController *MSIMEMusicOwner;
             if (_session) {
                 [MSIMEInputController holdDictionarySession:self];
                 created = YES;
+                // 生命周期核心接管按键音、上屏音、打字特效和背景音乐。先于下面的 setFocused:，让核心看到这次聚焦；字段属性随后报告，音乐所有权等到 claimBackgroundMusic。
+                [_session setLifecycle:MSIME_LIFECYCLE_FEEDBACK];
+                _fieldTraits = 0;
+                [self syncFieldTraits];
                 reopened = _resumeDedicatedEnglish;
                 _resumeDedicatedEnglish = NO;
             }
@@ -5279,32 +5289,38 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
 // Secure event input is on while a password field, or a terminal's secure keyboard entry, has the keyboard. It is window-server state shared by every process, so an application that leaves it on also silences this one; that errs the right way, because a click per keystroke tells anyone listening how long a password is.
 - (BOOL)secureEventInputActive { return IsSecureEventInputEnabled(); }
 
-// Become the controller music follows: it may play unless secure event input is on. Also called after a preference update, because music switched on while nothing else was sounding only starts once the player is told the input method is active.
+// 成为音乐跟随的控制器：经 msime_client_set_active 告诉生命周期核心这个会话处于激活，核心记它为音乐所有者，并按字段属性决定放不放（安全输入时不放）。偏好更新后也调用一次：没有别的声音时打开的音乐，要等播放器听到「输入法处于激活」才响。
 - (void)claimBackgroundMusic {
-    _secureEventInput = [self secureEventInputActive];
     MSIMEMusicOwner = self;
-    [_session setMusicActive:!_secureEventInput];
+    // 先报字段属性，核心据此判断安全输入，免得在密码框里先响一下。
+    [self syncFieldTraits];
+    [_session setLifecycleActive:YES];
 }
 
 - (void)releaseBackgroundMusic {
     if (MSIMEMusicOwner != self) return;
     MSIMEMusicOwner = nil;
-    [_session setMusicActive:NO];
+    [_session setLifecycleActive:NO];
 }
 
-// Every key press this input method is given makes its key sound, handled or passed on to the application, except auto-repeat (a held key is one press), a Command or Control shortcut (silent on Linux and Windows too; Option stays audible, it types characters on macOS), anything typed while secure event input is on, and English mode, which is silent on every desktop host (Windows only hears the keys it composes). The session only queues the request, so this costs the key nothing when sound is off.
-- (void)playKeySound:(NSEvent *)event {
-    const BOOL secure = [self secureEventInputActive];
-    if (secure != _secureEventInput) {
-        _secureEventInput = secure;
-        if (MSIMEMusicOwner == self) [_session setMusicActive:!secure];
-    }
+// 把字段属性报告给生命周期核心：安全输入是 SECURE，英文模式是 HOST_ENGLISH，macOS 两项都读得到，所以带 KNOWN。只在变了时调用，按契约先于这个键的 msime_client_key。核心按 SECURE 关掉声音、特效和音乐，所以安全输入的开关不必再由这里去开关音乐。
+- (void)syncFieldTraits {
+    _secureEventInput = [self secureEventInputActive];
+    const uint32_t traits = MSIME_TRAIT_KNOWN | (_secureEventInput ? MSIME_TRAIT_SECURE : 0) |
+        (_appearance.englishMode ? MSIME_TRAIT_HOST_ENGLISH : 0);
+    if (!_session || traits == _fieldTraits) return;
+    _fieldTraits = traits;
+    [_session setFieldTraits:traits];
+}
+
+// 交给本输入法的每个物理按下都先报告给生命周期核心，不论这个键最后被处理还是交给应用；核心据此出按键音并算出打字特效。例外照旧：自动重复（按住一个键算一次，由调用处排除）、Command 或 Control 快捷键（Linux 和 Windows 上也不出声；Option 在 macOS 上打字，照样出声）和英文模式（各桌面宿主都不出声，Windows 只听得见它组字的键）。这些键不调用 msime_client_key，也就不开新的一轮。安全输入时照样调用：核心看到 SECURE 属性，什么都不出。
+- (void)reportKeyToLifecycle:(NSEvent *)event {
+    [self syncFieldTraits];
     const BOOL shortcut = (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
-    if (secure || shortcut || _appearance.englishMode) return;
-    const uint32_t keyClass = msime::mac::PhysicalKeySoundClass(event.keyCode);
-    [_session keySound:keyClass];
-    // The typing effect counts the same keys the key sound plays for.
-    [self typingEffect:keyClass commit:NO];
+    // 没有会话（会话不可用，或词库维护期间）时没有人可报告，也就什么都不画。
+    if (!_session || shortcut || _appearance.englishMode) return;
+    const uint32_t packed = [_session lifecycleKey:msime::mac::PhysicalKeySoundClass(event.keyCode)];
+    if (!_secureEventInput) [self drawTypingEffect:packed commit:NO];
 }
 
 // The foreground application's full-screen state, read on the main queue's next turn rather than on a key: it walks the on-screen window list. The previous answer stands until then.
@@ -5332,11 +5348,10 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     if (_activeClient) [self refreshTypingEffectFullscreen];
 }
 
-// One key or commit for the typing effect. The library call is integer arithmetic on the session; nothing is drawn here. A full-screen foreground application keeps the tier-up sound quiet and gets nothing drawn over it, while the combo still counts.
-- (void)typingEffect:(uint32_t)event commit:(BOOL)commit {
-    if (!_session || !MSIMETypingEffectPanel.sharedPanel.configured) return;
+// 记下一个键或一次上屏的打字特效答复，留到主队列的下一轮再画，这里什么都不画。答复由生命周期核心算好（msime_client_key 的返回值、派发回复的 feedback），连击已经计过。前台应用占着全屏时不在它上面画。
+- (void)drawTypingEffect:(uint32_t)packed commit:(BOOL)commit {
+    if (!MSIMETypingEffectPanel.sharedPanel.configured) return;
     if (NSProcessInfo.processInfo.systemUptime - _typingEffectFullscreenCheckedAt >= 1.0) [self refreshTypingEffectFullscreen];
-    const uint32_t packed = [_session typingEffect:event | (_typingEffectFullscreen ? MSIMETypingEffectEventMuted : 0)];
     if (_typingEffectFullscreen) return;
     // A tier reached by an earlier key still undrawn is kept, so its bounce is not lost to the key after it.
     _typingEffectPacked = packed | (_typingEffectScheduled ? (_typingEffectPacked & MSIMETypingEffectTierUp) : 0);
@@ -5391,7 +5406,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         if (_appearance.floatingToolbarEnabled)
             [[MSIMEFloatingToolbarPanel sharedPanel] wakeForInputDelegate:self];
     }
-    if (event.type == NSEventTypeKeyDown && sender && !selfPosted && !event.isARepeat) [self playKeySound:event];
+    if (event.type == NSEventTypeKeyDown && sender && !selfPosted && !event.isARepeat) [self reportKeyToLifecycle:event];
     const BOOL handled = [self handleKeyEvent:event client:sender];
     if (event.type == NSEventTypeKeyDown && sender && !selfPosted) {
         // A key event is the wake-up edge: restore the toolbar before the next event arrives, even if
@@ -6268,11 +6283,11 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         if (MSIMECommitCountsAsTyping(transition[@"commit_context"]))
             MSIMERecordTypingStatistics(_preferencesDirectory ?: MSIMEStatisticsHostOptions(_session)[@"preferences_directory"],
                                         displayTransition[@"commit"], source);
-        // Dictated text is not typing, and the melody follows the keyboard.
-        if (source != msime::mac::TypingSource::Voice && !_secureEventInput) {
-            [_session commitSound];
-            [self typingEffect:MSIMETypingEffectEventCommit commit:YES];
-        }
+        // 上屏音由生命周期核心在派发里出，上屏特效随派发回复的 feedback 回来。只有派发类调用的回复带它：失焦上屏、语音转写和宿主自己合成的上屏都没有，所以既不出声也不画。安全输入时核心答 0。
+        uint64_t effect = 0;
+        NSDictionary *feedback = [transition[@"feedback"] isKindOfClass:NSDictionary.class] ? transition[@"feedback"] : nil;
+        if (feedback && MSIMEStrictUnsignedInteger(feedback[@"typing_effect"], &effect) && effect <= UINT32_MAX)
+            [self drawTypingEffect:static_cast<uint32_t>(effect) commit:YES];
     }
     // A key handled while this transition's text was being written has already put the newer view on screen; this one is older and must not replace it.
     if (applySequence != _applySequence) return;
@@ -6708,6 +6723,8 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         panel.pageHandler = ^(BOOL previous) {
             MSIMEInputController *controller = weakSelf;
             if (!controller || !controller->_activeClient || !controller->_session || !controller->_panel.isVisible) return;
+            // 指针翻页先开一轮（MSIME_KEY_POINTER 不出声不画），见 msime_client.h 的顺序契约。
+            [controller->_session lifecycleKey:MSIME_KEY_POINTER];
             [controller apply:[controller->_session command:previous ? MSIME_PREVIOUS_PAGE : MSIME_NEXT_PAGE error:nil]];
         };
         _panel = panel;
@@ -6996,6 +7013,8 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     if (!MSIMECurrentCandidateIdentity(identifier, _view)) return;
     uint64_t generation = 0; NSUInteger index = 0;
     if (!MSIMEStrictUnsignedInteger(identifier[@"generation"], &generation) || !MSIMEStrictUnsignedIntegerValue(identifier[@"index"], &index)) return;
+    // 指针点选先开一轮，不出声不画；上屏音和上屏特效照常来自这次派发。
+    [_session lifecycleKey:MSIME_KEY_POINTER];
     [self apply:[_session selectGeneration:generation index:index error:nil]];
 }
 
@@ -7085,6 +7104,8 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     NSUInteger page = 0; NSUInteger count = 0;
     if (!MSIMEStrictUnsignedIntegerValue(_view[@"page"], &page) || !MSIMEStrictUnsignedIntegerValue(_view[@"page_count"], &count)) return;
     if (count == 0 || page >= count) return;
+    // 指针翻页先开一轮，不出声不画。
+    if ((button.tag == -1 && page > 0) || (button.tag == -2 && page < count - 1)) [_session lifecycleKey:MSIME_KEY_POINTER];
     if (button.tag == -1 && page > 0) [self apply:[_session command:MSIME_PREVIOUS_PAGE error:nil]];
     if (button.tag == -2 && count > 0 && page < count - 1) [self apply:[_session command:MSIME_NEXT_PAGE error:nil]];
 }
