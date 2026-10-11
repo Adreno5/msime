@@ -368,8 +368,9 @@ test("a touch host calls the keyboard pages by their touch names", async () => {
   await settingsFormReady();
   expect(screen.getByRole("heading", { level: 1, name: "键盘" })).toBeTruthy();
   const sidebar = screen.getByRole("navigation", { name: "设置分类" });
-  expect(within(sidebar).getByRole("button", { name: "外接键盘快捷键" })).toBeTruthy();
   expect(within(sidebar).queryByRole("button", { name: "屏幕键盘" })).toBeNull();
+  // 手机上不提供实体键盘快捷键页，即使宿主路由了快捷键。
+  expect(within(sidebar).queryByRole("button", { name: "外接键盘快捷键" })).toBeNull();
   expect(within(sidebar).queryByRole("button", { name: "快捷键" })).toBeNull();
 
   cleanup();
