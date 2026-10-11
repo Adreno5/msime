@@ -11,6 +11,8 @@ export interface CustomTranslationSectionProps {
   endpoint: string;
   apiKey: string;
   endpointIssue?: string;
+  /** API Key 的问题，例如 DeepL 官方地址没有填密钥。 */
+  apiKeyIssue?: string;
   onEndpointChange: (value: string) => void;
   onApiKeyChange: (value: string) => void;
   children?: ReactNode;
@@ -26,6 +28,7 @@ export function CustomTranslationSection({
   endpoint,
   apiKey,
   endpointIssue,
+  apiKeyIssue,
   onEndpointChange,
   onApiKeyChange,
   children,
@@ -53,6 +56,11 @@ export function CustomTranslationSection({
         disabled={!available}
         onChange={onApiKeyChange}
       />
+      {available && apiKeyIssue && (
+        <SettingsGroupBlock>
+          <SettingsWarning>{apiKeyIssue}</SettingsWarning>
+        </SettingsGroupBlock>
+      )}
       {children && <SettingsGroupBlock>{children}</SettingsGroupBlock>}
     </SettingsRowStack>
   );

@@ -5,11 +5,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   SettingsPage,
+  customTranslationKeyIssue,
+  isDeepLApiEndpoint,
   translationEndpointIssue,
   type Preferences,
   type SettingsClient,
   type Snapshot,
 } from "@msime/ui";
+import customTranslationContract from "../../../../shared/contracts/custom-translation/cases.json";
 
 afterEach(cleanup);
 
@@ -71,6 +74,37 @@ test("a scheme-less endpoint warns instead of silently returning no glosses", as
   fireEvent.change(endpointField(), { target: { value: "example.com/translate" } });
   expect(screen.getByRole("status").textContent).toContain("http://");
   fireEvent.change(endpointField(), { target: { value: "https://example.com/translate" } });
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+// 与 crates/client-core/src/translation.rs 的 custom_translation_request 跑同一组用例：Rust 按 DeepL 格式构造（DeepL-Auth-Key）或拒绝构造（没有密钥）的地址，设置页也要认成 DeepL，否则页面会放过一个键盘永远不发请求的配置。
+describe("the DeepL check mirrors the shared request builder", () => {
+  test.each(customTranslationContract.cases)("$name", ({ endpoint, api_key, request }) => {
+    const authorization = request?.headers.Authorization ?? "";
+    expect(isDeepLApiEndpoint(endpoint)).toBe(
+      request === null || authorization.startsWith("DeepL-Auth-Key "),
+    );
+    expect(customTranslationKeyIssue(endpoint, api_key) !== "").toBe(request === null);
+  });
+
+  test("a whitespace-only key is no key", () => {
+    expect(customTranslationKeyIssue("https://api.deepl.com/v2/translate", "  ")).not.toBe("");
+    expect(customTranslationKeyIssue("https://deeplx.example/translate", "")).toBe("");
+  });
+});
+
+test("a DeepL endpoint without a key warns instead of silently returning no glosses", async () => {
+  await mount({
+    custom_translation: {
+      enabled: true,
+      endpoint: "https://api-free.deepl.com/v2/translate",
+      api_key: "",
+    },
+  });
+  expect(screen.getByRole("status").textContent).toContain("Auth Key");
+  fireEvent.change(screen.getByLabelText("自定义翻译 API Key"), {
+    target: { value: "synthetic-key:fx" },
+  });
   expect(screen.queryByRole("status")).toBeNull();
 });
 
