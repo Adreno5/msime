@@ -12,7 +12,6 @@
 export const page = "flex min-h-[560px] flex-col gap-3.5";
 export const toolbar =
   "flex items-center justify-between gap-4 [&_strong]:block [&_small]:block [&_small]:text-muted";
-export const modelControls = "flex items-center gap-2 [&>select]:min-w-[170px]";
 
 export const messages =
   "min-h-70 flex-1 overflow-auto rounded-[14px] border border-edge bg-card p-[18px]";
@@ -42,11 +41,6 @@ const hairline = "border-0 [box-shadow:inset_0_0_0_1px_var(--p-hair)]";
 export const touchPage = "flex min-h-0 flex-1 flex-col gap-2.5";
 export const touchBar = "flex shrink-0 items-center gap-2";
 export const touchChip = `m-0 inline-flex shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full ${hairline} bg-[var(--p-group-bg)] px-3 py-1.5 text-[13px] [font-family:inherit] [color:var(--p-text)] active:opacity-70 disabled:cursor-default disabled:opacity-40`;
-/** 模型选择：原生 select 套成胶囊，右边画一个小三角。 */
-export const touchModel = "relative min-w-0 max-w-[60%]";
-export const touchModelSelect = `${touchChip} w-full appearance-none truncate pr-7`;
-export const touchModelChevron =
-  "pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 [color:var(--p-sub)]";
 export const touchLog = "-mx-1 flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-1 pt-1 pb-2";
 const touchBubble =
   "m-0 max-w-[82%] rounded-[18px] px-3.5 py-2.5 text-[15px] leading-[1.5] break-anywhere";

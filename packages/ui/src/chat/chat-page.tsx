@@ -45,12 +45,15 @@ export function ChatPage({
   autoFocus = false,
   touch = false,
   active = true,
+  onComposerFocusChange,
 }: {
   client: ChatClient;
   onLogin?: () => void;
   autoFocus?: boolean;
   /** 触屏上对话是常驻的底部标签，切走时页面只是隐藏。每次重新显示都重读模型列表，在「我的」里登录或退出后回来，看到的就是新账号的状态；对话记录保留。 */
   active?: boolean;
+  /** 触屏输入框获得或失去焦点：外壳在打字时把底部标签栏让开，键盘上方只留输入栏。 */
+  onComposerFocusChange?: (focused: boolean) => void;
   /** A host with no hardware keyboard: the chord still works if one is attached, but naming it is noise. */
   touch?: boolean;
 }) {
@@ -82,9 +85,8 @@ export function ChatPage({
       const value = await client.models();
       if (!mounted.current || modelGeneration.current !== current) return;
       setCatalog(value);
-      setSelectedModel((current) =>
-        value.data.some((model) => model.id === current) ? current : value.defaultModel,
-      );
+      // 产品上不让用户选模型：固定用服务端的默认模型，它失败时由服务端换备用模型重试。
+      setSelectedModel(value.defaultModel);
     } catch (cause) {
       if (!mounted.current || modelGeneration.current !== current) return;
       const unauthorized = errorCode(cause) === "account_unauthorized";
@@ -201,43 +203,6 @@ export function ChatPage({
       <section className={chat.touchPage} aria-label="AI 对话">
         {confirmation}
         <div className={chat.touchBar}>
-          {loadingModels ? (
-            <span className={chat.touchChip} role="status">
-              正在加载模型…
-            </span>
-          ) : (
-            catalog && (
-              <span className={chat.touchModel}>
-                <select
-                  aria-label="聊天模型"
-                  className={chat.touchModelSelect}
-                  value={selectedModel}
-                  disabled={sending}
-                  onChange={(event) => setSelectedModel(event.target.value)}
-                >
-                  {catalog.data.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.id}
-                    </option>
-                  ))}
-                </select>
-                <svg
-                  className={chat.touchModelChevron}
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M2 3.5 5 6.5 8 3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  />
-                </svg>
-              </span>
-            )
-          )}
           <button
             type="button"
             className={`${chat.touchChip} ml-auto`}
@@ -298,12 +263,13 @@ export function ChatPage({
                   登录使用 AI
                 </button>
               ) : (
-                messages.at(-1)?.role === "user" && (
+                (!catalog || messages.at(-1)?.role === "user") && (
                   <button
                     type="button"
                     className={chat.touchChip}
-                    disabled={sending}
-                    onClick={retry}
+                    disabled={sending || loadingModels}
+                    // 还没拿到默认模型时重试的是加载，否则重发最后一条。
+                    onClick={() => (catalog ? retry() : void loadModels())}
                   >
                     重试
                   </button>
@@ -322,6 +288,8 @@ export function ChatPage({
             maxLength={16_384}
             placeholder="打几个字试试"
             enterKeyHint="send"
+            onFocus={() => onComposerFocusChange?.(true)}
+            onBlur={() => onComposerFocusChange?.(false)}
             onChange={(event) => {
               setDraft(event.target.value);
               resizeField();
@@ -368,32 +336,6 @@ export function ChatPage({
           <strong>边聊天，边试键盘</strong>
           <small>使用共享账号与 EveryAPI 对话</small>
         </div>
-        <div className={chat.modelControls}>
-          {loadingModels ? (
-            <span role="status">正在加载模型…</span>
-          ) : (
-            catalog && (
-              <select
-                aria-label="聊天模型"
-                value={selectedModel}
-                disabled={sending}
-                onChange={(event) => setSelectedModel(event.target.value)}
-              >
-                {catalog.data.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.id}
-                  </option>
-                ))}
-              </select>
-            )
-          )}
-          <ActionButton
-            action={() => void loadModels()}
-            className="secondary"
-            disabled={loadingModels || sending}
-            label="刷新模型"
-          />
-        </div>
       </div>
       {loginNeeded && onLogin && (
         <ActionButton action={onLogin} className={`primary ${chat.login}`} label="登录使用 AI" />
@@ -401,8 +343,14 @@ export function ChatPage({
       {error && (
         <div className={chat.error} role="alert">
           <span>{error}</span>
-          {!loginNeeded && messages.at(-1)?.role === "user" && (
-            <ActionButton action={retry} className="secondary" disabled={sending} label="重试" />
+          {!loginNeeded && (!catalog || messages.at(-1)?.role === "user") && (
+            <ActionButton
+              // 还没拿到默认模型时重试的是加载，否则重发最后一条。
+              action={() => (catalog ? retry() : void loadModels())}
+              className="secondary"
+              disabled={sending || loadingModels}
+              label="重试"
+            />
           )}
         </div>
       )}

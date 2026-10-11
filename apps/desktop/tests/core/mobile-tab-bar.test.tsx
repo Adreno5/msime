@@ -245,6 +245,22 @@ test("the 对话 tab keeps its conversation across tabs and does not raise the k
   );
 });
 
+// 在对话里打字时底部标签栏让开，键盘上方只留输入栏；输入框失焦后标签栏回来。
+test("the tab bar steps aside while typing in the 对话 tab", async () => {
+  mount();
+  await settingsFormReady();
+  fireEvent.click(
+    within(screen.getByRole("navigation", { name: "主要功能" })).getByRole("button", {
+      name: "对话",
+    }),
+  );
+  const composer = await screen.findByRole("textbox", { name: "聊天消息" });
+  fireEvent.focus(composer);
+  expect(screen.queryByRole("navigation", { name: "主要功能" })).toBeNull();
+  fireEvent.blur(composer);
+  expect(screen.getByRole("navigation", { name: "主要功能" })).toBeTruthy();
+});
+
 // 进入 AI 对话的入口由标签页承担，「AI 辅助」页不再列第二个「AI 对话」行。
 test("the AI 辅助 page no longer lists a second way into the chat on a touch host", async () => {
   mount("ai");

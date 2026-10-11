@@ -13729,6 +13729,50 @@ group("community skin categories filter, publish and change through the bridge",
     });
 });
 
+// 对话请求在传输层就失败（断网、连接被重置）时，鸿蒙抛的是 BusinessError 对象而不是 Error：它要变成页面不认识的 account_network，对话页写「连接失败」，而不是「聊天服务暂不可用」。
+group("a chat request that fails in transport reads as a network failure", () => {
+  let stored: string | null = null;
+  const store: AccountSessionStore = {
+    load: () => stored,
+    save: (value) => {
+      stored = value;
+    },
+    clear: () => {
+      stored = null;
+    },
+  };
+  let offline = false;
+  const transport: AccountTransport = {
+    request: async (_method, path) => {
+      if (path === "/v1/auth/login")
+        return {
+          status: 200,
+          body: JSON.stringify({
+            access_token: "a".repeat(64),
+            refresh_token: "b".repeat(64),
+            token_type: "Bearer",
+            expires_in: 3600,
+            user: { id: "u1", display_name: "Test", created_at: "2026-01-01" },
+          }),
+        };
+      if (offline) throw { code: 2300056, message: "Failure when receiving data from the peer" };
+      return { status: 404, body: "{}" };
+    },
+  };
+  const bridge = new AccountCloudBridge(transport, store);
+  void bridge
+    .handle('{"operation":"login","challenge_id":"challenge","credential":"123456"}')
+    .then(() => {
+      offline = true;
+      void bridge.handle('{"operation":"chat","chat_operation":"models"}').then((result) => {
+        check(
+          JSON.parse(result).error === "account_network",
+          "a dropped connection is a network failure",
+        );
+      });
+    });
+});
+
 group("the account assistant answers with a model list and one reply", () => {
   let stored: string | null = null;
   const store: AccountSessionStore = {

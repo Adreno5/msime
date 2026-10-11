@@ -72,10 +72,8 @@
         // states its own.
         // 分层图标：桌面按自己的遮罩裁圆角，背景层 #252525 与 Android 经典图标的 app_icon_field 同色；单张透明底的 app_icon 在桌面上会透出壁纸。
         "icon": "$media:app_icon_layered",
-        // The application's own icon, not the brand path the keyboard tints with fillColor: that one is a
-        // single black shape at 24x24, and a start window scales its icon to fill, which opened the
-        // settings on a window-sized black scrawl.
-        "startWindowIcon": "$media:app_icon",
+        // 启动屏图标和桌面图标同一个样子：分层图标的前景叠在 #252525 背景上、裁成圆角方形（start_window_icon.png，256×256）。原来用透明底的 app_icon，启动时屏幕中间只有一块带毛边的黑色 logo，没有底板。也不能用键盘那个按 fillColor 着色的品牌路径：它是 24×24 的单色图形，启动窗口会把图标拉满，结果是一整窗黑色笔画。
+        "startWindowIcon": "$media:start_window_icon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "skills": [

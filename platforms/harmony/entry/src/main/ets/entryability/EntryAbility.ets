@@ -90,5 +90,23 @@ export default class EntryAbility extends UIAbility {
         KeyboardLog.error(`settings page would not load: ${BusinessErrorPolicy.describe(error)}`);
       }
     });
+    // 系统栏先取启动窗的近黑色（`start_window_background`）：页面要等桥接就绪才能调用 setSystemBars，在那之前状态栏是系统默认的浅色，会在深色启动窗和开屏之间闪一条白。页面挂载后会换成它自己的颜色。
+    const launchBars: window.SystemBarProperties = {
+      statusBarColor: '#0A0B0A',
+      statusBarContentColor: '#FFFFFF',
+      navigationBarColor: '#0A0B0A',
+      navigationBarContentColor: '#FFFFFF'
+    };
+    stage.getMainWindow().then((main: window.Window): Promise<void> => {
+      // 窗口底色也一样：底部手势条那一块露出的是它，见 Settings 的 setSystemBars。
+      try {
+        main.setWindowBackgroundColor('#0A0B0A');
+      } catch (error) {
+        KeyboardLog.error(`launch window background not applied: ${describeError(error)}`);
+      }
+      return main.setWindowSystemBarProperties(launchBars);
+    }).catch((error: Object): void => {
+      KeyboardLog.error(`launch system bar colours not applied: ${describeError(error)}`);
+    });
   }
 }
