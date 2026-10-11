@@ -924,8 +924,9 @@ impl<E: InputEngine> Runtime<E> {
         }
         // The released tail reorders the list, so the page's IDs must not keep selecting by seat.
         if self.expand_cached_candidates().unwrap_or(false) {
-            // `generation == u64::MAX` was handled above, so this cannot fail.
-            debug_assert!(self.advance().is_ok());
+            // 上面已经排除了 `generation == u64::MAX`，所以这里不会失败。推进必须写在断言外面：release 构建不执行 `debug_assert!` 里的表达式。
+            let advanced = self.advance();
+            debug_assert!(advanced.is_ok());
         }
         self.all_candidates_cached()
     }

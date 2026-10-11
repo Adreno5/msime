@@ -39,6 +39,19 @@ function service() {
   return { client, download, listeners };
 }
 
+test("stops a progress subscription that resolves after the page unmounts", async () => {
+  const packs = service();
+  const subscription = deferred<() => void>();
+  const stop = vi.fn();
+  packs.client.onProgress.mockImplementationOnce(() => subscription.promise);
+
+  const view = renderHook(() => useResourcePacks(packs.client));
+  view.unmount();
+  await act(async () => subscription.resolve(stop));
+
+  expect(stop).toHaveBeenCalledOnce();
+});
+
 test("旧 client 的下载结束不能释放新 client 的下载登记", async () => {
   const old = service(),
     next = service();

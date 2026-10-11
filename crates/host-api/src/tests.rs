@@ -11121,6 +11121,54 @@ fn command_tables_and_mentions_reach_the_engine_from_the_plugins_directory() {
     assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
+/// 设置页重新导入同 id 的指令表时整个包目录被换掉。新清单与旧清单长度相同、修改时间又落在同一个计时粒度里（秒级或两秒级时间戳的文件系统）时，只比修改时间和长度看不出变化；获得焦点时仍要换上新表。
+#[cfg(unix)]
+#[test]
+fn a_reimported_table_of_the_same_length_and_time_is_picked_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = dir.path().join("state/plugins");
+    let import = |name: &str, template: &str| {
+        let source = dir.path().join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("plugin.toml"),
+            format!("schema_version = 1\nkind = \"command_table\"\nid = \"work\"\nname = \"work\"\nversion = \"1\"\nlicense = \"CC0-1.0\"\n[[commands]]\ntrigger = \"sig\"\ntitle = \"签名\"\ntemplate = \"{template}\"\n"),
+        )
+        .unwrap();
+        msime_client_core::plugins::import(&source, &plugins).unwrap();
+    };
+    import("first", "张三敬上");
+    let mut preferences = chinese_preferences();
+    preferences.local_modes.command = true;
+    preferences.plugins.command_tables = vec!["work".into()];
+    let handle = plugin_host(dir.path(), preferences);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    assert!(local_mode_candidates(handle, b"/sig").contains(&"张三敬上".to_owned()));
+
+    let manifest = plugins.join("command_table/work/plugin.toml");
+    let before = std::fs::metadata(&manifest).unwrap();
+    import("second", "李四敬上");
+    let after = std::fs::metadata(&manifest).unwrap();
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the test needs a same-length table"
+    );
+    // 模拟粗粒度时间戳：把新清单的修改时间设成与旧清单相同。
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_modified(before.modified().unwrap())
+        .unwrap();
+    assert_eq!(read(msime_client_focus(handle, false))["ok"], true);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    let commands = local_mode_candidates(handle, b"/sig");
+    assert!(commands.contains(&"李四敬上".to_owned()), "{commands:?}");
+    assert!(!commands.contains(&"张三敬上".to_owned()), "{commands:?}");
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
 fn install_phrase_table(root: &std::path::Path, id: &str, phrases: &[(&str, &str)]) {
     let pack = root.join("state/plugins/phrase_table").join(id);
     std::fs::create_dir_all(&pack).unwrap();
@@ -11193,6 +11241,42 @@ fn phrase_tables_reach_the_quick_phrase_mode_from_the_plugins_directory() {
             .quick_phrase_table
             .is_empty());
     });
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
+/// K 模式开着、数据库短语又查不了（这里没有主词库文件 `msime-pinyin.db`，查询返回 `QUICK_PHRASE_UNAVAILABLE`）时设置页换了短语表：Engine 已换上新表，只是刷新打开的列表时返回了诊断。聚焦不因此失败，会话记下的戳就是磁盘上的现状，之后的聚焦看不到变动、不会再换一次表；新表照常生效，偏好更新重建 Engine 后仍是新表。
+#[test]
+fn a_phrase_table_that_cannot_refresh_the_open_list_does_not_fail_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    install_phrase_table(dir.path(), "office", &[("dh", "电话号码")]);
+    let mut preferences = chinese_preferences();
+    preferences.plugins.phrase_tables = vec!["office".into()];
+    let handle = plugin_host(dir.path(), preferences.clone());
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    // 停在 K 模式里，宿主没有先失焦就再次聚焦。
+    for (key, shift) in [(b'K', true), (b'd', false), (b'h', false)] {
+        let typed = read(msime_client_character(handle, key, shift));
+        assert_eq!(typed["ok"], true, "{typed}");
+    }
+    install_phrase_table(dir.path(), "office", &[("dh", "办公室电话")]);
+    let focused = read(msime_client_focus(handle, true));
+    assert_eq!(focused["ok"], true, "{focused}");
+    // 换表报错后戳照常更新：若戳停在旧表，这里重新盖的戳会与会话记下的不同，之后每次聚焦都会再换一次表、再报一次。
+    SESSIONS.with(|sessions| {
+        let sessions = sessions.borrow();
+        let session = &sessions[&handle];
+        let current = plugin_tables::PluginTables::stamp(
+            session.plugin_roots.installed.as_deref(),
+            &session.options,
+            &session.applied.plugins,
+        );
+        assert_eq!(current, session.plugin_tables);
+    });
+    read(msime_client_command(handle, 3));
+    assert_eq!(quick_phrase_candidates(handle, b"dh"), ["办公室电话"]);
+    preferences.local_modes.unicode = !preferences.local_modes.unicode;
+    assert_eq!(update(handle, 1, &preferences)["value"]["deferred"], false);
+    assert_eq!(quick_phrase_candidates(handle, b"dh"), ["办公室电话"]);
     assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
