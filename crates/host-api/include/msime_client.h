@@ -812,6 +812,13 @@ char *msime_client_apply_online_candidates(uint64_t session,
                                           uint8_t source);
 /* Remove cached and visible rows for one source (source=0 cloud, 1 AI). */
 char *msime_client_clear_online_candidates(uint64_t session, uint8_t source);
+/* AI 回答为空、失败，或 apply_online_candidates 返回 applied:false 时调用（source 只认 1）：
+ * 这次查询在 AI 座位上的占位行（候选 source 12）换成「—」，留到组字变化为止。
+ * 返回 {applied, view}；过期查询、AI 已关或座位上已经是 AI 候选时 applied 为 false。 */
+char *msime_client_resolve_online_candidates(uint64_t session,
+                                             const uint8_t *query,
+                                             size_t query_length,
+                                             uint8_t source);
 /* Resolve a shared surface route ("settings", "settings:voice", "emoji", ...)
  * so a host launches the shared shell by name. Returns the canonical route and,
  * for panel surfaces, the window label, query and geometry. */

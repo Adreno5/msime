@@ -1364,8 +1364,7 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
             .collect::<Vec<_>>(),
         vec!["本地", "云一", "云二", "AI"]
     );
-    // With a cloud candidate present English sits after AI, and a second English candidate waits
-    // behind the seated ones rather than displacing anything.
+    // 有云候选时英文排在 AI 后面，第二条英文候选排在已入座的候选之后，不挤占任何位置。AI 的座位只坐第一条，第二条排在整个列表最后（#6888）。
     assert_eq!(
         seated(
             &["AI 一", "AI 二", "英一", "英二", "云", "本地"],
@@ -1374,7 +1373,51 @@ fn several_candidates_from_one_provider_take_their_seat_as_a_group() {
         .into_iter()
         .map(|(text, _)| text)
         .collect::<Vec<_>>(),
-        vec!["本地", "云", "AI 一", "AI 二", "英一", "英二"]
+        vec!["本地", "云", "AI 一", "英一", "英二", "AI 二"]
+    );
+
+    // AI 占位行（来源 12）和 AI 候选坐同一个座位；回答到达后其余候选的位置一个都不变。
+    let texts = |rows: Vec<(String, String)>| -> Vec<String> {
+        rows.into_iter().map(|(text, _)| text).collect()
+    };
+    let pending = texts(seated(
+        &["本地一", "本地二", "…", "本地三", "英一", "😀"],
+        vec![0, 0, 12, 0, 4, 6],
+    ));
+    assert_eq!(pending, ["本地一", "英一", "…", "😀", "本地二", "本地三"]);
+    let answered = texts(seated(
+        &[
+            "本地一",
+            "本地二",
+            "AI 一",
+            "本地三",
+            "英一",
+            "😀",
+            "AI 二",
+            "AI 三",
+        ],
+        vec![0, 0, 3, 0, 4, 6, 3, 3],
+    ));
+    assert_eq!(
+        answered,
+        [
+            "本地一",
+            "英一",
+            "AI 一",
+            "😀",
+            "本地二",
+            "本地三",
+            "AI 二",
+            "AI 三"
+        ]
+    );
+    // 后到的云候选只让出它自己的一格，占位行仍紧跟在云候选后面。
+    assert_eq!(
+        texts(seated(
+            &["本地一", "云", "…", "本地二", "英一"],
+            vec![0, 2, 12, 0, 4]
+        )),
+        ["本地一", "云", "…", "英一", "本地二"]
     );
 }
 
@@ -7241,4 +7284,125 @@ fn the_sentence_is_corrected_in_place_and_committed_whole() {
         .unwrap();
     assert_eq!(entered.commit.as_deref(), Some("我去北京"));
     assert_eq!(entered.diagnostic, None);
+}
+
+/// 读音 ni 有六个本地候选的真 Engine，开着 AI 座位。
+fn ai_seat_runtime(root: &std::path::Path) -> Runtime {
+    let dictionaries = root.join("dictionaries");
+    std::fs::create_dir_all(&dictionaries).unwrap();
+    rusqlite::Connection::open(dictionaries.join(msime_engine::assets::MAIN_DICTIONARY))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);\
+             INSERT INTO tbl_1_n VALUES('ni','n','你',100),('ni','n','拟',90),('ni','n','妮',80),\
+             ('ni','n','倪',70),('ni','n','泥',60),('ni','n','尼',50);",
+        )
+        .unwrap();
+    let mut session = msime_engine::host::Session::new(&real_engine_options(root)).unwrap();
+    assert!(session.set_ai_seat(true));
+    let mut runtime = Runtime::new(session, 9).unwrap();
+    runtime.focus(true).unwrap();
+    runtime
+}
+
+/// #6888：真 Engine 上的 AI 座位。占位行（来源 12）在回答到达前占住座位，数字键选它什么都不上屏，回答到达后同一页上别的候选一个都不挪位。
+#[test]
+fn the_ai_seat_holds_still_through_the_answer_and_its_digit_commits_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runtime = ai_seat_runtime(directory.path());
+    type_characters(&mut runtime, "ni");
+    let before = runtime.view();
+    let seat = before
+        .candidates
+        .iter()
+        .position(|candidate| candidate.source == 12)
+        .expect("an AI placeholder");
+    assert_eq!(before.candidates[seat].text, "…");
+
+    let digit = runtime
+        .dispatch(Action::Character {
+            value: b'1' + u8::try_from(seat).unwrap(),
+            shift: false,
+        })
+        .unwrap();
+    assert!(digit.handled);
+    assert_eq!(digit.commit, None);
+    assert_eq!(digit.view.editing_text, "ni");
+
+    let mut query = runtime.online_query().unwrap().unwrap();
+    query.ai_assistant =
+        Some(serde_json::from_value(json!({"enabled": true, "candidate_limit": 3})).unwrap());
+    assert!(runtime
+        .apply_online_candidates(
+            &query,
+            &["合成一".into(), "合成二".into(), "合成三".into()],
+            1
+        )
+        .unwrap());
+    let after = runtime.view();
+    assert_eq!(after.candidates[seat].text, "合成一");
+    assert_eq!(after.candidates[seat].source, 3);
+    for (index, candidate) in before.candidates.iter().enumerate() {
+        if index != seat {
+            assert_eq!(after.candidates[index].text, candidate.text, "seat {index}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_ai_answer_leaves_a_dash_in_the_seat_until_the_composition_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut runtime = ai_seat_runtime(directory.path());
+    type_characters(&mut runtime, "ni");
+    let query = runtime.online_query().unwrap().unwrap();
+    let texts = |runtime: &Runtime| -> Vec<String> {
+        runtime
+            .view()
+            .candidates
+            .into_iter()
+            .map(|candidate| candidate.text)
+            .collect()
+    };
+    let pending = texts(&runtime);
+    let generation = runtime.generation();
+    assert!(!runtime
+        .resolve_online_candidates_owned(query.clone(), 0)
+        .unwrap());
+    assert!(runtime
+        .resolve_online_candidates_owned(query.clone(), 1)
+        .unwrap());
+    assert!(runtime.generation() > generation);
+    let resolved = texts(&runtime);
+    let seat = pending.iter().position(|text| text == "…").unwrap();
+    assert_eq!(resolved[seat], "—");
+    assert_eq!(resolved.len(), pending.len());
+
+    type_characters(&mut runtime, "h");
+    runtime
+        .dispatch(Action::Command(Command::Backspace))
+        .unwrap();
+    assert_eq!(texts(&runtime), pending);
+    assert!(!runtime.resolve_online_candidates_owned(query, 1).unwrap());
+}
+
+/// #6888：重排模型不拿 AI 候选和它的占位行比较。在线座位总会把它们放回 AI 座位，若让它们参与，回答一到就可能抢走本来要提到首位的本地候选，本地候选的次序随之改变。
+#[test]
+fn the_reranker_never_weighs_ai_rows_or_their_placeholder() {
+    use msime_engine::ordering::{rerank_pick, ParallelOrderRows};
+    let mut reranker = Reranker::new(std::sync::Arc::new(favouring_model(
+        &['寒', '韓', '漢'],
+        &['漢'],
+    )));
+    let texts: Vec<String> = ["寒", "韓", "漢"].map(str::to_owned).to_vec();
+    let answers = vec![true; 3];
+    let corrected = vec![false; 3];
+    for (source, expected) in [(LATTICE_SOURCE, Some(2)), (3, None), (12, None)] {
+        let sources = vec![LATTICE_SOURCE, LATTICE_SOURCE, source];
+        let rows = ParallelOrderRows::new(&texts, &sources, &answers, &corrected);
+        assert_eq!(
+            rerank_pick(&mut reranker, "", 0, true, &rows),
+            expected,
+            "source {source}"
+        );
+    }
 }

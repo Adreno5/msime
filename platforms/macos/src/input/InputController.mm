@@ -278,11 +278,17 @@ static BOOL MSIMEStrictUnsignedIntegerValue(id value, NSUInteger *result) {
     return YES;
 }
 
+// 视图里的 `source` 是 Engine 的 CandidateSource（AiSuggestion = 3），不是 apply 接口的来源编号（0 云、1 AI）；按 1 判断会把用户词库的词当成 AI 候选，候选里有用户词时就跳过 AI 缓存（#6888）。AI 座位上的占位行（12）不算 AI 候选，缓存的回答照样替换它。
 static BOOL MSIMEViewContainsAICandidate(NSDictionary *view) {
     for (NSDictionary *candidate in view[@"candidates"])
         if ([candidate isKindOfClass:NSDictionary.class] &&
-            MSIMEStrictInteger(candidate[@"source"], -1) == 1) return YES;
+            MSIMEStrictInteger(candidate[@"source"], -1) == 3) return YES;
     return NO;
+}
+
+// Engine CandidateSource::AiPending：AI 座位上的占位行。
+static BOOL MSIMECandidateIsAIPlaceholder(NSDictionary *candidate) {
+    return [candidate isKindOfClass:NSDictionary.class] && MSIMEStrictInteger(candidate[@"source"], -1) == 12;
 }
 
 static msime::mac::TypingSource MSIMEResolveTypingSource(NSDictionary *context, NSDictionary *view,
@@ -1879,6 +1885,9 @@ static NSImage *MSIMECandidateLogoImage() {
         // poison this query identity. A later render may observe corrected
         // settings and should be allowed to construct a fresh request.
         _aiQuery = nil;
+        // 这次发不出请求：AI 座位上的占位行不能一直等下去，换成「—」（#6888）。已经换过时 applied 为 NO，不会再触发渲染。
+        NSDictionary *resolved = [_session resolveOnlineCandidatesForSource:1 query:online error:nil];
+        if (MSIMEStrictBoolean(resolved[@"applied"])) [self apply:resolved];
         return;
     }
     NSArray *items = @[ @{ @"text": @"ai", @"request": descriptor,
@@ -1914,9 +1923,14 @@ static NSImage *MSIMECandidateLogoImage() {
                     ? @{ @"online": [postOnline copy], @"config": [postConfig copy] } : nil;
                 [current apply:transition];
             } else {
-                // Empty or rejected provider results remain eligible for a later
-                // render after the local candidate generation is rebuilt.
-                current->_aiQuery = nil;
+                // 回答为空、失败或被拒：AI 座位上的占位行换成「—」，留到组字变化为止，后面的候选不挪位（#6888）。同一组字不再重发：查询身份留着，组字一变它就不相等了。
+                NSDictionary *resolved = [session resolveOnlineCandidatesForSource:1 query:query[@"online"] error:nil];
+                if (MSIMEStrictBoolean(resolved[@"applied"])) {
+                    [current apply:resolved];
+                } else {
+                    // 没有占位行可换（AI 座位没开）时照旧：等本地候选重建后的下一次渲染再试。
+                    current->_aiQuery = nil;
+                }
             }
         }];
         [owner->_aiBatch start];
@@ -6707,6 +6721,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.toolTip = pageGeometry.tooltips[slot - 1];
         button.bordered = NO;
         button.candidateHighlighted = MSIMEStrictBoolean(candidate[@"highlighted"]);
+        button.candidatePending = MSIMECandidateIsAIPlaceholder(candidate);
         id fixed = candidate[@"fixed_position"];
         button.candidateFixed = MSIMEUnsignedCandidateIdentityValue(fixed) &&
             [fixed compare:@0] == NSOrderedDescending && [fixed compare:@255] != NSOrderedDescending;
@@ -6853,6 +6868,9 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.titleColor = button.candidateHighlighted ? SkinColor(tokens.selectedText) : SkinColor(tokens.text);
         // Windows fixed-position span overrides candidate text, not its number.
         if (button.candidateFixed) button.titleColor = [NSColor colorWithSRGBRed:55.0/255 green:154.0/255 blue:211.0/255 alpha:1];
+        // AI 占位行用次要色（序号的颜色）画，和真候选区分开。
+        if (button.candidatePending)
+            button.titleColor = button.candidateHighlighted ? SkinColor(tokens.selectedNumber) : SkinColor(tokens.number);
         // The translation is the theme's secondary colour, which always equals the number colour: the design draws a plain row's gloss in cSub (dc.html L2150, L2183), the theme's kb.sub or the platform's sub, and on the selected fill in candSelTr (dc.html L1533), the selected number's colour. A fixed-position row keeps the Windows renderer's rule instead, where the translation is a child of the candidate text and takes its fixed-position colour at reduced opacity.
         // A package's own translation colour is its secondary colour, drawn on every row as Windows does.
         if (tokens.translation) button.translationColor = SkinColor(*tokens.translation);

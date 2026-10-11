@@ -44,6 +44,8 @@ final class KeyboardCandidatePanelView: UIView {
   private let candidateFamilies: [String]
   private var annotations: [KeyboardCandidateAnnotation]
   private var markers: [[CandidateMarker]]
+  /// AI 座位上的占位行（「…」或「—」）的下标：画成次要色，读屏念等待中或没有结果，不当成真候选（#6888）。
+  private var aiPlaceholders: Set<Int>
   private let display: (String) -> String
   private let onSelect: (Int) -> Void
   /// 长按候选块时提供的菜单。与候选条共用：在候选条里能管理词条的长按，展开列表后不应失效。
@@ -69,7 +71,7 @@ final class KeyboardCandidatePanelView: UIView {
   }
 
   init(candidates: [String], preedit: String, annotations: [KeyboardCandidateAnnotation] = [],
-       markers: [[CandidateMarker]] = [],
+       markers: [[CandidateMarker]] = [], aiPlaceholders: Set<Int> = [],
        candidateScale: CGFloat = 1, preeditScale: CGFloat = 1, candidateFamilies: [String] = [],
        selectedIndex: Int = 0, showsHeader: Bool = true,
        display: @escaping (String) -> String,
@@ -82,6 +84,7 @@ final class KeyboardCandidatePanelView: UIView {
     self.candidateFamilies = candidateFamilies
     self.annotations = annotations
     self.markers = markers
+    self.aiPlaceholders = aiPlaceholders
     self.display = display
     self.menuElements = menuElements
     self.onSelect = onSelect
@@ -248,10 +251,12 @@ final class KeyboardCandidatePanelView: UIView {
   }
 
   /// 换成另一代候选（九键面板里选拼音、退格或筛选之后），面板不关，回到列表开头。
-  func reload(candidates: [String], annotations: [KeyboardCandidateAnnotation], markers: [[CandidateMarker]]) {
+  func reload(candidates: [String], annotations: [KeyboardCandidateAnnotation], markers: [[CandidateMarker]],
+              aiPlaceholders: Set<Int> = []) {
     self.candidates = candidates
     self.annotations = annotations
     self.markers = markers
+    self.aiPlaceholders = aiPlaceholders
     count.text = "\(candidates.count) 个候选"
     scrollView.setContentOffset(.zero, animated: false)
     rebuildChips()
@@ -346,6 +351,8 @@ final class KeyboardCandidatePanelView: UIView {
     configuration.attributedTitle = title
     configuration.baseForegroundColor = selected || marks.contains { $0.symbol == "pin.fill" }
       ? skin.accent : skin.keyForeground
+    let aiPlaceholder = aiPlaceholders.contains(index)
+    if aiPlaceholder { configuration.baseForegroundColor = secondary }
     configuration.contentInsets = Self.cellInsets
     configuration.background.cornerRadius = skin.cornerRadius
     let fill = selected ? skin.accentSoft : skin.keyBackground
@@ -367,6 +374,7 @@ final class KeyboardCandidatePanelView: UIView {
       ? "候选词 \(number)：\(text)"
       : "候选词 \(number)：\(text)，\(annotation.accessibilityDescription)"
     for marker in marks { chip.accessibilityLabel? += "，\(marker.spoken)" }
+    if aiPlaceholder { chip.accessibilityLabel = "候选词 \(number)：\(CandidateMarker.aiPendingSpoken(candidate))" }
     if selected { chip.accessibilityTraits.insert(.selected) }
     // 在长按打开菜单时才构建，而不是一开始就给每个候选块建好：这个面板会排出整个列表，像 `yi` 这样的查询有几百个。
     chip.menu = UIMenu(children: [

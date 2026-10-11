@@ -9,7 +9,8 @@ use crate::pinyin::syllables::normalize_umlaut_aliases;
 use crate::quanpin::QuanpinEngine;
 use crate::text::{count_utf8_chars, first_han_char, last_han_char};
 use crate::types::{
-    CandidateEdge, KeyResult, LocalInputMode, PersonalDictionaryKind, SchemeType, WordItem,
+    CandidateEdge, CandidateSource, KeyResult, LocalInputMode, PersonalDictionaryKind, SchemeType,
+    WordItem,
 };
 use crate::user_dictionary::journal::is_user_inserted;
 
@@ -40,6 +41,10 @@ impl InputSession {
         }
         if !self.has_composition() || index >= self.candidates().len() {
             return KeyResult::unhandled();
+        }
+        // AI 占位行不是候选：点它或按它的数字键什么都不做，但按键算处理过了，数字不会落进文档（#6888）。
+        if self.candidates()[index].source == CandidateSource::AiPending {
+            return KeyResult::handled();
         }
         self.commit(index)
     }
@@ -94,7 +99,16 @@ impl InputSession {
     pub(super) fn finish_composition(&mut self, first_index: usize) -> KeyResult {
         self.close_korean_hanja();
         let mut result = KeyResult::unhandled();
-        let mut index = first_index;
+        // 高亮停在 AI 占位行上时，按没有高亮处理：上屏首选，不上屏占位文字。
+        let mut index = if self
+            .candidates()
+            .get(first_index)
+            .is_some_and(|item| item.source == CandidateSource::AiPending)
+        {
+            0
+        } else {
+            first_index
+        };
         // 改字时上屏的是改好的整句，不是光标处的候选。
         if self.conversion.is_some() {
             result = self.commit_conversion();

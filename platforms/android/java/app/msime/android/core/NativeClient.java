@@ -593,6 +593,12 @@ public final class NativeClient {
             throw new IllegalArgumentException("Online candidates are too large");
         return TextPolicy.utf8(applyOnlineCandidatesRaw(session, boundedQuery(query), payload, source));
     }
+    /** AI 回答为空、失败或被拒时调用（source 只认 1）：AI 座位上的占位行换成「—」，留到组字变化为止。 */
+    public static String resolveOnlineCandidates(long session, String query, int source) {
+        if (source != 0 && source != 1)
+            throw new IllegalArgumentException("Unknown online candidate source");
+        return TextPolicy.utf8(resolveOnlineCandidatesRaw(session, boundedQuery(query), source));
+    }
     /** Remove cached and visible rows for source 0 (cloud) or 1 (AI). */
     public static String clearOnlineCandidates(long session, int source) {
         if (source != 0 && source != 1)
@@ -702,6 +708,7 @@ public final class NativeClient {
     private static native byte[] applyOnlineCandidatesRaw(long session, byte[] query,
         byte[] candidates, int source);
     private static native byte[] clearOnlineCandidatesRaw(long session, int source);
+    private static native byte[] resolveOnlineCandidatesRaw(long session, byte[] query, int source);
     private static native byte[] viewRaw(long session);
     private static native byte[] updatePreferencesRaw(long session, byte[] snapshot);
     private static native byte[] voiceHotwordsRaw(byte[] request);

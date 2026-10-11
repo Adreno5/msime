@@ -2168,6 +2168,34 @@ bool online_request_is_stale(IBusEngine *engine, const std::string &encoded) {
     return false;
   }
 }
+// AI 座位上的占位行（Engine 候选来源 12）：这次组字不会向 AI 发问，或发问落空（失败、空回答、被拒）时换成「—」，留到组字变化为止，后面的候选不挪位（#6888）。座位已经换过或没开时 Host API 答 applied:false，什么都不画。
+void resolve_ai_seat(IBusEngine *engine, const std::string &query) {
+  auto &s = state(engine);
+  if (!s.session || query.empty())
+    return;
+  try {
+    auto resolved = response(msime_client_resolve_online_candidates(
+        s.session, reinterpret_cast<const uint8_t *>(query.data()), query.size(), 1));
+    if (!resolved.value("applied", false))
+      return;
+    s.view = resolved.at("view");
+    render(engine, s.view);
+  } catch (...) {}
+}
+// 不会向 AI 发问的状态（没有在线服务、私密输入框）下，把当前组字的 AI 座位直接换成「—」。
+void resolve_ai_seat_without_provider(IBusEngine *engine) {
+  auto &s = state(engine);
+  if (!s.session || !s.focused || s.blocked || !s.input_enabled)
+    return;
+  try {
+    const auto query = response(msime_client_online_query(s.session));
+    if (!query.is_object() || !query.value("ai_eligible", false))
+      return;
+    const auto ai = query.value("ai_assistant", Json());
+    if (ai.is_object() && ai.value("enabled", false))
+      resolve_ai_seat(engine, query.dump());
+  } catch (...) {}
+}
 // Send one source's provider request. The AI source is sent twice per input change: a cache-only probe at once, then the network request after its own idle delay.
 void online_dispatch(IBusEngine *engine, uint8_t only_source, bool ai_cache_only = false) {
   auto &s = state(engine);
@@ -2266,8 +2294,10 @@ void online_schedule(IBusEngine *engine) {
     }
   }
   if (s.online_provider_socket.empty() || !s.session || !s.focused ||
-      s.blocked || !s.input_enabled || s.private_input)
+      s.blocked || !s.input_enabled || s.private_input) {
+    resolve_ai_seat_without_provider(engine);
     return;
+  }
   s.online_delay_source = g_timeout_add_full(
       G_PRIORITY_DEFAULT, kCloudIdleDelayMs,
       [](gpointer data) -> gboolean {
@@ -2397,24 +2427,30 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
     online_schedule(engine);
     return;
   }
-  if (!raw) {
+  // 网络请求（不是只查缓存的探测）落空：除了留着下次重试，还要把 AI 座位上的占位行换成「—」。
+  const auto empty_ai = [&] {
     retry_empty_ai();
+    if (request->source == 1 && !request->ai_cache_only)
+      resolve_ai_seat(engine, request->query);
+  };
+  if (!raw) {
+    empty_ai();
     return;
   }
   try {
     const auto document = Json::parse(raw.get());
     if (!document.value("ok", false)) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     const auto value = document.at("value");
     if (!value.is_object()) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     const auto candidates = value.value("candidates", Json());
     if (!candidates.is_array() || candidates.size() > 11) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     Json groups[2] = {Json::array(), Json::array()};
@@ -2426,7 +2462,7 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
       groups[source].push_back(candidate);
     }
     if (groups[request->source].empty()) {
-      retry_empty_ai();
+      empty_ai();
       return;
     }
     bool ai_applied = false;
@@ -2441,7 +2477,7 @@ void online_complete(GObject *source, GAsyncResult *result, gpointer) {
         if (applied.value("applied", false))
           ai_applied = true;
         else
-          retry_empty_ai();
+          empty_ai();
       }
     }
     render(engine, s.view);
@@ -3786,6 +3822,8 @@ void render(IBusEngine *engine, const Json &view) {
         gloss += " · " + translation;
     }
     std::string tail;
+    // Engine 候选来源 12 是 AI 座位上的占位行，下面画成次要色。
+    const bool ai_placeholder = candidate.value("source", 0) == 12;
     switch (candidate.value("source", 0)) {
     case 2: tail += "  云"; break;
     case 3: tail += "  AI"; break;
@@ -3834,6 +3872,11 @@ void render(IBusEngine *engine, const Json &view) {
     else if (row_text_color)
       ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND,
                                  *row_text_color, 0, G_MAXUINT);
+    // AI 占位行用序号的颜色（没有主题色时用灰色）画，追加在行颜色之后所以盖过它。
+    if (ai_placeholder)
+      ibus_text_append_attribute(
+          text, IBUS_ATTR_TYPE_FOREGROUND,
+          state(engine).candidate_number_color.value_or(0x8a8a8a), 0, G_MAXUINT);
     // A skin's translation colour over the gloss, appended after the row colour so it wins where they overlap. Whether the desktop panel honours a ranged attribute is up to the panel.
     if (gloss_end > gloss_start && state(engine).candidate_translation_color)
       ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND,

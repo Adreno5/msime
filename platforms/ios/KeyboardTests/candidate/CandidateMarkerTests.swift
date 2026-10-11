@@ -64,4 +64,26 @@ final class CandidateMarkerTests: XCTestCase {
     XCTAssertEqual(snapshot.entries.map(\.fixedPosition), [1, 0, 0])
     XCTAssertEqual(snapshot.entries.map(\.source), [0, 2, 0])
   }
+
+  /// 展开的候选网格和候选条一样，把 AI 座位上的占位行画成次要色，读屏念等待中或没有结果（#6888）。
+  func testTheExpandedPanelDrawsTheAIPlaceholderAsSecondary() throws {
+    let panel = KeyboardCandidatePanelView(
+      candidates: ["你", "妮", "…", "泥"], preedit: "ni", aiPlaceholders: [2],
+      display: { $0 }, onSelect: { _ in }, onClose: {})
+    panel.frame = CGRect(x: 0, y: 0, width: 390, height: 240)
+    panel.layoutIfNeeded()
+    func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap { descendants($0) } }
+    func chip(_ number: Int) throws -> UIButton {
+      try XCTUnwrap(descendants(panel).first { $0.accessibilityIdentifier == "panelCandidate-\(number)" } as? UIButton)
+    }
+    let skin = KeyboardTheme.current
+    XCTAssertEqual(try chip(3).configuration?.baseForegroundColor, skin.secondary)
+    XCTAssertEqual(try chip(3).accessibilityLabel, "候选词 3：AI 候选等待中")
+    XCTAssertEqual(try chip(4).configuration?.baseForegroundColor, skin.keyForeground)
+    XCTAssertEqual(try chip(4).accessibilityLabel, "候选词 4：泥")
+
+    panel.reload(candidates: ["你", "妮", "—"], annotations: [], markers: [], aiPlaceholders: [2])
+    XCTAssertEqual(try chip(3).configuration?.baseForegroundColor, skin.secondary)
+    XCTAssertEqual(try chip(3).accessibilityLabel, "候选词 3：AI 候选没有结果")
+  }
 }

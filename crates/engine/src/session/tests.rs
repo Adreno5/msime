@@ -6658,3 +6658,166 @@ fn the_conversion_starts_from_the_highlighted_row() {
     assert!(session.snapshot().conversion.is_empty());
     assert_eq!(session.snapshot().caret_position, 10);
 }
+
+/// #6888 的 AI 座位：读音 ni 有四个本地候选。
+const AI_SEAT_FIXTURE: &str = "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);\
+INSERT INTO tbl_1_n VALUES('ni','n','你',100),('ni','n','拟',90),('ni','n','妮',80),('ni','n','倪',70);";
+
+fn sources(session: &Session) -> Vec<(String, CandidateSource)> {
+    session
+        .snapshot()
+        .candidates
+        .into_iter()
+        .map(|item| (item.word, item.source))
+        .collect()
+}
+
+fn ai_seat_session(fixture: &Fixture) -> Session {
+    let mut session = fixture.session();
+    assert!(session.set_ai_seat(true));
+    session
+}
+
+#[test]
+fn an_ai_seat_shows_a_placeholder_that_the_answer_replaces_in_place() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    assert_eq!(
+        sources(&session),
+        [
+            ("你".to_owned(), CandidateSource::Database),
+            ("拟".to_owned(), CandidateSource::Database),
+            ("…".to_owned(), CandidateSource::AiPending),
+            ("妮".to_owned(), CandidateSource::Database),
+            ("倪".to_owned(), CandidateSource::Database),
+        ]
+    );
+    let query = session.online_query().expect("a quanpin query");
+    let batch = ["智一", "智二", "智三"].map(str::to_owned);
+    assert!(session.apply_online_candidates(&query, &batch, CandidateSource::AiSuggestion));
+    // 座位上换成第一条 AI 候选，其他本地候选的位置不变，多出来的 AI 候选排在最后。
+    assert_eq!(
+        sources(&session),
+        [
+            ("你".to_owned(), CandidateSource::Database),
+            ("拟".to_owned(), CandidateSource::Database),
+            ("智一".to_owned(), CandidateSource::AiSuggestion),
+            ("妮".to_owned(), CandidateSource::Database),
+            ("倪".to_owned(), CandidateSource::Database),
+            ("智二".to_owned(), CandidateSource::AiSuggestion),
+            ("智三".to_owned(), CandidateSource::AiSuggestion),
+        ]
+    );
+}
+
+#[test]
+fn no_placeholder_without_ai_or_for_a_query_ai_cannot_answer() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut off = fixture.session();
+    type_text(&mut off, "ni");
+    assert!(!sources(&off)
+        .iter()
+        .any(|(_, source)| *source == CandidateSource::AiPending));
+
+    let mut session = ai_seat_session(&fixture);
+    // 只有声母的组字不是完整拼音，AI 不回答它。
+    type_text(&mut session, "n");
+    assert!(!session
+        .online_query()
+        .is_some_and(|query| query.ai_eligible));
+    assert!(!sources(&session)
+        .iter()
+        .any(|(_, source)| *source == CandidateSource::AiPending));
+    session.character(b'i', false);
+    assert_eq!(
+        session.snapshot().candidates[2].source,
+        CandidateSource::AiPending
+    );
+    // 组字中途关掉 AI，占位行立刻消失。
+    assert!(session.set_ai_seat(false));
+    assert!(!session.set_ai_seat(false));
+    assert_eq!(words(&session), ["你", "拟", "妮", "倪"]);
+}
+
+#[test]
+fn the_placeholder_never_commits() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let before = sources(&session);
+
+    let selected = session.select(2);
+    assert!(selected.handled);
+    assert_eq!(selected.commit, None);
+    let digit = session.candidate_key(b'3');
+    assert!(digit.handled);
+    assert_eq!(digit.commit, None);
+    assert!(!session.pin(2).handled);
+    assert!(!session.remove(2).handled);
+    assert!(!session.fix_position(2, 1).handled);
+    assert_eq!(session.snapshot().editing_text, "ni");
+    assert_eq!(sources(&session), before);
+
+    // 高亮停在占位行上收尾时，上屏的是首选。
+    let finished = session.finish(2);
+    assert_eq!(finished.commit.as_deref(), Some("你"));
+}
+
+#[test]
+fn an_empty_answer_turns_the_placeholder_into_a_dash_until_the_composition_changes() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::CloudSuggestion));
+    assert!(session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+    assert_eq!(
+        sources(&session)[2],
+        ("—".to_owned(), CandidateSource::AiPending)
+    );
+    assert_eq!(words(&session), ["你", "拟", "—", "妮", "倪"]);
+    // 同一次查询再解决一次什么都不变。
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+
+    // 组字变了，回到等待中。
+    session.command(Command::Backspace);
+    session.character(b'i', false);
+    assert_eq!(words(&session), ["你", "拟", "…", "妮", "倪"]);
+    // 上一次组字的查询过期了，不能把新组字的占位行解决掉。
+    assert!(!session.resolve_online_candidates(&query, CandidateSource::AiSuggestion));
+    assert_eq!(words(&session)[2], "…");
+}
+
+#[test]
+fn an_answer_of_listed_words_only_resolves_the_seat() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(session.apply_online_candidates(
+        &query,
+        &["妮".to_owned()],
+        CandidateSource::AiSuggestion
+    ));
+    assert_eq!(words(&session), ["你", "拟", "—", "妮", "倪"]);
+}
+
+#[test]
+fn a_cloud_answer_does_not_move_the_ai_seat() {
+    let fixture = Fixture::new(AI_SEAT_FIXTURE);
+    let mut session = ai_seat_session(&fixture);
+    type_text(&mut session, "ni");
+    let query = session.online_query().expect("a quanpin query");
+    assert!(session.apply_online_candidate(&query, "云", CandidateSource::CloudSuggestion));
+    assert_eq!(words(&session), ["你", "云", "…", "拟", "妮", "倪"]);
+    assert!(session.apply_online_candidates(
+        &query,
+        &["智一".to_owned(), "智二".to_owned()],
+        CandidateSource::AiSuggestion
+    ));
+    assert_eq!(
+        words(&session),
+        ["你", "云", "智一", "拟", "妮", "倪", "智二"]
+    );
+}

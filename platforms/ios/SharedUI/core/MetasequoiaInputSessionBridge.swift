@@ -129,6 +129,10 @@ private func msimeClientApplyOnlineCandidates(
   _ session: UInt64, _ query: UnsafePointer<MSIMEByte>?, _ queryLength: UInt,
   _ candidates: UnsafePointer<MSIMEByte>?, _ candidatesLength: UInt, _ source: UInt8
 ) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("msime_client_resolve_online_candidates")
+private func msimeClientResolveOnlineCandidates(
+  _ session: UInt64, _ query: UnsafePointer<MSIMEByte>?, _ queryLength: UInt, _ source: UInt8
+) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("msime_client_dictionary")
 private func msimeClientDictionary(_ request: UnsafePointer<MSIMEByte>?, _ length: UInt) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("msime_client_snapshot_version")
@@ -967,6 +971,22 @@ final class MetasequoiaInputSessionBridge: @unchecked Sendable {
         }
         return dictionary
       }
+    }
+  }
+
+  /// AI 回答为空、失败或被拒时调用（`source` 只认 1）：AI 座位上的占位行换成「—」，留到组字变化为止。Returns `{applied, view}`.
+  func resolveOnlineCandidates(query: Data, source: UInt8) throws -> [String: Any] {
+    guard handle != 0 else { throw InputBridgeFailure.unavailable }
+    guard !query.isEmpty, query.count <= 16_384, source <= 1 else {
+      throw InputBridgeFailure.invalidResponse
+    }
+    return try query.withUnsafeBytes { queryBytes in
+      guard let dictionary = try Self.decode(msimeClientResolveOnlineCandidates(
+        handle, queryBytes.bindMemory(to: MSIMEByte.self).baseAddress, UInt(query.count), source))
+        as? [String: Any] else {
+        throw InputBridgeFailure.invalidResponse
+      }
+      return dictionary
     }
   }
 

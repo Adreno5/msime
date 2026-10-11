@@ -6419,6 +6419,80 @@ fn clearing_online_source_removes_its_rows_without_empty_batch_protocol() {
     read(msime_client_destroy(handle));
 }
 
+/// #6888：开着 AI 时组字先在 AI 座位上放占位行（来源 12）；AI 失败时宿主调用 resolve，占位行换成「—」，别的候选不挪位；关掉 AI 后占位行立刻消失。
+#[test]
+fn an_ai_seat_waits_with_a_placeholder_and_a_failed_answer_leaves_a_dash() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut preferences = Preferences {
+        scheme: InputScheme::Quanpin,
+        ..chinese_preferences()
+    };
+    preferences.ai_assistant.enabled = true;
+    preferences.ai_assistant.provider = "deepseek".into();
+    preferences.ai_assistant.endpoint = "https://api.deepseek.com/chat/completions".into();
+    preferences.ai_assistant.model = "synthetic-model".into();
+    let handle = test_host_with_pinyin_fixture(dir.path(), preferences.clone());
+    read(msime_client_focus(handle, true));
+    for byte in b"nihao" {
+        read(msime_client_character(handle, *byte, false));
+    }
+    let has_placeholder = |view: &Value| {
+        view["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["source"] == 12)
+    };
+    // 开着 AI 却没有密钥（macOS、Windows 的出厂状态）时请求发不出去，不留座位。
+    assert!(!has_placeholder(&read(msime_client_view(handle))["value"]));
+    // 只放进会话内存的密钥（iOS 钥匙串）一到，座位就留出来。
+    let token = "synthetic-session-key";
+    assert_eq!(
+        read(unsafe { msime_client_set_ai_credential(handle, token.as_ptr(), token.len()) })
+            ["value"],
+        true
+    );
+    let texts = |view: &Value| -> Vec<String> {
+        view["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate["text"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let before = read(msime_client_view(handle))["value"].clone();
+    let seat = before["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|candidate| candidate["source"] == 12)
+        .expect("an AI placeholder");
+    assert_eq!(before["candidates"][seat]["text"], "…");
+
+    let query = read(msime_client_online_query(handle))["value"].to_string();
+    let resolve = |source: u8| {
+        read(unsafe {
+            msime_client_resolve_online_candidates(handle, query.as_ptr(), query.len(), source)
+        })
+    };
+    let refused = resolve(0);
+    assert_eq!(refused["value"]["applied"], false, "{refused}");
+    let resolved = resolve(1);
+    assert_eq!(resolved["value"]["applied"], true, "{resolved}");
+    let mut expected = texts(&before);
+    expected[seat] = "—".to_owned();
+    assert_eq!(texts(&resolved["value"]["view"]), expected);
+    assert_eq!(resolved["value"]["view"]["candidates"][seat]["source"], 12);
+
+    preferences.ai_assistant.enabled = false;
+    let disabled = update(handle, 1, &preferences);
+    assert!(
+        !has_placeholder(&read(msime_client_view(handle))["value"]),
+        "{disabled}"
+    );
+    read(msime_client_destroy(handle));
+}
+
 #[test]
 fn an_ai_credential_handed_over_in_memory_signs_requests_without_being_stored() {
     let dir = tempfile::tempdir().unwrap();

@@ -179,6 +179,16 @@ static NSDictionary *decode(char *response, NSError **error) {
     return decode(msime_client_apply_online_candidates(_handle, (const uint8_t *)queryData.bytes, queryData.length,
         (const uint8_t *)candidateData.bytes, candidateData.length, (uint8_t)source), error);
 }
+- (NSDictionary *)resolveOnlineCandidatesForSource:(NSUInteger)source
+                                            query:(NSDictionary *)query error:(NSError **)error {
+    if (source > 1 || ![query isKindOfClass:NSDictionary.class] || ![NSJSONSerialization isValidJSONObject:query]) {
+        setError(error, @"在线候选格式错误"); return nil;
+    }
+    NSData *queryData = [NSJSONSerialization dataWithJSONObject:query options:0 error:error];
+    if (!queryData || queryData.length > 16384) { setError(error, @"在线候选请求过大"); return nil; }
+    return decode(msime_client_resolve_online_candidates(_handle, (const uint8_t *)queryData.bytes, queryData.length,
+        (uint8_t)source), error);
+}
 + (NSDictionary *)customTranslationHTTPRequest:(NSDictionary *)request error:(NSError **)error {
     if (![NSJSONSerialization isValidJSONObject:request]) { setError(error, @"自定义翻译请求格式错误"); return nil; }
     NSData *data = [NSJSONSerialization dataWithJSONObject:request options:0 error:error];
