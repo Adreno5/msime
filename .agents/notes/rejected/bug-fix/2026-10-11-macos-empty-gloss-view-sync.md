@@ -25,4 +25,6 @@ Status: rejected — 原生 CI 仍有断言失败，按用户决定撤销并等�
 
 ## Related notes
 
+[按显示代次记账的新提案](../../proposed/bug-fix/2026-10-11-macos-empty-gloss-display-generation.md) 在用户重新授权继续修复后提出；不恢复本篇被否决的统一视图发布方案。
+
 [同代次释义合并](../../implemented/bug-fix/2026-10-11-generation-gloss-merge.md) 部分重叠：共享合并与空数组契约仍保留，本篇只否决后续 macOS 视图同步补丁。[Fcitx5 网络分发身份](../../implemented/bug-fix/2026-10-11-fcitx-online-dispatch-identity.md) 负责 Linux 分发与旧版依赖兼容，不受撤销影响。检索命中的在线释义保留、macOS 释义分隔和 Android 语音笔记不决定该视图同步顺序，不吸收它们。
