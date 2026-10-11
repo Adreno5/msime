@@ -2383,7 +2383,7 @@ public final class MSIMEInputService extends InputMethodService {
         touchKeyboardHeightAdjustment = nextHeightAdjustment;
         if (inlineHeightActive) inlineHeightOriginal = savedHeightAdjustment;
         touchVoiceShortcutEnabled = nextVoiceShortcut;
-        // 数字键盘顺序和 26 键数字键盘都只影响数字层；正画着它时要重建键行。
+        // 九宫格数字顺序和 26 键按 123 都只影响数字层；正画着它时要重建键行。
         boolean numberKeypadRebuild = (numberKeypadCalculator != nextNumberKeypadCalculator
                 || twentySixKeyNineKeyDigits != nextTwentySixKeyNineKeyDigits)
             && keyboardLayer == KeyboardLayout.Layer.SYMBOLS;
