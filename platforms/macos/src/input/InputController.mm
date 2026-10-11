@@ -4812,10 +4812,8 @@ static NSString *MSIMESessionUnavailableReason(NSDictionary *options) {
             if (_session) {
                 [MSIMEInputController holdDictionarySession:self];
                 created = YES;
-                // 生命周期核心接管按键音、上屏音、打字特效和背景音乐。先于下面的 setFocused:，让核心看到这次聚焦；字段属性随后报告，音乐所有权等到 claimBackgroundMusic。
+                // 生命周期核心接管按键音、上屏音、打字特效和背景音乐。先于下面的 setFocused:，让核心看到这次聚焦；字段属性在聚焦之前由 confirmFieldTraitsBeforeFocus 报告，音乐所有权等到 claimBackgroundMusic。
                 [_session setLifecycle:MSIME_LIFECYCLE_FEEDBACK];
-                _fieldTraits = 0;
-                [self syncFieldTraits];
                 reopened = _resumeDedicatedEnglish;
                 _resumeDedicatedEnglish = NO;
             }
@@ -4832,6 +4830,7 @@ static NSString *MSIMESessionUnavailableReason(NSDictionary *options) {
             NSDictionary *view = [_session setDedicatedEnglishEnabled:YES error:nil];
             if (view) _view = view;
         }
+        [self confirmFieldTraitsBeforeFocus];
         [self apply:[_session setFocused:YES error:nil]];
         _focusPending = NO;
         [self refreshTypingEffectSettings];
@@ -5323,6 +5322,12 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     [_session setFieldTraits:traits];
 }
 
+// 每次 setFocused:YES 之前都报告一次字段属性，变没变都报：脚本运行时在每次 msime_client_focus(true) 之后要先确认字段属性才投递事件，聚焦前的报告（同值也算）或聚焦后的第一个键都算确认。只在变了时报告的话，复用的会话、快照替换后的会话和按键换了客户端时的聚焦都等不到确认，focus_in 到不了脚本。新建的会话也走这里，所以建会话时不另报。
+- (void)confirmFieldTraitsBeforeFocus {
+    _fieldTraits = 0;
+    [self syncFieldTraits];
+}
+
 // 交给本输入法的每个物理按下都先报告给生命周期核心，不论这个键最后被处理还是交给应用；核心据此出按键音并算出打字特效。例外照旧：自动重复（按住一个键算一次，由调用处排除）、Command 或 Control 快捷键（Linux 和 Windows 上也不出声；Option 在 macOS 上打字，照样出声）和英文模式（各桌面宿主都不出声，Windows 只听得见它组字的键）。这些键不调用 msime_client_key，也就不开新的一轮。安全输入时照样调用：核心看到 SECURE 属性，什么都不出。
 - (void)reportKeyToLifecycle:(NSEvent *)event {
     [self syncFieldTraits];
@@ -5559,6 +5564,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         [self refreshFloatingToolbarState];
         _focusPending = _appearance.englishMode;
         if (!_appearance.englishMode) {
+            [self confirmFieldTraitsBeforeFocus];
             [self apply:[_session setFocused:YES error:nil]];
             [self refreshTypingEffectSettings];
         }

@@ -136,7 +136,7 @@ static void CheckMenu(NSMenu *menu, id controller) {
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *keySounds;
 @property(nonatomic) NSUInteger commitSounds;
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *musicStates;
-// 生命周期调用和派发按发生顺序记在一起："traits:<十六进制>"、"key:<值>"、"active:<0|1>"、"ascii"、"command:<值>"、"select"、"maintenance"，用来断言契约的调用顺序。
+// 生命周期调用和派发按发生顺序记在一起："traits:<十六进制>"、"key:<值>"、"active:<0|1>"、"focus:<0|1>"、"ascii"、"command:<值>"、"select"、"maintenance"，用来断言契约的调用顺序。
 @property(nonatomic, strong) NSMutableArray<NSString *> *calls;
 // lifecycleKey: 报告的物理按下（按键类别或 MSIME_KEY_POINTER），以及它要返回的打字特效答复。
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *keys;
@@ -260,6 +260,7 @@ static void CheckMenu(NSMenu *menu, id controller) {
 - (NSDictionary *)setFocused:(BOOL)focused error:(NSError **)error {
     (void)error;
     ++self.focusCalls;
+    [self recordCall:focused ? @"focus:1" : @"focus:0"];
     return @{@"handled": @NO, @"commit": NSNull.null, @"view": @{@"focused": @(focused), @"editing_text": @"", @"candidates": @[]}};
 }
 - (NSDictionary *)setCandidatePageSize:(uint8_t)size error:(NSError **)error {
@@ -3575,6 +3576,49 @@ static void TestSoundsFollowKeysCommitsAndActivation() {
     [NSFileManager.defaultManager removeItemAtPath:root error:nil];
 }
 
+// 脚本运行时在每次 msime_client_focus(true) 之后要先确认字段属性才投递事件，同值的报告也算确认。控制器平时只在属性变了时报告，所以每个 setFocused:YES 之前都要不论变没变再报告一次：复用会话的聚焦（快照替换或英文模式之后 _focusPending 的 prepareSession）和按键换了客户端时的聚焦都是这样，报告要紧挨在 focus(true) 之前。
+static void TestFieldTraitsAreConfirmedBeforeEveryFocusIn() {
+    NSString *suite = [@"msime.focus-traits." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *appearance = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    appearance.fullWidthInput = NO;
+    ModeController *controller = [ModeController alloc];
+    ShortcutSession *session = [ShortcutSession new];
+    ShortcutClient *client = [ShortcutClient new];
+    [controller setValue:appearance forKey:@"appearance"];
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:client forKey:@"activeClient"];
+    NSDictionary *idle = @{ @"focused": @YES, @"editing_text": @"", @"candidates": @[], @"scheme": @0 };
+    [controller setValue:idle forKey:@"view"];
+    session.nextTransition = @{ @"handled": @YES, @"commit": NSNull.null, @"view": idle };
+    NSEvent *(^letter)(unsigned short, NSString *) = ^NSEvent *(unsigned short code, NSString *characters) {
+        return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0
+                                 context:nil characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:code];
+    };
+    NSString *knownTraits = [NSString stringWithFormat:@"traits:%x", MSIME_TRAIT_KNOWN];
+    // 第一个键报告了属性，属性不变的下一个键不再报告。
+    [controller handleEvent:letter(0, @"a") client:client];
+    [controller handleEvent:letter(11, @"b") client:client];
+    assert(([session.calls isEqual:@[knownTraits, @"key:0", @"ascii", @"key:0", @"ascii"]]));
+    // 复用的会话重新聚焦：属性没变，也紧挨着 focus(true) 之前再报告一次。
+    [session.calls removeAllObjects];
+    [controller setValue:@YES forKey:@"focusPending"];
+    [controller prepareSession];
+    const NSUInteger focusIn = [session.calls indexOfObject:@"focus:1"];
+    assert(focusIn != NSNotFound && focusIn > 0 && [session.calls[focusIn - 1] isEqual:knownTraits]);
+    assert([session.reportedTraits.lastObject isEqual:@(MSIME_TRAIT_KNOWN)]);
+    // 按键换了客户端：这个键先报告，旧客户端失焦，新客户端聚焦之前再报告一次属性，最后才为这个键派发。
+    [session.calls removeAllObjects];
+    ShortcutClient *other = [ShortcutClient new];
+    [controller handleEvent:letter(8, @"c") client:other];
+    assert(([session.calls isEqual:@[@"key:0", @"focus:0", knownTraits, @"focus:1", @"ascii"]]));
+    // 没有聚焦的键照旧不重复报告。
+    [session.calls removeAllObjects];
+    [controller handleEvent:letter(2, @"d") client:other];
+    assert(([session.calls isEqual:@[@"key:0", @"ascii"]]));
+    MSIMERemoveTestPreferenceSuite(defaults, suite);
+}
+
 // IMK 在焦点移走或用户点进文档时调 commitComposition:，这是 macOS 失焦上屏最常走的一条路：用 MSIME_FINISH_ON_FOCUS_LOSS 结束组字，核心按失焦上屏处理，不出提交音也不画；回复里 feedback 为 0，控制器也就不画上屏特效。不是当前客户端的调用什么都不做。
 static void TestCommitCompositionFinishesAsAFocusLoss() {
     NSString *suite = [@"msime.commit-composition." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -3603,7 +3647,7 @@ static void TestCommitCompositionFinishesAsAFocusLoss() {
     MSIMERemoveTestPreferenceSuite(defaults, suite);
 }
 
-// 会话在 handleKeyEvent: 里才建好的控制器：词库维护结束后的第一个键就是这样，按下经过 handleEvent: 时还没有会话。这里用假会话代替真的新建，并照 prepareSession 的样子把上次报告的字段属性清零。
+// 会话在 handleKeyEvent: 里才建好的控制器：词库维护结束后的第一个键就是这样，按下经过 handleEvent: 时还没有会话。这里用假会话代替真的新建，并照 prepareSession 在聚焦前强制报告的样子把上次报告的字段属性清零。
 @interface SessionOpeningController : EffectRecordingController
 @property(nonatomic, strong) ShortcutSession *opening;
 @end
@@ -10595,6 +10639,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestSoundsFollowKeysCommitsAndActivation(); }
         @autoreleasepool { TestTheKeyThatOpensTheSessionIsReportedBeforeItsDispatch(); }
         @autoreleasepool { TestCommitCompositionFinishesAsAFocusLoss(); }
+        @autoreleasepool { TestFieldTraitsAreConfirmedBeforeEveryFocusIn(); }
         @autoreleasepool { TestMusicIsClaimedOnceTheSessionOpens(); }
         @autoreleasepool { TestPreferenceClientGeneration(); }
         @autoreleasepool { TestPreferenceReadDoesNotDeallocControllerOffMain(); }
