@@ -138,8 +138,10 @@ fn parse_word_entries(bytes: &[u8], name: &str) -> Result<Vec<WordbookEntry>, St
             ));
         }
         if entries.is_empty() {
-            entries.reserve_exact(wordbook::MAX_ENTRIES);
-            seen.reserve(wordbook::MAX_ENTRIES);
+            // 有效双列最短为 `a\tb\n` 四个字节；按输入长度给一次安全上界，避免短词表也保留满额缓冲。
+            let capacity = (bytes.len().saturating_add(1) / 4).min(wordbook::MAX_ENTRIES);
+            entries.reserve_exact(capacity);
+            seen.reserve(capacity);
         }
         if !seen.insert(word) {
             return Err(format!("{name} 里「{}」出现了不止一次", entry.word));
