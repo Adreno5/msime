@@ -60,15 +60,14 @@ inline constexpr ShellTarget cloud_dictionary{"cloud-dictionary", ""};
 inline constexpr ShellTarget input{"", "input"};
 inline constexpr ShellTarget screen_keyboard{"", "screen-keyboard"};
 inline constexpr ShellTarget voice{"", "voice"};
-inline constexpr ShellTarget handwriting{"", "handwriting"};
 inline constexpr ShellTarget help{"", "help"};
 inline constexpr ShellTarget feedback{"", "feedback"};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
 // 共享应用的「标点与翻译」页：在线翻译服务的选择和凭据只在那里编辑，本窗口的候选词翻译分组只放一个入口。
 inline constexpr ShellTarget expression{"", "expression"};
-inline constexpr std::array<ShellTarget, 12> all{
-    {appearance, skin, input, screen_keyboard, voice, handwriting, help, feedback,
+inline constexpr std::array<ShellTarget, 11> all{
+    {appearance, skin, input, screen_keyboard, voice, help, feedback,
      keyboard_panel, handwriting_panel, cloud_dictionary, expression}};
 } // namespace shell_links
 
