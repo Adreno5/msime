@@ -95,6 +95,12 @@ export const pages = [
     title: "发送哪些内容",
     icon: new URL("../assets/about.svg", import.meta.url).href,
   },
+  // 触屏宿主「我的 › 隐私」打开：数据怎么处理的几句话、匿名使用统计开关和完整隐私政策的链接。桌面的这些在「关于」里。
+  {
+    id: "privacy",
+    title: "隐私",
+    icon: new URL("../assets/about.svg", import.meta.url).href,
+  },
   // 触屏宿主「设置」根页状态卡片上的「试用键盘」打开的子页面；桌面首页有自己的键盘入口，没有这一页。
   {
     id: "try-keyboard",
@@ -131,5 +137,6 @@ export const subPageParents: Partial<Record<SettingsPageId, SettingsPageId>> = {
   vocabulary: "dictionary",
   help: "feedback",
   "usage-reporting": "about",
+  privacy: "account",
   "try-keyboard": "home",
 };
