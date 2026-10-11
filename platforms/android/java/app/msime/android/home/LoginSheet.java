@@ -291,8 +291,7 @@ final class LoginSheet {
     }
 
     private void say(String message) {
-        status.setText(message);
-        ViewPolicy.setVisibilityForText(status, message);
+        ViewPolicy.setTextAndVisibility(status, message);
     }
 
     private void setEnabled(boolean enabled) {

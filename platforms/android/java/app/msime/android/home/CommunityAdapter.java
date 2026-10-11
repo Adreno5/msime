@@ -226,8 +226,7 @@ public final class CommunityAdapter extends RecyclerView.Adapter<CommunityAdapte
         ViewPolicy.setBackground(holder.itemView, group(holder.itemView, first, last));
         String subtitle = subtitle(item);
         if (holder.author != null) {
-            holder.author.setText(subtitle);
-            ViewPolicy.setVisibilityForText(holder.author, subtitle);
+            ViewPolicy.setTextAndVisibility(holder.author, subtitle);
         }
         boolean reply = item.kind() == CommunityRequest.Kind.REPLY;
         if (holder.description != null) {
