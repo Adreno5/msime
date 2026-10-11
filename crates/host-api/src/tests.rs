@@ -13732,3 +13732,9 @@ fn voice_capture_device_export_lists_wasapi_endpoints_on_windows_only() {
 }
 
 mod lifecycle_traces;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+mod script_plugins;

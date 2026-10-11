@@ -2995,6 +2995,7 @@ dependencies = [
  "msime-host-windows",
  "msime-input-runtime",
  "msime-path-trust",
+ "msime-script-runtime",
  "rubato",
  "rusqlite",
  "rustix",

@@ -27,6 +27,9 @@ pub use instance::{
     CandidateRow, Candidates, CommitTexts, Composition, Event, Failure, InitFailure, LogSink,
     Outcome, Scalars, ScriptInstance,
 };
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use module::compile_text;
 pub use module::{compile, validate, Declaration, ModuleError, ScriptModule};
 
 // 模块缓存是进程级的，由后台编译线程填充、各会话线程读取，所以 `Module` 必须能跨线程共享。wasmi 2.0.0 的 `Module` 是 `Arc<ModuleInner>`，这条断言在编译期确认它确实是 Send + Sync；不成立时退回在会话线程的 focus 路径上编译。

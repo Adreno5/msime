@@ -190,6 +190,13 @@ pub fn validate(wasm: &[u8], declaration: Declaration) -> Result<(), ModuleError
     compile(wasm, declaration).map(drop)
 }
 
+/// 编译 WAT 文本，校验与 [`compile`] 相同，只是不要求二进制魔数。只给依赖本 crate 的测试用（`test-support` 特性），产品构建里没有它。
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn compile_text(wat: &str, declaration: Declaration) -> Result<ScriptModule, ModuleError> {
+    compile_unchecked_format(wat.as_bytes(), declaration)
+}
+
 /// 跳过二进制魔数检查的编译。测试打开了 wasmi 的 `wat` 特性，`Module::new` 直接吃 WAT 文本。
 pub(crate) fn compile_unchecked_format(
     wasm: &[u8],

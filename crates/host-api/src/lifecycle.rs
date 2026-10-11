@@ -5,8 +5,11 @@
 //! 会话属于创建它的线程，所以这里不起线程、不建全局总线、不回调宿主。推导是纯函数（[`derive`]），只读 `Copy` 的采样，按键路径上不分配内存；消费者各自包一层 `catch_unwind`，panic 不会落到 `response()` 那一层把整次上屏变成 `"internal runtime failure"`。
 //!
 //! 同一次调用内的顺序是：`input` → `selection_retracted` → `candidate_selected` → `before_commit` → `commit` → `composition_end` 或 `composition_start` → `composition_update` → `candidates_shown` 或 `candidates_hidden`，focus 的 `focus_in`/`focus_out` 排在最后，destroy 的 `session_end` 也排在最后。
+//!
+//! 消费者有两类：内置的音效、特效和音乐（`FEEDBACK` 位），以及脚本插件（`crate::scripts`，只在桌面开发构建里、进程开关打开时才有事件可收）。旁路调用的视图事件只给内置消费者。
 
 use crate::key_sound::{self, KeyClass, SessionSound};
+use crate::scripts::{CallTexts, ScriptSet};
 use msime_engine::LocalInputMode;
 use msime_input_runtime::{
     DispatchFacts, Runtime, SelectionFact, SelectionHow, SelectionOutcome, SelectionRetraction,
@@ -360,8 +363,8 @@ pub struct Context {
 }
 
 impl Context {
-    /// 字段属性已知，且不是 SECURE、PRIVATE 或 ELEVATED。
-    fn ordinary_field(self) -> bool {
+    /// 字段属性已知，且不是 SECURE、PRIVATE 或 ELEVATED。上屏能否改写和脚本能否运行都看它。
+    pub(crate) fn ordinary_field(self) -> bool {
         self.traits & TRAIT_KNOWN != 0
             && self.traits & (TRAIT_SECURE | TRAIT_PRIVATE | TRAIT_ELEVATED) == 0
     }
@@ -499,6 +502,8 @@ pub(crate) struct LifecycleState {
     active: bool,
     /// 本次调用里内置消费者算出的打字特效，FEEDBACK 时由 `msime_client_key` 返回、或写进 transition 的 `feedback`。每次调用开始时清零。
     effect: u32,
+    /// 这个会话的脚本插件。移动端是什么都不做的空壳。
+    scripts: ScriptSet,
     /// 测试用的消费者：记录事件或故意 panic。
     #[cfg(test)]
     pub(crate) probe: Option<Probe>,
@@ -516,9 +521,20 @@ impl LifecycleState {
             traits: 0,
             active: false,
             effect: 0,
+            scripts: ScriptSet::default(),
             #[cfg(test)]
             probe: None,
         }
+    }
+
+    /// 记下脚本插件的位置：`root` 是 `<state root>/plugins`（宿主没给状态根目录时为 `None`，脚本不运行），健康计数写在 `user_data` 下。
+    pub(crate) fn bind_scripts(&mut self, root: Option<std::path::PathBuf>, user_data: &str) {
+        self.scripts.bind(root, user_data);
+    }
+
+    /// `msime_client_focus(true)` 开始时：丢弃上一个字段的脚本实例，按戳重读授权。
+    pub(crate) fn scripts_focus_in(&mut self) {
+        self.scripts.focus_in();
     }
 
     pub(crate) fn flags(&self) -> u32 {
@@ -552,6 +568,8 @@ impl LifecycleState {
         if traits != self.traits {
             self.traits = traits;
             self.emit(sound, LifecycleEvent::TraitsChanged { traits });
+            // 变成 SECURE、PRIVATE、ELEVATED 或未知时，正在跑的脚本实例当场丢弃。
+            self.scripts.traits_changed(self.context());
         }
         self.traits
     }
@@ -574,6 +592,10 @@ impl LifecycleState {
             return 0;
         }
         self.effect = 0;
+        // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给。
+        if key & KEY_PASSTHROUGH == 0 {
+            self.scripts.next_turn();
+        }
         self.emit(
             sound,
             LifecycleEvent::KeyDown(KeyDown {
@@ -586,24 +608,22 @@ impl LifecycleState {
         self.effect
     }
 
-    /// 派发前：清零本次的特效，发 `input`。
+    /// 派发前：清零本次的特效，发 `input`。`input_char` 是这次打的字符，只交给授予了 `read_composition` 的脚本。
     pub(crate) fn before_dispatch(
         &mut self,
         sound: &SessionSound,
         class: InputClass,
         local_mode: &str,
+        input_char: Option<char>,
     ) {
         self.effect = 0;
-        self.emit(
-            sound,
-            LifecycleEvent::Input {
-                class,
-                local_mode: LocalModeClass::of(local_mode),
-            },
-        );
+        let local_mode = LocalModeClass::of(local_mode);
+        self.emit(sound, LifecycleEvent::Input { class, local_mode });
+        self.scripts
+            .input(self.context(), class, local_mode, input_char);
     }
 
-    /// 调用结束后推导并发出其余事件。返回本次的打字特效（只有 FEEDBACK 下的上屏会写它）。
+    /// 调用结束后推导并发出其余事件。返回本次的打字特效（只有 FEEDBACK 下的上屏会写它）。脚本收不到任何文本，见 [`Self::after_texts`]。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn after(
         &mut self,
@@ -615,15 +635,47 @@ impl LifecycleState {
         commit: Option<CommitSample>,
         page: PageSample,
     ) -> u32 {
+        self.after_texts(
+            sound,
+            call,
+            pre,
+            post,
+            facts,
+            commit,
+            page,
+            &CallTexts::default(),
+        )
+    }
+
+    /// 同 [`Self::after`]，脚本插件按授权从 `texts` 读这次调用的文本。旁路调用的事件不交给脚本；失焦和 destroy 在最后一个事件之后丢弃全部脚本实例。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn after_texts(
+        &mut self,
+        sound: &SessionSound,
+        call: Call,
+        pre: Sample,
+        post: Sample,
+        facts: DispatchFacts,
+        commit: Option<CommitSample>,
+        page: PageSample,
+        texts: &CallTexts<'_>,
+    ) -> u32 {
         if !matches!(call, Call::Dispatch(_)) {
             self.effect = 0;
         }
         let context = self.context();
+        let to_scripts = call != Call::SideChannel;
         derive(call, context, pre, post, facts, commit, page, |event| {
-            self.emit(sound, event)
+            self.emit(sound, event);
+            if to_scripts {
+                self.scripts.deliver(&event, context, texts);
+            }
         });
         if call == Call::Destroy {
             self.release_music(sound);
+        }
+        if matches!(call, Call::Focus(false) | Call::Destroy) {
+            self.scripts.release();
         }
         self.effect
     }
@@ -738,7 +790,12 @@ impl crate::HostSession {
         let state = self.lifecycle.as_deref_mut()?;
         let before = Sample::of(&self.runtime);
         let class = InputClass::of(action, host_commit);
-        state.before_dispatch(&self.sound, class, self.runtime.local_mode());
+        state.before_dispatch(
+            &self.sound,
+            class,
+            self.runtime.local_mode(),
+            typed_char(action),
+        );
         Some(Pending {
             call: Call::Dispatch(class),
             before,
@@ -764,7 +821,17 @@ impl crate::HostSession {
         let pending = pending?;
         let after = Sample::of(&self.runtime);
         let state = self.lifecycle.as_deref_mut()?;
-        let effect = state.after(
+        let texts = CallTexts {
+            view: Some(&transition.view),
+            commit: transition.commit.as_deref(),
+            commit_local_mode: transition
+                .commit_context
+                .as_ref()
+                .map(|context| context.local_mode.as_str()),
+            facts,
+            selected: self.runtime.selected_text(),
+        };
+        let effect = state.after_texts(
             &self.sound,
             pending.call,
             pending.before,
@@ -772,6 +839,7 @@ impl crate::HostSession {
             facts,
             CommitSample::of(transition),
             PageSample::of(&transition.view),
+            &texts,
         );
         state.feedback().then_some(effect)
     }
@@ -817,7 +885,12 @@ impl crate::HostSession {
             let view = self.runtime.view();
             let after = Sample::of(&self.runtime);
             if let Some(state) = self.lifecycle.as_deref_mut() {
-                state.after(
+                let texts = CallTexts {
+                    view: Some(&view),
+                    facts,
+                    ..CallTexts::default()
+                };
+                state.after_texts(
                     &self.sound,
                     pending.call,
                     pending.before,
@@ -825,13 +898,21 @@ impl crate::HostSession {
                     facts,
                     None,
                     PageSample::of(&view),
+                    &texts,
                 );
             }
         }
         result
     }
 
-    /// 会话被销毁：还在组字时先发 `composition_end{Destroyed}`，最后发 `session_end`；是音乐所有者时关掉音乐。
+    /// `msime_client_focus(true)` 开始时，紧挨着插件表的刷新：丢弃上一个字段留下的脚本实例，按戳重读脚本授权。
+    pub(crate) fn lifecycle_focus_in(&mut self) {
+        if let Some(state) = self.lifecycle.as_deref_mut() {
+            state.scripts_focus_in();
+        }
+    }
+
+    /// 会话被销毁：还在组字时先发 `composition_end{Destroyed}`，最后发 `session_end`；是音乐所有者时关掉音乐。脚本实例随之丢弃。
     pub(crate) fn lifecycle_destroy(&mut self) {
         let before = Sample::of(&self.runtime);
         if let Some(state) = self.lifecycle.as_deref_mut() {
@@ -866,6 +947,18 @@ pub fn replay(
         let state = session.lifecycle.as_deref_mut()?;
         Some(state.after(&session.sound, call, pre, post, facts, commit, page))
     })
+}
+
+/// 打字前那次派发打的字符：字符键、标点和 14 键的一键。
+fn typed_char(action: &msime_input_runtime::Action) -> Option<char> {
+    use msime_input_runtime::Action;
+    match action {
+        Action::Character { value, .. }
+        | Action::Punctuation(value)
+        | Action::PunctuationAscii(value)
+        | Action::GridKey(value) => Some(char::from(*value)),
+        _ => None,
+    }
 }
 
 /// 内置消费者要出的一个声音。

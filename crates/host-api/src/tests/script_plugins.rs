@@ -1,0 +1,864 @@
+//! 脚本插件经 C ABI 的行为：运行条件和隐私门控、按授权的文本、每次 focus 重建实例、每插件配额、按轮的 fuel、熔断与健康文件、panic 总开关、后台编译线程，以及不投递的事件。
+//!
+//! 模块用 WAT 写（`msime-script-runtime` 的 `test-support`），编译好直接放进进程缓存，哈希每个测试各不相同；只有后台编译线程那一例从磁盘上的包走完整路径，模块按字节手写。脚本经 `log` 把看到的东西写出来：级别是事件类型或 import 的返回码，文本是读到的文本。测试线程有自己的进程开关和 panic 总开关，互不影响。
+
+use super::*;
+use crate::lifecycle::{KEY_PASSTHROUGH, TRAIT_ELEVATED, TRAIT_KNOWN, TRAIT_PRIVATE, TRAIT_SECURE};
+use crate::scripts::{
+    insert_ready, TEST_PANIC, TEST_PANICKED, TEST_SCRIPT_LOG, TEST_SLOW, TEST_SWITCH,
+};
+use msime_client_core::plugins::{import, script_grants, MANIFEST_FILE};
+use msime_script_runtime::abi::commit_field;
+use msime_script_runtime::{
+    abi::status, compile_text, Capability, CapabilitySet, Declaration, Hook, HookSet,
+};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// 观察类钩子，全部。
+const OBSERVE: [Hook; 11] = [
+    Hook::FocusIn,
+    Hook::FocusOut,
+    Hook::Input,
+    Hook::SelectionRetracted,
+    Hook::CandidateSelected,
+    Hook::Commit,
+    Hook::CompositionEnd,
+    Hook::CompositionStart,
+    Hook::CompositionUpdate,
+    Hook::CandidatesShown,
+    Hook::CandidatesHidden,
+];
+
+const HEADER: &str = r#"(memory (export "memory") 1)
+  (func (export "msime_abi") (result i32) (i32.const 1))"#;
+
+/// 每个事件都 `log(事件类型, 0, 0)`。
+fn logger() -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    (i32.const 0)))"#
+    )
+}
+
+/// 读 `commit_text(field)`：读到了就 `log(事件类型, 文本)`，返回码为负就 `log(返回码, "")`。
+fn commit_reader(field: i32) -> String {
+    format!(
+        r#"(module
+  (import "msime" "commit_text" (func $text (param i32 i32 i32) (result i32)))
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32) (local $n i32)
+    (local.set $n (call $text (i32.const {field}) (i32.const 0) (i32.const 1024)))
+    (if (i32.lt_s (local.get $n) (i32.const 0))
+      (then (call $log (local.get $n) (i32.const 0) (i32.const 0)))
+      (else (call $log (local.get $kind) (i32.const 0) (local.get $n))))
+    (i32.const 0)))"#
+    )
+}
+
+/// 读 `composition_text(PREEDIT)` 和 `composition_text(INPUT_CHAR)`，同上写出。
+fn composition_reader() -> String {
+    format!(
+        r#"(module
+  (import "msime" "composition_text" (func $text (param i32 i32 i32) (result i32)))
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func $field (param $kind i32) (param $field i32) (local $n i32)
+    (local.set $n (call $text (local.get $field) (i32.const 0) (i32.const 1024)))
+    (if (i32.lt_s (local.get $n) (i32.const 0))
+      (then (call $log (local.get $n) (i32.const 0) (i32.const 0)))
+      (else (call $log (local.get $kind) (i32.const 0) (local.get $n)))))
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (call $field (local.get $kind) (i32.const 0))
+    (call $field (local.get $kind) (i32.const 2))
+    (i32.const 0)))"#
+    )
+}
+
+/// 一个实例里的计数器：每个事件加一并写出当前值。实例重建后从 1 开始。
+fn counter() -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (global $n (mut i32) (i32.const 0))
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (global.set $n (i32.add (global.get $n) (i32.const 1)))
+    (call $log (global.get $n) (i32.const 0) (i32.const 0))
+    (i32.const 0)))"#
+    )
+}
+
+/// 死循环，按钩子上限耗尽 fuel。
+fn spinner() -> String {
+    format!(
+        r#"(module
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (loop $forever (br $forever))
+    (i32.const 0)))"#
+    )
+}
+
+/// 先写出事件类型，再 `unreachable`。
+fn trapper() -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    unreachable))"#
+    )
+}
+
+/// `msime_init` 返回 -1。
+fn init_failure() -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_init") (result i32) (i32.const -1))
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    (i32.const 0)))"#
+    )
+}
+
+/// 空转 `rounds` 圈再写出事件类型。
+fn burner(rounds: u32) -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32) (local $i i32)
+    (loop $spin
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $spin (i32.lt_u (local.get $i) (i32.const {rounds}))))
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    (i32.const 0)))"#
+    )
+}
+
+/// 一个要装进授权的脚本。
+struct Script {
+    id: &'static str,
+    wat: String,
+    hooks: &'static [Hook],
+    capabilities: CapabilitySet,
+    granted: CapabilitySet,
+}
+
+impl Script {
+    fn new(id: &'static str, wat: String, hooks: &'static [Hook]) -> Self {
+        Self {
+            id,
+            wat,
+            hooks,
+            capabilities: CapabilitySet::EMPTY,
+            granted: CapabilitySet::EMPTY,
+        }
+    }
+
+    fn reading(mut self, capability: Capability, granted: bool) -> Self {
+        self.capabilities.insert(capability);
+        if granted {
+            self.granted.insert(capability);
+        }
+        self
+    }
+}
+
+/// 一个测试的环境：带状态根目录的全拼会话、插件根目录、user_data。
+struct Fixture {
+    _directory: tempfile::TempDir,
+    plugins: PathBuf,
+    user_data: PathBuf,
+    handle: u64,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        read(msime_client_destroy(self.handle));
+    }
+}
+
+/// 本测试线程打开进程开关、清空脚本日志，建一个全拼会话（`ni`、`hao`、`nihao` 都有候选）。
+fn fixture() -> Fixture {
+    TEST_SWITCH.with(|switch| switch.set(Some(true)));
+    TEST_PANICKED.with(|panicked| panicked.set(false));
+    TEST_SLOW.with(|slow| slow.set(false));
+    TEST_SCRIPT_LOG.with(|log| log.borrow_mut().clear());
+    let directory = tempfile::tempdir().unwrap();
+    let path = |name: &str| {
+        let path = directory.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    };
+    let resources = path("resources");
+    let dictionaries = path("dictionaries");
+    let state = path("state");
+    let plugins = state.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let fixture = "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+                   INSERT INTO tbl_1_n VALUES('ni','n','你',100);
+                   CREATE TABLE tbl_1_h(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+                   INSERT INTO tbl_1_h VALUES('hao','h','好',100);
+                   CREATE TABLE tbl_2_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+                   INSERT INTO tbl_2_n VALUES('ni''hao','nh','你好',1000),('ni''hao','nh','拟好',80);
+                   CREATE TABLE wubi86(key TEXT,value TEXT,weight INTEGER);
+                   CREATE TABLE quick_parases(key TEXT,value TEXT,weight INTEGER);
+                   CREATE INDEX idx_quick_parases_key_weight ON quick_parases(key,weight DESC);";
+    for directory in [&resources, &dictionaries] {
+        rusqlite::Connection::open(directory.join("msime-pinyin.db"))
+            .unwrap()
+            .execute_batch(fixture)
+            .unwrap();
+    }
+    let user_data = path("user");
+    let options = json!({ "api_version": 1, "resources": resources, "user_data": user_data, "cache": path("cache"), "dictionaries": dictionaries, "preferences_directory": state, "preferences": chinese_preferences() }).to_string();
+    let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
+    assert_eq!(created["ok"], true, "{created}");
+    Fixture {
+        handle: created["value"]["session"].as_u64().unwrap(),
+        _directory: directory,
+        plugins,
+        user_data,
+    }
+}
+
+/// 只属于这个测试的内容哈希：同一个进程里的测试共用模块缓存和熔断表。
+fn unique_hash(fixture: &Fixture, id: &str) -> String {
+    hex::encode(Sha256::digest(format!(
+        "{}\0{id}",
+        fixture.plugins.display()
+    )))
+}
+
+/// 把脚本编译好放进进程缓存，写一份按顺序启用它们的授权文件。返回各自的哈希。
+fn install(fixture: &Fixture, scripts: &[Script], revision: u64) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut hashes = Vec::new();
+    for script in scripts {
+        let hash = unique_hash(fixture, script.id);
+        let declaration = Declaration {
+            capabilities: script.capabilities,
+            hooks: script.hooks.iter().copied().collect::<HookSet>(),
+            memory_pages: 1,
+        };
+        let module = compile_text(&script.wat, declaration)
+            .unwrap_or_else(|error| panic!("{}: {error}", script.id));
+        insert_ready(&fixture.plugins, &hash, module);
+        entries.push(json!({
+            "id": script.id,
+            "hash": hash,
+            "enabled": true,
+            "granted": script.granted.iter().map(Capability::as_str).collect::<Vec<_>>(),
+        }));
+        hashes.push(hash);
+    }
+    write_grants(fixture, revision, entries);
+    hashes
+}
+
+fn write_grants(fixture: &Fixture, revision: u64, plugins: Vec<Value>) {
+    let document = json!({ "format_version": 1, "revision": revision, "plugins": plugins });
+    std::fs::write(
+        script_grants::document_path(&fixture.plugins),
+        serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+}
+
+/// 选择加入生命周期、报告普通字段，再聚焦一次：脚本从这里开始按授权运行。
+fn opt_in(fixture: &Fixture, traits: u32) {
+    assert_eq!(msime_client_set_lifecycle(fixture.handle, 0), 0);
+    msime_client_set_field_traits(fixture.handle, traits);
+    assert_eq!(read(msime_client_focus(fixture.handle, true))["ok"], true);
+}
+
+/// 宿主打一个字母：先 `msime_client_key`，再派发。
+fn letter(handle: u64, key: u8) {
+    msime_client_key(handle, 0);
+    assert_eq!(read(msime_client_character(handle, key, false))["ok"], true);
+}
+
+/// 打 `nihao`、空格选首选，返回上屏文本。
+fn commit_nihao(handle: u64) -> String {
+    for key in b"nihao" {
+        letter(handle, *key);
+    }
+    msime_client_key(handle, 1);
+    let picked = read(msime_client_command(handle, 1));
+    assert_eq!(picked["ok"], true, "{picked}");
+    picked["value"]["commit"].as_str().unwrap().to_owned()
+}
+
+/// 取走本线程的脚本日志。
+fn take_log() -> Vec<(i32, String)> {
+    TEST_SCRIPT_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+fn kinds(log: &[(i32, String)]) -> Vec<i32> {
+    log.iter().map(|(level, _)| *level).collect()
+}
+
+#[test]
+fn scripts_enable_answers_false_in_release_builds() {
+    // 开发构建里开关照常；release 构建（`cargo test --release`）里恒为 false，这一条就是第 3 阶段的验收。
+    assert_eq!(msime_client_scripts_enable(true), cfg!(debug_assertions));
+    assert!(!msime_client_scripts_enable(false));
+}
+
+#[test]
+fn an_ordinary_field_delivers_the_observe_events_and_no_key_down() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    opt_in(&fixture, TRAIT_KNOWN);
+    assert_eq!(kinds(&take_log()), [Hook::FocusIn.code()]);
+
+    // 只有按键的调用一个事件都不投递：key_down 不给脚本。
+    msime_client_key(fixture.handle, 0);
+    msime_client_key(fixture.handle, 1);
+    assert!(take_log().is_empty());
+
+    assert_eq!(commit_nihao(fixture.handle), "你好");
+    let log = kinds(&take_log());
+    let code = |hook: Hook| hook.code();
+    // 第一键：input, start, update, shown；之后四键各 input, update, shown；空格选首选：input, selected, commit, end, hidden。before_commit 第 4 阶段才投递。
+    let mut expected = vec![
+        code(Hook::Input),
+        code(Hook::CompositionStart),
+        code(Hook::CompositionUpdate),
+        code(Hook::CandidatesShown),
+    ];
+    for _ in 0..4 {
+        expected.extend([
+            code(Hook::Input),
+            code(Hook::CompositionUpdate),
+            code(Hook::CandidatesShown),
+        ]);
+    }
+    expected.extend([
+        code(Hook::Input),
+        code(Hook::CandidateSelected),
+        code(Hook::Commit),
+        code(Hook::CompositionEnd),
+        code(Hook::CandidatesHidden),
+    ]);
+    assert_eq!(log, expected);
+
+    read(msime_client_focus(fixture.handle, false));
+    assert_eq!(kinds(&take_log()), [Hook::FocusOut.code()]);
+}
+
+#[test]
+fn secure_private_elevated_and_unknown_fields_deliver_nothing() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    for traits in [
+        TRAIT_KNOWN | TRAIT_SECURE,
+        TRAIT_KNOWN | TRAIT_PRIVATE,
+        TRAIT_KNOWN | TRAIT_ELEVATED,
+        0,
+        // 只有 SECURE 位、没有 KNOWN 位：未知同样不运行。
+        TRAIT_SECURE,
+    ] {
+        read(msime_client_focus(fixture.handle, false));
+        opt_in(&fixture, traits);
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+        read(msime_client_focus(fixture.handle, false));
+        assert!(take_log().is_empty(), "traits {traits:#x} ran a script");
+    }
+    // 同一个会话换回普通字段就照常运行。
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert!(!take_log().is_empty());
+}
+
+#[test]
+fn a_field_turning_secure_drops_the_running_instance() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new("counter", counter(), &[Hook::Commit])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [1, 2]);
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN | TRAIT_SECURE);
+    commit_nihao(fixture.handle);
+    assert!(take_log().is_empty());
+    // 回到普通字段：实例是新建的，计数从 1 开始。
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [1]);
+}
+
+#[test]
+fn text_reaches_a_script_only_with_its_grant() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[
+            Script::new(
+                "granted",
+                commit_reader(commit_field::COMMIT),
+                &[Hook::Commit],
+            )
+            .reading(Capability::ReadCommit, true),
+            Script::new(
+                "not-granted",
+                commit_reader(commit_field::COMMIT),
+                &[Hook::Commit],
+            )
+            .reading(Capability::ReadCommit, false),
+        ],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    assert_eq!(commit_nihao(fixture.handle), "你好");
+    assert_eq!(
+        take_log(),
+        [
+            (Hook::Commit.code(), "你好".to_owned()),
+            (status::DENIED, String::new()),
+        ]
+    );
+}
+
+#[test]
+fn read_commit_sees_the_selected_candidate_and_the_body_without_the_tail() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[
+            Script::new(
+                "selected",
+                commit_reader(commit_field::SELECTED),
+                &[Hook::CandidateSelected, Hook::Commit],
+            )
+            .reading(Capability::ReadCommit, true),
+            Script::new(
+                "body",
+                commit_reader(commit_field::COMMIT_BODY),
+                &[Hook::Commit],
+            )
+            .reading(Capability::ReadCommit, true),
+        ],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    for key in b"nihao" {
+        letter(fixture.handle, *key);
+    }
+    // 逗号结束组字：选中的是首选，上屏是首选加全角逗号，body 不带逗号。
+    msime_client_key(fixture.handle, 0);
+    let finished = read(msime_client_punctuation(fixture.handle, b','));
+    assert_eq!(finished["value"]["commit"], "你好，");
+    assert_eq!(
+        take_log(),
+        [
+            (Hook::CandidateSelected.code(), "你好".to_owned()),
+            // 选中的文本只在 candidate_selected 里有。
+            (status::ABSENT, String::new()),
+            (Hook::Commit.code(), "你好".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn composition_text_follows_read_composition() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new(
+            "composer",
+            composition_reader(),
+            &[Hook::Input, Hook::CompositionUpdate],
+        )
+        .reading(Capability::ReadComposition, true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    letter(fixture.handle, b'n');
+    let input = Hook::Input.code();
+    let update = Hook::CompositionUpdate.code();
+    // input：预编辑串还没有（ABSENT），打的字符是 n；update：预编辑串是 n，没有打的字符。
+    assert_eq!(
+        take_log(),
+        [
+            (status::ABSENT, String::new()),
+            (input, "n".to_owned()),
+            (update, "n".to_owned()),
+            (status::ABSENT, String::new()),
+        ]
+    );
+}
+
+#[test]
+fn every_focus_rebuilds_the_instances() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new(
+            "counter",
+            counter(),
+            &[Hook::Commit, Hook::FocusOut],
+        )],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    commit_nihao(fixture.handle);
+    // focus_out 还送到同一个实例，之后整个丢弃。
+    read(msime_client_focus(fixture.handle, false));
+    assert_eq!(kinds(&take_log()), [1, 2, 3]);
+    read(msime_client_focus(fixture.handle, true));
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [1]);
+    // 只有 focus(true)、没有失焦（IBus 换字段、切中英都是这样）也重建。
+    read(msime_client_focus(fixture.handle, true));
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [1]);
+}
+
+#[test]
+fn one_plugin_burning_its_quota_leaves_the_next_one_untouched() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[
+            Script::new("spinner", spinner(), &[Hook::Commit]),
+            Script::new("logger", logger(), &[Hook::Commit]),
+        ],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    for _ in 0..2 {
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+        assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
+    }
+    let spinner = process_health(&fixture, "spinner", &hashes[0]);
+    assert_eq!(spinner.0, 2);
+    assert_eq!(process_health(&fixture, "logger", &hashes[1]).0, 0);
+}
+
+/// (失败次数, 停用原因)，直接读进程级的健康表。
+fn process_health(fixture: &Fixture, id: &str, hash: &str) -> (u64, Option<&'static str>) {
+    crate::scripts::health_snapshot(&fixture.plugins, id, hash)
+}
+
+#[test]
+fn fuel_is_given_per_turn_and_a_new_key_refills_it() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 每次 input 花几千 fuel，单次远低于观察类钩子的 25 000 上限。
+    for _ in 0..50 {
+        msime_client_key(fixture.handle, 0);
+        read(msime_client_reset_cache(fixture.handle));
+    }
+    assert_eq!(take_log().len(), 50);
+    // 同一轮里（交给应用的键不开新的一轮）连发：轮配额 125 000 用完后失败。
+    msime_client_key(fixture.handle, KEY_PASSTHROUGH);
+    for _ in 0..50 {
+        read(msime_client_reset_cache(fixture.handle));
+    }
+    assert!(take_log().len() < 50);
+}
+
+#[test]
+fn repeated_failures_trip_the_breaker_until_the_revision_changes() {
+    let fixture = fixture();
+    let scripts = || [Script::new("trapper", trapper(), &[Hook::Commit])];
+    let hashes = install(&fixture, &scripts(), 1);
+    opt_in(&fixture, TRAIT_KNOWN);
+    for _ in 0..5 {
+        // 脚本 trap 不影响上屏。
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+    }
+    // 第 3 次失败停用，之后不再运行。
+    assert_eq!(take_log().len(), 3);
+    assert_eq!(
+        process_health(&fixture, "trapper", &hashes[0]),
+        (3, Some("unreachable"))
+    );
+
+    // 失焦时健康计数交给后台线程写出：只有次数和原因码。
+    read(msime_client_focus(fixture.handle, false));
+    let file = fixture.user_data.join("script-health.json");
+    let health = wait_for(|| {
+        let bytes = std::fs::read(&file).ok()?;
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        (value["plugins"][0]["failures"] == 3).then_some(value)
+    });
+    assert_eq!(
+        health,
+        json!({"format_version": 1, "plugins": [{"id": "trapper", "hash": hashes[0], "failures": 3, "reasons": {"unreachable": 3}, "disabled": "unreachable"}]})
+    );
+
+    // 授权文件的 revision 变了：恢复。
+    install(&fixture, &scripts(), 2);
+    read(msime_client_focus(fixture.handle, true));
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
+}
+
+#[test]
+fn a_failed_init_disables_the_plugin_at_once() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[Script::new("init-failure", init_failure(), &[Hook::Commit])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    for _ in 0..2 {
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+    }
+    assert!(take_log().is_empty());
+    assert_eq!(
+        process_health(&fixture, "init-failure", &hashes[0]),
+        (1, Some("init_failed"))
+    );
+}
+
+#[test]
+fn slow_deliveries_trip_the_breaker() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[Script::new("logger", logger(), &[Hook::Commit])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    TEST_SLOW.with(|slow| slow.set(true));
+    for _ in 0..4 {
+        commit_nihao(fixture.handle);
+    }
+    assert_eq!(take_log().len(), 3);
+    assert_eq!(
+        process_health(&fixture, "logger", &hashes[0]),
+        (0, Some("slow"))
+    );
+}
+
+#[test]
+fn a_session_that_never_opted_in_runs_no_script() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    read(msime_client_focus(fixture.handle, true));
+    commit_nihao(fixture.handle);
+    read(msime_client_focus(fixture.handle, false));
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn the_process_switch_gates_every_session() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    TEST_SWITCH.with(|switch| switch.set(Some(false)));
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn side_channel_view_events_are_not_delivered() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    opt_in(&fixture, TRAIT_KNOWN);
+    letter(fixture.handle, b'n');
+    take_log();
+    // 组字中途切到英文：核心收到 composition_end 和 candidates_hidden，脚本收不到。
+    assert_eq!(
+        read(msime_client_set_english_mode(fixture.handle, true))["ok"],
+        true
+    );
+    assert!(take_log().is_empty());
+}
+
+#[test]
+fn a_host_side_panic_turns_every_script_off_and_the_commit_still_lands() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new("logger", logger(), &[Hook::Commit])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    TEST_PANIC.with(|panic| panic.set(true));
+    assert_eq!(commit_nihao(fixture.handle), "你好");
+    assert!(TEST_PANICKED.with(std::cell::Cell::get));
+    commit_nihao(fixture.handle);
+    assert!(take_log().is_empty());
+}
+
+fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(value) = probe() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// 最小的 ABI v1 模块，按字节手写：导入 `msime.log`，一页内存，`msime_on_event` 写出事件类型并返回 0。走后台线程那一例要一个真的 `.wasm` 文件，而 WAT 只能在测试里直接编译成模块。
+fn logger_binary() -> Vec<u8> {
+    fn section(id: u8, content: &[u8], out: &mut Vec<u8>) {
+        out.push(id);
+        out.push(u8::try_from(content.len()).unwrap());
+        out.extend_from_slice(content);
+    }
+    fn name(text: &str, out: &mut Vec<u8>) {
+        out.push(u8::try_from(text.len()).unwrap());
+        out.extend_from_slice(text.as_bytes());
+    }
+    let mut out = b"\0asm\x01\0\0\0".to_vec();
+    // 类型：(i32 i32 i32) -> ()、() -> i32、(i32) -> i32。
+    section(
+        1,
+        &[
+            3, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 0, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f,
+        ],
+        &mut out,
+    );
+    let mut imports = vec![1];
+    name("msime", &mut imports);
+    name("log", &mut imports);
+    imports.extend_from_slice(&[0x00, 0]);
+    section(2, &imports, &mut out);
+    section(3, &[2, 1, 2], &mut out);
+    section(5, &[1, 0x00, 1], &mut out);
+    let mut exports = vec![3];
+    for (export, kind, index) in [
+        ("memory", 2, 0),
+        ("msime_abi", 0, 1),
+        ("msime_on_event", 0, 2),
+    ] {
+        name(export, &mut exports);
+        exports.extend_from_slice(&[kind, index]);
+    }
+    section(7, &exports, &mut out);
+    let abi = [0x00, 0x41, 0x01, 0x0b];
+    let on_event = [
+        0x00, 0x20, 0x00, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00, 0x41, 0x00, 0x0b,
+    ];
+    let mut code = vec![2, abi.len() as u8];
+    code.extend_from_slice(&abi);
+    code.push(on_event.len() as u8);
+    code.extend_from_slice(&on_event);
+    section(10, &code, &mut out);
+    out
+}
+
+#[test]
+fn an_installed_pack_compiles_on_the_background_thread_and_then_runs() {
+    let fixture = fixture();
+    let source = fixture.plugins.parent().unwrap().join("source").join("e2e");
+    std::fs::create_dir_all(&source).unwrap();
+    let manifest = "schema_version = 2\nkind = 'script'\nid = 'e2e'\nname = '记录'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = []\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['commit']\nmemory_pages = 1\n";
+    std::fs::write(source.join(MANIFEST_FILE), manifest).unwrap();
+    std::fs::write(source.join("main.wasm"), logger_binary()).unwrap();
+    let summary = import(&source, &fixture.plugins).unwrap();
+    let msime_client_core::plugins::PluginContent::Script(pack) = summary.content else {
+        panic!("not a script pack");
+    };
+    script_grants::set(
+        &fixture.plugins,
+        "e2e",
+        &pack.content_hash,
+        true,
+        CapabilitySet::EMPTY,
+    )
+    .unwrap();
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 编译在后台线程上：还没编译好的那几次跳过，不算失败，上屏照常。
+    wait_for(|| {
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+        (!take_log().is_empty()).then_some(())
+    });
+    assert_eq!(
+        process_health(&fixture, "e2e", &pack.content_hash),
+        (0, None)
+    );
+}
+
+#[test]
+fn a_grant_whose_hash_no_longer_matches_the_pack_never_runs() {
+    let fixture = fixture();
+    let source = fixture
+        .plugins
+        .parent()
+        .unwrap()
+        .join("source")
+        .join("stale");
+    std::fs::create_dir_all(&source).unwrap();
+    let manifest = "schema_version = 2\nkind = 'script'\nid = 'stale'\nname = '记录'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = []\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['commit']\nmemory_pages = 1\n";
+    std::fs::write(source.join(MANIFEST_FILE), manifest).unwrap();
+    std::fs::write(source.join("main.wasm"), logger_binary()).unwrap();
+    import(&source, &fixture.plugins).unwrap();
+    // 授权的是另一份内容（哈希对不上）：后台线程核对后不编译它。
+    let stale = unique_hash(&fixture, "stale");
+    write_grants(
+        &fixture,
+        1,
+        vec![json!({"id": "stale", "hash": stale, "enabled": true, "granted": []})],
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    for _ in 0..20 {
+        commit_nihao(fixture.handle);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(take_log().is_empty());
+    assert_eq!(process_health(&fixture, "stale", &stale), (0, None));
+}
+
+/// 本地测量（默认忽略）：一个最小观察类脚本让一次字母键的派发多花多少时间。`cargo test -p msime-host-api [--release] -- --ignored --nocapture measure_minimal_hook_cost_per_key`。
+#[test]
+#[ignore]
+fn measure_minimal_hook_cost_per_key() {
+    let rounds = 400;
+    let time_letters = |fixture: &Fixture| {
+        let started = Instant::now();
+        for _ in 0..rounds {
+            letter(fixture.handle, b'n');
+            msime_client_key(fixture.handle, 3);
+            read(msime_client_command(fixture.handle, 3));
+        }
+        started.elapsed() / (2 * rounds)
+    };
+    let without = {
+        let fixture = fixture();
+        install(&fixture, &[], 1);
+        opt_in(&fixture, TRAIT_KNOWN);
+        time_letters(&fixture)
+    };
+    let with = {
+        let fixture = fixture();
+        let noop = format!(
+            r#"(module {HEADER} (func (export "msime_on_event") (param i32) (result i32) (i32.const 0)))"#
+        );
+        install(&fixture, &[Script::new("noop", noop, &OBSERVE)], 1);
+        opt_in(&fixture, TRAIT_KNOWN);
+        time_letters(&fixture)
+    };
+    println!(
+        "per dispatch: without scripts {without:?}, with one script on every observe hook {with:?}, profile {}",
+        if cfg!(debug_assertions) { "dev" } else { "release" }
+    );
+}

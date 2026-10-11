@@ -63,7 +63,7 @@ pub mod composition_field {
     pub const READING: i32 = 1;
     /// 文本：`input` 事件里这次打的字符；标量：它的 UTF-8 字节数。
     pub const INPUT_CHAR: i32 = 2;
-    /// 只有标量：光标在预编辑串里的位置（字符数）。
+    /// 只有标量：光标前已经打了几个编码字符。按的是编辑串（宿主看到的 `editing_text`，打下的字母本身）里的位置，不是预编辑串里的：两者在笔画、韩文、九键下不是同一个串。
     pub const CARET: i32 = 3;
 }
 
