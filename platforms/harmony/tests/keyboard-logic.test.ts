@@ -282,6 +282,7 @@ import {
   AccountSessionStore,
   AccountTransport,
   AccountTransportResponse,
+  CloudClipboardE2eHost,
   MAX_DICTIONARY_EXPORT_BYTES,
   MAX_SNAPSHOT_DOWNLOAD_BYTES,
   COMMUNITY_REPORT_REASONS,
@@ -11544,6 +11545,26 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
   );
 });
 
+/** 记下每次开始的操作、对每次开始都直接给出结果的假驱动；只给那些只关心桥接怎样开始操作的测试用，完整的往返在 cloud-clipboard-e2e.test.ts。 */
+function startRecordingClipboardDriver(
+  starts: Record<string, unknown>[],
+  firstStep: Record<string, unknown> = { done: {}, keystore: "v1.synthetic" },
+): CloudClipboardE2eHost {
+  return {
+    drive: (document) => {
+      const input = JSON.parse(document) as { start?: Record<string, unknown> };
+      if (input.start !== undefined) starts.push(input.start);
+      return JSON.stringify(
+        input.start !== undefined ? { ok: true, value: firstStep } : { ok: false, error: "done" },
+      );
+    },
+    loadKeystore: () => "v1.synthetic",
+    saveKeystore: () => {},
+    clearKeystore: () => {},
+    deviceName: () => "Synthetic",
+  };
+}
+
 group("the account bridge sends multi-line clipboard text the shared client accepts", () => {
   let stored: string | null = JSON.stringify({
     access_token: "a".repeat(64),
@@ -11552,17 +11573,9 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     expires_at: Date.now() + 600_000,
     user: { id: "synthetic-user", display_name: "Test", created_at: "2026-01-01" },
   });
-  const bodies: (Record<string, unknown> | undefined)[] = [];
+  const starts: Record<string, unknown>[] = [];
   const bridge = new AccountCloudBridge(
-    {
-      request: async (_method, _path, _token, body) => {
-        bodies.push(body);
-        return {
-          status: 200,
-          body: JSON.stringify({ id: "e".repeat(64), text: body?.text, updated_at: "2026-10-01" }),
-        };
-      },
-    },
+    { request: async () => ({ status: 200, body: "{}" }) },
     {
       load: () => stored,
       save: (value) => {
@@ -11572,6 +11585,8 @@ group("the account bridge sends multi-line clipboard text the shared client acce
         stored = null;
       },
     },
+    undefined,
+    startRecordingClipboardDriver(starts),
   );
   void bridge
     .handle(
@@ -11583,7 +11598,7 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     )
     .then((reply) => {
       check(JSON.parse(reply).ok === true, "a copied paragraph is accepted");
-      check(bodies[0]?.text === "第一行\n第二行", "and sent with its line break");
+      check(starts[0]?.text === "第一行\n第二行", "and handed to the driver with its line break");
     });
   void bridge
     .handle(
@@ -11591,6 +11606,7 @@ group("the account bridge sends multi-line clipboard text the shared client acce
     )
     .then((reply) => {
       check(JSON.parse(reply).error === "account_invalid", "a C1 control is refused locally");
+      check(starts.length <= 1, "and never reaches the driver");
     });
 });
 
@@ -11657,6 +11673,16 @@ group("a keyboard send refuses a same-account login adopted during refresh", () 
         return await body();
       },
     },
+    undefined,
+    startRecordingClipboardDriver([], {
+      request: {
+        method: "GET",
+        path: `/v1/users/me/clipboard/keys?device_id=${"d".repeat(32)}`,
+        body: null,
+      },
+      state: {},
+      keystore: "v1.synthetic",
+    }),
   );
   void bridge.addClipboardForCurrentSession("synthetic clipboard text").then((reply) => {
     check(JSON.parse(reply).error === "account_cancelled", "the adopted login cancels the send");
@@ -11672,14 +11698,9 @@ group("the account bridge accepts the shared clipboard search bound", () => {
     expires_at: Date.now() + 600_000,
     user: { id: "synthetic-user", display_name: "Test", created_at: "2026-01-01" },
   });
-  const paths: string[] = [];
+  const starts: Record<string, unknown>[] = [];
   const bridge = new AccountCloudBridge(
-    {
-      request: async (_method, path) => {
-        paths.push(path);
-        return { status: 200, body: '{"enabled":true,"items":[]}' };
-      },
-    },
+    { request: async () => ({ status: 200, body: "{}" }) },
     {
       load: () => stored,
       save: (value) => {
@@ -11689,6 +11710,8 @@ group("the account bridge accepts the shared clipboard search bound", () => {
         stored = null;
       },
     },
+    undefined,
+    startRecordingClipboardDriver(starts),
   );
   const accepted = "你".repeat(341) + "a";
   void bridge
@@ -11697,7 +11720,11 @@ group("the account bridge accepts the shared clipboard search bound", () => {
     )
     .then((reply) => {
       check(JSON.parse(reply).ok === true, "a 1,024-byte UTF-8 clipboard search is accepted");
-      check(paths.length === 1, "the accepted search reaches the account service");
+      // 服务端不再搜索：搜索词交给驱动，在本机解密后匹配。
+      check(
+        starts.length === 1 && starts[0].search === accepted,
+        "the accepted search reaches the driver",
+      );
       return bridge.handle(
         JSON.stringify({
           operation: "clipboard",
@@ -11711,7 +11738,7 @@ group("the account bridge accepts the shared clipboard search bound", () => {
         JSON.parse(reply).error === "account_invalid",
         "a search over 1,024 UTF-8 bytes is refused",
       );
-      check(paths.length === 1, "the oversized search never reaches the account service");
+      check(starts.length === 1, "the oversized search never reaches the driver");
     });
 });
 

@@ -1,10 +1,11 @@
 import http from '@ohos.net.http';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
+import deviceInfo from '@ohos.deviceInfo';
 import client from 'libmsimeclient.so';
 import {
-  AccountSessionStore, AccountTransport, AccountTransportResponse, parseResponseContentLength,
-  strictAccountOk
+  AccountSessionStore, AccountTransport, AccountTransportResponse, CloudClipboardE2eHost,
+  parseResponseContentLength, strictAccountOk
 } from './AccountCloudBridge';
 import { installNoRedirectGuard, noRedirectOptions } from '../network/HarmonyHttpSecurity';
 import { KeyboardLog } from '../keyboard/KeyboardLog';
@@ -46,10 +47,10 @@ export class FileSessionStore implements AccountSessionStore {
   private readonly lockFile: string;
   private readonly cancelSnapshots: boolean;
 
-  /** `name` 是文件名主干：已登录账号为 `account-session`，设备匿名账号为 `anonymous-session`。 */
-  constructor(directory: string, name: string = 'account-session') {
+  /** `name` 是文件名主干：已登录账号为 `account-session`，设备匿名账号为 `anonymous-session`；`extension` 是文件名后缀，云剪贴板密钥串按协议不带后缀。 */
+  constructor(directory: string, name: string = 'account-session', extension: string = '.json') {
     this.directory = directory;
-    this.file = `${directory}/${name}.json`;
+    this.file = `${directory}/${name}${extension}`;
     this.lockFile = `${directory}/${name}.lock`;
     this.cancelSnapshots = name === 'account-session';
   }
@@ -205,6 +206,46 @@ export class AnonymousSessionStore implements AccountSessionStore {
 
   clear(): void {
     this.file.clear();
+  }
+}
+
+/** 设备名的兜底：系统没给出可读的型号名时，批准列表里至少看得出是一台鸿蒙设备。 */
+const FALLBACK_DEVICE_NAME: string = 'HarmonyOS 设备';
+
+/**
+ * 云剪贴板端到端加密的宿主一侧：原生驱动 `cloudClipboardE2e`，以及 `<state>/cloud-clipboard-keystore`。
+ *
+ * 密钥串与账号会话放在同一个应用私有目录（`docs/cloud-clipboard-e2e.md` 的「密钥串的存放位置」），设置应用和键盘读写同一个文件，写入沿用会话文件的写临时文件再原子改名，读的一方只会看到旧的或新的一份。退出登录时 `AccountCloudBridge` 随会话一起删除它。API 12 起键盘扩展有独立沙箱，看不到设置应用的这个目录，见 README「输入法扩展的独立沙箱」。
+ */
+export class HarmonyCloudClipboardE2e implements CloudClipboardE2eHost {
+  private readonly keystore: FileSessionStore;
+
+  constructor(directory: string) {
+    this.keystore = new FileSessionStore(directory, 'cloud-clipboard-keystore', '');
+  }
+
+  drive(request: string): string {
+    return client.cloudClipboardE2e(request);
+  }
+
+  loadKeystore(): string | null {
+    return this.keystore.load();
+  }
+
+  saveKeystore(value: string): void {
+    this.keystore.save(value);
+  }
+
+  clearKeystore(): void {
+    this.keystore.clear();
+  }
+
+  /** 设备的市场名（如「HUAWEI Mate 70」），没有时用型号；驱动再去掉控制字符并截到 64 个字符。 */
+  deviceName(): string {
+    const market: string = deviceInfo.marketName.trim();
+    if (market.length > 0) return market;
+    const model: string = deviceInfo.productModel.trim();
+    return model.length > 0 ? model : FALLBACK_DEVICE_NAME;
   }
 }
 

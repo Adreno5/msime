@@ -28,7 +28,7 @@ import {
 } from './AccountPreferencePlan';
 import {
   ACCOUNT_ORIGIN, AnonymousSessionStore, FileSessionStore, HarmonyAccountTransport,
-  cancelSnapshotQueueForAccount, responseContentLength, responseContentType
+  HarmonyCloudClipboardE2e, cancelSnapshotQueueForAccount, responseContentLength, responseContentType
 } from './HarmonyAccountTransport';
 import { installNoRedirectGuard, noRedirectOptions } from '../network/HarmonyHttpSecurity';
 import { AccountAvatarPolicy } from './AccountAvatarPolicy';
@@ -353,9 +353,9 @@ export class HarmonyAccountCloudBridge {
       // The store reports an unavailable session if the sandbox cannot be prepared.
     }
     this.transport = new HarmonyTransport();
-    // 匿名会话就是 EntryAbility 在同一目录下注册的那个；无人登录时反馈回退到它，与 Android 一致。
+    // 匿名会话就是 EntryAbility 在同一目录下注册的那个；无人登录时反馈回退到它，与 Android 一致。云剪贴板的密钥串与会话同目录，键盘用的是同一份。
     this.bridge = new AccountCloudBridge(this.transport, new FileSessionStore(directory),
-      new AnonymousSessionStore(directory));
+      new AnonymousSessionStore(directory), new HarmonyCloudClipboardE2e(directory));
     // 流程里的 request_code 和 google_login 回到 request()，与页面发来的账号操作走同一条路。
     this.google = new HarmonyGoogleSignIn(context, (action: string): Promise<string> => this.request(action));
   }
