@@ -593,7 +593,7 @@ fn ios_voice_batch_configuration_covers_everyapi_and_mistral() {
         (
             "everyapi",
             "https://api.everyapi.ai/v1/audio/transcriptions",
-            "openai/whisper-large-v3-turbo",
+            "volc.seedasr.sauc.duration",
         ),
         (
             "mistral",

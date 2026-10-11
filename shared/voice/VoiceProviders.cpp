@@ -85,7 +85,7 @@ std::string default_asr_model(std::string_view provider) {
   if (id == "siliconflow")
     return "FunAudioLLM/SenseVoiceSmall";
   if (id == "everyapi")
-    return "openai/whisper-large-v3-turbo";
+    return "volc.seedasr.sauc.duration";
   if (id == "mistral")
     return "voxtral-mini-latest";
   if (id == "bailian")

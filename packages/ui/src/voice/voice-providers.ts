@@ -77,8 +77,8 @@ export const ASR_PROVIDER_DEFAULTS: Record<string, ProviderDefaults> = {
   },
   everyapi: {
     endpoint: "https://api.everyapi.ai/v1/audio/transcriptions",
-    model: "openai/whisper-large-v3-turbo",
-    models: ["openai/whisper-large-v3-turbo", "volc.seedasr.sauc.duration"],
+    model: "volc.seedasr.sauc.duration",
+    models: ["volc.seedasr.sauc.duration"],
     documentation: "https://everyapi.ai/models",
   },
   mistral: {

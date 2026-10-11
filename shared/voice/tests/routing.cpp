@@ -31,7 +31,7 @@ int main() {
     // The two transcription services carried over from the Apple provider catalogue. Both are
     // batch HTTPS, so a websocket default here would route them through the Doubao client.
     assert(default_asr_endpoint("everyapi") == "https://api.everyapi.ai/v1/audio/transcriptions");
-    assert(default_asr_model("everyapi") == "openai/whisper-large-v3-turbo");
+    assert(default_asr_model("everyapi") == "volc.seedasr.sauc.duration");
     assert(default_asr_endpoint("mistral") == "https://api.mistral.ai/v1/audio/transcriptions");
     assert(default_asr_model("mistral") == "voxtral-mini-latest");
     for (const auto *provider : {"everyapi", "mistral"}) {

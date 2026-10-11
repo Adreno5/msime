@@ -246,7 +246,7 @@ pub fn mobile_voice_provider_configuration(
         ),
         "everyapi" => (
             "https://api.everyapi.ai/v1/audio/transcriptions",
-            "openai/whisper-large-v3-turbo",
+            "volc.seedasr.sauc.duration",
         ),
         "mistral" => (
             "https://api.mistral.ai/v1/audio/transcriptions",

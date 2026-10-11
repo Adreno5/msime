@@ -1146,6 +1146,18 @@ pub struct VoiceInputPreferences {
     pub doubao_boosting_table_id: String,
 }
 
+/// EveryAPI 的识别默认模型以前写成 `openai/whisper-large-v3-turbo`，那是照搬 Apple 预设的名字，EveryAPI 从没有它的渠道（请求返回 503 `model_not_found`）。共享设置页切到 EveryAPI 时会把默认模型写进 `asr_model`，所以选过 EveryAPI 的文档里存的就是这个值。
+const RETIRED_EVERYAPI_ASR_MODEL: &str = "openai/whisper-large-v3-turbo";
+
+impl VoiceInputPreferences {
+    /// 读出文档时把 EveryAPI 下存着的旧默认模型清空，由 `voice::provider` 补上现在的默认（`volc.seedasr.sauc.duration`）。只认这一个值：用户自己填的其他模型原样保留；文件本身等下一次保存才改写。
+    fn retire_unavailable_asr_model(&mut self) {
+        if self.asr_provider == "everyapi" && self.asr_model.trim() == RETIRED_EVERYAPI_ASR_MODEL {
+            self.asr_model.clear();
+        }
+    }
+}
+
 impl Default for VoiceInputPreferences {
     fn default() -> Self {
         let polish = default_polish_service();
@@ -2970,11 +2982,15 @@ impl PreferencesStore {
             MAX_DOCUMENT_BYTES,
             || PreferencesError::DocumentTooLarge,
         )?;
-        let snapshot: PreferencesSnapshot = serde_json::from_slice(&bytes)?;
+        let mut snapshot: PreferencesSnapshot = serde_json::from_slice(&bytes)?;
         if snapshot.format_version != 1 {
             return Err(PreferencesError::UnsupportedFormat);
         }
         snapshot.preferences.validate()?;
+        snapshot
+            .preferences
+            .voice_input
+            .retire_unavailable_asr_model();
         Ok(snapshot)
     }
 

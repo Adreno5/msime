@@ -198,7 +198,7 @@ static void TestEveryRuntimeProviderIsEditable()
     assert([providers isEqual:expected]);
     assert(MSIMEVoiceASRProviderTitles().count == providers.count);
     NSDictionary *defaults = @{
-        @"everyapi" : @[ @"https://api.everyapi.ai/v1/audio/transcriptions", @"openai/whisper-large-v3-turbo" ],
+        @"everyapi" : @[ @"https://api.everyapi.ai/v1/audio/transcriptions", @"volc.seedasr.sauc.duration" ],
         @"mistral" : @[ @"https://api.mistral.ai/v1/audio/transcriptions", @"voxtral-mini-latest" ],
         @"bailian" : @[ @"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", @"qwen3-asr-flash" ]
     };
