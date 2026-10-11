@@ -4381,6 +4381,8 @@ private:
       return;
     }
     // 社区皮肤图库顶替主题页的设置，上面不画预览。
+    if (id == "themes")
+      follow_skin_search();
     if (has_preview(id) && preview_visible_ && !indexing_ && !(id == "themes" && skin_community_view_))
       page.Children().Append(make_preview());
     if (id == "themes")
@@ -5878,18 +5880,21 @@ private:
   }
 
   // 共享设置「主题」页（packages/ui/src/settings/pages/skin-page.tsx）在 Windows 上的样子：页首说明，内置主题卡片，皮肤包卡片（skin/external-skins.tsx 的 ExternalSkinCard）和两种明暗各用哪款皮肤的说明，「外观」组，「更多皮肤」组的「外部皮肤」一行（ExternalSkinDirectoryRow），「自定义主题」组的七个候选颜色取色器（candidate-colors-section.tsx），以及各界面的单独明暗。规则在 ThemeSkinModel.h。Windows 不是触屏键盘设计的宿主，没有「我的皮肤」编辑器；发布到社区和社区皮肤库仍在共享应用里。
+  // 搜索选中「社区皮肤」时打开图库，选中本页别的设置时回到「我的皮肤」。build_page 在决定画不画预览之前调用，图库上面不画预览，回到「我的皮肤」时预览也在。
+  void follow_skin_search() {
+    if (indexing_ || focus_row_.empty())
+      return;
+    const bool community = focus_row_ == L"社区皮肤";
+    if (community == skin_community_view_)
+      return;
+    skin_community_view_ = community;
+    if (community)
+      enter_skin_community();
+    else
+      leave_skin_community();
+  }
+
   void build_themes_page(StackPanel const &page) {
-    // 搜索选中「社区皮肤」时打开图库，选中本页别的设置时回到「我的皮肤」。
-    if (!indexing_ && !focus_row_.empty()) {
-      const bool community = focus_row_ == L"社区皮肤";
-      if (community != skin_community_view_) {
-        skin_community_view_ = community;
-        if (community)
-          enter_skin_community();
-        else
-          leave_skin_community();
-      }
-    }
     const bool community = skin_community_view_ && !indexing_;
     community_tabs(page, L"皮肤来源", L"我的皮肤", L"社区皮肤",
                    L"浏览、安装和发布候选窗口皮肤", community,
@@ -6649,6 +6654,11 @@ private:
     skin_category_active_.reset();
     skin_category_shown_.reset();
     // 读失败的预览图留在缓存里显示「预览图加载失败」，重新挂上图库时再试。
+    // 顺序表一起删，否则同一款会在里面出现两次，按旧的那一次被挤掉，正在读的图读完找不到缓存，卡片一直停在「正在读取预览…」。
+    std::erase_if(community_preview_order_, [this](std::wstring const &id) {
+      const auto found = community_previews_.find(id);
+      return found != community_previews_.end() && found->second.failed;
+    });
     std::erase_if(community_previews_, [](auto const &entry) { return entry.second.failed; });
     gallery_list<CommunitySkinItem>(L"", false, false);
     run_skin_sync();
@@ -7272,13 +7282,18 @@ private:
                         std::vector<std::pair<std::optional<std::wstring>, std::wstring>> const &choices,
                         std::optional<std::wstring> const &current,
                         std::function<void(std::optional<std::wstring>)> choose) {
+    // VariableSizedWrapGrid 不给格子大小时每格都取第一个按钮（「全部」）的大小，「科技夜色」「辅助码表」会被截掉；格子定宽，按钮铺满格子。
     VariableSizedWrapGrid row;
     row.Orientation(Orientation::Horizontal);
+    row.ItemWidth(104);
+    row.ItemHeight(40);
     row.Margin(Thickness{0, 4, 0, 8});
     for (auto const &[value, label] : choices) {
       const bool on = value == current;
       auto button = button_control(label, [choose, value] { choose(value); }).as<Button>();
       button.Margin(Thickness{0, 0, 8, 8});
+      button.MinWidth(0);
+      button.HorizontalAlignment(HorizontalAlignment::Stretch);
       if (on) {
         make_primary(button);
         A11y::SetItemStatus(button, L"已选择");
@@ -7620,7 +7635,7 @@ private:
     detail.IsEnabled(!gallery.action_busy);
     A11y::SetName(detail, L"举报补充说明");
     detail.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
-      gallery_for<Item>().report_detail = std::wstring(sender.as<TextBox>().Text().c_str());
+      gallery_for<Item>().report_detail = cm::line_feeds(sender.as<TextBox>().Text().c_str());
     });
     form.Children().Append(detail);
     StackPanel actions;
@@ -7920,7 +7935,7 @@ private:
     A11y::SetName(description_box, hstring(description_a11y));
     description_box.TextChanged([&description, &publication_id, changed](
                                     Inspectable const &sender, TextChangedEventArgs const &) {
-      const std::wstring typed(sender.as<TextBox>().Text().c_str());
+      const auto typed = cm::line_feeds(sender.as<TextBox>().Text().c_str());
       if (typed == description)
         return;
       publication_id = random_uuid();
@@ -8540,7 +8555,7 @@ private:
         form.Children().Append(make_text(L"无法打开皮肤目录，请重试。", 13, danger_color()));
     }
     if (state.has_pack) {
-      form.Children().Append(make_text(cm::zh_number(state.file_count) + L" 个文件 · " +
+      form.Children().Append(make_text(std::to_wstring(std::llround(state.file_count)) + L" 个文件 · " +
                                            cm::megabytes(state.size) + L" / " +
                                            std::wstring(cm::skin_package_limit),
                                        13, palette_.sub));
@@ -8707,7 +8722,7 @@ private:
                  current.file_count = named_number(pack, L"fileCount").value_or(0);
                  current.size = named_number(pack, L"size").value_or(0);
                  current.name = cm::bounded_graphemes(named_string(pack, L"suggestedName"), cm::name_limit);
-                 current.description = named_string(pack, L"suggestedDescription");
+                 current.description = cm::line_feeds(named_string(pack, L"suggestedDescription"));
                } else {
                  const auto failure = community_failure(response);
                  current.pack_error = cm::plugin_message(failure.code, failure.detail);
@@ -8814,7 +8829,7 @@ private:
     if (state.has_pack) {
       form.Children().Append(make_text(
           cm::join_dot({L"v" + state.version, state.license.empty() ? L"" : L"授权 " + state.license,
-                        cm::zh_number(state.file_count) + L" 个文件",
+                        std::to_wstring(std::llround(state.file_count)) + L" 个文件",
                         cm::megabytes(state.size) + L" / " + std::wstring(cm::plugin_archive_limit)}),
           13, palette_.sub));
       publication_fields(

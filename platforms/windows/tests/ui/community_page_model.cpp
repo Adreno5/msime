@@ -95,6 +95,9 @@ int main() {
         "category label");
   check(local_option_label(L"a", L"a") == L"a" && local_option_label(L"名字", L"id") == L"名字（id）",
         "local option label");
+  // 多行输入框的 CR 和 CR LF 都按 textarea 写成 LF。
+  check(line_feeds(L"a\rb\r\nc\n") == L"a\nb\nc\n", "line feeds");
+  check(line_feeds(L"\r\r\n") == L"\n\n", "consecutive breaks");
   check(join_dot({L"自然", L"", L"小鹿", L"v1"}) == L"自然 · 小鹿 · v1", "join");
 
   // 社区插件空列表的句子。

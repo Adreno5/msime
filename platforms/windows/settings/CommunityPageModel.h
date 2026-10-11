@@ -89,6 +89,22 @@ inline size_t utf8_length(std::wstring_view value) {
   return bytes;
 }
 
+// 多行输入框的文字按 textarea 的 value 写换行：WinUI 的 TextBox 把换行存成单独的 CR，粘贴进来的还可能是 CR LF，都换成 LF，发出去的说明和网页上输入的一样。
+inline std::wstring line_feeds(std::wstring_view value) {
+  std::wstring text;
+  text.reserve(value.size());
+  for (size_t i = 0; i < value.size(); ++i) {
+    if (value[i] != L'\r') {
+      text += value[i];
+      continue;
+    }
+    text += L'\n';
+    if (i + 1 < value.size() && value[i + 1] == L'\n')
+      ++i;
+  }
+  return text;
+}
+
 // 把非空的几段用「 · 」连起来（`[...].filter(Boolean).join(" · ")`）。
 inline std::wstring join_dot(std::vector<std::wstring> const &parts) {
   std::wstring joined;
