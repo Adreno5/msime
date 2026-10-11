@@ -9,6 +9,45 @@ use tempfile::tempdir;
 
 const HEADER: &[u8] = b"RIFF\x24\0\0\0WAVEfmt ";
 
+#[test]
+fn data_lines_preserves_bom_line_numbers_and_carriage_returns() {
+    let lines = Vec::from_iter(
+        data_lines(
+            "\u{feff}# synthetic\r\n\n词=ab\r\r\nlast\r\n".as_bytes(),
+            "synthetic.txt",
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        lines,
+        vec![
+            (1, "# synthetic"),
+            (2, ""),
+            (3, "词=ab\r"),
+            (4, "last"),
+            (5, ""),
+        ]
+    );
+}
+
+#[test]
+fn data_lines_preserves_an_empty_line_for_empty_content() {
+    for bytes in [b"".as_slice(), b"\xEF\xBB\xBF".as_slice()] {
+        assert_eq!(
+            Vec::from_iter(data_lines(bytes, "synthetic.txt").unwrap()),
+            vec![(1, "")]
+        );
+    }
+}
+
+#[test]
+fn data_lines_validates_all_utf8_before_exposing_the_first_line() {
+    let error = data_lines(b"synthetic\n\xFF", "synthetic.txt")
+        .err()
+        .unwrap();
+    assert_eq!(error, "synthetic.txt 不是 UTF-8 编码");
+}
+
 fn wav() -> Vec<u8> {
     let mut bytes = HEADER.to_vec();
     bytes.extend_from_slice(&[0; 32]);
