@@ -102,17 +102,73 @@ pub struct AccountProfile {
     pub identities: Vec<AccountProfileIdentity>,
 }
 
+/// 云剪贴板里解密后的一条，形状与 `docs/cloud-clipboard-e2e.md` 里驱动 `add` 的结果相同。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountClipboardItem {
     pub id: String,
     pub text: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub pinned: bool,
+    /// 写入这条的设备名，由驱动清理过控制字符和长度。
+    #[serde(default)]
+    pub device: String,
 }
 
+/// 本机能不能读写云剪贴板。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountClipboardE2eStatus {
+    /// 本机持有当前的剪贴板密钥。
+    Ready,
+    /// 本机已登记，等待一台已批准的设备点「允许」。
+    Pending,
+    /// 账号关闭了云剪贴板。
+    Disabled,
+}
+
+/// 驱动 `list` 结果里的 `e2e` 对象。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountClipboardE2e {
+    pub status: AccountClipboardE2eStatus,
+    /// 本机的核对码，16 位数字每 4 位一组。
+    pub code: String,
+    /// 等待本机批准的设备数。
+    pub pending_devices: usize,
+    /// 解不开而被略去的条目数。
+    pub undecryptable: usize,
+}
+
+/// 驱动 `list` 的结果：解密并在本机搜索过的条目。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountClipboardPage {
     pub enabled: bool,
+    #[serde(default)]
+    pub retention_days: i64,
     pub items: Vec<AccountClipboardItem>,
+    pub e2e: AccountClipboardE2e,
+}
+
+/// 账号下登记的一台云剪贴板设备。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountClipboardDevice {
+    pub device_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub approved: bool,
+    /// 是否就是本机。
+    pub current: bool,
+    pub code: String,
+}
+
+/// 驱动 `status`、`approve`、`reject`、`remove`、`reset` 的结果。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountClipboardDevices {
+    pub enabled: bool,
+    pub status: AccountClipboardE2eStatus,
+    pub device_id: String,
+    pub code: String,
+    pub devices: Vec<AccountClipboardDevice>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -447,6 +503,7 @@ mod anonymous;
 mod api;
 mod avatar;
 mod client;
+mod clipboard;
 mod file_storage;
 mod google;
 /// 账号页读到的脱敏响应，Tauri 的账号命令和原生设置窗口的 C 接口共用。
@@ -463,6 +520,7 @@ pub use anonymous::{
 pub use api::*;
 pub use avatar::*;
 pub use client::*;
+pub use clipboard::*;
 pub use file_storage::*;
 pub use google::*;
 pub use session::*;

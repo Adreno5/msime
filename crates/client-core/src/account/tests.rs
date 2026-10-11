@@ -3,6 +3,7 @@
 //! Same `mod tests` as before, so `use super::*` still names the parent.
 
 use super::*;
+use crate::cloud::clipboard_e2e::HttpRequest;
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::TcpListener;
@@ -56,19 +57,24 @@ fn validates_clipboard_boundaries() {
         id: valid_id.clone(),
         text: "fixture clipboard text".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
+        pinned: false,
+        device: "Fixture".into(),
     };
-    assert!(validate_clipboard_page(&AccountClipboardPage {
+    let page = |items| AccountClipboardPage {
         enabled: true,
-        items: vec![item(); 50],
-    })
-    .is_ok());
+        retention_days: 0,
+        items,
+        e2e: AccountClipboardE2e {
+            status: AccountClipboardE2eStatus::Ready,
+            code: "0000 0000 0000 0000".into(),
+            pending_devices: 0,
+            undecryptable: 0,
+        },
+    };
+    assert!(validate_clipboard_page(&page(vec![item(); 50])).is_ok());
     let mut too_many = vec![item(); 50];
     too_many.push(item());
-    assert!(validate_clipboard_page(&AccountClipboardPage {
-        enabled: true,
-        items: too_many,
-    })
-    .is_err());
+    assert!(validate_clipboard_page(&page(too_many)).is_err());
 }
 
 #[test]
@@ -1333,6 +1339,95 @@ fn transport_rejects_oversized_responses() {
     let origin = serve_once(response);
     let client = BackendAccountClient::loopback(&origin).unwrap();
     assert_eq!(client.providers(), Err(AccountError::Unavailable));
+}
+
+fn clipboard_request(method: &str, path: &str, body: Option<&str>) -> HttpRequest {
+    HttpRequest {
+        method: method.into(),
+        path: path.into(),
+        body: body.map(str::to_owned),
+    }
+}
+
+#[test]
+fn clipboard_transport_hands_error_responses_to_the_driver_with_the_token() {
+    let body = r#"{"error":{"code":"clipboard_key_conflict","message":"conflict"}}"#;
+    let (origin, captured) = serve_once_and_capture(
+        format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes(),
+    );
+    let client = BackendAccountClient::loopback(&origin).unwrap();
+    let response = client
+        .clipboard_e2e(
+            &clipboard_request(
+                "POST",
+                "/v1/users/me/clipboard",
+                Some(r#"{"ciphertext":"v1.x","key_id":"k","dedup":"d"}"#),
+            ),
+            &token(b'a'),
+        )
+        .unwrap();
+    assert_eq!(response.status, 409);
+    assert_eq!(response.body, body);
+    let request = String::from_utf8(captured.recv().unwrap())
+        .unwrap()
+        .to_lowercase();
+    assert!(request.starts_with("post /v1/users/me/clipboard http/1.1\r\n"));
+    assert!(request.contains(&format!("authorization: bearer {}\r\n", token(b'a'))));
+    assert!(request.ends_with(r#"{"ciphertext":"v1.x","key_id":"k","dedup":"d"}"#));
+}
+
+#[test]
+fn clipboard_transport_fits_a_full_page_of_ciphertext_but_stays_bounded() {
+    let page = |bytes: usize| {
+        let body = "x".repeat(bytes);
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    };
+    let list = clipboard_request("GET", "/v1/users/me/clipboard", None);
+    // 50 条、每条 16384 个字符的密文再加上其余字段，超过其他账号请求的 1 MiB。
+    let full = MAX_JSON_BYTES + 512 * 1024;
+    let client = BackendAccountClient::loopback(&serve_once(page(full))).unwrap();
+    assert_eq!(
+        client
+            .clipboard_e2e(&list, &token(b'a'))
+            .unwrap()
+            .body
+            .len(),
+        full
+    );
+    let client = BackendAccountClient::loopback(&serve_once(page(
+        super::clipboard::MAX_CLIPBOARD_RESPONSE_BYTES + 1,
+    )))
+    .unwrap();
+    assert_eq!(
+        client.clipboard_e2e(&list, &token(b'a')),
+        Err(AccountError::Unavailable)
+    );
+}
+
+#[test]
+fn clipboard_transport_only_sends_clipboard_paths() {
+    let client = BackendAccountClient::loopback("http://127.0.0.1:9").unwrap();
+    for (method, path) in [
+        ("GET", "/v1/users/me/profile"),
+        ("GET", "/v1/users/me/clipboardx"),
+        ("GET", "/v1/users/me/clipboard/../profile"),
+        ("PATCH", "/v1/users/me/clipboard"),
+        ("GET", "https://example.test/v1/users/me/clipboard"),
+    ] {
+        assert_eq!(
+            client.clipboard_e2e(&clipboard_request(method, path, None), &token(b'a')),
+            Err(AccountError::Invalid),
+            "{method} {path}"
+        );
+    }
 }
 
 #[test]

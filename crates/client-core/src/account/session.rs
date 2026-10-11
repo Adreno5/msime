@@ -46,8 +46,8 @@ impl RefreshFlight {
 }
 
 pub struct BackendAccountSession<A: AccountApi, S: AccountSessionStorage> {
-    api: A,
-    storage: S,
+    pub(super) api: A,
+    pub(super) storage: S,
     state: Mutex<SessionState>,
     /// Cancel flag of the Google browser sign-in in progress, if any. It lives outside `state` because the sign-in waits on the browser for minutes without holding the session lock.
     google_sign_in: Mutex<Option<Arc<AtomicBool>>>,
@@ -815,16 +815,8 @@ impl<A: AccountApi, S: AccountSessionStorage> BackendAccountSession<A, S> {
         Ok(updated)
     }
 
-    pub fn clipboard(&self, search: &str) -> Result<AccountClipboardPage, AccountError> {
-        self.authenticated(|api, token| api.clipboard(search, token))
-    }
-
     pub fn set_clipboard_enabled(&self, enabled: bool) -> Result<(), AccountError> {
         self.authenticated(|api, token| api.set_clipboard_enabled(enabled, token))
-    }
-
-    pub fn add_clipboard(&self, text: &str) -> Result<AccountClipboardItem, AccountError> {
-        self.authenticated(|api, token| api.add_clipboard(text, token))
     }
 
     pub fn delete_clipboard(&self, id: Option<&str>) -> Result<(), AccountError> {
