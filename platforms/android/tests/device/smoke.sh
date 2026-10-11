@@ -66,11 +66,28 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 [[ "$ready" == true ]] || { echo "Device bootstrap timed out" >&2; exit 1; }
+sdk=$("$adb" -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')
+[[ "$sdk" =~ ^[0-9]+$ ]] || { echo "Android API level was unavailable" >&2; exit 1; }
+# API 31 起可附着到已运行的产品进程。普通 instrument 若以产品包为目标，会连同 :ime 服务一起强停；
+# 连续跑设备套件时，系统偶尔来不及重新绑定输入法。以测试 APK 为目标的用例继续正常启动 instrumentation。
+run_instrumentation() {
+  local component=$1 class=${1#*/} target
+  target=$(xmllint --xpath "string(//instrumentation[@*[local-name()='name']='$class']/@*[local-name()='targetPackage'])" \
+    platforms/android/tests/device/AndroidManifest.xml)
+  [[ "$target" == app.msime.android || "$target" == app.msime.android.test ]] \
+    || { echo "Unknown instrumentation target: $component" >&2; return 1; }
+  if (( sdk >= 31 )) && [[ "$target" == app.msime.android ]]; then
+    "$adb" -s "$serial" shell am start -W -n app.msime.android/app.msime.android.home.HomeActivity >/dev/null
+    "$adb" -s "$serial" shell am instrument --no-restart -w "$component"
+  else
+    "$adb" -s "$serial" shell am instrument -w "$component"
+  fi
+}
 # 输入法 id 必须写成 `ime list` 给出的短写：系统按字符串原样查找，长写 app.msime.android/app.msime.android.MSIMEInputService 在 `ime enable` 时报 Unknown input method。设备测试里的 `ime` 命令都用同一个短写。
 "$adb" -s "$serial" shell ime enable app.msime.android/.MSIMEInputService
 "$adb" -s "$serial" shell ime set app.msime.android/.MSIMEInputService
 "$adb" -s "$serial" shell am force-stop app.msime.android.test
-result=$("$adb" -s "$serial" shell am instrument -w app.msime.android.test/app.msime.android.test.DeviceSmoke)
+result=$(run_instrumentation app.msime.android.test/app.msime.android.test.DeviceSmoke)
 printf '%s\n' "$result"
 [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "System input acceptance failed" >&2; exit 1; }
 if [[ "$core" == true ]]; then echo "Dedicated Android AVD: install, resource setup and core typing acceptance passed"; exit 0; fi
@@ -104,7 +121,12 @@ do
     skipped_suites+=("$suite")
     continue
   fi
-  result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
+  if [[ "$suite" == WubiLookupDeviceSmoke ]]; then
+    # 它直接改偏好文件，再让设置进程读新配置；必须重新启动产品主进程。
+    result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
+  else
+    result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
+  fi
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "${entry#*|}" >&2; exit 1; }
 done

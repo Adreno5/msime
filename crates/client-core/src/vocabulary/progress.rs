@@ -487,6 +487,20 @@ impl VocabularyProgressStore {
         Ok(document)
     }
 
+    /// Clear review history while preserving the latest settings. The read and replacement share
+    /// one lock, so another host cannot update settings between them, and a crash cannot leave an
+    /// intermediate document with default settings.
+    pub fn clear_review_progress(&self) -> Result<VocabularyProgress, VocabularyProgressError> {
+        let lock = self.lock()?;
+        let settings = self.read_locked(&lock)?.settings;
+        let document = VocabularyProgress {
+            settings,
+            ..VocabularyProgress::default()
+        };
+        self.write_locked(&lock, &document)?;
+        Ok(document)
+    }
+
     /// Forget everything.
     pub fn reset(&self) -> Result<VocabularyProgress, VocabularyProgressError> {
         let lock = self.lock()?;
@@ -830,6 +844,39 @@ mod tests {
 
         store.reset().unwrap();
         assert_eq!(store.load().unwrap(), VocabularyProgress::default());
+    }
+
+    #[test]
+    fn clearing_review_progress_keeps_the_latest_settings() {
+        let (_directory, store) = store();
+        let book = book_of(&["ubiquitous"]);
+        store
+            .answer(&book, "ubiquitous", ReviewGrade::Known, TODAY)
+            .unwrap();
+        store
+            .set_settings(VocabularyReviewSettings {
+                wordbook: book.id.clone(),
+                new_per_day: 12,
+                session_limit: 80,
+            })
+            .unwrap();
+        let stale = store.load().unwrap();
+        store
+            .set_settings(VocabularyReviewSettings {
+                wordbook: "kaoyan".to_owned(),
+                new_per_day: 7,
+                session_limit: 40,
+            })
+            .unwrap();
+
+        let reset = store.clear_review_progress().unwrap();
+        assert_eq!(reset.settings.new_per_day, 7);
+        assert_eq!(reset.settings.session_limit, 40);
+        assert_ne!(reset.settings.wordbook, stale.settings.wordbook);
+        assert_eq!(reset.settings.wordbook, "kaoyan");
+        assert!(reset.cards.is_empty());
+        assert!(reset.daily.is_empty());
+        assert_eq!(store.load().unwrap(), reset);
     }
 
     #[test]

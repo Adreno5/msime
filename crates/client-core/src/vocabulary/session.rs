@@ -184,9 +184,7 @@ pub fn apply(
         ReviewAction::Reset => {
             // Only the progress. The imported books are the user's own material and are deleted
             // one at a time, deliberately: the button says 清空进度, not 删除词表.
-            let settings = store.load()?.settings;
-            store.reset()?;
-            store.set_settings(settings)?;
+            store.clear_review_progress()?;
         }
     }
 

@@ -2211,9 +2211,22 @@ fn helpcode_tables_are_bounded_and_load_as_codes() {
 }
 
 #[test]
-fn helpcode_parser_reserves_its_bounded_entry_capacity() {
-    let entries = helpcode_pack::parse_table("你=ni\n".as_bytes(), "table.txt").unwrap();
-    assert_eq!(entries.len(), 1);
+fn helpcode_parser_reserves_capacity_from_input_size() {
+    for (input, expected_len) in [("é=a", 1), ("é=a\n", 1), ("é=a\nê=b", 2)] {
+        let input = input.as_bytes();
+        let entries = helpcode_pack::parse_table(input, "table.txt").unwrap();
+        assert_eq!(entries.len(), expected_len);
+        assert_eq!(
+            entries.capacity(),
+            (input.len().saturating_add(1) / 5).min(helpcode_pack::MAX_ENTRIES)
+        );
+    }
+
+    let full: String = (0..helpcode_pack::MAX_ENTRIES)
+        .map(|index| format!("{}=n\n", char::from_u32(0x4e00 + index as u32).unwrap()))
+        .collect();
+    let entries = helpcode_pack::parse_table(full.as_bytes(), "table.txt").unwrap();
+    assert_eq!(entries.len(), helpcode_pack::MAX_ENTRIES);
     assert_eq!(entries.capacity(), helpcode_pack::MAX_ENTRIES);
 }
 
@@ -2295,6 +2308,31 @@ fn wordbooks_are_bounded_and_load_as_books() {
 }
 
 #[test]
+fn wordbook_preview_keeps_only_its_small_result_buffer() {
+    for count in [1, 4, 5, 6, wordbook::MAX_ENTRIES] {
+        let directory = tempdir().unwrap();
+        let words: String = (0..count)
+            .rev()
+            .map(|index| format!("synthetic-{index:05}\tmeaning\n"))
+            .collect();
+        fs::write(directory.path().join("words.tsv"), words).unwrap();
+        let pack = wordbook_pack::read(directory.path(), "words.tsv").unwrap();
+        let expected: Vec<_> = (0..count)
+            .rev()
+            .take(wordbook_pack::PREVIEW_WORDS)
+            .map(|index| format!("synthetic-{index:05}"))
+            .collect();
+        assert_eq!(pack.word_count, count);
+        assert_eq!(pack.first_words, expected);
+        assert!(
+            pack.first_words.capacity() <= wordbook_pack::PREVIEW_WORDS,
+            "预览保留了整本词书的缓冲：{}",
+            pack.first_words.capacity()
+        );
+    }
+}
+
+#[test]
 fn wordbook_parser_preserves_column_boundaries() {
     let entries = wordbook_pack::parse_words(
         "two\t 释义 \nthree\t/θriː/\t三\nempty\t\t空音标\n".as_bytes(),
@@ -2327,9 +2365,20 @@ fn wordbook_parser_preserves_column_boundaries() {
 }
 
 #[test]
-fn wordbook_parser_reserves_its_bounded_entry_capacity() {
-    let entries = wordbook_pack::parse_words(b"synthetic\tmeaning\n", "words.tsv").unwrap();
+fn wordbook_parser_reserves_capacity_from_input_size() {
+    let input = b"synthetic\tmeaning\n";
+    let entries = wordbook_pack::parse_words(input, "words.tsv").unwrap();
     assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries.capacity(),
+        (input.len().saturating_add(1) / 4).min(wordbook::MAX_ENTRIES)
+    );
+
+    let full: String = (0..wordbook::MAX_ENTRIES)
+        .map(|index| format!("synthetic-{index:05}\tmeaning\n"))
+        .collect();
+    let entries = wordbook_pack::parse_words(full.as_bytes(), "words.tsv").unwrap();
+    assert_eq!(entries.len(), wordbook::MAX_ENTRIES);
     assert_eq!(entries.capacity(), wordbook::MAX_ENTRIES);
 }
 

@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { ControlledInput } from "./controlled-input";
 import * as style from "./platform-controls-style";
 
 /** A credential field whose value can be revealed to check a pasted key. */
@@ -19,7 +20,7 @@ export function SecretInput({
   const describedBy = useId();
   return (
     <span className={`secret-input ${style.secretInput}`}>
-      <input
+      <ControlledInput
         className={style.textInput}
         aria-label={label}
         type={revealed ? "text" : "password"}
@@ -27,7 +28,7 @@ export function SecretInput({
         disabled={disabled}
         placeholder={placeholder}
         aria-describedby={describedBy}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={onChange}
       />
       <button
         type="button"

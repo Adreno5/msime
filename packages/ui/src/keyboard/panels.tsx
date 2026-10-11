@@ -1,5 +1,12 @@
+import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
+import {
+  readOptionalJson,
+  readOptionalStorage,
+  writeOptionalJson,
+  writeOptionalStorage,
+} from "../core/optional-storage";
 import { useConfirm } from "../core/confirm";
 import { clamp } from "../core/number";
 import { utf8ByteLength } from "../core/text";
@@ -417,23 +424,13 @@ export function KeyboardPanel({
   customDesign?: TouchKeyboardSkinDesign;
 }) {
   const [activeLayout, setActiveLayout] = useState<"twenty_six_key" | "nine_key">(() => {
-    let saved: string | null = null;
-    try {
-      saved =
-        typeof window !== "undefined" ? window.localStorage.getItem("msime.keyboard.layout") : null;
-    } catch {
-      /* restricted webviews may deny storage */
-    }
+    const saved = readOptionalStorage("msime.keyboard.layout");
     return saved === "nine_key" || saved === "twenty_six_key" ? saved : layout;
   });
   function switchLayout() {
     const next = activeLayout === "nine_key" ? "twenty_six_key" : "nine_key";
     setActiveLayout(next);
-    try {
-      window.localStorage.setItem("msime.keyboard.layout", next);
-    } catch {
-      /* preference is optional */
-    }
+    writeOptionalStorage("msime.keyboard.layout", next);
   }
   const previousHostLayout = useRef(layout);
   useEffect(() => {
@@ -898,13 +895,7 @@ export function HandwritingPanel({
     packs.ensure("handwriting");
   }, [handwritingPack, packs]);
   const [activationMode, setActivationMode] = useState<"copy" | "input">(() => {
-    try {
-      return window.localStorage.getItem("msime.handwriting.activation") === "input"
-        ? "input"
-        : "copy";
-    } catch {
-      return "copy";
-    }
+    return readOptionalStorage("msime.handwriting.activation") === "input" ? "input" : "copy";
   });
   const effectiveMode =
     activationMode === "copy" && !client.copyHandwritingCandidate
@@ -915,11 +906,7 @@ export function HandwritingPanel({
   function selectActivation(mode: "copy" | "input") {
     if (!recognitionQueue.current.active || closingRef.current) return;
     setActivationMode(mode);
-    try {
-      window.localStorage.setItem("msime.handwriting.activation", mode);
-    } catch {
-      /* optional preference */
-    }
+    writeOptionalStorage("msime.handwriting.activation", mode);
   }
   const [strokes, setStrokes] = useState<InkStroke[]>([]);
   const [redoStrokes, setRedoStrokes] = useState<InkStroke[]>([]);
@@ -2193,8 +2180,7 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
         </p>
         <label className={cloud.clipboardToggle}>
           <span>启用云剪贴板</span>
-          <input
-            type="checkbox"
+          <ControlledCheckbox
             checked={enabled}
             onChange={() => void toggle()}
             disabled={busy || !loaded}
@@ -3803,12 +3789,7 @@ export function CloudCandidatesPanel({ client }: { client: CloudDictionaryPanelC
         {kind === "pinyin" && (
           <div className={cloud.dictionaryActions}>
             <label>
-              <input
-                type="checkbox"
-                checked={jianpin}
-                onChange={(event) => setJianpin(event.target.checked)}
-                disabled={busy}
-              />
+              <ControlledCheckbox checked={jianpin} onChange={setJianpin} disabled={busy} />
               简拼候选
             </label>
             <CloudDictionarySelectField
@@ -3875,12 +3856,7 @@ export function CloudCandidatesPanel({ client }: { client: CloudDictionaryPanelC
               />
             </label>
             <label>
-              <input
-                type="checkbox"
-                checked={forceTop}
-                onChange={(event) => setForceTop(event.target.checked)}
-                disabled={busy}
-              />
+              <ControlledCheckbox checked={forceTop} onChange={setForceTop} disabled={busy} />
               强制置顶
             </label>
             <label>
@@ -4085,21 +4061,14 @@ export function EmojiPanel({
   const [query, setQuery] = useState("");
   const [categories, setCategories] = useState({ emoji: "all", symbols: "all" });
   const [recent, setRecent] = useState<EmojiCatalogItem[]>(() => {
-    try {
-      const value: unknown =
-        typeof window === "undefined"
-          ? null
-          : JSON.parse(window.localStorage.getItem("msime.emoji.recent") ?? "null");
-      return Array.isArray(value)
-        ? (value
-            .filter(
-              (item) => item && typeof item.text === "string" && typeof item.keywords === "string",
-            )
-            .slice(0, 28) as EmojiCatalogItem[])
-        : [];
-    } catch {
-      return [];
-    }
+    const value = readOptionalJson("msime.emoji.recent");
+    return Array.isArray(value)
+      ? (value
+          .filter(
+            (item) => item && typeof item.text === "string" && typeof item.keywords === "string",
+          )
+          .slice(0, 28) as EmojiCatalogItem[])
+      : [];
   });
   const [clipboard, setClipboard] = useState<string[]>([]);
   const {
@@ -4156,11 +4125,7 @@ export function EmojiPanel({
   }, [client, invalidate]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem("msime.emoji.recent", JSON.stringify(recent.slice(0, 28)));
-    } catch {
-      /* preference is optional */
-    }
+    writeOptionalJson("msime.emoji.recent", recent.slice(0, 28));
   }, [recent]);
 
   useEffect(() => {
