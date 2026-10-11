@@ -118,7 +118,7 @@ struct Cached {
     /// 哪个插件根目录登记的，淘汰时按它分开。
     root: PathBuf,
     slot: Slot,
-    /// 计进内存总账的字节码估算。
+    /// 计进内存总账的模块开销：翻译结果的上界、固定开销和它的 Engine 留着的一份值栈（`limits::module_memory_bytes`）。模块有自己的 Engine，条目淘汰、最后一个克隆释放时这些内存真的还回去。
     bytecode: usize,
 }
 
@@ -260,10 +260,7 @@ fn compile(root: &Path, id: &str, hash: &str) {
             match msime_script_runtime::compile(&loaded.wasm, loaded.pack.declaration()) {
                 Ok(module) => (
                     Slot::Ready(module),
-                    loaded
-                        .wasm
-                        .len()
-                        .saturating_mul(limits::TRANSLATED_BYTES_PER_MODULE_BYTE),
+                    limits::module_memory_bytes(loaded.wasm.len()),
                 ),
                 Err(error) => (Slot::Invalid(error.reason()), 0),
             }
@@ -282,7 +279,7 @@ fn compile(root: &Path, id: &str, hash: &str) {
 
 // ---- 内存总账 ----
 
-/// 缓存里模块翻译后字节码的估算合计（模块大小乘以膨胀倍数）。
+/// 缓存里各模块开销的合计（`limits::module_memory_bytes`）。
 static BYTECODE_BYTES: AtomicUsize = AtomicUsize::new(0);
 /// 活着的实例一次预留的线性内存合计。
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -296,14 +293,13 @@ impl Drop for Reservation {
     }
 }
 
-/// 给一个新实例记账：线性内存预留、全部字节码和一份值栈合计不超过 `limits::PROCESS_MEMORY_BYTES`。授权时已经按单个会话做过准入检查，这里是多个会话同时有实例时的兜底；放不下时这一次不实例化，不算失败。
+/// 给一个新实例记账：线性内存预留和全部模块开销（翻译结果、固定开销、各自的值栈）合计不超过 `limits::PROCESS_MEMORY_BYTES`。授权时已经按单个会话做过准入检查，这里是多个会话同时有实例时的兜底；放不下时这一次不实例化，不算失败。
 pub(super) fn reserve(bytes: usize) -> Option<Reservation> {
     LIVE_BYTES
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
             let total = live
                 .saturating_add(bytes)
-                .saturating_add(BYTECODE_BYTES.load(Ordering::Acquire))
-                .saturating_add(limits::MAX_STACK_HEIGHT);
+                .saturating_add(BYTECODE_BYTES.load(Ordering::Acquire));
             (total <= limits::PROCESS_MEMORY_BYTES).then_some(live + bytes)
         })
         .ok()

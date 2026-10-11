@@ -7,10 +7,10 @@ use crate::abi::{
     CapabilitySet, Hook,
 };
 use crate::limits;
-use crate::module::{engine, ScriptModule};
+use crate::module::ScriptModule;
 use wasmi::{
-    Caller, Error, Instance, Linker, Memory, Store, StoreLimits, StoreLimitsBuilder, TrapCode,
-    TypedFunc, Val,
+    Caller, Engine, Error, Instance, Linker, Memory, Store, StoreLimits, StoreLimitsBuilder,
+    TrapCode, TypedFunc, Val,
 };
 
 /// 事件里的枚举字段，经 `event_scalar` 读出，不需要能力。值是 host-api 各枚举的判别值；`None` 表示这个事件没有该字段（`ABSENT`）。
@@ -413,7 +413,7 @@ impl CallContext {
 }
 
 /// 一个 Store 的宿主数据。
-struct HostState {
+pub(crate) struct HostState {
     limits: StoreLimits,
     grants: CapabilitySet,
     /// 实例化之后才有。
@@ -432,7 +432,7 @@ fn new_store(module: &ScriptModule, grants: CapabilitySet) -> Store<HostState> {
         .trap_on_grow_failure(true)
         .build();
     let mut store = Store::new(
-        engine(),
+        module.module.engine(),
         HostState {
             limits,
             grants,
@@ -450,8 +450,9 @@ fn instantiate(
     store: &mut Store<HostState>,
     module: &ScriptModule,
 ) -> Result<(Instance, Memory), Failure> {
-    let instance = LINKER
-        .with(|linker| linker.instantiate_and_start(&mut *store, &module.module))
+    let instance = module
+        .linker
+        .instantiate_and_start(&mut *store, &module.module)
         .map_err(|error| match error.kind() {
             wasmi::errors::ErrorKind::Memory(_) => Failure::MemoryLimit,
             _ => Failure::Instantiate,
@@ -743,13 +744,9 @@ fn run(
     (result, fuel)
 }
 
-thread_local! {
-    /// 每个线程一份链接表：链接表绑定进程唯一的 Engine，宿主函数都是不捕获状态的函数项。
-    static LINKER: Linker<HostState> = linker();
-}
-
-fn linker() -> Linker<HostState> {
-    let mut linker = Linker::new(engine());
+/// 绑在模块自己的 Engine 上的链接表，编译时建一次，随模块共享。宿主函数都是不捕获状态的函数项。
+pub(crate) fn linker(engine: &Engine) -> Linker<HostState> {
+    let mut linker = Linker::new(engine);
     let module = abi::IMPORT_MODULE;
     let define = |result: Result<&mut Linker<HostState>, wasmi::errors::LinkerError>| {
         // 名字都来自 `abi::IMPORTS`，不会重复；重复是编程错误，测试会在第一次实例化时撞上。

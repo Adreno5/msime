@@ -350,7 +350,7 @@ fn the_script_table_and_its_module_are_checked_without_running_anything() {
     let directory = write_pack(files.path(), "pangu", &without_table, &wasm);
     assert!(refusal(&directory).contains("脚本插件缺少 script 表"));
 
-    // 模块本身：不是 wasm、导入了没申请的能力、申请了却没用到、超过 1 MiB。
+    // 模块本身：不是 wasm、导入了没申请的能力、申请了却没用到、超过 256 KiB。
     let modules: &[(&str, Vec<u8>, &str)] = &[
         (
             "'read_commit'",
@@ -383,7 +383,7 @@ fn the_script_table_and_its_module_are_checked_without_running_anything() {
         let reason = refusal(&directory);
         assert!(reason.contains(expected), "{expected}: {reason}");
     }
-    // 恰好 1 MiB 的模块可以。
+    // 恰好 256 KiB 的模块可以。
     let directory = write_pack(
         files.path(),
         "pangu",
@@ -735,15 +735,18 @@ fn enabling_is_bounded_by_the_script_count_and_the_memory_budget() {
     // 新条目排在最后执行。
     assert_eq!(grants.plugins.last().unwrap().id, last.0);
 
-    // 8 个 1 MiB、64 页的模块：线性内存 32 MiB，估算的字节码 32 MiB，再加值栈，超出 64 MiB 的总账。
+    // 256 KiB、64 页的模块：线性内存 4 MiB，编译结果按上界估算 32 MiB，一个就占掉总账的一半多，第二个放不下。
     let state = tempdir().unwrap();
     let root = state.path().join("plugins");
     let big = padded(
         module(&[COMMIT_SCALAR]),
         script_pack::MAX_MODULE_BYTES as usize,
     );
+    let fitting = limits::PROCESS_MEMORY_BYTES
+        / limits::script_memory_bytes(big.len(), limits::MAX_MEMORY_PAGES);
+    assert!(fitting < limits::MAX_ENABLED_SCRIPTS);
     let mut hashes = Vec::new();
-    for index in 0..limits::MAX_ENABLED_SCRIPTS {
+    for index in 0..=fitting {
         let id = format!("big{index}");
         let script = manifest(
             &id,

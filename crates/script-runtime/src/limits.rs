@@ -42,15 +42,15 @@ pub const MAX_TABLE_ELEMENTS: usize = 10_000;
 /// 每个实例最多几张表（reference-types 允许多张）。
 pub const MAX_TABLES: usize = 4;
 
-/// 解释器值栈，整个 Engine 共用（字节）。
+/// 解释器值栈（字节）。每个模块有自己的 Engine，各留一份。
 pub const MAX_STACK_HEIGHT: usize = 65_536;
 /// 最大递归深度。
 pub const MAX_RECURSION_DEPTH: usize = 256;
 /// 留着复用的栈数。
 pub const MAX_CACHED_STACKS: usize = 1;
 
-/// 模块文件的上限。
-pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
+/// 模块文件的上限。按专门构造的模块实测的翻译膨胀定（见 [`TRANSLATED_BYTES_PER_MODULE_BYTE`]）：最大的模块带 64 页内存，在总账里约 36 MiB，单独启用放得下。
+pub const MAX_MODULE_BYTES: usize = 256 * 1024;
 /// 同时启用的脚本数。
 pub const MAX_ENABLED_SCRIPTS: usize = 8;
 /// 候选类事件里交给插件的行数上限（窗口内前 20 行）。
@@ -58,21 +58,31 @@ pub const MAX_CANDIDATE_ROWS: usize = 20;
 
 /// 进程里全部脚本合计的内存总账：线性内存预留、翻译后的字节码和解释器值栈。授权和启用时按它做准入检查，超出就拒绝启用，而不是让脚本在运行时争抢。
 pub const PROCESS_MEMORY_BYTES: usize = 64 * 1024 * 1024;
-/// 翻译后字节码相对模块大小的膨胀倍数，按第 3 阶段实测的约 3.3 倍向上取整。准入检查拿不到编译结果，按它估算字节码。
-pub const TRANSLATED_BYTES_PER_MODULE_BYTE: usize = 4;
+/// 编译结果（翻译后的代码、模块里的各种表，以及 Engine 留着复用的翻译缓冲）相对模块大小的倍数的上界。普通代码约 3.3 倍；专门构造的模块实测到约 110 倍（`block` 嵌套每层 3 字节，翻译缓冲却要约 330 字节），取 128。产品里量不到真实的编译结果（库不能替宿主进程装全局分配器），准入检查和内存总账都按它估算，`tests::expansion` 守着它确实是上界。
+pub const TRANSLATED_BYTES_PER_MODULE_BYTE: usize = 128;
+/// 每个模块与大小无关的固定开销：自己的 Engine、链接表和模块头约 10.6 KiB，一个声明了 3 万个局部变量的函数让翻译缓冲再留约 370 KiB，扣掉按倍数已经算进去的部分，实测最多差约 122 KiB，取 256 KiB。
+pub const MODULE_OVERHEAD_BYTES: usize = 256 * 1024;
 
-/// 一个脚本在总账里占的字节：一次预留的线性内存，加按模块大小估算的字节码。
+/// 一个编译好的模块在总账里占的字节，与有几个实例无关：翻译结果的上界、固定开销和它的 Engine 留着复用的一份值栈。
+pub fn module_memory_bytes(module_bytes: usize) -> usize {
+    module_bytes
+        .saturating_mul(TRANSLATED_BYTES_PER_MODULE_BYTE)
+        .saturating_add(MODULE_OVERHEAD_BYTES)
+        .saturating_add(MAX_STACK_HEIGHT)
+}
+
+/// 一个脚本在总账里占的字节：一次预留的线性内存，加 [`module_memory_bytes`]。
 pub fn script_memory_bytes(module_bytes: usize, memory_pages: u32) -> usize {
     (memory_pages as usize)
         .saturating_mul(PAGE_BYTES)
-        .saturating_add(module_bytes.saturating_mul(TRANSLATED_BYTES_PER_MODULE_BYTE))
+        .saturating_add(module_memory_bytes(module_bytes))
 }
 
-/// 一组脚本（每项是模块字节数和 `memory_pages`）合计放不放得进总账。值栈整个 Engine 共用一份，只算一次。
+/// 一组脚本（每项是模块字节数和 `memory_pages`）合计放不放得进总账。
 pub fn fits_memory_budget(scripts: impl IntoIterator<Item = (usize, u32)>) -> bool {
     scripts
         .into_iter()
         .map(|(module_bytes, memory_pages)| script_memory_bytes(module_bytes, memory_pages))
-        .fold(MAX_STACK_HEIGHT, usize::saturating_add)
+        .fold(0, usize::saturating_add)
         <= PROCESS_MEMORY_BYTES
 }

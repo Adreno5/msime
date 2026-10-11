@@ -17,7 +17,7 @@
 //!
 //! - 清单必须写 `schema_version = 2`；其余 8 种类型仍只认 1，所以不认识 script 的旧客户端在版本检查处就会拒绝它。
 //! - `permissions` 只认 `msime_script_runtime::Capability` 的白名单，不能重复，依赖必须一起申请（改写上屏要 `read_commit`，三种候选变换要 `read_candidates`），`rewrite_commit` 和 `read_composition` 不能同时申请。申请了就必须在模块里用到，反过来也一样，这一条由模块校验检查。
-//! - `[script]` 只有 4 个键：`abi` 必须是 1；`module` 点名包里的一个平铺 `.wasm` 文件，1 字节到 1 MiB，和辅助码表一样按数据文件走同一份文件检查；`hooks` 是非空、不重复的钩子名数组，只有声明过的钩子才会投递；`memory_pages` 可选，1 到 64，默认 16。
+//! - `[script]` 只有 4 个键：`abi` 必须是 1；`module` 点名包里的一个平铺 `.wasm` 文件，1 字节到 256 KiB，和辅助码表一样按数据文件走同一份文件检查；`hooks` 是非空、不重复的钩子名数组，只有声明过的钩子才会投递；`memory_pages` 可选，1 到 64，默认 16。
 //! - 载入时模块按 ABI v1 校验，只编译，不执行；导入时（`import`、`validate`）和输入法进程加载时用的是 `msime_script_runtime` 的同一份校验。
 //! - 内容哈希是 `sha256("msime-script\0" ‖ len ‖ plugin.toml ‖ len ‖ 模块)`，`len` 是后面那段的字节数，按 8 字节小端写入；说明文件不计入。授权（`script_grants`）绑定在这个哈希上，包的清单或模块一变，授权全部作废。
 
@@ -79,7 +79,7 @@ impl ScriptPack {
     }
 }
 
-/// 模块字节。`Debug` 只写长度，免得一次断言失败把 1 MiB 打进日志。
+/// 模块字节。`Debug` 只写长度，免得一次断言失败把整个模块打进日志。
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ModuleBytes(pub(crate) Vec<u8>);
 
@@ -216,7 +216,7 @@ pub(crate) fn parse(
     })
 }
 
-/// 模块在文件检查里的登记：必须存在、1 字节到 1 MiB、扩展名 `.wasm`。
+/// 模块在文件检查里的登记：必须存在、1 字节到 256 KiB、扩展名 `.wasm`。
 pub(crate) fn module_file(pack: &ScriptPack) -> DataFile {
     DataFile {
         name: pack.module.clone(),

@@ -1,15 +1,10 @@
 //! 写死的 wasmi `Config`、模块校验和编译。导入时（client-core、pack-tool）和加载时（输入法进程）走同一份校验。
 
 use crate::abi::{self, Capability, CapabilityRuleError, CapabilitySet, HookSet, ImportSpec, Ty};
+use crate::instance::{linker, HostState};
 use crate::limits;
-use std::sync::OnceLock;
-use wasmi::{CompilationMode, Config, Engine, ExternType, FuncType, Module, ValType};
-
-/// 进程里唯一的 Engine。模块缓存、实例和后台编译线程都用它；`Module` 只能在创建它的 Engine 上实例化。
-pub(crate) fn engine() -> &'static Engine {
-    static ENGINE: OnceLock<Engine> = OnceLock::new();
-    ENGINE.get_or_init(|| Engine::new(&config()))
-}
+use std::sync::Arc;
+use wasmi::{CompilationMode, Config, Engine, ExternType, FuncType, Linker, Module, ValType};
 
 /// ABI v1 的 `Config`，不对外开放任何开关。
 ///
@@ -149,13 +144,29 @@ impl std::fmt::Display for ModuleError {
 impl std::error::Error for ModuleError {}
 
 /// 编译好、校验过的模块。内部是 `Arc`，克隆便宜，可以跨线程共享（进程级缓存由后台线程填充）。
-#[derive(Clone, Debug)]
+///
+/// 每个模块有自己的 Engine，链接表也绑在它上面。wasmi 的 Engine 只追加不回收，翻译后的字节码要等 Engine 本身释放才还回去：所有模块共用一个进程级 Engine 时，淘汰掉的旧版本和导入时校验过的模块会一直占着内存，内存总账里减掉的数并没有真的释放。各用各的 Engine，最后一个克隆释放时字节码随 Engine 一起还回去。
+#[derive(Clone)]
 pub struct ScriptModule {
     pub(crate) module: Module,
+    /// 绑在这个模块的 Engine 上的链接表，实例化（包括 `before_commit` 的每次复位）直接用它。
+    pub(crate) linker: Arc<Linker<HostState>>,
     pub(crate) declaration: Declaration,
     pub(crate) has_init: bool,
     /// 实例化时一次预留到的页数：`memory_pages`，模块自己声明的最大值更小时取它。
     pub(crate) reserved_pages: u32,
+}
+
+impl std::fmt::Debug for ScriptModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 链接表里只有宿主函数，不打印。
+        f.debug_struct("ScriptModule")
+            .field("module", &self.module)
+            .field("declaration", &self.declaration)
+            .field("has_init", &self.has_init)
+            .field("reserved_pages", &self.reserved_pages)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ScriptModule {
@@ -185,9 +196,15 @@ pub fn compile(wasm: &[u8], declaration: Declaration) -> Result<ScriptModule, Mo
     compile_unchecked_format(wasm, declaration)
 }
 
-/// 只校验，不留下编译结果。导入时用：和加载时是同一份检查。
+/// 只校验，不留下编译结果。导入时用：和加载时是同一份检查。编译用的 Engine 随结果一起释放，设置应用每次刷新目录都校验一遍，不会越攒越多。
 pub fn validate(wasm: &[u8], declaration: Declaration) -> Result<(), ModuleError> {
-    compile(wasm, declaration).map(drop)
+    if wasm.len() > limits::MAX_MODULE_BYTES {
+        return Err(ModuleError::TooLarge);
+    }
+    if !wasm.starts_with(b"\0asm") {
+        return Err(ModuleError::NotBinary);
+    }
+    check(wasm, declaration).map(drop)
 }
 
 /// 编译 WAT 文本，校验与 [`compile`] 相同，只是不要求二进制魔数。只给依赖本 crate 的测试用（`test-support` 特性），产品构建里没有它。
@@ -202,6 +219,26 @@ pub(crate) fn compile_unchecked_format(
     wasm: &[u8],
     declaration: Declaration,
 ) -> Result<ScriptModule, ModuleError> {
+    let checked = check(wasm, declaration)?;
+    let linker = Arc::new(linker(checked.module.engine()));
+    Ok(ScriptModule {
+        module: checked.module,
+        linker,
+        declaration,
+        has_init: checked.has_init,
+        reserved_pages: checked.reserved_pages,
+    })
+}
+
+/// 校验通过、还没有链接表的模块。
+struct Checked {
+    module: Module,
+    has_init: bool,
+    reserved_pages: u32,
+}
+
+/// 在一个新的 Engine 上按 ABI v1 校验并 Eager 编译。
+fn check(wasm: &[u8], declaration: Declaration) -> Result<Checked, ModuleError> {
     if !(1..=limits::MAX_MEMORY_PAGES).contains(&declaration.memory_pages) {
         return Err(ModuleError::MemoryPages);
     }
@@ -212,8 +249,9 @@ pub(crate) fn compile_unchecked_format(
     if declaration.hooks.is_empty() {
         return Err(ModuleError::NoHooks);
     }
+    let engine = Engine::new(&config());
     let module =
-        Module::new(engine(), wasm).map_err(|error| ModuleError::Invalid(error.to_string()))?;
+        Module::new(&engine, wasm).map_err(|error| ModuleError::Invalid(error.to_string()))?;
 
     let reserved_pages = check_memory(&module, declaration.memory_pages)?;
     check_func_export(&module, abi::EXPORT_ABI, &[], &[ValType::I32])?;
@@ -232,9 +270,8 @@ pub(crate) fn compile_unchecked_format(
     };
     check_imports(&module, declaration.capabilities)?;
 
-    Ok(ScriptModule {
+    Ok(Checked {
         module,
-        declaration,
         has_init,
         reserved_pages,
     })

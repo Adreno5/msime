@@ -1097,11 +1097,12 @@ mod measure {
     #[test]
     #[ignore]
     fn measure_compile_and_instantiate_a_512_kib_module() {
+        // 模块上限已经下调到 256 KiB，这个测量照设计量 512 KiB 的普通代码，所以绕过大小检查。
         let wasm = synthetic_module(512 * 1024);
         let declared = declaration(&[], &[Hook::Input]);
         let started = Instant::now();
         let before = counting::net();
-        let module = compile(&wasm, declared).expect("synthetic module compiles");
+        let module = compile_unchecked_format(&wasm, declared).expect("synthetic module compiles");
         let retained = counting::net() - before;
         let compiled = started.elapsed();
         let started = Instant::now();
@@ -1173,6 +1174,336 @@ mod measure {
                 started.elapsed() / rounds as u32
             );
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_expansion_of_adversarial_modules() {
+        // 从 2 KiB 到模块上限按 1.07 倍取样，每种形状记下倍数最大的那一点。
+        let mut worst: std::collections::BTreeMap<&str, (f64, usize, usize)> = Default::default();
+        for (shape, bytes, retained) in super::expansion::points(1.07) {
+            let ratio = retained as f64 / bytes.max(1) as f64;
+            let entry = worst.entry(shape).or_insert((0.0, 0, 0));
+            if ratio > entry.0 {
+                *entry = (ratio, bytes, retained);
+            }
+        }
+        for (shape, (ratio, bytes, retained)) in worst {
+            println!(
+                "{shape}: worst {ratio:.2}x ({retained} bytes retained by a {bytes} byte module)"
+            );
+        }
+    }
+}
+
+/// 翻译后的模块没有办法在产品里直接量（库不能替宿主进程装全局分配器），内存总账只能按模块大小估算。这里用计数分配器量专门放大翻译结果的模块形状，守住估算确实是上界：哪天 wasmi 的翻译变了、或者有人改小了倍数，这里就变红。
+///
+/// 留下来的有两部分。一是翻译结果本身：函数表按 2 的幂分桶，一个最小的函数（4 字节）留下约 100 字节，元素段的一个条目（1 字节）约 24 字节。二是 Engine 留着复用的翻译缓冲，大小取决于最大的那个函数：`block` 嵌套每层 3 字节却要约 330 字节（缓冲按 2 的幂扩容），`br_table` 的一个目标 1 字节要约 90 字节，3 万个局部变量要约 370 KiB。模块有自己的 Engine，这些随模块一起释放；共用一个 Engine 时，它们会按见过的最大函数一直留着。
+mod expansion {
+    use super::*;
+
+    #[test]
+    fn the_ledger_estimate_bounds_every_adversarial_shape() {
+        for (shape, bytes, retained) in points(1.5) {
+            assert!(
+                retained <= limits::module_memory_bytes(bytes) - limits::MAX_STACK_HEIGHT,
+                "{shape}: {retained} bytes retained by a {bytes} byte module ({:.2}x)",
+                retained as f64 / bytes.max(1) as f64
+            );
+        }
+    }
+
+    /// 每种形状从 2 KiB 到模块上限按 `step` 倍取样，外加函数表每个桶刚多出一个函数的位置；返回 (形状, 模块字节数, 编译结果留下的字节数)。
+    pub(super) fn points(step: f64) -> Vec<(&'static str, usize, usize)> {
+        let mut sizes = Vec::new();
+        let mut size = 2048.0f64;
+        while size < limits::MAX_MODULE_BYTES as f64 {
+            sizes.push(size as usize);
+            size *= step;
+        }
+        sizes.push(limits::MAX_MODULE_BYTES);
+        let minimal = Shape::default().encode();
+        let mut points = vec![("minimal", minimal.len(), retained(&minimal))];
+        for bytes in sizes {
+            for (shape, wasm) in shapes(bytes) {
+                points.push((shape, wasm.len(), retained(&wasm)));
+            }
+        }
+        // 函数表的第一个桶 32 个函数，之后每个桶翻倍；骨架自带 2 个函数。
+        for k in 6..=20u32 {
+            let wasm = Shape {
+                bodies: vec![vec![0x00, 0x0b]; (1usize << k) - 32 + 1 - 2],
+                ..Shape::default()
+            }
+            .encode();
+            if wasm.len() > limits::MAX_MODULE_BYTES {
+                break;
+            }
+            points.push((
+                "tiny functions at a bucket edge",
+                wasm.len(),
+                retained(&wasm),
+            ));
+        }
+        points
+    }
+
+    fn leb(mut value: u32, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn section(id: u8, body: &[u8], out: &mut Vec<u8>) {
+        out.push(id);
+        leb(body.len() as u32, out);
+        out.extend_from_slice(body);
+    }
+
+    fn name(text: &str, out: &mut Vec<u8>) {
+        leb(text.len() as u32, out);
+        out.extend_from_slice(text.as_bytes());
+    }
+
+    /// 合规模块的骨架：类型 0 `() -> i32`、类型 1 `(i32) -> i32`、类型 2 `() -> ()`，外加 `types` 个重复的类型 2；函数 0 是 `msime_abi`，函数 1 是 `msime_on_event`，之后是 `bodies`（都是类型 2）；`exports` 个额外导出都指向函数 0。`globals` 是全局变量数，`elements` 是一个被动元素段里的条目数，`element_segments` 和 `datas` 是空的被动元素段和数据段的个数。
+    #[derive(Default)]
+    struct Shape {
+        types: u32,
+        bodies: Vec<Vec<u8>>,
+        exports: u32,
+        globals: u32,
+        elements: u32,
+        element_segments: u32,
+        datas: u32,
+    }
+
+    impl Shape {
+        fn encode(&self) -> Vec<u8> {
+            let mut out = b"\0asm\x01\0\0\0".to_vec();
+            let mut types = Vec::new();
+            leb(3 + self.types, &mut types);
+            types.extend_from_slice(&[0x60, 0x00, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f]);
+            for _ in 0..=self.types {
+                types.extend_from_slice(&[0x60, 0x00, 0x00]);
+            }
+            section(1, &types, &mut out);
+
+            let mut funcs = Vec::new();
+            leb(2 + self.bodies.len() as u32, &mut funcs);
+            funcs.extend_from_slice(&[0x00, 0x01]);
+            funcs.extend(std::iter::repeat_n(0x02, self.bodies.len()));
+            section(3, &funcs, &mut out);
+            section(5, &[0x01, 0x00, 0x01], &mut out);
+            if self.globals > 0 {
+                let mut globals = Vec::new();
+                leb(self.globals, &mut globals);
+                for _ in 0..self.globals {
+                    // 不可变的 i32，初值 `i32.const 0`。
+                    globals.extend_from_slice(&[0x7f, 0x00, 0x41, 0x00, 0x0b]);
+                }
+                section(6, &globals, &mut out);
+            }
+
+            let mut exports = Vec::new();
+            leb(3 + self.exports, &mut exports);
+            name("memory", &mut exports);
+            exports.extend_from_slice(&[0x02, 0x00]);
+            name("msime_abi", &mut exports);
+            exports.extend_from_slice(&[0x00, 0x00]);
+            name("msime_on_event", &mut exports);
+            exports.extend_from_slice(&[0x00, 0x01]);
+            for index in 0..self.exports {
+                name(&format!("{index:x}"), &mut exports);
+                exports.extend_from_slice(&[0x00, 0x00]);
+            }
+            section(7, &exports, &mut out);
+
+            if self.elements > 0 || self.element_segments > 0 {
+                let mut elements = Vec::new();
+                leb(
+                    u32::from(self.elements > 0) + self.element_segments,
+                    &mut elements,
+                );
+                if self.elements > 0 {
+                    // 一个被动段，`elements` 个函数下标，每个 1 字节。
+                    elements.extend_from_slice(&[0x01, 0x00]);
+                    leb(self.elements, &mut elements);
+                    elements.extend(std::iter::repeat_n(0x00, self.elements as usize));
+                }
+                for _ in 0..self.element_segments {
+                    // 空的被动段，3 字节。
+                    elements.extend_from_slice(&[0x01, 0x00, 0x00]);
+                }
+                section(9, &elements, &mut out);
+            }
+
+            let mut code = Vec::new();
+            leb(2 + self.bodies.len() as u32, &mut code);
+            for body in [&[0x00, 0x41, 0x01, 0x0b][..], &[0x00, 0x41, 0x00, 0x0b]] {
+                leb(body.len() as u32, &mut code);
+                code.extend_from_slice(body);
+            }
+            for body in &self.bodies {
+                leb(body.len() as u32, &mut code);
+                code.extend_from_slice(body);
+            }
+            section(10, &code, &mut out);
+
+            if self.datas > 0 {
+                // `datas` 个空的被动段，每个 2 字节。
+                let mut datas = Vec::new();
+                leb(self.datas, &mut datas);
+                for _ in 0..self.datas {
+                    datas.extend_from_slice(&[0x01, 0x00]);
+                }
+                section(11, &datas, &mut out);
+            }
+            out
+        }
+    }
+
+    /// 每种形状按 `bytes` 字节左右生成（不超过它）。
+    fn shapes(bytes: usize) -> Vec<(&'static str, Vec<u8>)> {
+        let fill = |make: &dyn Fn(u32) -> Shape| {
+            // 先用 0 个和 4096 个条目量出骨架和每个条目的平均大小，再按比例放大，最后往回收到不超过 `bytes`。
+            let base = make(0).encode().len();
+            let each = (make(4096).encode().len() - base) as f64 / 4096.0;
+            let mut count = ((bytes - base) as f64 / each) as u32;
+            loop {
+                let wasm = make(count).encode();
+                if wasm.len() <= bytes {
+                    return wasm;
+                }
+                count -= count / 64 + 1;
+            }
+        };
+        let br_table = |targets: u32| {
+            // 一个 i32 局部变量; block; block; local.get 0; br_table（目标在 0 和 1 之间交替，每个 1 字节）; end; end; end。下标不能是常量，否则翻译时直接折叠成一次跳转。
+            let mut body = vec![0x01, 0x01, 0x7f, 0x02, 0x40, 0x02, 0x40, 0x20, 0x00, 0x0e];
+            leb(targets, &mut body);
+            body.extend((0..=targets).map(|target| (target % 2) as u8));
+            body.extend_from_slice(&[0x0b, 0x0b, 0x0b]);
+            body
+        };
+        // wasmparser 对元素段和数据段的个数各有 10 万的上限。
+        let segments = |n: u32| n.min(100_000);
+        vec![
+            (
+                "tiny functions",
+                fill(&|n| Shape {
+                    bodies: vec![vec![0x00, 0x0b]; n as usize],
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "functions with 30000 locals",
+                fill(&|n| Shape {
+                    bodies: vec![vec![0x01, 0xb0, 0xea, 0x01, 0x7f, 0x0b]; n as usize],
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "dense br_table",
+                fill(&|n| Shape {
+                    // wasmparser 限制一个 br_table 最多 128 Ki 个目标。
+                    bodies: (0..n.div_ceil(100_000))
+                        .map(|index| br_table((n - index * 100_000).min(100_000)))
+                        .collect(),
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "deep block nesting",
+                fill(&|n| {
+                    // `block` 套 n 层再逐层 `end`，每层 3 字节。
+                    let mut body = vec![0x00];
+                    body.extend(std::iter::repeat_n([0x02, 0x40], n as usize).flatten());
+                    body.extend(std::iter::repeat_n(0x0b, n as usize));
+                    body.push(0x0b);
+                    Shape {
+                        bodies: vec![body],
+                        ..Shape::default()
+                    }
+                }),
+            ),
+            (
+                "deep operand stack",
+                fill(&|n| {
+                    // 连压 `local.get 0` 再逐个 `drop`，每层 3 字节。wasmi 每个函数的寄存器有上限，每个函数压 10000 层。
+                    let deep = |depth: u32| {
+                        let mut body = vec![0x01, 0x01, 0x7f];
+                        body.extend(std::iter::repeat_n([0x20, 0x00], depth as usize).flatten());
+                        body.extend(std::iter::repeat_n(0x1a, depth as usize));
+                        body.push(0x0b);
+                        body
+                    };
+                    Shape {
+                        bodies: (0..n.div_ceil(10_000))
+                            .map(|index| deep((n - index * 10_000).min(10_000)))
+                            .collect(),
+                        ..Shape::default()
+                    }
+                }),
+            ),
+            (
+                "duplicate types",
+                fill(&|n| Shape {
+                    types: n,
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "exports",
+                fill(&|n| Shape {
+                    exports: n,
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "globals",
+                fill(&|n| Shape {
+                    globals: n,
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "element items",
+                fill(&|n| Shape {
+                    elements: n,
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "empty element segments",
+                fill(&|n| Shape {
+                    element_segments: segments(n),
+                    ..Shape::default()
+                }),
+            ),
+            (
+                "empty data segments",
+                fill(&|n| Shape {
+                    datas: segments(n),
+                    ..Shape::default()
+                }),
+            ),
+        ]
+    }
+
+    /// 编译一个模块，返回编译结果留下的字节数。编译不过的形状说明夹具写错了。
+    fn retained(wasm: &[u8]) -> usize {
+        let declared = declaration(&[], &[Hook::Input]);
+        let before = counting::net();
+        let module = compile(wasm, declared).expect("adversarial module compiles");
+        let retained = counting::net() - before;
+        drop(module);
+        retained.max(0) as usize
     }
 }
 

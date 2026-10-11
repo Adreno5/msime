@@ -746,7 +746,7 @@ fn load_directory_with(directory: &Path, data_files: DataFiles) -> Result<Plugin
                 AudioLimits::NONE,
             )
         }
-        // 模块按数据文件登记，走同一份文件检查（存在、1 字节到 1 MiB、扩展名 `.wasm`）；内容等文件检查过之后再读。
+        // 模块按数据文件登记，走同一份文件检查（存在、1 字节到 256 KiB、扩展名 `.wasm`）；内容等文件检查过之后再读。
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
