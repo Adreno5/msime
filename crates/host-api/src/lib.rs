@@ -699,29 +699,30 @@ impl HostSession {
         Ok(fallback)
     }
 
-    /// 输入框获得焦点时，让 `/` 指令表、K 模式短语表、辅助码表和 `@` 名单跟上插件目录：设置页可能刚导入了表或改了名单。没有文件变动时什么都不读。
-    fn refresh_plugin_tables(&mut self) -> Result<(), String> {
+    /// 输入框获得焦点时，让 `/` 指令表、K 模式短语表、辅助码表和 `@` 名单跟上插件目录：设置页可能刚导入了表或改了名单。没有文件变动时什么都不读。换表失败只报告，不让聚焦失败。
+    fn refresh_plugin_tables(&mut self) {
         let root = self.plugin_roots.installed.as_deref();
         let tables = plugin_tables::PluginTables::stamp(root, &self.options, &self.applied.plugins);
+        // 指令表、`@` 名单和短语表换不上也不算聚焦失败。这三个 setter 都是先把表交给 Engine，再刷新打开着的那个模式的列表；除了代次耗尽（那时随后的 `runtime.focus` 同样失败），报错只来自这次刷新，典型是 K 模式开着而数据库短语查不了。此时 Engine 已经用上新表，所以照样记进 `options`（重建的 Engine 从这里开始），戳也照常更新；把错误往上抛会让这次和之后每一次聚焦都失败（戳没更新，下次又会重试）。
         if tables.commands_differ(&self.plugin_tables) {
             let table = tables.command_table(root);
-            self.runtime
-                .set_command_table(&table)
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = self.runtime.set_command_table(&table) {
+                diagnostics::report("command table view not refreshed", &error.to_string());
+            }
             self.options.command_table = table;
         }
         if tables.mentions_differ(&self.plugin_tables) {
             let entries = tables.mention_entries(root, &self.options);
-            self.runtime
-                .set_mention_entries(&entries)
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = self.runtime.set_mention_entries(&entries) {
+                diagnostics::report("mention list view not refreshed", &error.to_string());
+            }
             self.options.mention_entries = entries;
         }
         if tables.phrases_differ(&self.plugin_tables) {
             let table = tables.quick_phrase_table(root);
-            self.runtime
-                .set_quick_phrase_table(&table)
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = self.runtime.set_quick_phrase_table(&table) {
+                diagnostics::report("quick phrase view not refreshed", &error.to_string());
+            }
             self.options.quick_phrase_table = table;
         }
         if tables.helpcode_differs(&self.plugin_tables) {
@@ -735,7 +736,6 @@ impl HostSession {
             }
         }
         self.plugin_tables = tables;
-        Ok(())
     }
 
     /// 输入框获得焦点时，看设置应用是否在会话打开后装好（或移除）了日文、粤拼、注音、笔画的资源包和落定重排模型：只做几次 stat。词典路径有变就记下，等输入空闲时由 `apply_pending` 重建 Engine（重建时日文临时模式的开关按新路径重新判断）；落定重排模型的文件有变就起一个后台线程加载它（经 `sentence_model_settled` 的共享缓存），加载完之后由某次输入空闲的 `apply_pending` 换上。聚焦本身不读词典也不读模型文件。
