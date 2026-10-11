@@ -2,6 +2,8 @@ package app.msime.android.home;
 
 import android.content.Context;
 import android.os.Bundle;
+import android.text.InputType;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import androidx.annotation.Nullable;
 import app.msime.android.AndroidLocalSettings;
@@ -9,13 +11,21 @@ import app.msime.android.DoubaoAsrPolicy;
 import app.msime.android.NativeClient;
 import app.msime.android.ResourcePackService;
 import app.msime.android.ResourcePacks;
+import app.msime.android.TextPolicy;
 import app.msime.android.VoiceConfiguration;
+import app.msime.android.VoiceProviderPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * 语音输入页：识别语言、自动添加标点、离线识别、启动方式，以及隐私组的「上传语音以改进识别」。
+ * 语音输入页：识别服务及其密钥，识别语言、自动添加标点、离线识别、启动方式，以及隐私组的「上传语音以改进识别」。
+ *
+ * <p>识别服务写共享偏好的 `voice_input.asr_provider`，密钥、接口和模型写同一对象里的 `asr_token` / `asr_tokens`、`asr_app_key`、`doubao_auth_mode`、`asr_endpoint`、`asr_model`、`asr_resource_id`，键盘经共享解析读它们，这里不另存一份。切换服务和凭据分槽的规则在 {@link VoiceProviderPolicy}。密钥只在本机：设置同步只带识别语言。
  *
  * <p>键盘读同一批存储：语言是共享偏好的 `voice_input.language`（普通话 `zh-cn`、粤语 `yue`、英语 `en`、普通话 + 英语 `auto`）；自动标点绑定已有的 `voice_input.doubao_enable_punc`，只有豆包识别支持，其他识别器下置灰并写明原因；离线识别只有 Android 有，在 {@link AndroidLocalSettings} 的 `platform.android.voice_offline_fallback`；启动方式没有自己的字段，由本地设置的长按空格（`platform.android.space_voice`）和共享偏好的 `touch_voice_shortcut` 联合派生，选择时两个一起写。
  *
@@ -36,9 +46,10 @@ public final class VoicePage extends DetailPage {
      *
      * @param runtimeReady 本地语音运行库已可用：安装包自带，或 voice-runtime 资源包已装好
      * @param runtimePack 共享层列出的 voice-runtime 资源包（状态和下载大小），读不出来时为 null
+     * @param resolvedProvider 共享解析给出的识别服务，没有可用配置（键盘用系统识别）时为 null
      */
     private record State(JSONObject preferences, AndroidLocalSettings.Snapshot local, boolean punctuationSupported,
-            boolean runtimeReady, @Nullable ResourcePacks.Pack runtimePack) {}
+            boolean runtimeReady, @Nullable ResourcePacks.Pack runtimePack, @Nullable String resolvedProvider) {}
 
     @Nullable private LinearLayout column;
     @Nullable private GroupCard.Row contributeRow;
@@ -80,7 +91,7 @@ public final class VoicePage extends DetailPage {
         ResourcePacks.Pack runtime = ResourcePacks.pack(context.getFilesDir(), ResourcePacks.VOICE_RUNTIME);
         boolean runtimeReady = (runtime != null && runtime.installed()) || bundledRuntime();
         return new State(preferences, AndroidLocalSettings.load(context),
-            DoubaoAsrPolicy.PROVIDER.equals(configuration.provider()), runtimeReady, runtime);
+            DoubaoAsrPolicy.PROVIDER.equals(configuration.provider()), runtimeReady, runtime, configuration.provider());
     }
 
     /** 安装包自带语音运行库：按名字能载入。没带时载入失败，按需下载的资源包补上它。 */
@@ -105,6 +116,8 @@ public final class VoicePage extends DetailPage {
         AndroidLocalSettings.Snapshot local = state.local();
         JSONObject voice = preferences.optJSONObject("voice_input");
         if (voice == null) voice = new JSONObject();
+
+        serviceGroup(target, voice, state);
 
         GroupCard recognition = GroupCard.add(target, "识别");
         String language = InputViewValuePolicy.textOr(voice, "language", "");
@@ -137,6 +150,171 @@ public final class VoicePage extends DetailPage {
         boolean contribute = local.bool(AndroidLocalSettings.VOICE_CONTRIBUTE_AUDIO);
         contributeRow = privacy.toggle("上传语音以改进识别", "语音片段匿名处理，可随时关闭", contribute,
             this::onContributeChanged);
+    }
+
+    /** 「识别服务」组：服务选择，选了联网服务时再列出它要的密钥和可改的接口、模型。 */
+    private void serviceGroup(LinearLayout target, JSONObject voice, State state) {
+        String provider = InputViewValuePolicy.textOr(voice, "asr_provider", "");
+        GroupCard service = GroupCard.add(target, "识别服务");
+        service.nav("识别服务", VoiceProviderPolicy.status(provider, state.resolvedProvider()),
+            VoiceProviderPolicy.label(provider), () -> pickProvider(provider));
+        if (!VoiceProviderPolicy.network(provider)) return;
+
+        String box = InputViewValuePolicy.textOr(voice, "asr_token", "").trim();
+        JSONObject slots = voice.optJSONObject("asr_tokens");
+        boolean hasToken = !box.isEmpty() || (slots != null && !slots.optString(provider, "").trim().isEmpty());
+        String endpoint = InputViewValuePolicy.textOr(voice, "asr_endpoint", "").trim();
+        if (DoubaoAsrPolicy.isStreaming(provider)) {
+            boolean legacy = VoiceProviderPolicy.legacyAuth(InputViewValuePolicy.textOr(voice, "doubao_auth_mode", ""));
+            service.nav("鉴权方式", null, legacy ? "App ID + Access Token" : "API Key", () -> pickAuthMode(legacy));
+            if (legacy) {
+                String appId = InputViewValuePolicy.textOr(voice, "asr_app_key", "").trim();
+                service.nav("App ID", null, appId.isEmpty() ? "未设置" : "已设置",
+                    () -> editAppId(provider, appId));
+            }
+            String tokenTitle = legacy ? "Access Token" : "API Key";
+            service.nav(tokenTitle, null, hasToken ? "已设置" : "未设置", () -> editToken(provider, tokenTitle));
+            service.nav("识别接口", VoiceProviderPolicy.endpointProblem(provider, endpoint),
+                VoiceProviderPolicy.doubaoEndpointLabel(endpoint), () -> pickDoubaoEndpoint(provider, endpoint));
+            String resource = InputViewValuePolicy.textOr(voice, "asr_resource_id", "").trim();
+            service.nav("资源 ID", null, resource.isEmpty() ? "默认" : shorten(resource), () -> editText("资源 ID",
+                "火山引擎控制台里开通的识别资源；留空使用 volc.seedasr.sauc.duration", resource,
+                value -> saveVoice("asr_resource_id", value)));
+            service.footer("在火山引擎控制台开通豆包流式语音识别后获取密钥。密钥只保存在本机，不随设置同步。");
+            return;
+        }
+        service.nav("API Key", null, hasToken ? "已设置" : "未设置", () -> editToken(provider, "API Key"));
+        String model = InputViewValuePolicy.textOr(voice, "asr_model", "").trim();
+        service.nav("模型", null, model.isEmpty() ? "默认" : shorten(model), () -> editText("模型",
+            "留空使用该服务的默认识别模型", model, value -> saveVoice("asr_model", value)));
+        String problem = VoiceProviderPolicy.endpointProblem(provider, endpoint);
+        service.nav("接口地址", problem, endpoint.isEmpty() ? "默认" : shorten(endpoint),
+            () -> editEndpoint(provider, endpoint));
+        service.footer("说完后录音上传到所选服务识别。API Key 只保存在本机，不随设置同步。");
+    }
+
+    private void pickProvider(String selected) {
+        OptionSheet sheet = new OptionSheet(requireContext(), "识别服务", null);
+        String current = selected.isEmpty() ? VoiceProviderPolicy.SYSTEM : selected;
+        for (String provider : VoiceProviderPolicy.PROVIDERS) {
+            sheet.option(VoiceProviderPolicy.label(provider), provider.equals(current), () -> {
+                if (!provider.equals(current)) saveProvider(provider);
+            });
+        }
+        sheet.show();
+    }
+
+    /** 换服务：凭据按 {@link VoiceProviderPolicy#switchTokens} 换槽，接口和模型清空交给共享层补默认值。 */
+    private void saveProvider(String provider) {
+        save(preferences -> {
+            JSONObject voice = KeyboardSheets.child(preferences, "voice_input");
+            String from = InputViewValuePolicy.textOr(voice, "asr_provider", "");
+            if (provider.equals(from)) return;
+            VoiceProviderPolicy.Tokens tokens = VoiceProviderPolicy.switchTokens(from, provider,
+                InputViewValuePolicy.textOr(voice, "asr_token", ""), slots(voice.optJSONObject("asr_tokens")));
+            voice.put("asr_provider", provider);
+            voice.put("asr_token", tokens.token());
+            JSONObject next = new JSONObject();
+            for (Map.Entry<String, String> entry : tokens.tokens().entrySet()) next.put(entry.getKey(), entry.getValue());
+            voice.put("asr_tokens", next);
+            voice.put("asr_endpoint", "");
+            voice.put("asr_model", "");
+        });
+    }
+
+    private void pickAuthMode(boolean legacy) {
+        OptionSheet sheet = new OptionSheet(requireContext(), "鉴权方式", "以火山引擎控制台给出的凭据类型为准");
+        sheet.option("API Key（新版控制台）", !legacy,
+            () -> saveVoice("doubao_auth_mode", VoiceProviderPolicy.AUTH_API_KEY));
+        sheet.option("App ID + Access Token（旧版控制台）", legacy,
+            () -> saveVoice("doubao_auth_mode", VoiceProviderPolicy.AUTH_LEGACY));
+        sheet.show();
+    }
+
+    private void pickDoubaoEndpoint(String provider, String endpoint) {
+        String label = VoiceProviderPolicy.doubaoEndpointLabel(endpoint);
+        OptionSheet sheet = new OptionSheet(requireContext(), "识别接口", null);
+        sheet.option("整句流式（准确率更高）", "整句流式".equals(label),
+            () -> saveVoice("asr_endpoint", VoiceProviderPolicy.DOUBAO_NOSTREAM));
+        sheet.option("双向流式（增量结果）", "双向流式".equals(label),
+            () -> saveVoice("asr_endpoint", VoiceProviderPolicy.DOUBAO_ASYNC));
+        sheet.option("自定义地址…", "自定义地址".equals(label), () -> editEndpoint(provider, endpoint));
+        sheet.show();
+    }
+
+    /** 密钥框不回显旧值；留空删除这个服务的密钥（当前框和它的槽一起清）。确认时服务已被键盘或别的页面换掉就不写。 */
+    private void editToken(String provider, String title) {
+        InputDialog dialog = new InputDialog(requireContext(), title,
+            VoiceProviderPolicy.label(provider) + " 的" + title + "，只保存在本机");
+        EditText field = dialog.addField("留空表示删除", "",
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        dialog.setValidator(values -> {
+            boolean valid = VoiceProviderPolicy.validCredential(provider, values.get(0));
+            field.setError(valid ? null : "含有不能用的字符");
+            return valid;
+        });
+        dialog.setPrimary("保存", values -> save(preferences -> {
+            JSONObject voice = KeyboardSheets.child(preferences, "voice_input");
+            if (!provider.equals(InputViewValuePolicy.textOr(voice, "asr_provider", "")))
+                throw new JSONException("provider changed");
+            voice.put("asr_token", values.get(0).trim());
+            KeyboardSheets.child(voice, "asr_tokens").remove(provider);
+        }));
+        dialog.show();
+    }
+
+    private void editAppId(String provider, String current) {
+        InputDialog dialog = new InputDialog(requireContext(), "App ID", "火山引擎控制台里应用的 App ID");
+        EditText field = dialog.addField("App ID", current, InputType.TYPE_CLASS_TEXT);
+        dialog.setValidator(values -> {
+            boolean valid = VoiceProviderPolicy.validCredential(provider, values.get(0));
+            field.setError(valid ? null : "含有不能用的字符");
+            return valid;
+        });
+        dialog.setPrimary("保存", values -> saveVoice("asr_app_key", values.get(0).trim()));
+        dialog.show();
+    }
+
+    private void editEndpoint(String provider, String current) {
+        boolean streaming = DoubaoAsrPolicy.isStreaming(provider);
+        InputDialog dialog = new InputDialog(requireContext(), "接口地址",
+            streaming ? "豆包流式识别的 wss:// 地址" : "留空使用该服务的默认地址；代理或专属地址填完整的 https:// 地址");
+        EditText field = dialog.addField(streaming ? "wss://" : "https://", current,
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        dialog.setValidator(values -> {
+            String problem = VoiceProviderPolicy.endpointProblem(provider, values.get(0));
+            field.setError(problem);
+            return problem == null;
+        });
+        dialog.setPrimary("保存", values -> saveVoice("asr_endpoint", values.get(0).trim()));
+        dialog.show();
+    }
+
+    private interface TextAction {
+        void accept(String value);
+    }
+
+    private void editText(String title, String message, String current, TextAction save) {
+        InputDialog dialog = new InputDialog(requireContext(), title, message);
+        dialog.addField(title, current, InputType.TYPE_CLASS_TEXT);
+        dialog.setValidator(values -> !TextPolicy.hasControl(values.get(0)));
+        dialog.setPrimary("保存", values -> save.accept(values.get(0).trim()));
+        dialog.show();
+    }
+
+    private static Map<String, String> slots(@Nullable JSONObject value) {
+        Map<String, String> slots = new LinkedHashMap<>();
+        if (value == null) return slots;
+        for (Iterator<String> keys = value.keys(); keys.hasNext(); ) {
+            String key = keys.next();
+            Object token = value.opt(key);
+            if (token instanceof String text) slots.put(key, text);
+        }
+        return slots;
+    }
+
+    private static String shorten(String value) {
+        return value.length() <= 24 ? value : value.substring(0, 23) + "…";
     }
 
     private void pickLanguage(String selected, GroupCard.Row row) {
