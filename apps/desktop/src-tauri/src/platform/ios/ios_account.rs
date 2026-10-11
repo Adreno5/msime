@@ -77,6 +77,19 @@ impl<R: Runtime> AccountSessionStorage for IosAccountStorage<R> {
             .clear_account_session()
             .map_err(|_| AccountError::Storage)
     }
+
+    /// 云剪贴板密钥串与账号会话在同一个钥匙串访问组里，退出登录时由 `clearSession` 一并删除。
+    fn load_clipboard_keystore(&self) -> Result<Option<String>, AccountError> {
+        self.0
+            .load_cloud_clipboard_keystore()
+            .map_err(|_| AccountError::Storage)
+    }
+
+    fn save_clipboard_keystore(&self, value: &str) -> Result<(), AccountError> {
+        self.0
+            .save_cloud_clipboard_keystore(value)
+            .map_err(|_| AccountError::Storage)
+    }
 }
 
 #[cfg(target_os = "ios")]

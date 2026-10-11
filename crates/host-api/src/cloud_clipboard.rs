@@ -1,9 +1,11 @@
 //! Cloud clipboard requests: the shape every host accepts ([`validate_request`]) and the account-backed answer ([`account_request`]).
 
-use msime_client_core::account::{AccountApi, AccountSessionStorage, BackendAccountSession};
+use msime_client_core::account::{
+    AccountApi, AccountClipboardError, AccountError, AccountSessionStorage, BackendAccountSession,
+};
 use msime_client_core::{
     has_disallowed_control_with_options, is_bounded_ascii_identifier, is_bounded_text,
-    is_bounded_utf16,
+    is_bounded_utf16, is_lower_hex,
 };
 use serde_json::{json, Value};
 
@@ -45,12 +47,24 @@ pub fn validate_request(request: &Value) -> Result<(), &'static str> {
                 return Err("invalid cloud clipboard request");
             }
         }
+        // 端到端加密的设备管理，见 `docs/cloud-clipboard-e2e.md` 的「共享面板的动作」。
+        "devices" | "reset" => {}
+        "approve" | "reject" | "remove" => {
+            let device_id = request
+                .get("device_id")
+                .and_then(Value::as_str)
+                .ok_or("invalid cloud clipboard request")?;
+            // 设备编号是公钥 SHA-256 的前 16 字节，小写十六进制。
+            if !is_lower_hex(device_id, 32) {
+                return Err("invalid cloud clipboard request");
+            }
+        }
         _ => return Err("invalid cloud clipboard request"),
     }
     Ok(())
 }
 
-/// One cloud clipboard action answered through the account session, the same `list`, `set_enabled`, `add` and `delete` the 云剪贴板 panel sends. Blocks on the network, so callers run it off their UI thread. The Tauri shells pass the session their `AccountState` holds; the native Windows settings window (`msime_client_account_cloud_clipboard`) passes one over the signed-in session file the shell writes. An action that is not one of the four, or lacks its field, is `invalid_cloud_clipboard` and never reaches the backend; a failed call is the account error's code, `account_unauthorized` when no one is signed in.
+/// One cloud clipboard action answered through the account session: the `list`, `set_enabled`, `add` and `delete` the 云剪贴板 panel sends, plus the device management of end-to-end encryption (`devices`, `approve`, `reject`, `remove`, `reset`, see `docs/cloud-clipboard-e2e.md`). Blocks on the network, so callers run it off their UI thread. The Tauri shells pass the session their `AccountState` holds; the native Windows settings window (`msime_client_account_cloud_clipboard`) passes one over the signed-in session file the shell writes. An action that is not one of these, or lacks its field, is `invalid_cloud_clipboard` and never reaches the backend; a failed call is the account error's code, `account_unauthorized` when no one is signed in, or the driver's code (for example `clipboard_device_pending`).
 pub fn account_request<A: AccountApi, S: AccountSessionStorage>(
     session: &BackendAccountSession<A, S>,
     action: &Value,
@@ -60,13 +74,14 @@ pub fn account_request<A: AccountApi, S: AccountSessionStorage>(
         .get("operation")
         .and_then(Value::as_str)
         .ok_or(INVALID)?;
-    let result = match operation {
+    let field = |name: &str| action.get(name).and_then(Value::as_str).ok_or(INVALID);
+    match operation {
         "list" => {
             let search = action
                 .get("search")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            session.clipboard(search).and_then(account_value)
+            clipboard_value(session.clipboard(search))
         }
         "set_enabled" => {
             let enabled = action
@@ -76,25 +91,28 @@ pub fn account_request<A: AccountApi, S: AccountSessionStorage>(
             session
                 .set_clipboard_enabled(enabled)
                 .map(|()| json!({ "enabled": enabled }))
+                .map_err(|error| error.code())
         }
-        "add" => {
-            let text = action.get("text").and_then(Value::as_str).ok_or(INVALID)?;
-            session.add_clipboard(text).and_then(account_value)
-        }
-        "delete" => {
-            let id = action.get("id").and_then(Value::as_str).ok_or(INVALID)?;
-            session.delete_clipboard(Some(id)).map(|()| json!({}))
-        }
-        _ => return Err(INVALID),
-    };
-    result.map_err(|error| error.code())
+        "add" => clipboard_value(session.add_clipboard(field("text")?)),
+        "delete" => session
+            .delete_clipboard(Some(field("id")?))
+            .map(|()| json!({}))
+            .map_err(|error| error.code()),
+        "devices" => clipboard_value(session.clipboard_devices()),
+        "approve" => clipboard_value(session.approve_clipboard_device(field("device_id")?)),
+        "reject" => clipboard_value(session.reject_clipboard_device(field("device_id")?)),
+        "remove" => clipboard_value(session.remove_clipboard_device(field("device_id")?)),
+        "reset" => clipboard_value(session.reset_clipboard()),
+        _ => Err(INVALID),
+    }
 }
 
-/// A response that cannot be serialized is reported as the service being unavailable, the code the pages already handle for a failed call.
-fn account_value<T: serde::Serialize>(
-    value: T,
-) -> Result<Value, msime_client_core::account::AccountError> {
-    serde_json::to_value(value).map_err(|_| msime_client_core::account::AccountError::Unavailable)
+/// 经端到端加密驱动的结果交给页面；驱动或账号的错误换成页面认得的错误码，序列化不了按服务不可用处理。
+fn clipboard_value<T: serde::Serialize>(
+    result: Result<T, AccountClipboardError>,
+) -> Result<Value, &'static str> {
+    let value = result.map_err(|error| error.code())?;
+    serde_json::to_value(value).map_err(|_| AccountError::Unavailable.code())
 }
 
 #[cfg(test)]
@@ -117,6 +135,30 @@ mod tests {
     }
 
     #[test]
+    fn accepts_device_management_with_a_well_formed_device_id() {
+        let id = "0123456789abcdef".repeat(2);
+        assert!(validate_request(&json!({"operation":"devices"})).is_ok());
+        assert!(validate_request(&json!({"operation":"reset"})).is_ok());
+        for operation in ["approve", "reject", "remove"] {
+            assert!(validate_request(&json!({"operation":operation,"device_id":id})).is_ok());
+            assert!(validate_request(&json!({"operation":operation})).is_err());
+            for bad in [
+                id.to_uppercase(),
+                format!("{id}0"),
+                id[..31].to_owned(),
+                "g".repeat(32),
+                "../".repeat(11)[..32].to_owned(),
+            ] {
+                assert!(
+                    validate_request(&json!({"operation":operation,"device_id":bad})).is_err(),
+                    "{operation} {bad}"
+                );
+            }
+            assert!(validate_request(&json!({"operation":operation,"device_id":32})).is_err());
+        }
+    }
+
+    #[test]
     fn rejects_unsafe_or_unknown_requests() {
         assert!(validate_request(&json!({"operation":"list","search":"bad\n"})).is_err());
         assert!(validate_request(&json!({"operation":"add","text":"bad\u{0007}"})).is_err());
@@ -127,10 +169,10 @@ mod tests {
     mod account {
         use super::super::account_request;
         use msime_client_core::account::{
-            AccountApi, AccountChallenge, AccountClipboardItem, AccountClipboardPage, AccountError,
-            AccountProfile, AccountSessionStorage, AccountTokens, AccountUser,
-            BackendAccountSession, SavedAccountSession,
+            AccountApi, AccountChallenge, AccountError, AccountProfile, AccountSessionStorage,
+            AccountTokens, AccountUser, BackendAccountSession, SavedAccountSession,
         };
+        use msime_client_core::cloud::clipboard_e2e::{HttpRequest, HttpResponse};
         use serde_json::json;
         use std::sync::{Arc, Mutex};
 
@@ -175,15 +217,18 @@ mod tests {
             fn delete_account(&self, _: &str) -> Result<(), AccountError> {
                 unreachable!("delete_account")
             }
-            fn clipboard(
+            /// 云剪贴板关着的账号：驱动先取密钥状态，看到 `enabled: false` 就停下，列表答「已关闭」，上传和设备操作答 `clipboard_sync_disabled`。
+            fn clipboard_e2e(
                 &self,
-                search: &str,
+                request: &HttpRequest,
                 token: &str,
-            ) -> Result<AccountClipboardPage, AccountError> {
-                self.record(format!("list:{search}"), token);
-                Ok(AccountClipboardPage {
-                    enabled: false,
-                    items: vec![item("synthetic-1", "合成文本")],
+            ) -> Result<HttpResponse, AccountError> {
+                let path = request.path.split('?').next().unwrap_or_default();
+                self.record(format!("{} {path}", request.method), token);
+                Ok(HttpResponse {
+                    status: 200,
+                    body: json!({ "enabled": false, "key_id": null, "wrap": null, "devices": [] })
+                        .to_string(),
                 })
             }
             fn set_clipboard_enabled(
@@ -193,14 +238,6 @@ mod tests {
             ) -> Result<(), AccountError> {
                 self.record(format!("set_enabled:{enabled}"), token);
                 Ok(())
-            }
-            fn add_clipboard(
-                &self,
-                text: &str,
-                token: &str,
-            ) -> Result<AccountClipboardItem, AccountError> {
-                self.record(format!("add:{text}"), token);
-                Ok(item("synthetic-2", text))
             }
             fn delete_clipboard(&self, id: Option<&str>, token: &str) -> Result<(), AccountError> {
                 self.record(format!("delete:{}", id.unwrap_or("*")), token);
@@ -220,13 +257,11 @@ mod tests {
             fn clear(&self) -> Result<(), AccountError> {
                 Ok(())
             }
-        }
-
-        fn item(id: &str, text: &str) -> AccountClipboardItem {
-            AccountClipboardItem {
-                id: id.into(),
-                text: text.into(),
-                updated_at: "2026-01-01T00:00:00Z".into(),
+            fn load_clipboard_keystore(&self) -> Result<Option<String>, AccountError> {
+                Ok(None)
+            }
+            fn save_clipboard_keystore(&self, _: &str) -> Result<(), AccountError> {
+                Ok(())
             }
         }
 
@@ -270,17 +305,21 @@ mod tests {
         #[test]
         fn each_operation_reaches_its_backend_call_and_answers_what_the_page_reads() {
             let (session, calls) = session(signed_in());
+            let list = account_request(&session, &json!({ "operation": "list", "search": "合成" }))
+                .unwrap();
+            assert_eq!(list["enabled"], false);
+            assert_eq!(list["items"], json!([]));
+            assert_eq!(list["e2e"]["status"], "disabled");
             assert_eq!(
-                account_request(&session, &json!({ "operation": "list", "search": "合成" })),
-                Ok(json!({
-                    "enabled": false,
-                    "items": [{ "id": "synthetic-1", "text": "合成文本", "updated_at": "2026-01-01T00:00:00Z" }],
-                }))
+                account_request(&session, &json!({ "operation": "add", "text": "合成上传" })),
+                Err("clipboard_sync_disabled")
             );
-            let added =
-                account_request(&session, &json!({ "operation": "add", "text": "合成上传" }))
-                    .unwrap();
-            assert_eq!(added["id"], "synthetic-2");
+            let devices = account_request(&session, &json!({ "operation": "devices" })).unwrap();
+            assert_eq!(devices["status"], "disabled");
+            assert_eq!(
+                account_request(&session, &json!({ "operation": "reset" })),
+                Err("clipboard_sync_disabled")
+            );
             assert_eq!(
                 account_request(
                     &session,
@@ -298,8 +337,10 @@ mod tests {
             assert_eq!(
                 *calls.lock().unwrap(),
                 [
-                    "list:合成",
-                    "add:合成上传",
+                    "GET /v1/users/me/clipboard/keys",
+                    "GET /v1/users/me/clipboard/keys",
+                    "GET /v1/users/me/clipboard/keys",
+                    "GET /v1/users/me/clipboard/keys",
                     "delete:synthetic-1",
                     "set_enabled:true"
                 ]
@@ -318,6 +359,7 @@ mod tests {
                 json!({}),
                 json!({ "operation": "clear" }),
                 json!({ "operation": "add" }),
+                json!({ "operation": "approve" }),
                 json!({ "operation": "set_enabled", "enabled": "yes" }),
             ] {
                 assert_eq!(

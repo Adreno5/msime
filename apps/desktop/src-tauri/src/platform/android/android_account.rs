@@ -53,6 +53,13 @@ fn valid_secure_session(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_SECURE_SESSION_BYTES
 }
 
+/// 密钥串约 130 个字符，与桌面端文件的上限相同。
+const MAX_CLIPBOARD_KEYSTORE_BYTES: usize = 4096;
+
+fn valid_clipboard_keystore(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_CLIPBOARD_KEYSTORE_BYTES
+}
+
 #[derive(Deserialize)]
 struct LoadResponse {
     value: Option<String>,
@@ -130,6 +137,33 @@ impl<R: Runtime> AccountSessionStorage for AndroidAccountStorage<R> {
     fn clear(&self) -> Result<(), AccountError> {
         self.0
             .run_mobile_plugin::<()>("clearSession", ())
+            .map_err(|_| AccountError::Storage)
+    }
+
+    /// 云剪贴板密钥串由原生插件存放在应用私有目录、经 AndroidKeyStore 加密，主进程、`:ime` 进程和这里共用一份；退出登录时由 `clearSession` 一并删除。
+    fn load_clipboard_keystore(&self) -> Result<Option<String>, AccountError> {
+        let response = self
+            .0
+            .run_mobile_plugin::<LoadResponse>("loadCloudClipboardKeystore", ())
+            .map_err(|_| AccountError::Storage)?;
+        response
+            .value
+            .map(|value| {
+                if valid_clipboard_keystore(&value) {
+                    Ok(value)
+                } else {
+                    Err(AccountError::Storage)
+                }
+            })
+            .transpose()
+    }
+
+    fn save_clipboard_keystore(&self, value: &str) -> Result<(), AccountError> {
+        if !valid_clipboard_keystore(value) {
+            return Err(AccountError::Storage);
+        }
+        self.0
+            .run_mobile_plugin::<()>("saveCloudClipboardKeystore", SaveRequest { value })
             .map_err(|_| AccountError::Storage)
     }
 }
