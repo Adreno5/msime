@@ -159,6 +159,104 @@ pub struct Transition {
     pub view: View,
 }
 
+/// 用户是经哪条路径选中候选的。
+///
+/// 每个取值对应 `Runtime::dispatch` 里一处把候选交给引擎的调用点。bare 的 `/`、`@` 前缀按标点或原样结束、注音把空格当拼写符号、候选为空时的 `SelectHighlighted`（笔画、藏文上屏方案自己的文本）都不是选择，不在这里。判别值是将来脚本 ABI 的一部分，只能追加，不能改号。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SelectionHow {
+    /// `Action::Finish`：从高亮行结束组字。
+    Finish = 0,
+    /// 标点结束组字，`punctuation` 和 `punctuation_ascii` 两条路由都算；标点本身记在 `DispatchFacts::tail_chars` 里。
+    PunctuationFinish = 1,
+    /// 五笔四码之后再打一个字母，顶出首选。
+    WubiTop = 2,
+    /// 引擎交还的空格落在打开的候选列表上，选高亮行。
+    SpaceOverList = 3,
+    /// 数字键选当前页的一格。
+    Digit = 4,
+    /// 14 键的原样上屏：组码不是可上屏的字母，从高亮行结束组字。
+    GridRaw = 5,
+    /// `Action::Select`，即点选当前页的一行。
+    Select = 6,
+    /// `Action::SelectAnyCandidate`，从完整列表里点选。
+    AnyCandidate = 7,
+    /// `Action::SelectEdge`，以词定字取首字或尾字。
+    Edge = 8,
+    /// `Action::SelectHighlighted` 在有候选时选高亮行，包括韩文汉字列表的确认。
+    Highlighted = 9,
+    /// 五笔唯一四码在第四键自动上屏。
+    WubiAuto = 10,
+}
+
+/// 选中之后发生了什么。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SelectionOutcome {
+    /// 选中的文本上屏，组字随之结束（顶字时下一段组字是新的一段，也算这一类）。
+    Committed = 0,
+    /// 选中的词段暂存在 `View::phrase_prefix` 里，等整个词组完成再上屏。
+    Held = 1,
+    /// 整句改字里钉住一段，不上屏。
+    Pinned = 2,
+    /// 选中的文本已上屏，但它只用掉了一部分读音，其余仍在组字。
+    Partial = 3,
+}
+
+/// 一次派发里被选中的候选。只有候选文本和引擎的上屏能对上时才会记录。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionFact {
+    /// 候选在呈现顺序里的座位（整个列表的下标，不是页内下标），即宿主看到的 `Candidate::id.index`。
+    pub seat: u32,
+    /// 这个座位上候选的来源，同 `Candidate::source`。
+    pub source: u8,
+    pub how: SelectionHow,
+    pub outcome: SelectionOutcome,
+}
+
+/// 撤回暂存词组里最近一次选择的方式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SelectionRetraction {
+    /// 退格：把这次选择用掉的读音还回来。
+    Restore = 0,
+    /// Ctrl+退格：删掉这一段，读音不还。
+    Drop = 1,
+}
+
+/// 最近一次 `Runtime::dispatch` 或 `Runtime::focus` 里"发生了什么"。
+///
+/// 这是 `Transition` 的旁路：`Transition` 和它的 JSON 是所有宿主共用的契约，生命周期核心需要的额外事实不往里加，而是在调用返回后经 `Runtime::facts()` 读取。每次进入 `dispatch` 和 `focus` 时整体重置，所以读到的永远只属于上一次调用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DispatchFacts {
+    /// 本次选中的候选；没有选择、或者选择没能和上屏对上时为 `None`。
+    pub selection: Option<SelectionFact>,
+    /// 本次撤回了暂存词组里的一次选择。
+    pub retracted: Option<SelectionRetraction>,
+    /// 本次有文本进了暂存词段。普通字符键也可能让它变长，所以它本身不代表"已选择"。
+    pub held_grew: bool,
+    /// 暂存的词段随本次上屏一起送出（结束组字、标点、失焦）。被 Esc 丢掉时为假。
+    pub held_flushed: bool,
+    /// 本次上屏是原样上屏的读音（`Command::CommitRaw`，以及 bare 的 `/`、`@` 前缀），不是选词。
+    pub raw: bool,
+    /// 上屏文本末尾有几个字符（Unicode 标量）是接在选中文本后面的尾巴：结束组字的标点、顶字时打出的那个键。从末尾数，所以前面拼上暂存段不影响它；按字符数而不是字节数记，所以全角转换之后仍然切在同一处。
+    pub tail_chars: u32,
+}
+
+impl DispatchFacts {
+    /// 按 `tail_chars` 把上屏文本切成 body 和 tail。`commit` 可以是宿主做过逐字符转换（全角）之后的文本。
+    pub fn split_commit<'a>(&self, commit: &'a str) -> (&'a str, &'a str) {
+        let tail = self.tail_chars as usize;
+        if tail == 0 {
+            return (commit, "");
+        }
+        match commit.char_indices().rev().nth(tail - 1) {
+            Some((index, _)) => commit.split_at(index),
+            None => ("", commit),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AiAssistantProviderConfig {
     #[serde(default)]

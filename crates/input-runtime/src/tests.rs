@@ -7659,3 +7659,5 @@ fn the_reranker_never_weighs_ai_rows_or_their_placeholder() {
         );
     }
 }
+
+mod facts;

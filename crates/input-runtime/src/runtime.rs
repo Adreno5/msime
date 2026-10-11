@@ -141,6 +141,12 @@ pub struct Runtime<E: InputEngine = Session> {
     pub(crate) settled_reranker: Option<Reranker>,
     /// Whether [`Runtime::rerank_settled`] runs the settled model: the product's desktop sentence model switch. On unless a host turns it off, so a caller that attaches a model and says nothing else gets it.
     pub(crate) settled_rerank_enabled: bool,
+    /// 最近一次 `dispatch` 或 `focus` 的旁路事实，见 [`DispatchFacts`]。
+    pub(crate) facts: DispatchFacts,
+    /// 组字（预编辑、读音、光标、整句改字、暂存词段）每变一次加一。宿主在一次调用前后各读一次，不同就说明组字变了；只看 refresh 里的比较不够，暂存词段不经过引擎快照。
+    pub(crate) composition_epoch: u64,
+    /// 候选视图（列表、注释、来源、高亮、页、释义）每变一次加一。高亮移动和翻页在 refresh 之前就返回，所以单独计数。
+    pub(crate) candidates_epoch: u64,
 }
 
 /// `SchemeType::Korean`: Hangul syllables that compose in the preedit, with no Chinese punctuation; the only candidates are the composing syllable's Hanja, in the Engine's table order, once the host asks for them.
@@ -629,6 +635,9 @@ impl<E: InputEngine> Runtime<E> {
             phrase_preedit: false,
             phrase_prefix: String::new(),
             phrase_selections: Vec::new(),
+            facts: DispatchFacts::default(),
+            composition_epoch: 0,
+            candidates_epoch: 0,
         })
     }
 
@@ -644,6 +653,7 @@ impl<E: InputEngine> Runtime<E> {
             return None;
         }
         self.phrase_selections.clear();
+        self.bump_composition_epoch();
         Some(std::mem::take(&mut self.phrase_prefix))
     }
 
@@ -697,6 +707,7 @@ impl<E: InputEngine> Runtime<E> {
             self.snapshot_valid = true;
             self.highlighted = 0;
             let _ = self.advance();
+            self.bump_candidates_epoch();
         }
         moved
     }
@@ -1004,6 +1015,31 @@ impl<E: InputEngine> Runtime<E> {
             && self.cached.candidates.is_empty()
     }
 
+    /// 是否有组字：暂存词段、预编辑、读音或候选任一非空。
+    ///
+    /// 与 [`Self::is_idle`] 的区别是不看 `snapshot_valid`：一次失败的 refresh 让快照失效，但用户眼里并没有多出一段组字，生命周期核心据此判断组字开始和结束时不能把它算进去。
+    pub fn has_composition(&self) -> bool {
+        !self.phrase_prefix.is_empty()
+            || !self.cached.preedit.is_empty()
+            || !self.cached.editing_text.is_empty()
+            || !self.cached.candidates.is_empty()
+    }
+
+    /// 最近一次 `dispatch` 或 `focus` 里发生了什么，见 [`DispatchFacts`]。
+    pub fn facts(&self) -> DispatchFacts {
+        self.facts
+    }
+
+    /// 组字的单调计数器，见字段说明。只比较相等与否，不解释数值。
+    pub fn composition_epoch(&self) -> u64 {
+        self.composition_epoch
+    }
+
+    /// 候选视图的单调计数器，见字段说明。
+    pub fn candidates_epoch(&self) -> u64 {
+        self.candidates_epoch
+    }
+
     /// The host uses the generation to detect whether a deferred preference
     /// update changed the view after an input action.
     pub fn generation(&self) -> u64 {
@@ -1065,7 +1101,10 @@ impl<E: InputEngine> Runtime<E> {
                     .unwrap_or(false);
             }
         }
+        // 释义画在候选行下面，有变化就是候选视图的变化。
+        let mut changed = false;
         if translations.is_empty() {
+            changed = !self.translations.is_empty();
             self.translations.clear();
         } else {
             let candidates: HashSet<&str> =
@@ -1073,8 +1112,12 @@ impl<E: InputEngine> Runtime<E> {
             self.translations.extend(
                 translations
                     .into_iter()
-                    .filter(|(text, _)| candidates.contains(text.as_str())),
+                    .filter(|(text, _)| candidates.contains(text.as_str()))
+                    .inspect(|_| changed = true),
             );
+        }
+        if changed {
+            self.bump_candidates_epoch();
         }
         true
     }
@@ -1189,6 +1232,7 @@ impl<E: InputEngine> Runtime<E> {
         self.rerank();
         self.demote_runner_up_readings();
         self.normalize_online_slots();
+        self.bump_candidates_epoch();
         Ok(true)
     }
 
@@ -1211,6 +1255,64 @@ impl<E: InputEngine> Runtime<E> {
             .checked_add(1)
             .ok_or(RuntimeError::IdentityExhausted)?;
         Ok(())
+    }
+
+    fn bump_composition_epoch(&mut self) {
+        self.composition_epoch = self.composition_epoch.wrapping_add(1);
+    }
+
+    fn bump_candidates_epoch(&mut self) {
+        self.candidates_epoch = self.candidates_epoch.wrapping_add(1);
+    }
+
+    /// 一次把候选交给引擎的调用是否真的选中了 `seat` 上的候选，用的是引擎调用之前（refresh 之前）的快照。
+    ///
+    /// 只有引擎的上屏带着这个候选时才算：常规路径要求上屏以候选文本开头（结束组字、顶字后面还会接上别的），以词定字要求上屏的首字是候选的首字或尾字。整句改字里、以及注音打开的列表里，点选、数字或空格选中一段只把这段钉住、不上屏，记为钉住；韩文汉字列表也是打开的列表，但它的选择会上屏，走上面的分支。对不上的一律不记，宁可漏报，也不把别的文本说成用户选中的候选。
+    fn selection_fact(
+        &self,
+        how: SelectionHow,
+        seat: usize,
+        result: &EngineResult,
+    ) -> Option<SelectionFact> {
+        let text = self.cached.candidates.get(seat)?;
+        let outcome = if result.has_commit {
+            let matches = if how == SelectionHow::Edge {
+                let first = result.commit.chars().next();
+                first.is_some()
+                    && (first == text.chars().next() || first == text.chars().next_back())
+            } else {
+                !text.is_empty() && result.commit.starts_with(text.as_str())
+            };
+            if !matches {
+                return None;
+            }
+            SelectionOutcome::Committed
+        } else if result.handled
+            && (!self.cached.conversion.is_empty() || self.cached.candidate_list_open)
+            && matches!(
+                how,
+                SelectionHow::Select
+                    | SelectionHow::AnyCandidate
+                    | SelectionHow::Digit
+                    | SelectionHow::Highlighted
+                    | SelectionHow::SpaceOverList
+            )
+        {
+            SelectionOutcome::Pinned
+        } else {
+            return None;
+        };
+        Some(SelectionFact {
+            seat: u32::try_from(seat).unwrap_or(u32::MAX),
+            source: self
+                .cached
+                .candidate_sources
+                .get(seat)
+                .copied()
+                .unwrap_or_default(),
+            how,
+            outcome,
+        })
     }
 
     /// Keep the tail of what was committed, cut on a character boundary, and hand it to the Engine.
@@ -1283,6 +1385,12 @@ impl<E: InputEngine> Runtime<E> {
             .pop()
             .expect("the stack was checked above");
         self.phrase_prefix = selection.word_before;
+        self.bump_composition_epoch();
+        self.facts.retracted = Some(if restore {
+            SelectionRetraction::Restore
+        } else {
+            SelectionRetraction::Drop
+        });
         if !restore {
             // The segment is gone and its spelling with it. The reading is already empty, so the
             // Engine has nothing to say; the view still changes, because the held phrase is
@@ -1345,6 +1453,13 @@ impl<E: InputEngine> Runtime<E> {
             self.phrase_prefix.push_str(&result.commit);
             result.has_commit = false;
             result.commit = String::new();
+            // 暂存分支只说明词段变长了；只有这次确实选中了候选，选择的结果才是"暂存"。上屏被收走，尾巴也就无从谈起。
+            self.facts.held_grew = true;
+            self.facts.tail_chars = 0;
+            if let Some(selection) = self.facts.selection.as_mut() {
+                selection.outcome = SelectionOutcome::Held;
+            }
+            self.bump_composition_epoch();
             return;
         }
         if self.phrase_prefix.is_empty() || composing {
@@ -1356,6 +1471,8 @@ impl<E: InputEngine> Runtime<E> {
         }
         let held = std::mem::take(&mut self.phrase_prefix);
         self.phrase_selections.clear();
+        self.bump_composition_epoch();
+        self.facts.held_flushed = !discard;
         if result.has_commit {
             if !discard {
                 result.commit = held + &result.commit;
@@ -1685,6 +1802,7 @@ impl<E: InputEngine> Runtime<E> {
 
     pub(crate) fn refresh(&mut self) -> Result<(), RuntimeError> {
         self.snapshot_valid = false;
+        let had_translations = !self.translations.is_empty();
         self.translations.clear();
         self.engine_order.clear();
         let previous_highlight = self.highlighted;
@@ -1727,6 +1845,9 @@ impl<E: InputEngine> Runtime<E> {
                     conversion_focus_start: 0,
                     conversion_focus_end: 0,
                 };
+                // 占位快照替换了整个视图，两边都按变了算。
+                self.bump_composition_epoch();
+                self.bump_candidates_epoch();
                 return Err(error);
             }
         };
@@ -1753,10 +1874,36 @@ impl<E: InputEngine> Runtime<E> {
             self.highlighted =
                 previous_highlight.min(self.cached.candidates.len().saturating_sub(1));
         }
+        let cached = &self.cached;
+        if cached.preedit != previous.preedit
+            || cached.editing_text != previous.editing_text
+            || cached.caret_position != previous.caret_position
+            || cached.reading != previous.reading
+            || cached.display_reading != previous.display_reading
+            || cached.conversion != previous.conversion
+            || cached.conversion_focus_start != previous.conversion_focus_start
+            || cached.conversion_focus_end != previous.conversion_focus_end
+        {
+            self.bump_composition_epoch();
+        }
+        let cached = &self.cached;
+        if had_translations
+            || self.highlighted != previous_highlight
+            || cached.candidates != previous.candidates
+            || cached.candidate_codes != previous.candidate_codes
+            || cached.candidate_annotations != previous.candidate_annotations
+            || cached.candidate_sources != previous.candidate_sources
+            || cached.candidate_positions != previous.candidate_positions
+            || cached.candidate_corrected != previous.candidate_corrected
+            || cached.candidate_list_open != previous.candidate_list_open
+        {
+            self.bump_candidates_epoch();
+        }
         Ok(())
     }
 
     pub fn focus(&mut self, focused: bool) -> Result<Transition, RuntimeError> {
+        self.facts = DispatchFacts::default();
         self.advance()?;
         // Invalidate the client before cancellation, including on engine failure.
         self.focused = false;
@@ -1830,11 +1977,14 @@ impl<E: InputEngine> Runtime<E> {
         // Finish through Engine with the host highlight BEFORE asking it to translate.
         // Calling Engine punctuation on an active composition would choose candidate zero.
         let mut finished = self.engine.finish(self.engine_index(self.highlighted))?;
+        self.facts.selection =
+            self.selection_fact(SelectionHow::PunctuationFinish, self.highlighted, &finished);
         let punctuation = match self.engine.punctuation(value) {
             Ok(result) => result,
             Err(error) if finished.has_commit => {
                 // Completion already changed Engine state: never discard that commit.
                 finished.commit.push(char::from(value));
+                self.facts.tail_chars = 1;
                 finished.handled = true;
                 finished.diagnostic =
                     format!("{} Punctuation failed: {error}", finished.diagnostic)
@@ -1847,16 +1997,23 @@ impl<E: InputEngine> Runtime<E> {
         if !finished.has_commit {
             if !punctuation.handled && !self.phrase_prefix.is_empty() {
                 // The held phrase piece goes out ahead of the mark (`hold_phrase_progress`), which marks the key handled, so a mark with no Chinese form has to go out with it rather than be left to the host.
+                self.facts.tail_chars = 1;
                 return Ok(literal_mark(value, punctuation.diagnostic));
+            }
+            // 没有组字可结束时上屏的只有标点；暂存段若随后拼在前面，标点仍是尾巴。
+            if punctuation.has_commit {
+                self.facts.tail_chars = char_count(&punctuation.commit);
             }
             return Ok(punctuation);
         }
         finished.handled = true;
         if punctuation.has_commit {
             finished.commit.push_str(&punctuation.commit);
+            self.facts.tail_chars = char_count(&punctuation.commit);
         } else if !punctuation.handled {
             // ASCII mode/unsupported symbols still terminate composition in one commit.
             finished.commit.push(char::from(value));
+            self.facts.tail_chars = 1;
         }
         if !punctuation.diagnostic.is_empty() {
             finished.diagnostic = format!("{} {}", finished.diagnostic, punctuation.diagnostic)
@@ -1890,23 +2047,32 @@ impl<E: InputEngine> Runtime<E> {
         // The Linux host has already applied its surrounding-text policy.
         // A bare `/` or `@` commits as the literal prefix rather than its first row.
         let mut finished = if self.bare_mode_prefix() {
-            self.engine.command(Command::CommitRaw)?
+            let raw = self.engine.command(Command::CommitRaw)?;
+            self.facts.raw = raw.has_commit;
+            raw
         } else {
-            self.engine.finish(self.engine_index(self.highlighted))?
+            let finished = self.engine.finish(self.engine_index(self.highlighted))?;
+            self.facts.selection =
+                self.selection_fact(SelectionHow::PunctuationFinish, self.highlighted, &finished);
+            finished
         };
         if !finished.has_commit {
             // As in `punctuation`: a held phrase piece takes the key, so the mark goes out with it.
             if !self.phrase_prefix.is_empty() {
+                self.facts.tail_chars = 1;
                 return Ok(literal_mark(value, finished.diagnostic));
             }
             return Ok(finished);
         }
         finished.handled = true;
         finished.commit.push(char::from(value));
+        self.facts.tail_chars = 1;
         Ok(finished)
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<Transition, RuntimeError> {
+        // 每次调用都从空白开始，提前返回的路径（报错、失焦）也不会留下上一键的事实。
+        self.facts = DispatchFacts::default();
         if matches!(&action, Action::Punctuation(value) | Action::PunctuationAscii(value) if !value.is_ascii_punctuation())
         {
             return Err(RuntimeError::InvalidPunctuation);
@@ -1994,6 +2160,10 @@ impl<E: InputEngine> Runtime<E> {
             _ => None,
         };
         if let Some(index) = next_highlight {
+            // 这里不经过 refresh，候选视图的变化只能在这里记。
+            if index != self.highlighted {
+                self.bump_candidates_epoch();
+            }
             self.highlighted = index;
             return Ok(self.transition(empty_result(true)));
         }
@@ -2031,6 +2201,12 @@ impl<E: InputEngine> Runtime<E> {
             && self.snapshot_valid
             && self.phrase_prefix.is_empty()
             && wubi_four_code_is_complete(&self.cached);
+        // 这次把哪个座位的候选交给了引擎、经由哪条路径，引擎调用之后再与它的上屏核对（`selection_fact`）。标点结束组字的两条路由在 `punctuation`、`punctuation_ascii` 里自己记。
+        let mut pick: Option<(SelectionHow, usize)> = None;
+        // 原样上屏读音的路由：bare 前缀上的 Finish 和 `CommitRaw` 命令。
+        let mut raw_route = false;
+        // 顶字时接在首选后面的那段文本的字符数。
+        let mut top_tail = 0;
         let result = match action {
             Action::ResetCache => {
                 self.engine.reset_cache()?;
@@ -2044,28 +2220,37 @@ impl<E: InputEngine> Runtime<E> {
             Action::Punctuation(value) => self.punctuation(value),
             Action::PunctuationAscii(value) => self.punctuation_ascii(value),
             // A bare `/` or `@` flushes as the literal prefix, as on the punctuation routes; finishing would commit the list's first row.
-            Action::Finish if self.bare_mode_prefix() => self.engine.command(Command::CommitRaw),
-            Action::Finish => self.engine.finish(self.engine_index(self.highlighted)),
+            Action::Finish if self.bare_mode_prefix() => {
+                raw_route = true;
+                self.engine.command(Command::CommitRaw)
+            }
+            Action::Finish => {
+                pick = Some((SelectionHow::Finish, self.highlighted));
+                self.engine.finish(self.engine_index(self.highlighted))
+            }
             // The key that tops the code is never lost: what the Engine commits for it goes out after the word, and a key it lets go (a capital that opens no mode, Shift+K with the K mode off) goes out as the literal letter, as `literal_mark` sends a mark behind a held phrase, since the host has already been told the key was handled.
-            Action::Character { value, shift } if wubi_top_commit => self
-                .engine
-                .select(self.engine_index(0))
-                .and_then(|mut committed| {
-                    let next = self.engine.character(value, shift)?;
-                    let tail = if next.has_commit {
-                        next.commit
-                    } else if !next.handled {
-                        char::from(value).to_string()
-                    } else {
-                        String::new()
-                    };
-                    if !tail.is_empty() {
-                        committed.commit.push_str(&tail);
-                        committed.handled = true;
-                        committed.has_commit = true;
-                    }
-                    Ok(committed)
-                }),
+            Action::Character { value, shift } if wubi_top_commit => {
+                pick = Some((SelectionHow::WubiTop, 0));
+                self.engine
+                    .select(self.engine_index(0))
+                    .and_then(|mut committed| {
+                        let next = self.engine.character(value, shift)?;
+                        let tail = if next.has_commit {
+                            next.commit
+                        } else if !next.handled {
+                            char::from(value).to_string()
+                        } else {
+                            String::new()
+                        };
+                        if !tail.is_empty() {
+                            top_tail = char_count(&tail);
+                            committed.commit.push_str(&tail);
+                            committed.handled = true;
+                            committed.has_commit = true;
+                        }
+                        Ok(committed)
+                    })
+            }
             // A symbol that would open a mode behind a held phrase piece ends the phrase as punctuation instead, as on the punctuation route.
             Action::Character { value, .. }
                 if !self.phrase_prefix.is_empty()
@@ -2090,6 +2275,7 @@ impl<E: InputEngine> Runtime<E> {
                         && self.cached.candidate_list_open
                         && len > 0
                     {
+                        pick = Some((SelectionHow::SpaceOverList, self.highlighted));
                         return self.engine.select(self.engine_index(self.highlighted));
                     }
                     // Let Engine consume numeric input (Unicode mode, nine-key, etc.) first. A result that already committed (a Korean syllable the digit ended) is final: selecting now would replace that commit and lose the text. A digit the scheme spells with (a Zhuyin tone or phonetic key) is never a pick, even one the Engine let go: Zhuyin leaves 1-9 to selection only while its list is open, when they are not spelling symbols, so `0` there stays ㄢ.
@@ -2110,6 +2296,7 @@ impl<E: InputEngine> Runtime<E> {
                         return Ok(empty_result(true));
                     }
                     selected_by_digit = true;
+                    pick = Some((SelectionHow::Digit, page_start + slot));
                     self.engine.select(self.engine_index(page_start + slot))
                 })
             }
@@ -2126,15 +2313,29 @@ impl<E: InputEngine> Runtime<E> {
                         .is_some_and(|grid| !grid.offers_raw_key())
                     && len > 0 =>
             {
+                pick = Some((SelectionHow::GridRaw, self.highlighted));
                 self.engine.finish(self.engine_index(self.highlighted))
             }
-            Action::Command(command) => self.engine.command(command),
+            Action::Command(command) => {
+                raw_route = matches!(
+                    command,
+                    Command::CommitRaw | Command::CommitRawWithoutLearning
+                );
+                self.engine.command(command)
+            }
             Action::SegmentBackspace => self.engine.segment_command(SegmentCommand::Backspace),
             Action::SegmentMoveLeft => self.engine.segment_command(SegmentCommand::MoveLeft),
             Action::SegmentMoveRight => self.engine.segment_command(SegmentCommand::MoveRight),
-            Action::Select(id) => self.engine.select(self.engine_index(id.index)),
-            Action::SelectAnyCandidate(id) => self.engine.select(self.engine_index(id.index)),
+            Action::Select(id) => {
+                pick = Some((SelectionHow::Select, id.index));
+                self.engine.select(self.engine_index(id.index))
+            }
+            Action::SelectAnyCandidate(id) => {
+                pick = Some((SelectionHow::AnyCandidate, id.index));
+                self.engine.select(self.engine_index(id.index))
+            }
             Action::SelectEdge(id, edge) => {
+                pick = Some((SelectionHow::Edge, id.index));
                 self.engine.select_edge(self.engine_index(id.index), edge)
             }
             Action::PinCandidate(id) => self.engine.pin_candidate(self.engine_index(id.index)),
@@ -2164,11 +2365,24 @@ impl<E: InputEngine> Runtime<E> {
                 self.engine.character(b' ', false)
             }
             Action::SelectHighlighted if len > 0 => {
+                pick = Some((SelectionHow::Highlighted, self.highlighted));
                 self.engine.select(self.engine_index(self.highlighted))
             }
             Action::SelectHighlighted => self.engine.command(Command::CommitCandidate),
             _ => return Ok(self.transition(empty_result(false))),
         };
+        // 快照还是引擎调用之前的那份，座位和候选文本都按用户当时看到的核对。
+        if let Ok(result) = &result {
+            if let Some((how, seat)) = pick {
+                self.facts.selection = self.selection_fact(how, seat, result);
+            }
+            if raw_route {
+                self.facts.raw = result.has_commit;
+            }
+            if top_tail > 0 {
+                self.facts.tail_chars = top_tail;
+            }
+        }
         // Keep the pre-refresh mode only when this action can produce a commit. Most keystrokes
         // leave the composition open, so copying local_mode for them is wasted work. A held phrase
         // and the automatic Wubi top-commit can produce a commit after the Engine result itself
@@ -2189,6 +2403,9 @@ impl<E: InputEngine> Runtime<E> {
         // open, matching the reference's creating-word guard.
         if self.wubi_should_auto_commit(character_action) {
             result = self.engine.select(self.engine_index(0))?;
+            // 这次的结果整个换成了自动上屏，之前记下的事实随之作废。
+            self.facts.selection = self.selection_fact(SelectionHow::WubiAuto, 0, &result);
+            self.facts.tail_chars = 0;
             if let Err(error) = self.refresh() {
                 result.diagnostic = format!("Candidate refresh failed: {error}");
             }
@@ -2211,6 +2428,15 @@ impl<E: InputEngine> Runtime<E> {
             Action::SegmentBackspace | Action::SegmentMoveLeft | Action::SegmentMoveRight
         );
         self.hold_phrase_progress(picked, discarded, keep_empty, consumed, &mut result);
+        // 选中的文本上屏了，读音却还在：这次选择只用掉了一部分读音。顶字时剩下的是新打的那一键，不算。
+        if let Some(selection) = self.facts.selection.as_mut() {
+            if selection.outcome == SelectionOutcome::Committed
+                && selection.how != SelectionHow::WubiTop
+                && !self.cached.editing_text.is_empty()
+            {
+                selection.outcome = SelectionOutcome::Partial;
+            }
+        }
         let mut transition = self.transition(result);
         if let Some(commit_context) = commit_context {
             if transition.commit.is_some() {
@@ -2238,6 +2464,11 @@ fn literal_mark(value: u8, diagnostic: String) -> EngineResult {
         commit: char::from(value).to_string(),
         diagnostic,
     }
+}
+
+/// `DispatchFacts::tail_chars` 用的字符数（Unicode 标量），超出 `u32` 时取上限。
+fn char_count(text: &str) -> u32 {
+    u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
 }
 
 /// 数字键在当前页里选的格子：`1`–`9` 是前九格；`0` 只在每页十个时选第十格，每页不到十个时它不是选词键，照旧交回去。
