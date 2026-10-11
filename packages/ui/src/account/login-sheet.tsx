@@ -1,7 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { privacyUrl } from "../settings/app-resources";
-import { AccountInputField } from "./account-input-field";
-import { AccountVerificationCodeField } from "./account-verification-code-field";
+import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
 import { useAccountAction } from "./account-operation";
 import { useAccountGoogleLogin } from "./use-account-google-login";
@@ -136,20 +135,8 @@ export function LoginSheet({
     setError,
     setNotice,
   );
-  const {
-    channel,
-    target,
-    code,
-    setCode,
-    challenge,
-    expiresAt,
-    resendSeconds,
-    expired,
-    selectChannel,
-    updateTarget,
-    sendCode,
-    signIn: runVerificationSignIn,
-  } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
+  const verification = useAccountVerification({ client, mounted, clientGeneration, setNotice });
+  const { channel, selectChannel, sendCode, signIn: runVerificationSignIn } = verification;
   const {
     waiting: googleWaiting,
     cancel: cancelGoogle,
@@ -196,7 +183,6 @@ export function LoginSheet({
       onClearedExpired();
     });
 
-  const targetLabel = channel === "email" ? "邮箱地址" : "手机号（含国家区号）";
   // 后端可能为没有对应客户端的宿主也开着 Google，所以还要看宿主有没有 googleLogin。
   const googleAvailable = providers.google === true && Boolean(client.googleLogin);
 
@@ -254,58 +240,13 @@ export function LoginSheet({
           <p className={`${account.sheetHint} text-center`}>当前没有可用的登录方式，请稍后重试。</p>
         )}
         {channel && (
-          <>
-            <AccountInputField
-              label={<span className="sr-only">{targetLabel}</span>}
-              ariaLabel={targetLabel}
-              className={account.sheetInput}
-              type={channel === "email" ? "email" : "tel"}
-              autoComplete={channel === "email" ? "email" : "tel"}
-              placeholder={channel === "email" ? "name@example.com" : targetLabel}
-              maxLength={320}
-              value={target}
-              disabled={busy}
-              autoFocus
-              onChange={(value) => {
-                updateTarget(value);
-              }}
-            />
-            <button
-              type="button"
-              className={account.sheetPrimary}
-              disabled={busy || !target.trim() || resendSeconds > 0}
-              onClick={requestCode}
-            >
-              {resendSeconds > 0
-                ? `${resendSeconds} 秒后可重新发送`
-                : challenge
-                  ? "重新发送验证码"
-                  : "发送验证码"}
-            </button>
-            {challenge && (
-              <>
-                <AccountVerificationCodeField
-                  className={account.sheetInput}
-                  visuallyHiddenLabel
-                  placeholder="6 位验证码"
-                  value={code}
-                  disabled={busy}
-                  onChange={setCode}
-                />
-                <button
-                  type="button"
-                  className={account.sheetPrimary}
-                  disabled={busy || expired || !/^\d{6}$/.test(code)}
-                  onClick={signIn}
-                >
-                  {expired ? "验证码已过期，请重新获取" : busy ? "正在登录…" : "登录"}
-                </button>
-              </>
-            )}
-            <p className={`${account.sheetHint} text-center`}>
-              验证码只用于本次登录，请勿向他人透露。
-            </p>
-          </>
+          <AccountVerificationForm
+            variant="sheet"
+            verification={verification}
+            busy={busy}
+            onRequestCode={requestCode}
+            onSignIn={signIn}
+          />
         )}
       </div>
       <p className={account.sheetFooter}>
