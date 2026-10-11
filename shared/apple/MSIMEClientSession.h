@@ -72,6 +72,9 @@ FOUNDATION_EXPORT NSNotificationName const MSIMEClientSessionDidReplaceSnapshotN
 /// Engine validates candidate limit, eligibility and query identity. No network I/O.
 - (nullable NSDictionary *)applyOnlineCandidates:(NSArray<NSString *> *)candidates source:(NSUInteger)source
                                            query:(NSDictionary *)query error:(NSError **)error;
+/// AI 回答为空、失败，或 applyOnlineCandidates 没有采用时调用（source 只认 1）：AI 座位上的占位行换成「—」，留到组字变化为止。返回 {applied, view}。
+- (nullable NSDictionary *)resolveOnlineCandidatesForSource:(NSUInteger)source
+                                                     query:(NSDictionary *)query error:(NSError **)error;
 /// Copied enabled translation query, or nil when no candidates are eligible.
 /// May contain custom/Tencent credentials for native transport; never log it.
 - (nullable NSDictionary *)translationQueryWithError:(NSError **)error;

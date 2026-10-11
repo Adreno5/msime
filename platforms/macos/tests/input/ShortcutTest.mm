@@ -6458,6 +6458,9 @@ static void TestApplyCandidateTranslationSnapshotsAreReused() {
 @property(nonatomic) NSUInteger applications;
 @property(nonatomic) NSUInteger descriptorRequests;
 @property(nonatomic) BOOL rejectNextAI;
+// resolveOnlineCandidatesForSource: 被调用的次数；resolveApplies 时像 Host API 一样把 AI 座位换成「—」并回 applied。
+@property(nonatomic) NSUInteger resolutions;
+@property(nonatomic) BOOL resolveApplies;
 @end
 @implementation AIShortcutSession
 - (NSDictionary *)onlineQueryWithError:(NSError **)error { (void)error; return self.query; }
@@ -6481,7 +6484,9 @@ static void TestApplyCandidateTranslationSnapshotsAreReused() {
 - (NSDictionary *)applyOnlineCandidates:(NSArray<NSString *> *)candidates source:(uint8_t)source
                                   query:(NSDictionary *)query error:(NSError **)error {
     (void)error;
-    assert(source == 1 && [query isEqual:self.query] && candidates.count == 1);
+    assert(source == 1 && [query isEqual:self.query] && candidates.count <= 1);
+    // Host API 不收空批次。
+    if (!candidates.count) return @{ @"applied": @NO, @"view": @{} };
     if (self.rejectNextAI) {
         self.rejectNextAI = NO;
         return @{ @"applied": @NO, @"view": @{} };
@@ -6491,7 +6496,16 @@ static void TestApplyCandidateTranslationSnapshotsAreReused() {
     updated[@"generation"] = @([updated[@"generation"] unsignedLongLongValue] + 1);
     self.query = updated;
     return @{ @"applied": @YES, @"view": @{ @"focused": @YES, @"editing_text": @"synthetic",
-        @"candidates": @[@{ @"text": @"合成候选", @"source": @1 }] } };
+        @"candidates": @[@{ @"text": @"合成候选", @"source": @3 }] } };
+}
+- (NSDictionary *)resolveOnlineCandidatesForSource:(NSUInteger)source query:(NSDictionary *)query error:(NSError **)error {
+    (void)error;
+    assert(source == 1 && [query isEqual:self.query]);
+    ++self.resolutions;
+    if (!self.resolveApplies) return @{ @"applied": @NO, @"view": @{} };
+    self.resolveApplies = NO;
+    return @{ @"applied": @YES, @"view": @{ @"focused": @YES, @"editing_text": @"synthetic",
+        @"candidates": @[@{ @"text": @"本地", @"source": @0 }, @{ @"text": @"—", @"source": @12 }] } };
 }
 @end
 @interface AIShortcutController : CloudShortcutController
@@ -6599,6 +6613,71 @@ static void TestAiCandidateRetryAfterRejectedResponse() {
     assert(controller.aiBatches.count == 2);
     controller.aiBatches[1].reply(@[@{ @"translation": @"重试候选" }]);
     assert(session.applications == 1);
+    [controller cancelAITranslations];
+}
+
+// #6888：回答为空时宿主调用 resolve，AI 座位上的占位行换成「—」；同一组字不再重发请求，组字变了才再问。
+static void TestAiPlaceholderResolvesAfterAnEmptyAnswer() {
+    AIShortcutController *controller = [AIShortcutController alloc];
+    controller.aiBatches = [NSMutableArray array];
+    AIShortcutSession *session = [AIShortcutSession new];
+    session.query = @{ @"scheme": @0, @"generation": @1, @"identity": @"synthetic-ai-empty",
+        @"query_text": @"nihao", @"cache_key": @"nihao-empty", @"pinyin_segments": @[@"ni", @"hao"],
+        @"ai_context": @"", @"cloud_eligible": @NO, @"ai_eligible": @YES, @"cloud_candidates": @YES,
+        @"ai_assistant": @{ @"enabled": @YES, @"candidate_limit": @3 }, @"session_id": @1 };
+    session.resolveApplies = YES;
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:[ShortcutClient new] forKey:@"activeClient"];
+    [controller synchronizeAITranslations];
+    [(NSTimer *)[controller valueForKey:@"aiTimer"] fire];
+    assert(controller.aiBatches.count == 1);
+    controller.aiBatches[0].reply(@[]);
+    assert(session.applications == 0 && session.resolutions == 1);
+    NSDictionary *view = [controller valueForKey:@"view"];
+    assert([view[@"candidates"][1][@"text"] isEqual:@"—"] && [view[@"candidates"][1][@"source"] isEqual:@12]);
+    // 同一组字：查询身份还在，不再发请求。
+    assert([controller valueForKey:@"aiQuery"] != nil);
+    [controller synchronizeAITranslations];
+    assert([controller valueForKey:@"aiTimer"] == nil && session.descriptorRequests == 1);
+    // 组字变了：重新问。
+    NSMutableDictionary *next = [session.query mutableCopy];
+    next[@"generation"] = @2;
+    next[@"cache_key"] = @"nihaoa-empty";
+    session.query = next;
+    [controller synchronizeAITranslations];
+    assert([controller valueForKey:@"aiTimer"] != nil);
+    [controller cancelAITranslations];
+}
+
+// 视图里的 source 是 Engine 的 CandidateSource：用户词库的词是 1，AI 候选才是 3。候选里有用户词时缓存的 AI 回答照样立刻换上（#6888）。
+static void TestAiCacheIgnoresUserDictionaryRows() {
+    AIShortcutController *controller = [AIShortcutController alloc];
+    controller.aiBatches = [NSMutableArray array];
+    AIShortcutSession *session = [AIShortcutSession new];
+    session.query = @{ @"scheme": @0, @"generation": @1, @"identity": @"synthetic-ai-user-row",
+        @"query_text": @"nihao", @"cache_key": @"nihao-user-row", @"pinyin_segments": @[@"ni", @"hao"],
+        @"ai_context": @"", @"cloud_eligible": @NO, @"ai_eligible": @YES, @"cloud_candidates": @YES,
+        @"ai_assistant": @{ @"enabled": @YES, @"candidate_limit": @3 }, @"session_id": @1 };
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:[ShortcutClient new] forKey:@"activeClient"];
+    [controller synchronizeAITranslations];
+    [(NSTimer *)[controller valueForKey:@"aiTimer"] fire];
+    controller.aiBatches[0].reply(@[@{ @"translation": @"缓存候选" }]);
+    assert(session.applications == 1);
+    NSMutableDictionary *next = [session.query mutableCopy];
+    next[@"generation"] = @([next[@"generation"] unsignedLongLongValue] + 1);
+    session.query = next;
+    [controller setValue:@{ @"candidates": @[@{ @"text": @"用户词", @"source": @1 },
+        @{ @"text": @"…", @"source": @12 }] } forKey:@"view"];
+    [controller synchronizeAITranslations];
+    assert(session.applications == 2 && session.descriptorRequests == 1);
+    // 已经坐着 AI 候选时不再重放缓存。
+    next = [session.query mutableCopy];
+    next[@"generation"] = @([next[@"generation"] unsignedLongLongValue] + 1);
+    session.query = next;
+    [controller setValue:@{ @"candidates": @[@{ @"text": @"缓存候选", @"source": @3 }] } forKey:@"view"];
+    [controller synchronizeAITranslations];
+    assert(session.applications == 2);
     [controller cancelAITranslations];
 }
 
@@ -8451,6 +8530,8 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestAiCandidateScheduling(); }
         @autoreleasepool { TestAiCandidatesIgnoreGlossSwitch(); }
         @autoreleasepool { TestAiCandidateRetryAfterRejectedResponse(); }
+        @autoreleasepool { TestAiPlaceholderResolvesAfterAnEmptyAnswer(); }
+        @autoreleasepool { TestAiCacheIgnoresUserDictionaryRows(); }
         @autoreleasepool { TestAiCandidateCacheAcrossGenerations(); }
         @autoreleasepool { TestAiCandidateCacheTracksProviderSettings(); }
         @autoreleasepool { TestAiCandidateDescriptorFailureIsRetryable(); }
