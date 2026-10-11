@@ -38,6 +38,7 @@ import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
 import { useAccountRecoveryActions } from "./use-account-recovery-actions";
+import { useAccountSessionActions } from "./use-account-session-actions";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
@@ -184,6 +185,14 @@ function MobileAccountProfilePage({
     setError,
     setNotice,
   );
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut,
+    onDeleted: onSignedOut,
+  });
   const { clearExpired } = useAccountRecoveryActions({
     client,
     mounted,
@@ -203,20 +212,6 @@ function MobileAccountProfilePage({
       onProfileUpdated(updated);
       setName(updated.user.displayName);
       setNotice("昵称已更新。");
-    });
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut();
-    });
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut();
     });
   const confirmAction = () => {
     const action = confirmation;
@@ -363,6 +358,14 @@ function HarmonyProfilePage({
       if (message) showToast(toastText(message));
     },
   );
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut: (all) => onSignedOut(all ? "已退出所有设备" : "已退出登录"),
+    onDeleted: () => onSignedOut("账号已注销"),
+  });
   const normalizedName = normalizeAccountName(name);
   const validName = isValidAccountName(name);
   const shownName = preferredAccountName(user);
@@ -378,20 +381,6 @@ function HarmonyProfilePage({
       setName(updated.user.displayName);
       setRenaming(false);
       showToast("昵称已更新");
-    });
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut(all ? "已退出所有设备" : "已退出登录");
-    });
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut("账号已注销");
     });
   const confirmAction = () => {
     const action = confirmation;
@@ -1036,6 +1025,27 @@ function AccountDetailsPage({
     setError,
     setNotice,
   );
+  const clearSession = () => {
+    setUser(null);
+    setProfile(null);
+    setName("");
+  };
+  const { signOut, deleteAccount } = useAccountSessionActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onSignedOut: (all) => {
+      clearSession();
+      setConfirmation(null);
+      setNotice(all ? "已退出所有设备。" : "已退出登录。");
+    },
+    onDeleted: () => {
+      clearSession();
+      setConfirmation(null);
+      setNotice("账号已注销。");
+    },
+  });
   const { refreshProviders, clearExpired } = useAccountRecoveryActions({
     client,
     mounted,
@@ -1043,9 +1053,7 @@ function AccountDetailsPage({
     perform,
     onProvidersChange: setProviders,
     onClearedExpired: () => {
-      setUser(null);
-      setProfile(null);
-      setName("");
+      clearSession();
       setNotice("已清除失效登录状态。");
     },
   });
@@ -1153,30 +1161,6 @@ function AccountDetailsPage({
       if (!mounted.current || result.generation !== clientGeneration.current) return;
       setNotice("登录成功。");
       onLoginComplete?.();
-    });
-
-  const signOut = (all: boolean) =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      setUser(null);
-      setProfile(null);
-      setName("");
-      setConfirmation(null);
-      setNotice(all ? "已退出所有设备。" : "已退出登录。");
-    });
-
-  const deleteAccount = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.deleteAccount();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      setUser(null);
-      setProfile(null);
-      setName("");
-      setConfirmation(null);
-      setNotice("账号已注销。");
     });
 
   const rename = () =>
