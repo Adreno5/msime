@@ -16,6 +16,8 @@ Fcitx5 现在也消费共享 `keybindings` 的五个模式快捷键与 `default_
 
 `msime-linux-settings` 的「快捷键 → 输入模式切换」下拉框提供 Shift、单击 Ctrl、Ctrl+Space、Ctrl+Alt+Space 和「不使用」。Ctrl+Space 对应 `keybindings.switch_language_ctrl_space`，旧配置缺少字段时仍默认开启；多项同时启用时按选项顺序显示第一项，打开页面不改写配置。用户选择时一次更新四个布尔值，仅保留选中的切换键；「不使用」全部关闭。关闭后两个宿主都不拦截新的 Ctrl+Space 按下、重复和松开，也不改变正在输入的拼音；保存后热重载。下拉框不改 IBus/Fcitx5 的全局快捷键，框架若占用同名组合键，需在框架设置中另行关闭。专项验收复用现有原生测试入口：`ibus-engine-smoke <已验证词库目录> --ctrl-space` 与 `fcitx5-native-test <已验证词库目录> --ctrl-space`。
 
+同一组里的「单按 Caps Lock 切换中英文」（`keybindings.switch_language_caps_lock`，缺省关）与下拉框互不排斥。两个宿主按 `Caps_Lock` 符号认键（被 xkb 选项改成 Control、Escape 的 Caps Lock 不算，被 `shift:both_capslock` 一类选项改成 `Caps_Lock` 的 Shift 也不算）：按下前大写锁定是关的、没有和修饰键一起按、按着期间没有按别的键、300 毫秒内松开，就先用 `XkbLockModifiers` 撤回大写锁定，撤回成功再像裸 Shift 一样切换（组字中先上屏原文），松开事件照常交给应用。撤回只在 X11 会话里做得到（`src/system/CapsLockRelease.cpp`，构建时找到 libX11 才编进来）；`WAYLAND_DISPLAY` 有值或 `XDG_SESSION_TYPE=wayland` 时锁定状态归合成器，宿主不布防，轻点照常是大写锁定。
+
 Fcitx5 状态栏切换输入方案、双拼方案和辅助码方案时，除了写共享偏好库，还给当前输入上下文留一个 override：会话按 `runtime-options.json` 建立，而这份文件只有设置页会同步。override 只在与偏好库一致时保留；设置页或别的窗口改过偏好库后，偏好热重载和新建会话都会丢掉它、改用偏好库的值，所以与 Windows 一样，设置页改方案所有窗口都跟着变。新建会话时这几项一律取偏好库的值，不取 `runtime-options.json` 里可能已过时的值，状态栏选辅助码方案时一并清掉的辅助码表插件也一样；状态栏切输入方案时与 IBus 一样清掉辅助码方案 override，全拼下选的辅助码不会带进双拼。保存失败的选择不回滚：与 IBus 的 `failed_menu_save` 一样，待重试的保存跨焦点保留，只在保存成功或偏好目录变更时清掉，「未落盘」标记记在各个 override 自己身上，偏好库真正存下这个值之前菜单不会跳回去。
 
 Fcitx5 的 `ime_mode_scope` 也真正决定中英文状态的记忆范围：`app` 按输入上下文报告的程序名保存有界的应用级状态，`global` 在当前 Fcitx5 进程内共享一个状态；失焦时先记录（会话留给托盘菜单，到有输入上下文获得焦点时才关闭，见「状态区」的说明；托盘上的中英文切换会更新这份记录），重新聚焦并重建会话时恢复，而不是重新套用 `default_ime_mode`。匿名或缺失程序名使用共享的匿名槽位，不把状态写入偏好文件。

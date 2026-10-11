@@ -6,6 +6,8 @@
 #include "../clipboard/ClipboardText.h"
 #include "../clipboard/ClipboardAtomicWrite.h"
 #include "../system/ChineseTextConversion.h"
+#include "../system/CapsLockRelease.h"
+#include "../../../../shared/input/CapsLockTap.h"
 #include "HelpcodeDefaults.h"
 #include "HelpcodePack.h"
 #include "HelpcodeSchemaNames.h"
@@ -420,6 +422,8 @@ struct State {
     right_ctrl_down = false;
     left_ctrl_down = false;
     modifier_toggle_deadline = 0;
+    caps_lock_tap.reset();
+    caps_lock_down = false;
     mode_chord_held = false;
     character_set_chord_held = false;
     host_shortcut_strokes.clear();
@@ -428,6 +432,10 @@ struct State {
   bool mode_ctrl_enabled = false;
   bool mode_ctrl_space_enabled = true;
   bool mode_ctrl_alt_space_enabled = true;
+  // 单按 Caps Lock 切换中英文（缺省关）、判定状态，以及 Caps Lock 是否按着（自动重复的按下不重新计时）。
+  bool mode_caps_lock_enabled = false;
+  msime::input::CapsLockTap caps_lock_tap;
+  bool caps_lock_down = false;
   bool character_set_shortcut_enabled = true;
   bool number_row_selection = true;
   std::optional<bool> number_row_override;
@@ -775,6 +783,7 @@ struct State {
     mode_ctrl_enabled = keybindings.value("switch_language_ctrl", false);
     mode_ctrl_alt_space_enabled =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
     traditional_output = traditional_output_override.value_or(
@@ -1031,6 +1040,7 @@ struct State {
     mode_ctrl_enabled = keybindings.value("switch_language_ctrl", false);
     mode_ctrl_alt_space_enabled =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
   }
@@ -6063,6 +6073,30 @@ gboolean process_key(IBusEngine *engine, guint key, guint keycode, guint flags) 
   if (const bool caps_lock = (flags & IBUS_LOCK_MASK) != 0; caps_lock != s.caps_lock) {
     s.caps_lock = caps_lock;
     publish_mode(engine);
+  }
+  // 单按 Caps Lock 切换中英文。认的是 Caps_Lock 这个符号：被 xkb 选项改成 Control 或 Escape 的 Caps Lock 键不算，被改成 Caps_Lock 的 Shift 键（evdev 键码 42、54）也不算。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换；松开本身照常交给应用，和裸 Shift 一样。
+  const bool caps_lock_key = key == IBUS_Caps_Lock && keycode != 42 && keycode != 54;
+  if (!caps_lock_key) {
+    if (!release) s.caps_lock_tap.interrupt();
+  } else if (!release) {
+    if (!s.caps_lock_down) {
+      s.caps_lock_down = true;
+      const bool enabled = s.mode_caps_lock_enabled && s.focused && !s.blocked &&
+                           msime::linux_host::caps_lock_release_available();
+      const bool others = (flags & (IBUS_SHIFT_MASK | IBUS_CONTROL_MASK | IBUS_MOD1_MASK | IBUS_MOD4_MASK |
+                                    IBUS_SUPER_MASK | IBUS_META_MASK | IBUS_HYPER_MASK)) != 0;
+      s.caps_lock_tap.press(g_get_monotonic_time() / 1000, enabled, (flags & IBUS_LOCK_MASK) != 0, others);
+    }
+  } else {
+    s.caps_lock_down = false;
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (s.caps_lock_tap.release(g_get_monotonic_time() / 1000) && s.focused && !s.blocked &&
+        msime::linux_host::release_caps_lock()) {
+      s.caps_lock = false;
+      publish_mode(engine);
+      guarded(engine, "process_key", [&] { toggle_input_mode(engine); });
+      return FALSE;
+    }
   }
   if (key == IBUS_BackSpace && release) {
     const bool owned = s.backspace_hold.armed();

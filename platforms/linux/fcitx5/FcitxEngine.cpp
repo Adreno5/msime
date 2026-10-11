@@ -5,6 +5,8 @@
 #include "Telemetry.h"
 #endif
 #include "../src/system/ChineseTextConversion.h"
+#include "../src/system/CapsLockRelease.h"
+#include "../../../shared/input/CapsLockTap.h"
 #include <fcitx-utils/capabilityflags.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/utf8.h>
@@ -1697,6 +1699,7 @@ public:
     mode_ctrl_space_enabled_ = keybindings.value("switch_language_ctrl_space", true);
     mode_ctrl_alt_space_enabled_ =
         keybindings.value("switch_language_ctrl_alt_space", true);
+    mode_caps_lock_enabled_ = keybindings.value("switch_language_caps_lock", false);
     character_set_shortcut_enabled_ =
         keybindings.value("toggle_character_set_ctrl_shift_f", true);
     // Windows starts a new context in Chinese unless the user said otherwise.
@@ -1870,6 +1873,7 @@ public:
             mode_ctrl_space_enabled_ = reloaded.value("switch_language_ctrl_space", true);
             mode_ctrl_alt_space_enabled_ = reloaded.value(
                 "switch_language_ctrl_alt_space", mode_ctrl_alt_space_enabled_);
+            mode_caps_lock_enabled_ = reloaded.value("switch_language_caps_lock", mode_caps_lock_enabled_);
             character_set_shortcut_enabled_ = reloaded.value(
                 "toggle_character_set_ctrl_shift_f", character_set_shortcut_enabled_);
             // The toolbar follows the reloaded switches without waiting for the
@@ -3408,6 +3412,38 @@ public:
     const auto code = event.key().code();
     return sym == FcitxKey_Control_L || sym == FcitxKey_Control_R || code == 37 || code == 105;
   }
+  // 认的是 Caps_Lock 这个符号：被 xkb 选项改成 Control 或 Escape 的 Caps Lock 键不算，被改成 Caps_Lock 的 Shift 键（见上，X11 键码 50、62）也不算。
+  static bool isCapsLockKey(const fcitx::KeyEvent &event) {
+    const auto code = event.key().code();
+    return event.key().sym() == FcitxKey_Caps_Lock && code != 50 && code != 62;
+  }
+  // 单按 Caps Lock 切换中英文。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换。返回 true 表示切换了；按键本身照常交给后面的路由和应用。
+  bool observeCapsLockTap(const fcitx::KeyEvent &event) {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    if (!isCapsLockKey(event)) {
+      if (!event.isRelease()) caps_lock_tap_.interrupt();
+      return false;
+    }
+    if (!event.isRelease()) {
+      if (caps_lock_down_) return false;
+      caps_lock_down_ = true;
+      const auto raw = event.rawKey().states();
+      const bool enabled = mode_caps_lock_enabled_ && ic_.hasFocus() && !restricted() &&
+                           !privateInput() && msime::linux_host::caps_lock_release_available();
+      const bool others = raw.testAny(fcitx::KeyStates{fcitx::KeyState::Shift, fcitx::KeyState::Ctrl,
+                                                      fcitx::KeyState::Alt, fcitx::KeyState::Super,
+                                                      fcitx::KeyState::Hyper});
+      caps_lock_tap_.press(now, enabled, raw.test(fcitx::KeyState::CapsLock), others);
+      return false;
+    }
+    caps_lock_down_ = false;
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (!caps_lock_tap_.release(now) || !msime::linux_host::release_caps_lock()) return false;
+    noteCapsLock(false);
+    return ensure() && toggleInputMode();
+  }
   bool key(fcitx::KeyEvent &event);
   // Characters the IME hands back to the application are still typed text: Windows counts them in the statistics (ShouldCountPassthroughChar), so English-mode letters and Chinese-mode keys the Engine declines show up in the daily totals. Keys the IME consumed already recorded their committed text.
   void countPassthroughKey(const fcitx::KeyEvent &event) const {
@@ -3671,6 +3707,10 @@ public:
   bool mode_ctrl_enabled_ = false;
   bool mode_ctrl_space_enabled_ = true;
   bool mode_ctrl_alt_space_enabled_ = true;
+  // 单按 Caps Lock 切换中英文（缺省关）、判定状态，以及 Caps Lock 是否按着（自动重复的按下不重新计时）。
+  bool mode_caps_lock_enabled_ = false;
+  msime::input::CapsLockTap caps_lock_tap_;
+  bool caps_lock_down_ = false;
   bool character_set_shortcut_enabled_ = true;
   // A bare modifier switches on release, and only if nothing else was typed
   // while it was held. Windows measures the same gesture; so does the IBus host.
@@ -6385,6 +6425,8 @@ public:
   void reset(const fcitx::InputMethodEntry &, fcitx::InputContextEvent &event) override {
     auto *state = event.inputContext()->propertyFor(&factory_);
     state->backspace_hold_.reset();
+    state->caps_lock_tap_.reset();
+    state->caps_lock_down_ = false;
     state->toggle_chord_held_ = FcitxKey_None;
     state->pending_caret_.clear();
     state->caret_forward_event_.reset();
@@ -6912,6 +6954,8 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
   const auto &key = event.key();
   const auto sym = key.sym();
   const auto states = key.states();
+  // 和裸 Shift 一样，切换之后松开事件照常交给应用。
+  if (observeCapsLockTap(event)) return false;
   // 规范化后的符号可能已丢掉 Shift 位，光标转发必须按原始事件判断。
   caret_shift_ = event.rawKey().states().test(fcitx::KeyState::Shift);
   if (!caret_shift_ && !isShiftKey(event)) {
