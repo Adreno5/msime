@@ -2122,20 +2122,17 @@ static NSImage *MSIMECandidateLogoImage() {
         if (ownSnapshot) [self invalidateServiceSnapshots];
         return NO;
     }
-    if (!results.count) {
-        _translationAppliedGeneration = view[@"generation"];
-        [self synchronizeCandidateServices];
-        if (ownSnapshot) [self invalidateServiceSnapshots];
-        return YES;
-    }
-    // 应用非空释义使共享快照失效；下一次服务调度先获取最新查询和视图。
+    // 空结果不应用释义，但也要先同步视图代次再调度服务，避免陈旧视图触发递归重试。
+    NSDictionary *next = view;
     [self invalidateServiceSnapshots];
-    uint64_t generation = 0;
-    if (!MSIMEStrictUnsignedInteger(view[@"generation"], &generation)) return NO;
-    NSDictionary *applied = [_session applyTranslations:MSIMESessionTranslations(results) generation:generation error:nil];
-    if (!MSIMEStrictBoolean(applied[@"applied"])) return NO;
-    // A gloss changes what the card shows, never the composition, so only the card is redrawn. Going through apply: re-sent the marked text on every arrival, and IMK services the next key inside that synchronous setMarkedText: call - the whole keystroke, reranking included, ran nested in it, after which the outer apply: wrote the older view back over the newer one.
-    NSDictionary *next = applied[@"view"];
+    if (results.count) {
+        uint64_t generation = 0;
+        if (!MSIMEStrictUnsignedInteger(view[@"generation"], &generation)) return NO;
+        NSDictionary *applied = [_session applyTranslations:MSIMESessionTranslations(results) generation:generation error:nil];
+        if (!MSIMEStrictBoolean(applied[@"applied"])) return NO;
+        next = applied[@"view"];
+    }
+    // 释义只重绘卡片，不重发组字文本；否则同步 setMarkedText: 中嵌入的新按键会被外层旧视图覆盖。
     if (![next isKindOfClass:NSDictionary.class]) return NO;
     // _view is next from here on, so synchronizeCandidateServices below finds this generation already applied and does not come back.
     _translationAppliedGeneration = next[@"generation"];

@@ -2320,7 +2320,11 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 @property(nonatomic) NSUInteger serviceSyncs;
 @end
 @implementation ServiceCountingController
-- (void)synchronizeCandidateServices { ++self.serviceSyncs; [super synchronizeCandidateServices]; }
+- (void)synchronizeCandidateServices {
+    ++self.serviceSyncs;
+    assert(self.serviceSyncs < 16);
+    [super synchronizeCandidateServices];
+}
 @end
 
 // A gloss changes what the card shows, never the composition. Its arrival must not write the marked text again: IMK services the next key inside that synchronous call, which is how a keystroke, reranking and all, came to run nested in every gloss arrival.
@@ -2353,6 +2357,20 @@ static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appea
     [controller applyCandidateTranslationResults];
     assert(session.applications == 1 && client.markedWrites == 0 && [controller valueForKey:@"view"] == view);
     assert(controller.serviceSyncs == syncs + 1);
+
+    // 缓存释义不属于当前请求且控制器视图落后一代时，空结果仍先同步视图；不能在服务调度里递归重试。
+    NSMutableDictionary *staleView = [view mutableCopy];
+    staleView[@"generation"] = @2;
+    [controller setValue:staleView forKey:@"view"];
+    [controller setValue:gloss forKey:@"glossResults"];
+    [controller setValue:@{} forKey:@"glossRequest"];
+    controller.serviceSyncs = 0;
+    [controller applyCandidateTranslationResults];
+    NSDictionary *currentView = [controller valueForKey:@"view"];
+    assert([currentView[@"generation"] isEqual:@3]);
+    assert([[controller valueForKey:@"translationAppliedGeneration"] isEqual:currentView[@"generation"]]);
+    assert(session.applications == 1 && client.markedWrites == 0 && controller.serviceSyncs == 1);
+    [controller setValue:request forKey:@"glossRequest"];
 
     // A gloss merged while an apply: is writing the marked text belongs to the same page; the transition finishing afterwards carries the page from before it and must not take the gloss away.
     [controller setValue:gloss forKey:@"glossResults"];
