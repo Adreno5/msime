@@ -131,6 +131,7 @@ export function ScreenKeyboardSettingsPage() {
         keySpacingTenths={touchKeySpacingTenths}
         rowSpacingTenths={touchRowSpacingTenths}
         heightAdjustment={touchKeyboardHeightAdjustment}
+        phone={harmonyPhone}
         touchRows={
           harmonyPhone
             ? harmonyTouchKeyboardRows[harmonyTouchLayout(selectedTouchKeyboardScheme)]
