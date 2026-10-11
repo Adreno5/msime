@@ -8,6 +8,7 @@ import { useToast } from "../core/toast";
 import { ActionButton } from "../core/action-button";
 import * as chat from "./chat-style";
 import { chatMessageByteLength, MAX_MESSAGE_BYTES } from "./chat-history";
+import { resizeChatComposer } from "./chat-composer-size";
 import { chatRequest } from "./chat-prompt";
 import { chatError } from "./chat-errors";
 import { useAsyncGeneration } from "../settings/use-async-generation";
@@ -42,10 +43,6 @@ const markdown = new MarkdownIt({ html: false, linkify: false, breaks: true }).d
   "image",
   "link",
 ]);
-/** 触屏输入框最多长到四行，再多就在框里滚动。 */
-const FIELD_MAX_LINES = 4;
-const FIELD_LINE_HEIGHT = 22;
-
 // Mirrors the client-core byte and message limits used by the chat service.
 
 export function ChatPage({
@@ -201,10 +198,7 @@ export function ChatPage({
   };
 
   const resizeField = () => {
-    const element = composer.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, FIELD_LINE_HEIGHT * FIELD_MAX_LINES + 16)}px`;
+    resizeChatComposer(composer.current);
   };
   const newConversation = () => {
     if (!messages.length) {
