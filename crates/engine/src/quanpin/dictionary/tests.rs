@@ -697,7 +697,7 @@ fn online_rows_land_in_the_series_slot_the_query_used() {
         &ai,
         CandidateSource::AiSuggestion
     ));
-    // A second cloud answer replaces the first and keeps the AI block at index 2.
+    // A second cloud answer replaces the first and keeps the AI seat at index 2; the second AI row stays last (#6888).
     assert!(dictionary.insert_online_words(
         "nihao",
         "ni'hao",
@@ -706,7 +706,8 @@ fn online_rows_land_in_the_series_slot_the_query_used() {
         CandidateSource::CloudSuggestion
     ));
     let listed = query(&mut dictionary, "nihao", "ni'hao", NONE);
-    assert_eq!(words(&listed[..4]), ["你好", "妮好", "智能甲", "智能乙"]);
+    assert_eq!(words(&listed[..3]), ["你好", "妮好", "智能甲"]);
+    assert_eq!(listed.last().unwrap().word, "智能乙");
     assert!(!contains(&listed, "倪好"));
 
     let two = vec!["一".to_string(), "二".to_string()];
