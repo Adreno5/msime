@@ -45,4 +45,6 @@ Status: implemented
 
 各平台：Android 经 JNI 在 API 28 与 API 35 模拟器上跑真实驱动对假服务端的设备冒烟（`CloudClipboardDriverDeviceSmoke`）和密钥串的跨进程冒烟，`run-core-test.sh` 两边各 1267 项通过，`check-host.sh` 的 JVM 冒烟通过。iOS 模拟器上 `MSIMEClientTests` 855 项通过，其中一项经 C 绑定驱动真实 Rust 驱动、一项读写真实钥匙串条目；macOS 全量 `ctest` 149 项通过，`shared/backend` 的 `swift test` 168 项通过。HarmonyOS `tests/run.sh` 通过（新增的驱动循环测试用按脚本应答的假驱动），原生交叉编译后确认 `.so` 导出新符号，`hvigorw assembleHap` 打包成功。桌面端 `client-core` 账号层 115 项（两台设备流程、401 刷新、密钥串保存顺序与文件权限）、`host-api`、`host-macos`、Tauri 的云剪贴板测试和 iOS、Android 目标的 `cargo check` 通过；共享面板 vitest 新增 10 项，合并后 `apps/desktop` 与 `apps/harmony` 的类型检查通过。
 
+Windows 原生设置窗口的剪贴板页（`platforms/windows/settings/main.cpp`）照共享页认得「本机待批准」和「已关闭」，这处 C++ 改动只由 PR 上的 MinGW 交叉构建检查，本机没有编译。
+
 没有验证的：真实服务端（还没部署）、各平台装机后的真实输入法会话与设置页界面、macOS 上 Tauri 面板经 IPC 与原生 provider 的联调、Android 的 Tauri 合包 APK。服务端上线前要在一台 macOS 和一台 Android 上用测试账号走一遍：开启、在另一台上批准、互传、移除、重置。
