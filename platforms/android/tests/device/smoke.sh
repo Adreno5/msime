@@ -66,11 +66,23 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 [[ "$ready" == true ]] || { echo "Device bootstrap timed out" >&2; exit 1; }
+sdk=$("$adb" -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')
+[[ "$sdk" =~ ^[0-9]+$ ]] || { echo "Android API level was unavailable" >&2; exit 1; }
+# API 31 起可附着到已运行的目标进程。普通 instrument 会强停目标包，连同 :ime 服务一起杀掉；
+# 连续跑设备套件时，系统偶尔来不及重新绑定输入法，后面的用例只能看到空 IME 窗口。
+run_instrumentation() {
+  if (( sdk >= 31 )); then
+    "$adb" -s "$serial" shell am start -W -n app.msime.android/app.msime.android.home.HomeActivity >/dev/null
+    "$adb" -s "$serial" shell am instrument --no-restart -w "$1"
+  else
+    "$adb" -s "$serial" shell am instrument -w "$1"
+  fi
+}
 # 输入法 id 必须写成 `ime list` 给出的短写：系统按字符串原样查找，长写 app.msime.android/app.msime.android.MSIMEInputService 在 `ime enable` 时报 Unknown input method。设备测试里的 `ime` 命令都用同一个短写。
 "$adb" -s "$serial" shell ime enable app.msime.android/.MSIMEInputService
 "$adb" -s "$serial" shell ime set app.msime.android/.MSIMEInputService
 "$adb" -s "$serial" shell am force-stop app.msime.android.test
-result=$("$adb" -s "$serial" shell am instrument -w app.msime.android.test/app.msime.android.test.DeviceSmoke)
+result=$(run_instrumentation app.msime.android.test/app.msime.android.test.DeviceSmoke)
 printf '%s\n' "$result"
 [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "System input acceptance failed" >&2; exit 1; }
 if [[ "$core" == true ]]; then echo "Dedicated Android AVD: install, resource setup and core typing acceptance passed"; exit 0; fi
@@ -104,17 +116,17 @@ do
     skipped_suites+=("$suite")
     continue
   fi
-  result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
+  result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "${entry#*|}" >&2; exit 1; }
 done
 if [[ "$settings" == true ]]; then
   for suite in SettingsDeviceSmoke SettingsLifecycleSmoke AccountStorageDeviceSmoke CloudClipboardKeystoreDeviceSmoke CloudClipboardDriverDeviceSmoke; do
-    result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
+    result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
     printf '%s\n' "$result"
     [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Shared settings acceptance failed" >&2; exit 1; }
   done
-  result=$("$adb" -s "$serial" shell am instrument -w app.msime.android.test/app.msime.android.BackendAccountRefreshDeviceSmoke)
+  result=$(run_instrumentation app.msime.android.test/app.msime.android.BackendAccountRefreshDeviceSmoke)
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Account refresh acceptance failed" >&2; exit 1; }
 fi
@@ -175,8 +187,7 @@ if [[ "$handwriting" == true ]]; then
   }
   "$adb" -s "$serial" shell rm -f "$touch_request" "$touch_ack"
   handwriting_output=$(mktemp "$repo_root/target/android/device-test/handwriting.XXXXXX")
-  "$adb" -s "$serial" shell am instrument -w \
-    app.msime.android.test/app.msime.android.test.HandwritingDeviceSmoke \
+  run_instrumentation app.msime.android.test/app.msime.android.test.HandwritingDeviceSmoke \
     >"$handwriting_output" &
   instrumentation_pid=$!
   last_request=0
