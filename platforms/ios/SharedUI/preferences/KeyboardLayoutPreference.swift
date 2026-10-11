@@ -74,7 +74,7 @@ enum KeyboardLayoutPreference {
     if let voice = preferences["touch_voice_shortcut"] as? Bool { voiceShortcutEnabled = voice }
   }
 
-  /// 「数字键盘顺序」：九键数字层 1 2 3 在上（电话）还是 7 8 9 在上（计算器），26 键选了九宫格数字键盘时它的数字层同样按这个顺序。共享文档里是 `touch_number_keypad_order`，键盘从 App Group 镜像读。
+  /// 「九宫格数字顺序」：九键数字层 1 2 3 在上（电话）还是 7 8 9 在上（计算器），26 键选了九宫格数字键盘时它的数字层同样按这个顺序。共享文档里是 `touch_number_keypad_order`，键盘从 App Group 镜像读。
   enum NumberKeypadOrder: String, CaseIterable {
     case phone, calculator
 
@@ -82,8 +82,8 @@ enum KeyboardLayoutPreference {
 
     var title: String {
       switch self {
-      case .phone: "电话（123 在上）"
-      case .calculator: "计算器（789 在上）"
+      case .phone: "123 在上"
+      case .calculator: "789 在上"
       }
     }
 
@@ -107,7 +107,7 @@ enum KeyboardLayoutPreference {
     set { defaults.set(newValue.rawValue, forKey: numberKeypadOrderKey) }
   }
 
-  /// 把数字键盘顺序写进共享文档，只改这一项；文档接受了才更新 App Group 镜像。
+  /// 把九宫格数字顺序写进共享文档，只改这一项；文档接受了才更新 App Group 镜像。
   @discardableResult
   static func saveNumberKeypadOrder(_ order: NumberKeypadOrder, stateRoot: URL? = nil) -> Bool {
     guard MetasequoiaInputSessionBridge.updateSharedPreferences(stateRoot: stateRoot, { document in
@@ -117,7 +117,7 @@ enum KeyboardLayoutPreference {
     return true
   }
 
-  /// 「26 键数字键盘」：手机 26 键按 123 时出一行 1 到 0 的数字符号页（`row`，默认），还是九键那样的 3×3 数字层（`nine_key`）。共享文档里是 `touch_twenty_six_key_number_layout`，键盘从 App Group 镜像读。iPad 全尺寸键盘不受它影响，见 `KeyboardViewController.opensNineKeyDigitPad`。
+  /// 「26 键按 123」：手机 26 键按 123 时出一行 1 到 0 的数字符号页（`row`，默认），还是九键那样的 3×3 数字层（`nine_key`）。共享文档里是 `touch_twenty_six_key_number_layout`，键盘从 App Group 镜像读。iPad 全尺寸键盘不受它影响，见 `KeyboardViewController.opensNineKeyDigitPad`。
   enum TwentySixKeyNumberLayout: String, CaseIterable {
     case row
     case nineKey = "nine_key"
@@ -126,7 +126,7 @@ enum KeyboardLayoutPreference {
 
     var title: String {
       switch self {
-      case .row: "一行"
+      case .row: "数字一行"
       case .nineKey: "九宫格"
       }
     }
@@ -143,7 +143,7 @@ enum KeyboardLayoutPreference {
     set { defaults.set(newValue.rawValue, forKey: twentySixKeyNumberLayoutKey) }
   }
 
-  /// 把 26 键数字键盘写进共享文档，只改这一项；文档接受了才更新 App Group 镜像。
+  /// 把「26 键按 123」写进共享文档，只改这一项；文档接受了才更新 App Group 镜像。
   @discardableResult
   static func saveTwentySixKeyNumberLayout(_ layout: TwentySixKeyNumberLayout, stateRoot: URL? = nil) -> Bool {
     guard MetasequoiaInputSessionBridge.updateSharedPreferences(stateRoot: stateRoot, { document in

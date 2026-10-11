@@ -1401,7 +1401,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     return Self.chineseSymbolFaces.first { $0.value == mark }?.key ?? mark
   }
 
-  /// 26 键的 123 是否换成九键的数字层：「26 键数字键盘」选了九宫格、手机形态（含 iPad 的浮动键盘和窄窗口），而且字母层画的是 26 键字母（全拼、双拼、五笔、英文、日文罗马字、韩文等，本地输入模式也算）。九键网格有自己的数字层，笔画、手写、假名和大千保留各自的符号层；iPad 全尺寸键盘本来就有数字行，3×3 拉到整个键盘宽也不顺手，所以保留一行的 123 页，分离式键盘也就不受影响。不是 private：布局测试会固定它。
+  /// 26 键的 123 是否换成九键的数字层：「26 键按 123」选了九宫格、手机形态（含 iPad 的浮动键盘和窄窗口），而且字母层画的是 26 键字母（全拼、双拼、五笔、英文、日文罗马字、韩文等，本地输入模式也算）。九键网格有自己的数字层，笔画、手写、假名和大千保留各自的符号层；iPad 全尺寸键盘本来就有数字行，3×3 拉到整个键盘宽也不顺手，所以保留一行的 123 页，分离式键盘也就不受影响。不是 private：布局测试会固定它。
   static func opensNineKeyDigitPad(layout: KeyboardLayoutPreference.TwentySixKeyNumberLayout,
                                    formFactor: KeyboardFormFactor, letterKeys: Bool) -> Bool {
     layout == .nineKey && formFactor == .phone && letterKeys
@@ -4748,12 +4748,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     // 笔画方案在九键外框里画它的 2×3 笔画键：沿用同样的标点侧栏、删除列和功能行。它的符号层与 Android 一样是设计稿的 123 / #+= 层，所以只有拼音网格保留自己的数字层。
     let strokes = isChineseMode && inputScheme.isStroke && !isInLocalMode
     let strokePad = strokes && !showsSymbols
-    // 全拼 14 键在三排字母的位置画它的三排键；123 与 26 键一样打开设计稿的 123 层（或按「26 键数字键盘」打开九宫格数字层），底行沿用手机 26 键底行。
+    // 全拼 14 键在三排字母的位置画它的三排键；123 与 26 键一样打开设计稿的 123 层（或按「26 键按 123」打开九宫格数字层），底行沿用手机 26 键底行。
     let fourteenKey = typesFourteenKey
     let fourteenKeyRows = fourteenKey && !showsSymbols
     for row in fourteenKeyRowViews where row.isHidden == fourteenKeyRows { row.isHidden = !fourteenKeyRows }
     updateFourteenKeySeparator()
-    // 「26 键数字键盘」选了九宫格时，手机 26 键的 123 画成九键的数字层：同一个外框和同一组键，只有回到字母的键回到 26 键字母。
+    // 「26 键按 123」选了九宫格时，手机 26 键的 123 画成九键的数字层：同一个外框和同一组键，只有回到字母的键回到 26 键字母。
     let digitPad = showsSymbols && Self.opensNineKeyDigitPad(
       layout: twentySixKeyNumberLayout, formFactor: formFactor,
       letterKeys: !(nineKey || strokes || handwritingScheme || kana || dachen))

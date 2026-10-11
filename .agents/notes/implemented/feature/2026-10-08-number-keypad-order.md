@@ -10,7 +10,7 @@ Status: implemented
 
 - 新增共享偏好 `touch_number_keypad_order`，取值 `phone`（默认，1 2 3 在上）或 `calculator`（7 8 9 在上，1 2 3 在下），定义在 client-core 的 `NumberKeypadOrder`。桌面宿主原样保留、不使用（`preference_coverage.py` 记为不适用）。
 - 只改九宫格数字层，字母层永远是 1 2 3 在上：Android `NineKeyLayout.rows(digits, calculator)`，iOS 数字层的位置到数字的映射，HarmonyOS `NineKeyLayout.digits(order)`。按下的输入和无障碍文本跟着显示的数字走。
-- 设置入口：共享设置页「屏幕键盘 › 布局」在移动宿主上显示「数字键盘顺序」；Android 的键盘设置页和 iOS 的键盘布局设置页各加一行。
+- 设置入口：共享设置页「屏幕键盘 › 布局」在移动宿主上显示「九宫格数字顺序」（原名「数字键盘顺序」，选项原为「电话 / 计算器」，现为「123 在上 / 789 在上」）；Android 的键盘设置页和 iOS 的键盘布局设置页各加一行。
 - 账号同步：Android 和 iOS 走 client-core 的 `platform.android.number_keypad_order`，HarmonyOS 按它自己的命名空间用 `platform.harmony.number_keypad_order`。服务端字段表还没有这两个键，上传时会被按字段表过滤掉，所以目前只存在本机，等服务端登记后自动开始同步。
 
 ## Alternatives considered
