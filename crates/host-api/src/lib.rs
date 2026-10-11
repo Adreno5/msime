@@ -128,6 +128,8 @@ mod key_sound;
 // 生命周期核心；`pub` 是为了让集成测试（零分配断言）直接调用纯推导函数。
 pub mod lifecycle;
 mod plugin_tables;
+// 脚本插件：进程开关、每会话的实例和进程级的模块缓存、熔断。移动端是空壳。
+mod scripts;
 mod voice_capture;
 pub use dictionary_snapshot::{
     inspect_snapshot_json, msime_client_snapshot_discard, msime_client_snapshot_inspect,

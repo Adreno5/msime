@@ -424,6 +424,11 @@ public final class NativeClient {
         return TextPolicy.utf8(voiceLocalModelRemoveRaw(utf8(requestJson)));
     }
 
+    /** 语音设置页的「测试」：请求 {@code {"preferences_directory","service"}}（service 是 voice.asr 或 voice.polish），按存着的配置发一次请求，返回 {@code {ok, value:{ok, message}}}，message 是给用户看的一句话，不含凭据。阻塞到约 15 秒，只在工作线程上调用。 */
+    public static String testVoiceCredential(String requestJson) {
+        return TextPolicy.utf8(testVoiceCredentialRaw(utf8(requestJson)));
+    }
+
     /** 把升级前已解压在本机的文件收编为资源包：请求 {@code {"state_root","pack","source"}}。要哈希整组文件，只在主进程的工作线程上调用。 */
     public static String resourcePackAdopt(String requestJson) {
         return TextPolicy.utf8(resourcePackAdoptRaw(utf8(requestJson)));
@@ -763,6 +768,7 @@ public final class NativeClient {
     private static native byte[] resourcePackInstallRaw(byte[] request, ResourcePackProgress listener);
     private static native void resourcePackCancelRaw(byte[] pack);
     private static native byte[] resourcePackAdoptRaw(byte[] request);
+    private static native byte[] testVoiceCredentialRaw(byte[] request);
     private static native byte[] voiceLocalModelsRaw(byte[] request);
     private static native byte[] voiceLocalModelInstallRaw(byte[] request, LocalModelProgress listener);
     private static native byte[] voiceLocalModelCancelRaw(byte[] request);

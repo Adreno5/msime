@@ -98,6 +98,8 @@ int main(int argc, const char *argv[]) {
             [[NSNotificationCenter defaultCenter] removeObserver:closeObserver];
             return 0;
         }
+        // 脚本插件只在输入法进程里运行，上面的独立设置窗口已经返回；release 构建里这一行什么都不做（msime_client.h）。在第一个会话之前打开。
+        msime_client_scripts_enable(true);
         // One input method process is one usage session; the standalone preferences window above is not.
         NSDictionary *reportingOptions = MSIMELoadRuntimeOptions();
         id reportingPreferences = reportingOptions[@"preferences_directory"];

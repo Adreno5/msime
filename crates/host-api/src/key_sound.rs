@@ -134,7 +134,7 @@ impl PluginRoots {
 /// What a pack's manifest looked like when its settings were taken: its modification time, length and (on Unix) inode, or `None` when there was none. Importing a pack again writes a new manifest and removing it takes the manifest away, so a changed stamp is how a session notices either without reading the pack.
 pub(crate) type PackStamp = Option<(Option<SystemTime>, u64, u64)>;
 
-fn stamp(path: Option<PathBuf>) -> PackStamp {
+pub(crate) fn stamp(path: Option<PathBuf>) -> PackStamp {
     let metadata = std::fs::symlink_metadata(path?).ok()?;
     #[cfg(unix)]
     let inode = std::os::unix::fs::MetadataExt::ino(&metadata);

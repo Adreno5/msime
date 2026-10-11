@@ -78,13 +78,23 @@ pub extern "C" fn msime_client_set_lifecycle(handle: u64, flags: u32) -> u32 {
         match session.lifecycle.as_deref_mut() {
             Some(state) => state.set_flags(&session.sound, flags),
             None => {
-                let state = lifecycle::LifecycleState::new(handle, flags);
+                let mut state = lifecycle::LifecycleState::new(handle, flags);
+                state.bind_scripts(
+                    session.plugin_roots.installed.clone(),
+                    &session.options.user_data,
+                );
                 let accepted = state.flags();
                 session.lifecycle = Some(Box::new(state));
                 accepted
             }
         }
     })
+}
+
+/// 进程级：打开或关闭脚本插件，返回开关的实际状态。只由 4 个桌面入口（macOS 输入法进程、Windows Server、IBus 引擎进程、Fcitx5 addon）在启动时调用；Windows TIP、设置应用和 MCP 从不调用。release 构建和移动端恒返回 false：授权的加固（macOS 钥匙串 MAC）落地之前，发布出去的输入法不运行脚本。
+#[no_mangle]
+pub extern "C" fn msime_client_scripts_enable(on: bool) -> bool {
+    crate::scripts::enable(on)
 }
 
 /// 一次物理按下，开启新的一轮（`PASSTHROUGH` 除外）。FEEDBACK 下出按键音并返回打字特效，位布局同 `msime_client_typing_effect`；没选择加入、类别不认识、SECURE 字段或指针调用时返回 0。
