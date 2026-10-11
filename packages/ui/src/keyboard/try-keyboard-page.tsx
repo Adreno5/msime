@@ -1,3 +1,4 @@
+import { SendStopButton } from "../core/send-stop-button";
 import MarkdownIt from "markdown-it";
 import {
   useEffect,
@@ -325,29 +326,13 @@ export function TryKeyboardPage({
           onBlur={() => setFocused(false)}
         />
         {chat && (
-          <button
-            type="button"
+          <SendStopButton
             className={sendButton}
-            aria-label={sending ? "停止" : "发送"}
-            disabled={!sending && !draft.trim()}
-            // 发送后键盘留着，接着打下一句。
-            onPointerDown={(event) => event.preventDefault()}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => (sending ? stop() : void send())}
-          >
-            {sending ? (
-              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-                <rect width="14" height="14" rx="2" fill="currentColor" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M11 20V7.83l-5.59 5.59L4 12l8-8 8 8-1.41 1.41L13 7.83V20h-2Z"
-                  fill="currentColor"
-                />
-              </svg>
-            )}
-          </button>
+            sending={sending}
+            sendDisabled={!draft.trim()}
+            onStop={stop}
+            onSend={() => void send()}
+          />
         )}
       </div>
     </section>
