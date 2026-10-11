@@ -23,7 +23,7 @@ import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
 import { AccountNicknameField } from "./account-nickname-field";
 import { AccountInputField } from "./account-input-field";
-import { AccountVerificationCodeField } from "./account-verification-code-field";
+import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
 import {
   AccountIdentityDetails,
@@ -1035,22 +1035,16 @@ function AccountDetailsPage({
     setError,
     setNotice,
   );
+  const verification = useAccountVerification({ client, mounted, clientGeneration, setNotice });
   const {
     channel,
     setChannel,
-    target,
-    code,
     setCode,
-    challenge,
     setChallenge,
-    expiresAt,
-    resendSeconds,
-    expired,
     selectChannel,
-    updateTarget,
     sendCode,
     signIn: runVerificationSignIn,
-  } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
+  } = verification;
   const {
     waiting: googleWaiting,
     resetWaiting: resetGoogleWaiting,
@@ -1706,38 +1700,13 @@ function AccountDetailsPage({
             </>
           ) : (
             <div className={account.signInBody}>
-              <AccountInputField
-                label={channel === "email" ? "邮箱地址" : "手机号（含国家区号）"}
-                ariaLabel={channel === "email" ? "邮箱地址" : "手机号（含国家区号）"}
-                type={channel === "email" ? "email" : "tel"}
-                autoComplete={channel === "email" ? "email" : "tel"}
-                maxLength={320}
-                value={target}
-                disabled={busy}
-                onChange={(value) => {
-                  updateTarget(value);
-                }}
+              <AccountVerificationForm
+                variant="page"
+                verification={verification}
+                busy={busy}
+                onRequestCode={requestCode}
+                onSignIn={signIn}
               />
-              <ActionButton
-                action={requestCode}
-                className={challenge ? account.provider : account.submit}
-                disabled={busy || !target.trim() || resendSeconds > 0}
-                label={resendSeconds > 0 ? `${resendSeconds} 秒后可重新发送` : "获取验证码"}
-              />
-              {challenge && (
-                <div className={account.code}>
-                  <AccountVerificationCodeField value={code} disabled={busy} onChange={setCode} />
-                  <ActionButton
-                    action={signIn}
-                    className={account.submit}
-                    disabled={busy || expired || !/^\d{6}$/.test(code)}
-                    label={expired ? "验证码已过期，请重新获取" : busy ? "正在登录…" : "登录"}
-                  />
-                </div>
-              )}
-              <p className={`${account.muted} m-0 text-center`}>
-                验证码只用于本次登录，请勿向他人透露。
-              </p>
               <div className={account.signInFooter}>
                 <ActionButton
                   action={() => setChannel(null)}
