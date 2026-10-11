@@ -5897,8 +5897,9 @@ public final class MSIMEInputService extends InputMethodService {
         boolean sendable = recentImageSendable(nowMs);
         recentClip.dismiss();
         render();
-        if (identity == null || mimeType == null || connection == null) return;
-        if (!sendable || !imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)) {
+        if (identity == null || mimeType == null || connection == null
+                || !imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)) return;
+        if (!sendable) {
             notice("这个输入框不支持直接发送图片，可以长按输入框粘贴");
             return;
         }
