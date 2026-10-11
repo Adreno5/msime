@@ -1,4 +1,4 @@
-// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎，激活时也先报属性再 set_active（全屏前台的判断由测试注入，好让属性在两次调用之间变化）；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏（韩文、整句改字、本地回车）前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退用命令 19；上屏特效只在上屏真的进了文档时发布，部分选词暂存的那一段和宿主合成的上屏都不发布；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。最后经 InputState 核对 TIP 报的属性记在客户端上，词库维护后重建的会话也拿得到。
+// Server 的会话接入生命周期核心以后，宿主库调用的先后顺序。测试自己实现 msime_client.h 里 Server 用到的函数，记下每一次调用，在 FocusedSession 的真实按键路径上逐条核对：会话一建好就选择加入 FEEDBACK 和 HOST_HOLDS_PIECES；字段属性变了先报，再报按键，然后才把键交给引擎，每次 focus(true) 之前都原样报一次属性（值没变也报，脚本运行时据此确认属性），激活时也先报属性再 set_active（全屏前台的判断由测试注入，好让属性在两次调用之间变化）；交给应用的键带 PASSTHROUGH、不派发；TIP 自己写进文档的上屏（韩文、整句改字、本地回车）前后打开 COMMIT_OBSERVE_ONLY；以词定字的回退用命令 19；上屏特效只在上屏真的进了文档时发布，部分选词暂存的那一段和宿主合成的上屏都不发布；旧的 key_sound、commit_sound、music_set_active 和 typing_effect 一次都不再调用，同一次上屏不会在宿主这边再响一遍。最后经 InputState 核对 TIP 报的属性记在客户端上，词库维护后重建的会话也拿得到。
 #include "FocusedSession.h"
 #include "InputQueue.h"
 #include "LifecyclePolicy.h"
@@ -107,7 +107,15 @@ std::vector<std::string> trace() {
   return result;
 }
 
+// 每次 focus(true) 都紧挨在一次 set_field_traits 之后，值没变也报：脚本运行时据此确认获得焦点时的属性，把 focus_in 交给脚本。
+void require_traits_before_focus(int line) {
+  for (size_t at = 0; at < calls.size(); ++at)
+    if (calls[at].name == "focus" && calls[at].value == 1)
+      require_at(at > 0 && calls[at - 1].name == "set_field_traits", line);
+}
+
 void expect_trace(const std::vector<std::string> &expected, int line) {
+  require_traits_before_focus(line);
   const auto actual = trace();
   if (actual != expected) {
     std::cerr << "expected:";
@@ -271,14 +279,14 @@ int main() {
       // 会话一建好就选择加入，不等第一次激活。
       EXPECT_TRACE({"create:0", "set_lifecycle:" + std::to_string(lifecycle_flags())});
 
-      // 激活：先报字段属性（旧 TIP 什么都没报，属性未知、没有变化，不调用），再成为背景音乐的所有者。
+      // 激活：获得焦点之前原样报一次字段属性（旧 TIP 什么都没报，属性未知，值没变也报），再成为背景音乐的所有者。
       const PipeTicket ticket{client, {1, 2, 3}};
       const auto change = gate.begin(ticket, token);
       REQUIRE(change.has_value());
       const auto lease = change->pending;
       REQUIRE(focused.prepare(lease));
       REQUIRE(gate.acknowledge(lease, [] { return true; }));
-      EXPECT_TRACE({"focus:1", "set_active:1"});
+      EXPECT_TRACE({"set_field_traits:0", "focus:1", "set_active:1"});
 
       // 旧 TIP 的一个字母：按键在引擎处理之前报给核心，属性仍然未知（不带 KNOWN）。
       uint64_t request = 2;
@@ -389,6 +397,11 @@ int main() {
                     "set_lifecycle:" + std::to_string(lifecycle_flags())});
       REQUIRE(recorded.back() == "g");
 
+      // 切到英文再切回来：切回来的 focus(true) 之前同样原样再报一次属性。
+      REQUIRE(focused.set_input_enabled(lease, false));
+      REQUIRE(focused.set_input_enabled(lease, true));
+      EXPECT_TRACE({"focus:0", "set_field_traits:" + std::to_string(MSIME_TRAIT_KNOWN), "focus:1"});
+
       // 整段上屏的候选来源（这里是整句）选中后读音还剩一截：Server 丢掉剩下的读音，选中的一段直接进文档，不是暂存的部分选词。这次选词不带 HOST_HOLDS_PIECES，核心照常出上屏音、写上屏特效，之后再恢复；带着它的话这次整段上屏既不响也不画，还会用 0 把连击徽标清零。
       REQUIRE(focused.configured_key(lease, key('E', u'e', request), TsfPreeditStyle::Pinyin, {}).has_value());
       REQUIRE(focused.confirm(lease, request++));
@@ -418,13 +431,13 @@ int main() {
       REQUIRE(focused.cancel(lease));
       EXPECT_TRACE({"set_active:0", "focus:0"});
 
-      // 再次获得焦点时全屏应用在前台：先报属性，再成为背景音乐的所有者，核心据此不放音乐。
+      // 再次获得焦点时全屏应用在前台：属性在获得焦点之前报（变了先报一次，获得焦点之前再原样报一次，这里合并成一条），再成为背景音乐的所有者，核心据此不放音乐。
       fake_fullscreen = true;
       const auto again = gate.begin(ticket, token + 1);
       REQUIRE(again.has_value());
       REQUIRE(focused.prepare(again->pending));
       REQUIRE(gate.acknowledge(again->pending, [] { return true; }));
-      EXPECT_TRACE({"focus:1", "set_field_traits:" + std::to_string(MSIME_TRAIT_KNOWN | MSIME_TRAIT_FULLSCREEN),
+      EXPECT_TRACE({"set_field_traits:" + std::to_string(MSIME_TRAIT_KNOWN | MSIME_TRAIT_FULLSCREEN), "focus:1",
                     "set_active:1"});
       REQUIRE(focused.cancel(again->pending));
       EXPECT_TRACE({"set_active:0", "focus:0"});

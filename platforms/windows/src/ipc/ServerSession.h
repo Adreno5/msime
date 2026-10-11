@@ -110,7 +110,7 @@ public:
   nlohmann::json view() const;
   // 一次物理按下（msime_client_key，lifecycle_key 或 lifecycle_passthrough_key 的值）：会话开着 FEEDBACK，按键音由共享库按会话的偏好排进播放队列，返回这个键的打字特效（位布局同 msime_client_typing_effect），候选窗据此画闪光和连击。不阻塞、不分配。只有 Server 调它：TSF DLL 把同一个库链进它加载到的每个进程，从不选择加入生命周期，也从不启动播放器。
   uint32_t key(uint32_t key);
-  // 交给核心的字段属性（server_field_traits 的值），和上次报的一样时不调 FFI。属性决定声音、特效和背景音乐：SECURE 什么都不出、音乐关掉，FULLSCREEN 声音静音、特效照画。
+  // 交给核心的字段属性（server_field_traits 的值），和上次报的一样时不调 FFI。activate 和 set_input_enabled 在获得焦点之前另外原样再报一次（confirm_field_traits_before_focus），调用方要先用它报好此刻的属性。属性决定声音、特效和背景音乐：SECURE 什么都不出、音乐关掉，FULLSCREEN 声音静音、特效照画。
   void set_field_traits(uint32_t traits);
   uint32_t field_traits() const {
     check_thread();
@@ -153,6 +153,8 @@ private:
   TypingEffectSettings typing_effect_settings_{};
   TypingEffectPalette typing_effect_palette_{};
   void refresh_typing_effect_settings();
+  // 每次 msime_client_focus(true) 之前调用：把 field_traits_ 原样再报一次，不去重。
+  void confirm_field_traits_before_focus();
 };
 
 // TIP 已经从自己的宿主会话把文字写进文档的那一次派发：派发前打开 COMMIT_OBSERVE_ONLY，离开作用域时关掉，派发抛出也一样。可以嵌套：外层已经打开时，内层什么都不做，也不会提前关掉外层的。

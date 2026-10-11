@@ -93,6 +93,8 @@ nlohmann::json ServerSession::activate(uint64_t epoch) {
     throw std::logic_error("Expired Windows activation");
   if (active_ && epoch != epoch_)
     response(msime_client_focus(session_, false));
+  if (input_enabled_)
+    confirm_field_traits_before_focus();
   auto result = response(msime_client_focus(session_, input_enabled_));
   epoch_ = epoch;
   active_ = true;
@@ -108,6 +110,8 @@ nlohmann::json ServerSession::deactivate(uint64_t epoch) {
 void ServerSession::set_input_enabled(uint64_t epoch, bool enabled) {
   check_active(epoch);
   if (input_enabled_ != enabled) {
+    if (enabled)
+      confirm_field_traits_before_focus();
     response(msime_client_focus(session_, enabled));
     input_enabled_ = enabled;
   }
@@ -614,6 +618,10 @@ void ServerSession::set_field_traits(uint32_t traits) {
     return;
   (void)msime_client_set_field_traits(session_, traits);
   field_traits_ = traits;
+}
+void ServerSession::confirm_field_traits_before_focus() {
+  // 脚本运行时只在获得焦点之后字段属性经过确认时才把 focus_in 交给脚本：确认是获得焦点之前的一次 set_field_traits（值相同也算），或者获得焦点之后的第一个键。只靠后者的话，Windows 激活之后要等第一个键，focus_in 几乎永远到不了脚本；靠前者又不能去重，属性没变时就不会有这次调用。所以每次 msime_client_focus(true) 之前都原样再报一次。核心只在属性变了时发 traits_changed，多报一次不改变别的。
+  (void)msime_client_set_field_traits(session_, field_traits_);
 }
 void ServerSession::set_commit_observe_only(bool observe_only) noexcept {
   // 错线程时 FFI 自己返回 0、什么都不改，这里不再抛出：清标志的一方在析构里调用。
