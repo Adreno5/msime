@@ -421,7 +421,7 @@ memory_pages = 4                # 可选，1 到 64，默认 16
 | 单次钩子           | `candidates` 125 000，`before_commit` 100 000，其余 25 000；实际可用的是这个和本轮剩下的较小者                              |
 | 函数调用           | 每次调用 `msime` 的函数扣 100 fuel，每复制 4 字节再扣 1                                                                     |
 | 值栈               | 64 KiB，递归最深 256 层                                                                                                     |
-| 表                 | 最多 4 张，合计 10 000 个元素                                                                                               |
+| 表                 | 最多 4 张，每张 10 000 个元素                                                                                               |
 | 同时启用           | 8 个                                                                                                                        |
 | 进程内存总账       | 64 MiB：每个插件按「线性内存 + 模块大小 × 128 + 256 KiB + 64 KiB」估算，启用时检查，放不下就拒绝启用                        |
 
@@ -440,7 +440,7 @@ memory_pages = 4                # 可选，1 到 64，默认 16
 ### 失败
 
 - 一次失败指 trap（`unreachable`、越界、除零等）、超出 fuel 配额、栈溢出、内存越过预留，或 `msime_on_event` 返回负数。失败时丢弃这个插件这一次的全部动作，上屏和候选保持原样，后面的插件照常运行。
-- trap 之后这个插件在当前输入框里不再运行，下一次聚焦时重新实例化；返回负数不算 trap，实例照用。
+- 钩子运行到一半的失败（trap、fuel 用完、栈溢出、内存越过预留）之后实例丢弃，这个插件在当前输入框里不再运行，下一次聚焦时重新实例化。返回负数、本轮配额在调用之前就已用完（不运行，直接算一次 fuel 耗尽）时实例照用；`before_commit` 每次都在一次性的快照实例上运行，它的失败也不影响插件的实例。
 - 停用：初始化失败（含 `msime_abi` 不是 1、`msime_init` 返回负数）和模块不合规立即停用；否则最近 50 次投递里失败 3 次，或者最近 20 次里有 3 次超过 4 ms，就停用。停用持续到授权变化或输入法进程重启。
 - 输入法自己在投递时出错，会关掉本进程的全部脚本直到重启，上屏照常。
 - 停用的插件记在 `<数据目录>/script-health.json`，只有 id、内容哈希和类别（`invalid`、`init`、`failed`、`slow`），不记失败次数和原因。
@@ -497,7 +497,7 @@ target/debug/msime-pack run path/to/pack --events events.jsonl --grant all
 - `init_fuel` 只在这个事件之前实例化时出现，是初始化用掉的 fuel。
 - `actions` 是这次调用修改类函数的记录和输入法给的结果，目前都是 `denied`；失败时这些动作在输入法里全部丢弃。
 - `log` 是插件经 `log` 写的每一行，`msime_init` 里写的跟在实例化的那个事件上。
-- `status`：`ok`；`not_subscribed`（清单没声明这个钩子）；失败原因 `out_of_fuel`、`stack_overflow`、`memory_limit`、`memory_out_of_bounds`、`unreachable`、`trap`、`negative_return`；初始化失败 `init:<原因>`（如 `init:init_failed`、`init:abi_mismatch`），之后的事件是 `disabled`；trap 之后、下一次 `focus_in` 之前是 `suspended`；初始化预算被本轮用完时是 `deferred`。
+- `status`：`ok`；`not_subscribed`（清单没声明这个钩子）；失败原因 `out_of_fuel`、`stack_overflow`、`memory_limit`、`memory_out_of_bounds`、`unreachable`、`trap`、`negative_return`；初始化失败 `init:<原因>`（如 `init:init_failed`、`init:abi_mismatch`），之后的事件是 `disabled`；实例因失败丢弃之后（见[失败](#失败)）、下一次 `focus_in` 之前是 `suspended`；初始化预算被本轮用完时是 `deferred`。
 
 实例的生命周期按输入法的规则：第一次需要投递时才实例化，`focus_in` 之前和 `focus_out` 之后丢弃实例，同一轮里重建的实例接着用这一轮剩下的配额。和输入法不同的地方：
 
