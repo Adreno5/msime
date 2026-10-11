@@ -28,6 +28,30 @@ def wait(predicate):
     raise AssertionError("Expected frontend state was not observed")
 
 
+def daemon_environment(root, addon):
+    """把真实 daemon 的目录、插件与状态限制在合成夹具内。"""
+    config = root / "config" / "fcitx5"
+    config.mkdir(parents=True)
+    (config / "profile").write_text(
+        "[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=msime\n"
+        "[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n"
+        "[Groups/0/Items/1]\nName=msime\nLayout=\n[GroupOrder]\n0=Default\n")
+    runtime = root / "run"
+    runtime.mkdir(mode=0o700)
+    data = root / "data" / "fcitx5"
+    (data / "addon").mkdir(parents=True)
+    (data / "inputmethod").mkdir()
+    source = Path(__file__).resolve().parents[1]
+    (data / "addon" / "msime.conf").write_bytes((source / "msime.conf").read_bytes())
+    (data / "inputmethod" / "msime.conf").write_bytes((source / "msime-inputmethod.conf").read_bytes())
+    system_lib = subprocess.check_output(
+        ["pkg-config", "--variable=libdir", "Fcitx5Core"], text=True).strip()
+    return dict(os.environ, XDG_CONFIG_HOME=str(root / "config"),
+               XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(runtime),
+               MSIME_FCITX5_OPTIONS=str(root / "options.json"),
+               FCITX_ADDON_DIRS=f"{addon.parent}:{system_lib}/fcitx5")
+
+
 def main():
     resources, library, addon = map(Path, sys.argv[1:4])
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -76,26 +100,9 @@ def main():
         if "--wayland-punctuation" in sys.argv[4:]:
             options["preferences"]["usage_reporting"] = False
         publish()
-        config = root / "config" / "fcitx5"
-        config.mkdir(parents=True)
-        (config / "profile").write_text(
-            "[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=msime\n"
-            "[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n"
-            "[Groups/0/Items/1]\nName=msime\nLayout=\n[GroupOrder]\n0=Default\n")
+        env = daemon_environment(root, addon)
         runtime = root / "run"
-        runtime.mkdir(mode=0o700)
-        data = root / "data" / "fcitx5"
-        (data / "addon").mkdir(parents=True)
-        (data / "inputmethod").mkdir()
         source = Path(__file__).resolve().parents[1]
-        (data / "addon" / "msime.conf").write_bytes((source / "msime.conf").read_bytes())
-        (data / "inputmethod" / "msime.conf").write_bytes((source / "msime-inputmethod.conf").read_bytes())
-        system_lib = subprocess.check_output(
-            ["pkg-config", "--variable=libdir", "Fcitx5Core"], text=True).strip()
-        env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"),
-                   XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(runtime),
-                   MSIME_FCITX5_OPTIONS=str(root / "options.json"),
-                   FCITX_ADDON_DIRS=f"{addon.parent}:{system_lib}/fcitx5")
         if "--page-number" in sys.argv[4:]:
             env["FCITX_X11_USE_CLIENT_SIDE_UI"] = "1"
         if "--wayland-punctuation" in sys.argv[4:]:

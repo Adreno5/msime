@@ -447,7 +447,7 @@ impl Runtime<Session> {
             .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         if resolved {
             self.advance()?;
-            self.refresh()?;
+            self.refresh_online_candidates()?;
         }
         Ok(resolved)
     }

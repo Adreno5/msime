@@ -17,7 +17,9 @@ class EmptyGlossResultWiring(unittest.TestCase):
         self.assertIn('_translationAppliedGeneration = view[@"generation"];', empty)
         self.assertIn("[self synchronizeCandidateServices];", empty)
         self.assertIn("return YES;", empty)
-        self.assertIn("applyTranslations:@[]", source)
+        for method in ("appearanceChanged:", "applySharedToolbarPreferences:"):
+            clearing = source.split(f"- (void){method}", 1)[1].split("\n- (", 1)[0]
+            self.assertIn("applyTranslations:@[]", clearing, method)
 
     def test_android_empty_result_follows_offline_bookkeeping(self):
         source = (ROOT / "platforms/android/java/app/msime/android/core/MSIMEInputService.java").read_text()
@@ -25,7 +27,8 @@ class EmptyGlossResultWiring(unittest.TestCase):
         body = body.split("NativeClient.applyTranslations(", 1)[0]
         guard = body.index("if (new JSONArray(translations).length() == 0) return;")
         self.assertLess(body.index("candidateOfflineGlossGeneration = token.generation();"), guard)
-        self.assertIn('session, generation, "[]"', source)
+        clearing = source.split("if (translationDisplayChanged) {", 1)[1].split("\n        if (", 1)[0]
+        self.assertIn('session, generation, "[]"', clearing)
 
     def test_ios_empty_offline_array_never_reaches_session(self):
         source = (ROOT / "platforms/ios/KeyboardExtension/Sources/keyboard/KeyboardViewController.swift").read_text()

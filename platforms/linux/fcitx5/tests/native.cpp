@@ -3200,7 +3200,7 @@ int main(int argc, char **argv) {
     const auto glossResources = state->resources_;
     const std::filesystem::path backupPath = glossPath.string() + ".seed-test-backup";
     std::error_code restorationError;
-    const auto missingOfflineGloss = [&](bool interrupt) {
+    const auto checkMissingOfflineGloss = [&](bool interrupt) {
       auto resources = state->resources_;
       std::filesystem::rename(glossPath, backupPath);
       fcitx::ScopeExit restore([&] {
@@ -3208,7 +3208,7 @@ int main(int argc, char **argv) {
         std::filesystem::rename(backupPath, glossPath, restorationError);
       });
       state->resources_ = std::string(directory) + "/missing-gloss-resources";
-      require(!interrupt, "合成夹具中途失败");
+      if (interrupt) throw std::logic_error("合成夹具中途失败");
       state->startTranslation(response(msime_client_translation_query(state->session_)), true);
       while (state->translation_job_.valid()) {
         require(state->translation_job_.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
@@ -3220,14 +3220,14 @@ int main(int argc, char **argv) {
     };
     bool interrupted = false;
     try {
-      missingOfflineGloss(true);
-    } catch (const std::runtime_error &error) {
-      interrupted = std::string(error.what()) == "合成夹具中途失败";
+      checkMissingOfflineGloss(true);
+    } catch (const std::logic_error &) {
+      interrupted = true;
     }
     require(interrupted, "夹具应触发合成中途失败");
     require(!restorationError && state->resources_ == glossResources && std::filesystem::exists(glossPath),
             "中途失败后必须恢复资源目录和释义数据库");
-    missingOfflineGloss(false);
+    checkMissingOfflineGloss(false);
     require(!restorationError && state->resources_ == glossResources && std::filesystem::exists(glossPath),
             "正常退出也必须恢复资源目录和释义数据库");
     const auto retainedQuery = response(msime_client_translation_query(state->session_));

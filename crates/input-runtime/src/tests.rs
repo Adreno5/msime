@@ -7536,6 +7536,11 @@ fn a_failed_ai_answer_leaves_a_dash_in_the_seat_until_the_composition_changes() 
     };
     let pending = texts(&runtime);
     let generation = runtime.generation();
+    let translated = runtime.view().candidates[0].text.clone();
+    assert!(runtime.apply_translations(
+        generation,
+        [(translated.clone(), "synthetic-retained-gloss".into())]
+    ));
     assert!(!runtime
         .resolve_online_candidates_owned(query.clone(), 0)
         .unwrap());
@@ -7547,12 +7552,29 @@ fn a_failed_ai_answer_leaves_a_dash_in_the_seat_until_the_composition_changes() 
     let seat = pending.iter().position(|text| text == "…").unwrap();
     assert_eq!(resolved[seat], "—");
     assert_eq!(resolved.len(), pending.len());
+    assert_eq!(
+        runtime
+            .view()
+            .candidates
+            .iter()
+            .find(|candidate| candidate.text == translated)
+            .unwrap()
+            .translation
+            .as_deref(),
+        Some("synthetic-retained-gloss")
+    );
+    assert!(!runtime.apply_translations(generation, [(translated, "stale-gloss".into())]));
 
     type_characters(&mut runtime, "h");
     runtime
         .dispatch(Action::Command(Command::Backspace))
         .unwrap();
     assert_eq!(texts(&runtime), pending);
+    assert!(runtime
+        .view()
+        .candidates
+        .iter()
+        .all(|candidate| candidate.translation.is_none()));
     assert!(!runtime.resolve_online_candidates_owned(query, 1).unwrap());
 }
 
