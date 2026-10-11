@@ -4002,6 +4002,8 @@ export class KeyboardSession implements HardwareKeyTarget {
   private onlineEpoch: number = 0;
   private readonly onlineRequests: Set<http.HttpRequest> = new Set<http.HttpRequest>();
   private onlineSignature: string = '';
+  /** 问过 AI 却没有结果、占位行已换成「—」的那次请求的签名：同一组字不再向 AI 发请求，只在本地把占位行再换成「—」；组字一变就清掉（#6888）。 */
+  private aiResolvedSignature: string = '';
   private translationTimer: number = -1;
   private translationEpoch: number = 0;
   private readonly translationRequests: Set<http.HttpRequest> = new Set<http.HttpRequest>();
@@ -4231,11 +4233,13 @@ export class KeyboardSession implements HardwareKeyTarget {
     }
     const query: OnlineQuery | null = NativeReplyPolicy.successfulValue<OnlineQuery>(reply);
     if (query === null) {
+      this.aiResolvedSignature = '';
       this.invalidateOnlineProviders();
       return;
     }
     const signature: string = OnlineCandidatePolicy.signature(query);
     if (signature === this.onlineSignature) return;
+    if (signature !== this.aiResolvedSignature) this.aiResolvedSignature = '';
     this.invalidateOnlineProviders();
     this.onlineSignature = signature;
     const epoch: number = ++this.onlineEpoch;
@@ -4281,10 +4285,14 @@ export class KeyboardSession implements HardwareKeyTarget {
     if (epoch !== this.onlineEpoch || handle !== this.handle) return;
     const assistant = aiQuery.ai_assistant;
     if (assistant?.enabled === true && aiQuery.ai_eligible) {
-      const aiApplied: boolean = await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch);
-      // 向 AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位（#6888）。
-      if (!aiApplied) this.resolveAiSeat(handle, aiDocument, epoch);
-      complete = aiApplied && complete;
+      // 这个组字问过 AI 而没有结果（云候选失败触发的重试走到这里）：不再发请求，只把占位行换成「—」。
+      const aiApplied: boolean = requestSignature !== this.aiResolvedSignature
+        && await this.fetchAi(handle, aiDocument, assistant.candidate_limit, epoch);
+      // 向 AI 发问了却没有采用任何回答（请求发不出去、失败、空回答、被拒）：AI 座位上的占位行换成「—」，后面的候选不挪位；同一组字不再问，所以不为 AI 释放签名，只有云候选失败才重试（#6888）。
+      if (!aiApplied) {
+        this.resolveAiSeat(handle, aiDocument, epoch);
+        if (epoch === this.onlineEpoch && handle === this.handle) this.aiResolvedSignature = requestSignature;
+      }
     }
     if (!complete) this.releaseOnlineSignatureIfCurrent(requestSignature, epoch, handle);
   }
