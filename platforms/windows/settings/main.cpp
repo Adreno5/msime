@@ -3088,6 +3088,10 @@ private:
       bool_row(schemes, 0xE8CB, L"四码唯一候选自动上屏",
                L"五笔输入达到四码且只有一个候选时，自动提交该候选。关闭后这个词留在候选列表里，用空格或数字键选它。",
                L"wubi_auto_commit_unique", true);
+      // 查码面板画在共享应用的「输入」页里，本窗口只给入口：五笔版没有辅助码组，这是本窗口通到那一页的唯一一行。
+      shell_row(schemes, 0xE721, L"五笔查码",
+                L"在水杉输入法应用的「输入 › 五笔查码」中输入或粘贴汉字，查它的 86 和 98 五笔编码", L"打开",
+                nav::shell_links::input);
     }
 
     auto language = add_group(page, L"中英文");

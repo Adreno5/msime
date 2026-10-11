@@ -51,7 +51,7 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：候选字体选择器；皮肤编辑器、取色器、主题包和社区皮肤库；词库管理；「输入」页上的辅助码插件；面板设置；帮助与反馈；以及屏幕键盘和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：候选字体选择器；皮肤编辑器、取色器、主题包和社区皮肤库；词库管理；「输入」页上的辅助码插件和五笔查码；面板设置；帮助与反馈；以及屏幕键盘和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget appearance{"", "appearance"};
 inline constexpr ShellTarget skin{"", "skin"};
