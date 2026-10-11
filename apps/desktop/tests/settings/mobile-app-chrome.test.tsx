@@ -173,7 +173,7 @@ test("Harmony appearance names only the surfaces the form factor actually has", 
   // The phone hides the physical-keyboard shortcut page everywhere, the sidebar included: a sidebar entry here was a button `selectPage` refused, and asserting the page's text passed only because the hidden fieldset stays in the DOM.
   expect(screen.queryByRole("button", { name: "快捷键" })).toBeNull();
 
-  // The per-surface theme overrides are in the 高级 group of 主题.
+  // 手机皮肤页只有网格，不提供各界面的明暗覆盖。
   cleanup();
   renderSettings(
     "harmony",
@@ -186,7 +186,7 @@ test("Harmony appearance names only the surfaces the form factor actually has", 
     "skin",
   );
   await settingsFormReady();
-  expect(screen.getByRole("combobox", { name: "候选栏主题" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "候选栏主题" })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "候选窗口主题" })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "悬浮工具栏主题" })).toBeNull();
 
@@ -368,8 +368,9 @@ test("a touch host calls the keyboard pages by their touch names", async () => {
   await settingsFormReady();
   expect(screen.getByRole("heading", { level: 1, name: "键盘" })).toBeTruthy();
   const sidebar = screen.getByRole("navigation", { name: "设置分类" });
-  expect(within(sidebar).getByRole("button", { name: "外接键盘快捷键" })).toBeTruthy();
   expect(within(sidebar).queryByRole("button", { name: "屏幕键盘" })).toBeNull();
+  // 手机上不提供实体键盘快捷键页，即使宿主路由了快捷键。
+  expect(within(sidebar).queryByRole("button", { name: "外接键盘快捷键" })).toBeNull();
   expect(within(sidebar).queryByRole("button", { name: "快捷键" })).toBeNull();
 
   cleanup();
@@ -867,4 +868,16 @@ test("the 2-in-1 warns on 输入 and 关于 while the input method is not set up
   renderSettings("harmony", {}, "input", { home: { setup, openSystemKeyboardSettings } });
   await settingsFormReady();
   expect(screen.queryByText("水杉输入法尚未在「系统 → 输入法」中添加")).toBeNull();
+});
+
+// 共享沙箱还没有 data-group-id 时，宿主照实报 `harmony_shared_sandbox: false`，但设置页不对用户显示这件事：这是开发和签名上的状态，用户对它无能为力。
+test("a HarmonyOS host without the shared sandbox shows no warning about it", async () => {
+  renderSettings("harmony", {
+    mobile_settings: true,
+    panel_windows: false,
+    harmony_shared_sandbox: false,
+  });
+  await settingsFormReady();
+  expect(screen.queryByText(/共享沙箱/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });

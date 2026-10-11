@@ -40,7 +40,6 @@ const preferences = {
 const rootPages: RootPage[] = [
   { id: "input", title: "输入" },
   { id: "expression", title: "表达" },
-  { id: "shortcuts", title: "外接键盘快捷键" },
   { id: "dictionary", title: "词库" },
   { id: "skin", title: "皮肤" },
   { id: "appearance", title: "候选栏" },
@@ -122,7 +121,6 @@ test("root rows follow the design's grouping and order, with every other offered
     "输入",
     "表达",
     "词库",
-    "外接键盘快捷键",
     "语音输入",
     "手写输入",
     "剪贴板",
@@ -134,7 +132,7 @@ test("root rows follow the design's grouping and order, with every other offered
   expect(groupOf("键盘")).toBe(groupOf("皮肤"));
   expect(groupOf("候选栏")).toBe(groupOf("皮肤"));
   expect(groupOf("输入")).not.toBe(groupOf("皮肤"));
-  expect(groupOf("外接键盘快捷键")).toBe(groupOf("输入"));
+  expect(groupOf("词库")).toBe(groupOf("输入"));
   expect(groupOf("手写输入")).toBe(groupOf("语音输入"));
   expect(groupOf("AI 辅助")).toBe(groupOf("剪贴板"));
   expect(groupOf("开发者选项")).not.toBe(groupOf("剪贴板"));
@@ -143,11 +141,10 @@ test("root rows follow the design's grouping and order, with every other offered
 
 test("root rows show only the pages the shell offers", () => {
   const { home } = renderTouchHome({
-    pages: rootPages.filter((page) => !["shortcuts", "developer", "handwriting"].includes(page.id)),
+    pages: rootPages.filter((page) => !["developer", "handwriting"].includes(page.id)),
   });
 
   const titles = rowTitles(home);
-  expect(titles).not.toContain("外接键盘快捷键");
   expect(titles).not.toContain("开发者选项");
   expect(titles).not.toContain("手写输入");
   expect(titles).toContain("语音输入");
@@ -239,10 +236,10 @@ test("search lists the rows whose title or value matches, case-insensitively, an
   expect(rowTitles(home)).toEqual(["表达"]);
 
   fireEvent.change(search, { target: { value: "  键盘 " } });
-  expect(rowTitles(home)).toEqual(["键盘", "外接键盘快捷键"]);
+  expect(rowTitles(home)).toEqual(["键盘"]);
 
-  fireEvent.click(screen.getByRole("button", { name: "外接键盘快捷键" }));
-  expect(onOpenPage).toHaveBeenCalledWith("shortcuts");
+  fireEvent.click(screen.getByRole("button", { name: "键盘" }));
+  expect(onOpenPage).toHaveBeenCalledWith("screen-keyboard");
 });
 
 test("search says so when nothing matches", () => {

@@ -13,7 +13,6 @@ import { useSettingsNavigation } from "./settings/use-settings-navigation";
 import { useSettingsContentScrollReset } from "./settings/use-settings-content-scroll-reset";
 import { MobileSettingsTabs } from "./settings/mobile-settings-tabs";
 import { SettingsPageHeader } from "./settings/settings-page-header";
-import { SettingsWarning } from "./settings/settings-warning";
 import {
   mobilePrimaryPageIds,
   mobileTabForPage,
@@ -2861,13 +2860,11 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     linuxPlatform ||
     windowsPlatform ||
     macosPlatform;
-  // Physical-keyboard shortcuts and a desktop floating toolbar have no phone surface. HarmonyOS keeps those controls in the input-method panel on a 2-in-1, but its phone panel is still a touch keyboard, so the settings entry must not leak the PC key descriptions into the phone's "全部设置" list.
+  // 手机上不提供实体键盘快捷键页和桌面悬浮工具栏。HarmonyOS 在 2-in-1 上把这些控件放在输入法面板里，手机的面板仍是触屏键盘，设置里不能把电脑按键的说明带进手机的列表。
   //
-  // The shortcuts page carries the hardware-keyboard chords, so it is hidden where the host does not route any of them rather than where the platform happens to be a phone. Any of these devices can have a keyboard attached, and its owner has to be able to reach the switches the host already reads; hiding the page by platform name left them unreachable on Android.
+  // 快捷键页以前只在宿主一个快捷键都不路由时隐藏，好让接了实体键盘的手机用户改得到宿主读取的开关（Android 曾因按平台隐藏而改不到）。现在手机上一律不提供：接实体键盘的手机用户很少，这一页对其余用户是噪音；宿主照旧按默认值处理这些按键。
   const mobileHiddenPageIds: readonly SettingsPageId[] = [
-    ...(showModeSwitchShortcuts || showPanelShortcuts || showDesktopMaintenanceShortcuts
-      ? []
-      : (["shortcuts"] as const)),
+    "shortcuts",
     "floating-toolbar",
     // Sound packs, music and the / and @ modes all belong to a physical keyboard and a desktop candidate window; a phone keeps its own keyboard feedback settings.
     "plugins",
@@ -3564,13 +3561,6 @@ function SettingsShell(props: SettingsPageProps) {
                 (page === "input" || page === "about") && (
                   <SetupWarningStrip actions={client.home} />
                 )}
-              {harmonyPlatform && host?.harmony_shared_sandbox === false && (
-                <SettingsWarning role="alert">
-                  当前 HarmonyOS
-                  构建未启用输入法共享沙箱；设置页的偏好、账号、插件和统计不会同步到键盘。请使用已配置
-                  data-group-id 的签名版本。
-                </SettingsWarning>
-              )}
               <SettingsPageStatus
                 error={error}
                 notice={notice}
