@@ -42,11 +42,14 @@ function renderSettings({
   mobile = true,
   feedback,
   devices = false,
+  voiceHotkeys,
 }: {
   page: string;
   preferences?: Record<string, unknown>;
   mobile?: boolean;
   feedback?: MobileKeyboardFeedback;
+  /** 宿主处理实体键盘的语音快捷键；真机的鸿蒙宿主在手机和 2in1 上都报告 true。 */
+  voiceHotkeys?: boolean;
   /** 宿主能列出录音设备，语音页显示「录音设备」分组。 */
   devices?: boolean;
 }) {
@@ -67,6 +70,7 @@ function renderSettings({
           mobile_settings: mobile,
           panel_windows: !mobile,
           voice_capture_devices: devices,
+          ...(voiceHotkeys === undefined ? {} : { voice_hotkeys: voiceHotkeys }),
         }),
         ...(devices ? { listVoiceCaptureDevices: vi.fn().mockResolvedValue([]) } : {}),
         openSystemKeyboardSettings: vi.fn(),
@@ -111,6 +115,20 @@ function shownValue(title: string) {
 }
 
 // ---- 语音输入 ----
+
+// Ctrl+F9、长按右 Alt 这些语音快捷键要连实体键盘才用得上：手机上不列，2in1 照旧列。
+test("voice shortcuts for a physical keyboard are listed on a 2in1 and not on a phone", async () => {
+  const preferences = { voice_input: { enabled: true, language: "", asr_provider: "doubao" } };
+  renderSettings({ page: "voice", preferences, voiceHotkeys: true });
+  await settingsFormReady();
+  expect(screen.queryByText("语音快捷键")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Ctrl+F9 切换语音" })).toBeNull();
+  cleanup();
+
+  renderSettings({ page: "voice", preferences, mobile: false, voiceHotkeys: true });
+  await settingsFormReady();
+  expect(screen.getByText("语音快捷键")).toBeTruthy();
+});
 
 test("the phone voice page puts language and punctuation first and the service below", async () => {
   renderSettings({
