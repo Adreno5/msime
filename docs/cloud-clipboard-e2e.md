@@ -155,6 +155,28 @@
 
 ### 宿主的职责
 
-- 保存 `keystore`：放在与账号会话相同的安全存储里（iOS/macOS 钥匙串、Android Keystore 加密、HarmonyOS 应用私有目录、桌面端仅本人可读写的文件），退出登录时与会话一起删除。输入法进程和设置进程读写同一份。
-- 设置页显示待批准的设备和核对码，提供「允许」「拒绝」「移除」和「重置云剪贴板」；本机待批准时显示自己的核对码，并说明去哪里批准。
+- 保存 `keystore`：每台设备（每个应用安装）只有一份，输入法进程、设置进程和 Tauri 设置页读写同一份，否则同一台设备会在服务端登记成几台、要批准几次。存放位置见下一节，写入一律原子替换，退出登录时与会话一起删除。
+- 设置页显示待批准的设备和核对码，提供「允许」「拒绝」「移除」和「重置云剪贴板」；本机待批准时显示自己的核对码，并说明去哪里批准。移除和重置之后其他设备都要重新批准，确认框里要写明。
 - 键盘只用 `list` 和 `add`；本机待批准时显示一句提示，不上传。
+- 置顶、保留期、删除、清空和开关仍直接调用原来的接口，不经过驱动。
+
+### 密钥串的存放位置
+
+| 平台 | 位置 | 共用者 |
+| --- | --- | --- |
+| macOS | 与 `account-session.json` 同一目录下的 `cloud-clipboard-keystore`，仅本人可读写 | 输入法、设置应用（Swift）与 Tauri 面板（Rust） |
+| Windows、Linux | 与 `account-session.json` 同一目录下的 `cloud-clipboard-keystore`，仅本人可读写 | 设置窗口与面板（Rust） |
+| iOS | 钥匙串通用密码项，service `app.msime.backend.account`，account `cloud-clipboard-keystore`，与账号会话同一个 App Group 访问组 | App、键盘扩展与 Tauri 设置页 |
+| Android | 应用私有目录下的 `cloud-clipboard-keystore`，与账号会话一样先用 AndroidKeyStore 加密 | 主进程、`:ime` 进程与 Tauri 设置页 |
+| HarmonyOS | 与账号会话同一个应用私有目录下的 `cloud-clipboard-keystore` | 设置应用与键盘 |
+
+Tauri 移动端（iOS、Android）经平台插件读写：`loadCloudClipboardKeystore` 返回 `{"value": string|null}`，`saveCloudClipboardKeystore` 的参数是 `{"value": string}`。
+
+### 共享面板的动作
+
+共享 React 面板（Windows、Linux、macOS 的 Tauri 面板、HarmonyOS 设置页、移动端 Tauri 设置页）经各宿主的 `cloud_clipboard_request` 发出 `CloudClipboardAction`。原有的 `list`、`add`、`delete`、`set_enabled` 不变，`list` 的结果多出 `retention_days`、`e2e` 和条目的 `pinned`、`device`；新增的动作是：
+
+- `{"operation": "devices"}`：驱动的 `status`。
+- `{"operation": "approve" | "reject" | "remove", "device_id": "…"}`、`{"operation": "reset"}`：对应驱动的同名操作。
+
+这五个动作的结果都是驱动 `status` 的结果形状。驱动返回的错误按宿主原有的错误通道交给面板，错误码保持驱动给出的 `code`（例如 `clipboard_device_pending`、`clipboard_sync_disabled`、`clipboard_key_conflict`）。
