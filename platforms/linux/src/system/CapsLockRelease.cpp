@@ -10,7 +10,18 @@
 
 namespace msime::linux_host {
 
+namespace {
+bool (*available_for_testing)() = nullptr;
+bool (*release_for_testing)() = nullptr;
+} // namespace
+
+void replace_caps_lock_release_for_testing(bool (*available)(), bool (*release)()) {
+  available_for_testing = available;
+  release_for_testing = release;
+}
+
 bool caps_lock_release_available() {
+  if (available_for_testing) return available_for_testing();
 #ifdef MSIME_LINUX_HAS_X11_SURFACE
   return caps_lock_release_supported(std::getenv("WAYLAND_DISPLAY"), std::getenv("XDG_SESSION_TYPE"),
                                      std::getenv("DISPLAY"));
@@ -20,6 +31,7 @@ bool caps_lock_release_available() {
 }
 
 bool release_caps_lock() {
+  if (release_for_testing) return release_for_testing();
 #ifdef MSIME_LINUX_HAS_X11_SURFACE
   if (!caps_lock_release_available()) return false;
   Display *display = XOpenDisplay(nullptr);

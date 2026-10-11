@@ -3417,7 +3417,7 @@ public:
     const auto code = event.key().code();
     return event.key().sym() == FcitxKey_Caps_Lock && code != 50 && code != 62;
   }
-  // 单按 Caps Lock 切换中英文。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换。返回 true 表示切换了；按键本身照常交给后面的路由和应用。
+  // 单按 Caps Lock 切换中英文。按下时布防（按下事件带的是按下前的锁定状态），别的键按下取消，松开时认定为轻点就先撤回大写锁定、成功后切换。返回 true 表示这个按键到此为止、交给应用：切换了，或者是布防了的按下。fcitx 不把 Caps_Lock 算作修饰键，组字时按下它会照普通按键先把首选上屏，那样轻点切换上屏的就是候选而不是原文，和单按 Shift、IBus 宿主都不一样，所以布防了的按下不再往下走，组字留到松开时由切换上屏原文。
   bool observeCapsLockTap(const fcitx::KeyEvent &event) {
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::steady_clock::now().time_since_epoch())
@@ -3427,7 +3427,7 @@ public:
       return false;
     }
     if (!event.isRelease()) {
-      if (caps_lock_down_) return false;
+      if (caps_lock_down_) return caps_lock_tap_.armed();
       caps_lock_down_ = true;
       const auto raw = event.rawKey().states();
       const bool enabled = mode_caps_lock_enabled_ && ic_.hasFocus() && !restricted() &&
@@ -3436,7 +3436,7 @@ public:
                                                       fcitx::KeyState::Alt, fcitx::KeyState::Super,
                                                       fcitx::KeyState::Hyper});
       caps_lock_tap_.press(now, enabled, raw.test(fcitx::KeyState::CapsLock), others);
-      return false;
+      return caps_lock_tap_.armed();
     }
     caps_lock_down_ = false;
     // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
@@ -6954,7 +6954,7 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
   const auto &key = event.key();
   const auto sym = key.sym();
   const auto states = key.states();
-  // 和裸 Shift 一样，切换之后松开事件照常交给应用。
+  // 和裸 Shift 一样，切换之后松开事件照常交给应用；布防了的按下也只交给应用。
   if (observeCapsLockTap(event)) return false;
   // 规范化后的符号可能已丢掉 Shift 位，光标转发必须按原始事件判断。
   caret_shift_ = event.rawKey().states().test(fcitx::KeyState::Shift);

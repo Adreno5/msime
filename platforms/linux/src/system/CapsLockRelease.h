@@ -20,4 +20,7 @@ bool caps_lock_release_available();
 // 把 X11 会话的大写锁定撤回关闭，成功返回 true。不可用或失败时什么都不改。
 bool release_caps_lock();
 
+// 宿主测试用：把上面两个函数换成测试给的实现，从真实的按键处理路径驱动轻点，不碰 X 服务器。传空指针恢复系统实现。产品代码不调用它。
+void replace_caps_lock_release_for_testing(bool (*available)(), bool (*release)());
+
 } // namespace msime::linux_host
