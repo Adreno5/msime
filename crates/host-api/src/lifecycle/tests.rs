@@ -280,6 +280,14 @@ fn the_commit_origin_follows_the_facts() {
     );
     // 失焦上屏不论事实如何都是 FocusLoss，而且没有 before_commit。
     assert_eq!(origin(Call::Focus(false), flushed), CommitOrigin::FocusLoss);
+    // 命令 20 替失焦结束组字，引擎即使记了选中候选也按失焦上屏算。
+    assert_eq!(
+        origin(
+            dispatch(InputClass::FocusLoss),
+            picked(SelectionHow::Finish, SelectionOutcome::Committed)
+        ),
+        CommitOrigin::FocusLoss
+    );
     let blur = events(
         Call::Focus(false),
         ordinary(),
@@ -539,37 +547,44 @@ fn input_classes_and_local_modes_map_from_the_runtime() {
                 value: b'a',
                 shift: false
             },
-            false
+            None
         ),
         InputClass::Character
     );
     assert_eq!(
-        InputClass::of(&Action::PunctuationAscii(b','), false),
+        InputClass::of(&Action::PunctuationAscii(b','), None),
         InputClass::Punctuation
     );
     assert_eq!(
-        InputClass::of(&Action::SelectHighlighted, false),
+        InputClass::of(&Action::SelectHighlighted, None),
         InputClass::Selection
     );
     assert_eq!(
-        InputClass::of(&Action::NextPage, false),
+        InputClass::of(&Action::NextPage, None),
         InputClass::Navigation
     );
     assert_eq!(
-        InputClass::of(&Action::Command(Command::Backspace), false),
+        InputClass::of(&Action::Command(Command::Backspace), None),
         InputClass::Edit
     );
     assert_eq!(
-        InputClass::of(&Action::Command(Command::CommitRaw), false),
+        InputClass::of(&Action::Command(Command::CommitRaw), None),
         InputClass::Commit
     );
     assert_eq!(
-        InputClass::of(&Action::Command(Command::Cancel), false),
+        InputClass::of(&Action::Command(Command::Cancel), None),
         InputClass::Cancel
     );
     assert_eq!(
-        InputClass::of(&Action::Command(Command::Cancel), true),
+        InputClass::of(
+            &Action::Command(Command::Cancel),
+            Some(InputClass::HostCommit)
+        ),
         InputClass::HostCommit
+    );
+    assert_eq!(
+        InputClass::of(&Action::Finish, Some(InputClass::FocusLoss)),
+        InputClass::FocusLoss
     );
     assert_eq!(LocalModeClass::of("none"), LocalModeClass::None);
     assert_eq!(LocalModeClass::of("url"), LocalModeClass::Url);

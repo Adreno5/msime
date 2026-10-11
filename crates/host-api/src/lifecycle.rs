@@ -56,6 +56,8 @@ pub const KEY_PASSTHROUGH: u32 = 0x400;
 
 /// `msime_client_command` 的命令 19：宿主自己写入文本后丢弃组字。
 pub const COMMAND_CANCEL_AFTER_HOST_COMMIT: u32 = 19;
+/// `msime_client_command` 的命令 20：焦点即将离开或会话即将关闭，宿主替用户结束组字。对会话同 `MSIME_FINISH_COMPOSITION`，上屏来源记 `FocusLoss`。
+pub const COMMAND_FINISH_ON_FOCUS_LOSS: u32 = 20;
 
 /// 一次物理按下，来自 `msime_client_key`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,15 +91,17 @@ pub enum InputClass {
     HostCommit = 7,
     /// 其余：候选的置顶、删除、固定位置，假名切换，打开候选列表，清缓存，九键筛选。
     Other = 8,
+    /// 命令 20：焦点即将离开或会话即将关闭，宿主替用户结束组字（macOS IMK 的 `commitComposition:`）。上屏同 focus(false)，来源记 `FocusLoss`。
+    FocusLoss = 9,
 }
 
 impl InputClass {
-    /// 派发前就要读出类别：动作随后被交给 runtime。
-    pub fn of(action: &msime_input_runtime::Action, host_commit: bool) -> Self {
+    /// 派发前就要读出类别：动作随后被交给 runtime。`host` 是命令 19、20 指定的类别（`HostCommit`、`FocusLoss`），它们对会话的动作同 Cancel、Finish，只有生命周期里的类别不同。
+    pub fn of(action: &msime_input_runtime::Action, host: Option<Self>) -> Self {
         use msime_engine::host::Command;
         use msime_input_runtime::Action;
-        if host_commit {
-            return Self::HostCommit;
+        if let Some(class) = host {
+            return class;
         }
         match action {
             Action::Character { .. } | Action::GridKey(_) | Action::Glide { .. } => Self::Character,
@@ -197,7 +201,7 @@ pub enum CommitOrigin {
     HeldFlush = 2,
     /// 方案自己的文本：韩文音节、藏文、注音的空格、笔画字母、标点本身等。
     SchemeText = 3,
-    /// `msime_client_focus(false)` 上屏的组字。不可改写，也不出声。
+    /// `msime_client_focus(false)` 或命令 20 上屏的组字。不可改写，也不出声、不画。
     FocusLoss = 4,
 }
 
@@ -439,7 +443,11 @@ pub fn derive(
 }
 
 fn commit_origin(call: Call, facts: DispatchFacts) -> CommitOrigin {
-    if call == Call::Focus(false) {
+    // 命令 20 是宿主替失焦结束组字，和 focus(false) 的上屏一样处理，即使引擎把它记成了选中候选。
+    if matches!(
+        call,
+        Call::Focus(false) | Call::Dispatch(InputClass::FocusLoss)
+    ) {
         return CommitOrigin::FocusLoss;
     }
     match facts.selection {
@@ -663,7 +671,7 @@ impl LifecycleState {
                     Instant::now(),
                 );
             }
-            // 失焦上屏不出声：IBus 根本不插入这段运行时副本，macOS 失焦时出提交音也是错的。
+            // 失焦上屏（focus(false) 和命令 20）不出声也不画：IBus 根本不插入这段运行时副本，macOS 失焦时出提交音也是错的。
             LifecycleEvent::Commit { origin, .. }
                 if origin != CommitOrigin::FocusLoss && !secure =>
             {
@@ -729,15 +737,15 @@ impl crate::HostSession {
             .is_some_and(LifecycleState::feedback)
     }
 
-    /// 派发前：采样并发 `input`。
+    /// 派发前：采样并发 `input`。`host` 是命令 19、20 指定的类别，见 [`InputClass::of`]。
     pub(crate) fn lifecycle_input(
         &mut self,
         action: &msime_input_runtime::Action,
-        host_commit: bool,
+        host: Option<InputClass>,
     ) -> Option<Pending> {
         let state = self.lifecycle.as_deref_mut()?;
         let before = Sample::of(&self.runtime);
-        let class = InputClass::of(action, host_commit);
+        let class = InputClass::of(action, host);
         state.before_dispatch(&self.sound, class, self.runtime.local_mode());
         Some(Pending {
             call: Call::Dispatch(class),
