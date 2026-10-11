@@ -136,10 +136,12 @@ SessionController::SessionController(
              settled_since_ = std::chrono::steady_clock::now();
              if (reply.online_query) {
                (void)cloud_.submit(lease, *reply.online_query);
-               // The same query carries the resolved AI config and the
-               // ai_eligible flag; the AI worker decides for itself whether it
-               // applies, so an ineligible query costs nothing here.
-               (void)ai_.submit(lease, *reply.online_query);
+               // The session descriptor contains the current credential and
+               // maps Engine's pinyin segments to the provider request field.
+               // An absent descriptor still lets the worker resolve the AI
+               // seat without starting a network request.
+               (void)ai_.submit(lease, *reply.online_query,
+                                reply.ai_request.value_or(std::string{}));
              }
            },
            [this](const FocusLease &lease, const PendingReply &reply) {

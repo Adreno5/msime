@@ -49,11 +49,9 @@ int transfer_progress(void *context, curl_off_t, curl_off_t, curl_off_t,
   return cancelled && cancelled() ? 1 : 0;
 }
 
-// Build the AI request from the online query the Engine already produced.
-// Returns nothing when the query is not eligible, which is the ordinary case:
-// AI assistance off, no credentials, or a prefix too short to ask about.
-std::optional<nlohmann::json> ai_descriptor(const std::string &query,
-                                            uint8_t &limit) {
+// The session has already built the authenticated HTTP descriptor. Keep the
+// response limit from the query that will receive the parsed candidates.
+std::optional<uint8_t> ai_limit(const std::string &query) {
   try {
     const auto parsed = nlohmann::json::parse(query, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object())
@@ -64,30 +62,9 @@ std::optional<nlohmann::json> ai_descriptor(const std::string &query,
     if (!config.is_object() || !config.value("enabled", false))
       return std::nullopt;
     const auto candidate_limit = config.value("candidate_limit", 3);
-    limit = static_cast<uint8_t>(candidate_limit >= 1 && candidate_limit <= 10
-                                     ? candidate_limit
-                                     : kDefaultLimit);
-    nlohmann::json request{
-        {"config", config},
-        {"input",
-         {{"segmented_pinyin",
-           parsed.value("segmented_pinyin", nlohmann::json::array())},
-          {"context", parsed.value("ai_context", std::string{})},
-          {"candidate_limit", limit}}}};
-    const auto serialized = request.dump();
-    if (serialized.size() > 65536)
-      return std::nullopt;
-    auto raw = msime::host_api::own_string(
-        msime_client_ai_http_request(
-            reinterpret_cast<const uint8_t *>(serialized.data()),
-            serialized.size()));
-    if (!raw)
-      return std::nullopt;
-    const auto response = nlohmann::json::parse(raw.get(), nullptr, false);
-    if (response.is_discarded() || !response.value("ok", false) ||
-        !response.at("value").is_object())
-      return std::nullopt;
-    return response.at("value");
+    return static_cast<uint8_t>(candidate_limit >= 1 && candidate_limit <= 10
+                                    ? candidate_limit
+                                    : kDefaultLimit);
   } catch (...) {
     return std::nullopt;
   }
@@ -107,7 +84,8 @@ bool ai_requested(const std::string &query) {
   }
 }
 
-std::optional<std::string> ai_cache_key(const std::string &query) {
+std::optional<std::string> ai_cache_key(const std::string &query,
+                                        const std::string &descriptor) {
   try {
     const auto parsed = nlohmann::json::parse(query, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object())
@@ -130,7 +108,12 @@ std::optional<std::string> ai_cache_key(const std::string &query) {
     // Session and generation stay out so an unchanged request can be reused
     // after a candidate refresh.
     const auto context = parsed.value("ai_context", std::string{});
-    return nlohmann::json{{"provider", config.value("provider", std::string{})},
+    // The descriptor contains the endpoint and credential headers resolved by
+    // the host session. Hash it into the identity without retaining secrets in
+    // the cache key, so a credential or endpoint change cannot reuse an older
+    // provider answer for the same pinyin.
+    return nlohmann::json{{"descriptor_hash", std::hash<std::string>{}(descriptor)},
+                          {"provider", config.value("provider", std::string{})},
                           {"endpoint", config.value("endpoint", std::string{})},
                           {"model", config.value("model", std::string{})},
                           {"candidate_limit", candidate_limit},
@@ -237,24 +220,25 @@ AiCandidateWorker::AiCandidateWorker(Completed completed, Fetcher fetcher)
   if (!completed_)
     throw std::invalid_argument("Missing AI candidate completion");
   if (!fetch_)
-    fetch_ = [](const std::string &query,
+    fetch_ = [](const std::string &query, const std::string &descriptor,
                 const std::function<bool()> &cancelled) {
-      return fetch(query, cancelled);
+      return fetch(query, descriptor, cancelled);
     };
   worker_ = std::thread([this] { run(); });
 }
 
 AiCandidateWorker::~AiCandidateWorker() { stop(); }
 
-bool AiCandidateWorker::submit(const FocusLease &lease, std::string query) {
+bool AiCandidateWorker::submit(const FocusLease &lease, std::string query,
+                               std::string descriptor) {
   if (!lease.epoch || !lease.token || query.empty() ||
-      query.size() > kMaximumQueryBytes)
+      query.size() > kMaximumQueryBytes || descriptor.size() > 131072)
     return false;
   std::lock_guard lock(mutex_);
   if (stopping_)
     return false;
   const uint64_t serial = ++next_serial_;
-  pending_ = Request{lease, std::move(query), serial};
+  pending_ = Request{lease, std::move(query), std::move(descriptor), serial};
   latest_serial_.store(serial, std::memory_order_release);
   wake_.notify_one();
   return true;
@@ -286,17 +270,20 @@ bool AiCandidateWorker::cancelled(uint64_t serial) const noexcept {
 
 std::vector<std::string>
 AiCandidateWorker::fetch(const std::string &query,
+                         const std::string &descriptor,
                          const std::function<bool()> &is_cancelled) {
-  uint8_t limit = kDefaultLimit;
-  const auto descriptor = ai_descriptor(query, limit);
-  if (!descriptor || (is_cancelled && is_cancelled()))
+  const auto limit = ai_limit(query);
+  if (!limit || descriptor.empty() || (is_cancelled && is_cancelled()))
     return {};
-  const auto body = https_post(*descriptor, is_cancelled);
+  const auto parsed_descriptor = nlohmann::json::parse(descriptor, nullptr, false);
+  if (parsed_descriptor.is_discarded())
+    return {};
+  const auto body = https_post(parsed_descriptor, is_cancelled);
   if (!body || body->empty() || (is_cancelled && is_cancelled()))
     return {};
   auto raw = msime::host_api::own_string(
       msime_client_parse_ai_response(
-          reinterpret_cast<const uint8_t *>(body->data()), body->size(), limit));
+          reinterpret_cast<const uint8_t *>(body->data()), body->size(), *limit));
   if (!raw)
     return {};
   try {
@@ -305,7 +292,7 @@ AiCandidateWorker::fetch(const std::string &query,
         !parsed.at("value").is_array())
       return {};
     std::vector<std::string> candidates;
-    candidates.reserve(limit);
+    candidates.reserve(*limit);
     for (const auto &entry : parsed.at("value")) {
       if (!entry.is_string())
         continue;
@@ -313,7 +300,7 @@ AiCandidateWorker::fetch(const std::string &query,
       if (text.empty() || text.size() > 512)
         continue;
       candidates.push_back(std::move(text));
-      if (candidates.size() >= limit)
+      if (candidates.size() >= *limit)
         break;
     }
     return candidates;
@@ -350,7 +337,7 @@ void AiCandidateWorker::run() {
     };
     std::vector<std::string> candidates;
     bool cached = false;
-    const auto cache_key = ai_cache_key(request.query);
+    const auto cache_key = ai_cache_key(request.query, request.descriptor);
     {
       std::lock_guard lock(mutex_);
       if (cache_key) {
@@ -363,7 +350,8 @@ void AiCandidateWorker::run() {
     }
     if (!cached) {
       try {
-        candidates = fetch_(request.query, is_cancelled);
+        if (!request.descriptor.empty())
+          candidates = fetch_(request.query, request.descriptor, is_cancelled);
       } catch (...) {
         failed_.store(true, std::memory_order_release);
         candidates.clear();
