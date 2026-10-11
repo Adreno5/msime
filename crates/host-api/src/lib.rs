@@ -41,7 +41,7 @@ use msime_engine::host::{
     validate_shuangpin_custom_profile, CandidateEdge, Command, EngineOptions, Session,
     ShuangpinCustomTable,
 };
-use msime_engine::{SchemeSet, SchemeType};
+use msime_engine::{release_japanese_dictionary_cache, SchemeSet, SchemeType};
 use msime_input_runtime::HandwritingQuery;
 #[cfg(unix)]
 use msime_input_runtime::UnixSocketProvider;
