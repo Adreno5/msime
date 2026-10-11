@@ -316,8 +316,9 @@ public final class VoicePage extends DetailPage {
         List<Runnable> imports = new ArrayList<>();
         List<String> importLabels = new ArrayList<>();
         ResourcePacks.Pack runtime = state.runtimePack();
+        ResourcePackService.Status runtimeStatus = ResourcePackService.status(ResourcePacks.VOICE_RUNTIME);
         if (!state.runtimeReady() && runtime != null && !runtime.importFiles().isEmpty()
-                && ResourcePackService.status(ResourcePacks.VOICE_RUNTIME) == null) {
+                && (runtimeStatus == null || !runtimeStatus.running())) {
             importLabels.add(ResourcePackService.title(ResourcePacks.VOICE_RUNTIME));
             imports.add(() -> explainImport(ResourcePacks.VOICE_RUNTIME, null,
                 ResourcePackService.title(ResourcePacks.VOICE_RUNTIME), runtime.importFiles()));
