@@ -144,27 +144,14 @@ public final class SymbolPanelModel {
 
     /** 读回存储的记录：丢掉空串、超长条目和重复项，最多保留 {@link #RECENTS_LIMIT} 个。 */
     public static List<String> normalizeRecents(List<String> stored) {
-        LinkedHashSet<String> unique = new LinkedHashSet<>(RECENTS_LIMIT);
-        if (stored != null) {
-            for (String symbol : stored) {
-                if (!validSymbol(symbol)) continue;
-                unique.add(symbol);
-                if (unique.size() == RECENTS_LIMIT) break;
-            }
-        }
-        return List.copyOf(unique);
+        return ListPolicy.normalizeRecents(stored, RECENTS_LIMIT, SymbolPanelModel::validSymbol);
     }
 
     /** 点了 `selected` 之后的记录：它排到最前，原来的位置去掉，超出上限的最旧一个被挤掉。 */
     public static List<String> recordRecent(List<String> stored, String selected) {
         if (!validSymbol(selected)) throw new IllegalArgumentException("Invalid recent symbol");
-        ArrayList<String> reordered = new ArrayList<>(RECENTS_LIMIT);
-        reordered.add(selected);
-        for (String symbol : normalizeRecents(stored)) {
-            if (reordered.size() == RECENTS_LIMIT) break;
-            if (!selected.equals(symbol)) reordered.add(symbol);
-        }
-        return List.copyOf(reordered);
+        return ListPolicy.recordRecent(stored, selected, RECENTS_LIMIT,
+            SymbolPanelModel::validSymbol);
     }
 
     /** 能不能记进「常用」：空串和超过 {@link #MAX_SYMBOL_CODE_POINTS} 个码位的不记。 */
