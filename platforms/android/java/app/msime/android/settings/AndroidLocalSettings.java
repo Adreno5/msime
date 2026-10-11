@@ -65,7 +65,7 @@ public final class AndroidLocalSettings {
     public static final String LANGUAGE_KEY_CYCLE = "platform.android.language_key_cycle";
     /** 剪贴板面板一行排几条（{@link ClipboardLayoutPolicy}）：`one` 单列、`two` 双列，默认单列。同步字段表里没有这个键，只在本机。 */
     public static final String CLIPBOARD_COLUMNS = "platform.android.clipboard_columns";
-    /** 工具栏显示最近复制的文字（{@link RecentClipboardSuggestion}），默认开；剪贴板历史关着时不生效。同步字段表里没有这个键，只在本机。 */
+    /** 工具栏显示最近复制的文字或图片（{@link RecentClipboardSuggestion}，图片见 #6781），默认开；剪贴板历史关着时不生效。同步字段表里没有这个键，只在本机。 */
     public static final String CLIPBOARD_SUGGESTION = "platform.android.clipboard_suggestion";
     /** 「数字行」（#6022）：26 键和韩文键盘的字母上方多一行 1–0（{@link KeyboardLayout#drawsNumberRow}），默认关。同步字段表里没有这个键，只在本机。 */
     public static final String NUMBER_ROW = "platform.android.number_row";

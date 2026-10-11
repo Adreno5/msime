@@ -10,7 +10,7 @@ Status: implemented
 
 只做本机这一部分（第一期），跨设备的图片另行评估。
 
-- **同一个「最近复制」**：`RecentClipboardSuggestion` 多一种状态，复制的是图片时记身份和具体图片类型（`offerImage`），不记 URI，也不碰图片内容。显示窗口（60 秒）、点过或关掉后同一条不再出现、开始打字就收起，这些规则与文字一模一样；文字和图片同一时刻至多一条，后到的替换先到的。开关也是同一个：剪贴板历史开着且本地设置 `platform.android.clipboard_suggestion` 开着才提供，隐私模式、密码类和不许个性化学习的输入框不提供，系统标为敏感（`EXTRA_IS_SENSITIVE`）的图片直接丢弃。图片从不写进剪贴板历史。
+- **同一个「最近复制」**：`RecentClipboardSuggestion` 多一种状态，复制的是图片时记身份和具体图片类型（`offerImage`），不记 URI，也不碰图片内容。显示窗口（60 秒）、点过或关掉后同一条不再出现、开始打字就收起，这些规则与文字一模一样；文字和图片同一时刻至多一条，后到的替换先到的。开关也是同一个：剪贴板历史开着且本地设置 `platform.android.clipboard_suggestion` 开着才提供（设置页「工具栏显示最近复制」的说明写明文字和图片都归它管，否则想关掉图片的用户看不出该关哪一项），隐私模式、密码类和不许个性化学习的输入框不提供，系统标为敏感（`EXTRA_IS_SENSITIVE`）的图片直接丢弃。图片从不写进剪贴板历史。
 - **只在收得下的输入框里出现**：`render` 里经 `recentImageSendable` 判断，当前输入框的 `EditorInfo.contentMimeTypes` 声明收这种类型（规则同 `ClipDescription.compareMimeTypes`，`ClipboardImagePolicy.accepts`）才把这一行换成「发送复制的图片」。不声明的输入框里不显示，也不提示；图片仍在系统剪贴板上，长按输入框粘贴照样能用。是否显示按当前输入框实时判断：在不收图片的输入框里复制，切到收图片的输入框，一分钟内这一行会出现。
 - **发送的是缓存副本**：点按时 `sendRecentImage` 先在主线程核对剪贴板里还是同一张（身份一致、没有被清空或换掉、不敏感），再在 `clipboardImageWorker` 上把图读进 `cache/clipboard-images/`（`ClipboardImageCache.replace`，上限 20 MB，超过就不发并提示粘贴），回到主线程经本应用的 FileProvider（`${applicationId}.files`，`res/xml/msime_file_paths.xml` 新增 `clipboard-images`）拿到 content URI，用 `InputConnection.commitContent` 加 `INPUT_CONTENT_GRANT_READ_URI_PERMISSION` 交给输入框。读图期间换了输入框或收起了键盘（`clipboardImageGeneration` 变了），这张不再发。读图这一步是系统边界：图片来自别的应用的 provider，它在 `openFile` 里抛的 `NullPointerException`、`IllegalStateException` 等会经 binder 原样抛到 worker 上，所以 worker 除了 IOException 还接住全部 RuntimeException，一律提示「无法读取复制的图片」；漏掉一个，未捕获异常会让整个 `:ime` 进程崩掉。
 - **副本不久留**：目录里至多一张，写新的之前先删旧的；发出 5 分钟后删掉（`ClipboardImagePolicy.RETENTION_MS`），输入框没收下时立刻删，键盘进程启动和 `onDestroy` 时清空。
