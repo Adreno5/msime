@@ -136,10 +136,15 @@ namespace FanyImeFieldTraits
 {
 // 密码框：TIP 只能从「键盘停用或空上下文」认出它（KeyPressStatistics.h 的 ShouldCountKeyPress 用同一个判据），安全桌面（登录、UAC）也算。
 constexpr std::uint32_t Secure = 0x01u;
-// 客户端进程以管理员身份运行（TokenElevation）。
+// 客户端进程以管理员身份运行（TokenElevation），或者查不出来（见 ProcessElevated）。
 constexpr std::uint32_t Elevated = 0x40u;
 // TIP 会报的全部位；其余位的 FieldTraits 帧是非法帧。
 constexpr std::uint32_t Reported = Secure | Elevated;
+// TIP 查进程令牌的结果：`queried` 是 OpenProcessToken 和 GetTokenInformation(TokenElevation) 都成功了，`tokenElevated` 是查到的 TokenIsElevated。查不出来时当作提权：「提权窗口里不运行脚本」靠的就是这一位，少报会让它落空；ELEVATED 不让声音和特效静音，多报一次用户察觉不到。
+constexpr bool ProcessElevated(bool queried, bool tokenElevated)
+{
+    return !queried || tokenElevated;
+}
 constexpr std::uint32_t Observe(bool keyboardDisabled, bool secureMode, bool elevated)
 {
     return (keyboardDisabled || secureMode ? Secure : 0u) | (elevated ? Elevated : 0u);

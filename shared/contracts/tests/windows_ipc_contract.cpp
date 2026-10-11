@@ -121,6 +121,11 @@ int main()
     for (unsigned flags = 0; flags < 8; ++flags)
         CHECK((FanyImeFieldTraits::Observe((flags & 1u) != 0, (flags & 2u) != 0, (flags & 4u) != 0) &
                ~FanyImeFieldTraits::Reported) == 0);
+    // 查不出令牌时当作提权：提权窗口里不运行脚本靠的就是这一位，ELEVATED 又不让声音静音，多报没有代价。
+    static_assert(FanyImeFieldTraits::ProcessElevated(true, true));
+    static_assert(!FanyImeFieldTraits::ProcessElevated(true, false));
+    static_assert(FanyImeFieldTraits::ProcessElevated(false, false));
+    static_assert(FanyImeFieldTraits::ProcessElevated(false, true));
 
     hello.wch += 1;
     result = FanyImeProtocol::Negotiate(hello);

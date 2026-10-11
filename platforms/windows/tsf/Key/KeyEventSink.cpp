@@ -2134,24 +2134,25 @@ void CMetasequoiaIME::_NotePassthroughKeySound(WPARAM wParam, LPARAM lParam, WCH
 
 namespace
 {
-// 客户端进程是否以管理员身份运行。进程的令牌在它的一生里不会变，查一次就够；查不到时当作没有提权。这个 DLL 用 /Zc:threadSafeInit- 编译，函数内的静态变量没有线程安全的初始化，所以缓存放在常量初始化的原子量里（0 没查过，1 没有提权，2 提权）：几个线程同时第一次查，各自算出同一个值，不会有数据竞争。
+// 客户端进程是否以管理员身份运行。进程的令牌在它的一生里不会变，查一次就够；查不到时当作提权（FanyImeFieldTraits::ProcessElevated）。这个 DLL 用 /Zc:threadSafeInit- 编译，函数内的静态变量没有线程安全的初始化，所以缓存放在常量初始化的原子量里（0 没查过，1 没有提权，2 提权）：几个线程同时第一次查，各自算出同一个值，不会有数据竞争。
 bool CurrentProcessIsElevated()
 {
     static std::atomic<int> cached{0};
     int value = cached.load(std::memory_order_relaxed);
     if (value == 0)
     {
-        bool elevated = false;
+        bool queried = false;
+        bool tokenElevated = false;
         HANDLE token = nullptr;
         if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
         {
             TOKEN_ELEVATION elevation = {};
             DWORD size = 0;
-            elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) &&
-                       elevation.TokenIsElevated != 0;
+            queried = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) != FALSE;
+            tokenElevated = queried && elevation.TokenIsElevated != 0;
             CloseHandle(token);
         }
-        value = elevated ? 2 : 1;
+        value = FanyImeFieldTraits::ProcessElevated(queried, tokenElevated) ? 2 : 1;
         cached.store(value, std::memory_order_relaxed);
     }
     return value == 2;

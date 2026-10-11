@@ -93,6 +93,8 @@ int main(int argc, char **argv) {
     expect(sink, "FanyImeFieldTraits::Observe(_IsKeyboardDisabled() != FALSE, _IsSecureMode() != FALSE,", true,
            "a disabled keyboard, an empty context and the secure desktop are reported as SECURE");
     expect(sink, "GetTokenInformation(token, TokenElevation,", true, "an elevated client process is reported as ELEVATED");
+    expect(sink, "FanyImeFieldTraits::ProcessElevated(queried, tokenElevated)", true,
+           "a process whose token cannot be queried is reported as ELEVATED");
     const auto ime = read(root / "IME/MetasequoiaIME.cpp");
     expect_order(ime, "void SendCurrentImeStatusSnapshot(", "pIME->_NoteFieldTraitsForServer();",
                  "SendIMEStatusSnapshotToUIProcessViaNamedPipe(",
