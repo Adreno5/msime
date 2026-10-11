@@ -609,16 +609,16 @@ final class OnboardingUITests: XCTestCase {
     let app = XCUIApplication()
     app.launchArguments = ["-hasCompletedOnboarding", "YES", "-communityPreview"]
     app.launch()
-    app.tabBars.buttons["社区"].tap()
-    app.buttons["communityCategory-2"].tap()
+    openAISettings(app)
+    tapRevealed("replyCommunityLink", in: app)
+    XCTAssertTrue(app.navigationBars["回复模板社区"].waitForExistence(timeout: 5))
     let search = app.textFields.firstMatch
     search.tap(); search.typeText("reply\n")
-    app.buttons["publishCommunityWork"].tap()
+    app.buttons["publishCommunityResource"].tap()
     XCTAssertTrue(app.navigationBars["发布回复模板"].waitForExistence(timeout: 5))
     app.buttons["取消"].tap()
-    XCTAssertTrue(app.navigationBars["社区"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.navigationBars["回复模板社区"].waitForExistence(timeout: 5))
     XCTAssertEqual(search.value as? String, "reply")
-    XCTAssertTrue(app.buttons["communityCategory-2"].isSelected)
   }
 
   @MainActor
@@ -902,8 +902,9 @@ final class OnboardingUITests: XCTestCase {
     let toggle = app.switches["keyboardAIEnabled"]
     if toggle.value as? String == "1" { toggle.switches.firstMatch.tap() }
     toggle.switches.firstMatch.tap()
+    // 只看 isHittable 不够：页面下面还有社区回复模板，上滑之后保存按钮可能停在半透明的导航栏下面，点击落在导航栏上，配置没有保存。
     for _ in 0..<6 {
-      if app.buttons["saveServiceConfiguration"].isHittable { break }
+      if clearOfBars(app.buttons["saveServiceConfiguration"], in: app) { break }
       app.swipeDown()
     }
     app.buttons["saveServiceConfiguration"].tap()

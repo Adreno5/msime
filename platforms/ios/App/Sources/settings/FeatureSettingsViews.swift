@@ -406,6 +406,7 @@ struct ServiceSettingsView: View {
           Button(busy ? "正在处理…" : "发送并润色") { send() }
             .disabled(busy || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        CommunityReplyTemplatesSection()
       } else {
         Section {
           Button(recorder.isRecording ? "停止录音" : "开始录音") {

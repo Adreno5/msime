@@ -78,8 +78,15 @@ struct CommunityResourcesView: View {
   /// 等待导入确认的词库：导入会改动个人词库，所以绝不在单次点按时直接发生。
   @State private var confirmingImport: CommunityResource?
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-  /// The community home already owns the publish button; only the account-scoped list needs one.
-  private var offersPublishing: Bool { !initialScope.isEmpty && initialScope != "saved" }
+  /// 全部作品和「我发布的」都可以发布新作品；「收藏的」只是别人作品的书签，不放发布按钮。
+  private var offersPublishing: Bool { initialScope != "saved" }
+  /// 登录后才能发布。模拟器上的社区预览没有账号，直接打开发布表单，好让 UI 测试走到它。
+  private var opensPublisher: Bool {
+    #if DEBUG && targetEnvironment(simulator)
+    if CommunityPreviewFixtures.enabled { return true }
+    #endif
+    return signedIn
+  }
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
@@ -88,7 +95,7 @@ struct CommunityResourcesView: View {
           VStack(spacing: 12) {
             Image(systemName: kind.icon).font(.largeTitle).foregroundStyle(MetasequoiaTheme.accent)
             Text(scope == "" ? "期待第一份\(kind == .dictionary ? "词库" : "回复模板")" : "这里还没有作品")
-            Text(scope == "saved" ? "去社区逛逛，收藏喜欢的作品。" : "点右上角 + 发布你的第一份作品。")
+            Text(scope == "saved" ? "在「\(kind == .dictionary ? "词库" : "AI 润色与回复")」页浏览更多\(kind.title)，收藏喜欢的作品。" : "点右上角 + 发布你的第一份作品。")
               .font(.caption).foregroundStyle(MetasequoiaTheme.sub)
           }.frame(maxWidth: .infinity).padding(.vertical, 35)
         }
@@ -105,13 +112,12 @@ struct CommunityResourcesView: View {
       }.communityPageContent(regular: horizontalSizeClass == .regular)
     }
     .background(MetasequoiaTheme.canvas)
-    .navigationTitle(initialScope.isEmpty ? "社区" : "\(initialScope == "saved" ? "收藏的" : "我发布的")\(kind.title)")
-    // Without a scope this is the 社区 tab's own list, which carries the tab's large title.
-    .navigationBarTitleDisplayMode(initialScope.isEmpty ? .large : .inline)
+    .navigationTitle(initialScope.isEmpty ? "\(kind.title)社区" : "\(initialScope == "saved" ? "收藏的" : "我发布的")\(kind.title)")
+    .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       if offersPublishing {
         ToolbarItem(placement: .navigationBarTrailing) {
-          Button { if signedIn { publishing = true } else { showAccount = true } } label: {
+          Button { if opensPublisher { publishing = true } else { showAccount = true } } label: {
             Label("发布", systemImage: "plus")
           }
           .accessibilityLabel("发布\(kind.title)")
@@ -210,12 +216,7 @@ struct CommunityResourcesView: View {
             latest = try await SkinCommunityAPI.shared.resource(item.id)
           }
         } else {
-          try await SkinCommunityAPI.shared.saveResource(item.id, saved: true)
-          latest = try await SkinCommunityAPI.shared.resource(item.id)
-          let saved = latest
-          try await Task.detached(priority: .userInitiated) {
-            try CommunityLibrary.save(saved)
-          }.value
+          latest = try await CommunityReplyInstall.add(item)
           installed.insert(latest.id)
         }
         if let index = items.firstIndex(where: { $0.id == latest.id }) { items[index] = latest }
@@ -228,8 +229,8 @@ struct CommunityResourcesView: View {
   @MainActor private func refreshInstalled() async {
     if kind == .dictionary {
       installed = CommunityDictionaryImports.ids()
-    } else if let library = try? await Task.detached(priority: .userInitiated, operation: { try CommunityLibrary.read() }).value {
-      installed = Set(library.filter { $0.kind == .reply }.map(\.id))
+    } else if let ids = await CommunityReplyInstall.installedIDs() {
+      installed = ids
     }
   }
 
@@ -243,6 +244,116 @@ struct CommunityResourcesView: View {
       else { items = page.items }
       more = page.has_more
     } catch { if requestID == id { if !append { items = []; more = false }; message = error.localizedDescription } }
+  }
+}
+
+/// 把社区回复模板装进本机高情商回复键盘的模板库，由完整列表和「AI 润色与回复」页的社区回复模板共用。
+enum CommunityReplyInstall {
+  /// 先收藏（需要登录），再把最新版本复制进回复键盘的模板库；返回最新版本。
+  @MainActor static func add(_ item: CommunityResource) async throws -> CommunityResource {
+    try await SkinCommunityAPI.shared.saveResource(item.id, saved: true)
+    let latest = try await SkinCommunityAPI.shared.resource(item.id)
+    try await Task.detached(priority: .userInitiated) {
+      try CommunityLibrary.save(latest)
+    }.value
+    return latest
+  }
+
+  /// 模板库里已有的回复模板 id；模板库正被别处写入而读不到时为 nil，调用方保留上一次的结果。
+  static func installedIDs() async -> Set<String>? {
+    guard let library = try? await Task.detached(priority: .userInitiated, operation: { try CommunityLibrary.read() }).value else {
+      return nil
+    }
+    return Set(library.filter { $0.kind == .reply }.map(\.id))
+  }
+}
+
+/// 「AI 润色与回复」页里的社区回复模板：直接列出社区的前几份，每份带「添加」；最后一行「浏览更多回复模板」推入完整的回复模板社区，搜索、详情、收藏、评分、举报和发布都在那里。回复模板只给键盘的高情商回复用，所以放在配置它所用 AI 服务的这一页。
+struct CommunityReplyTemplatesSection: View {
+  /// 这一页直接列出的回复模板数。
+  private static let limit = 3
+
+  @State private var items: [CommunityResource]?
+  @State private var failed = false
+  @State private var installed: Set<String> = []
+  @State private var adding: Set<String> = []
+  @State private var message: String?
+
+  var body: some View {
+    Section {
+      if let items {
+        if items.isEmpty {
+          Text("社区里还没有回复模板。").foregroundStyle(.secondary)
+        }
+        ForEach(items) { row($0) }
+      } else {
+        Text(failed ? "暂时无法加载社区回复模板" : "正在读取社区回复模板…").foregroundStyle(.secondary)
+      }
+      // 加载和提示挂在这一行上：它总在，而挂在 Section 上的修饰符会分给每一行。
+      NavigationLink { CommunityResourcesView(kind: .reply) } label: { Text("浏览更多回复模板") }
+        .accessibilityIdentifier("replyCommunityLink")
+        .task { await load() }
+        .onAppear { Task { await refreshInstalled() } }
+        .alert("社区回复模板", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+          Button("好", role: .cancel) {}
+        } message: { Text(message ?? "") }
+    } header: {
+      Text("社区回复模板")
+    } footer: {
+      Text("添加后，在键盘的高情商回复里点「模板」即可选用；只有点击生成时才会发送文字。")
+    }
+  }
+
+  private func row(_ item: CommunityResource) -> some View {
+    let isAdded = installed.contains(item.id)
+    let isAdding = adding.contains(item.id)
+    let title = isAdded ? "已添加" : isAdding ? "添加中" : "添加"
+    return HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(item.name).lineLimit(1)
+        let meta = item.description.isEmpty ? CommunityListingText.resourceMeta(item) : item.description
+        if !meta.isEmpty { Text(meta).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+      }
+      Spacer(minLength: 8)
+      Button { add(item) } label: {
+        CommunityPillLabel(title: title, offersAction: !isAdded, size: .row).opacity(isAdding ? 0.6 : 1)
+      }
+      .buttonStyle(.borderless)
+      .disabled(isAdded || isAdding)
+      .accessibilityLabel("\(title)，\(item.name)")
+      .accessibilityIdentifier("replyCommunityAdd-\(item.id)")
+    }
+  }
+
+  private func add(_ item: CommunityResource) {
+    guard !adding.contains(item.id) else { return }
+    adding.insert(item.id)
+    Task { @MainActor in
+      defer { adding.remove(item.id) }
+      do {
+        let latest = try await CommunityReplyInstall.add(item)
+        installed.insert(latest.id)
+        if let index = items?.firstIndex(where: { $0.id == latest.id }) { items?[index] = latest }
+        ToastCenter.shared.show("已添加「\(latest.name)」")
+      } catch { message = error.localizedDescription }
+    }
+  }
+
+  @MainActor private func refreshInstalled() async {
+    if let ids = await CommunityReplyInstall.installedIDs() { installed = ids }
+  }
+
+  @MainActor private func load() async {
+    do {
+      let page = try await SkinCommunityAPI.shared.resources(.reply)
+      items = Array(page.items.prefix(Self.limit))
+      failed = false
+    } catch is CancellationError {
+      return
+    } catch {
+      // 已经加载过的列表保留下来；刷新失败只替换加载提示。
+      if items == nil { failed = true }
+    }
   }
 }
 
