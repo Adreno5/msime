@@ -355,13 +355,13 @@ public final class CommonPhrasesStore {
                 if (pack == null) continue;
                 String id = JsonPolicy.strictString(pack.opt("id"));
                 String name = JsonPolicy.strictString(pack.opt("name"));
-                Integer revision = nonNegativeInteger(pack.opt("revision"));
+                Integer revision = JsonPolicy.nonNegativeInteger(pack.opt("revision"));
                 if (id == null || name == null || revision == null) continue;
                 packs.add(new Pack(id, name, revision));
             }
         }
         return new Document(ListPolicy.copyOrEmpty(phrases), ListPolicy.copyOrEmpty(packs),
-            nonNegativeInteger(value.opt("skipped"), 0));
+            JsonPolicy.nonNegativeInteger(value.opt("skipped"), 0));
     }
 
     private static Result perform(Context context, JSONObject action, boolean writes) {
@@ -397,20 +397,9 @@ public final class CommonPhrasesStore {
         }
     }
 
-    /** 常用语包修订号和跳过条数必须是非负 JSON 整数。 */
+    /** Compatibility entry point; the shared rule lives in {@link JsonPolicy}. */
     public static Integer nonNegativeInteger(Object value) {
-        Integer parsed = JsonPolicy.strictInteger(value);
-        return parsed == null || parsed < 0 ? null : parsed;
-    }
-
-    static int strictInteger(Object value, int fallback) {
-        Integer parsed = JsonPolicy.strictInteger(value);
-        return parsed == null ? fallback : parsed;
-    }
-
-    static int nonNegativeInteger(Object value, int fallback) {
-        Integer parsed = nonNegativeInteger(value);
-        return parsed == null ? fallback : parsed;
+        return JsonPolicy.nonNegativeInteger(value);
     }
 
     /** Bootstrap 写进 runtime-options.json 的偏好目录，首次设置之前为空串。两个进程都从这里读，所以不会各自用一份。 */

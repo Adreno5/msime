@@ -45,6 +45,30 @@ public final class JsonPolicy {
         return null;
     }
 
+    /** Accept only a non-negative JSON integer that fits in a Java int. */
+    public static Integer nonNegativeInteger(Object value) {
+        Integer parsed = strictInteger(value);
+        return parsed == null || parsed < 0 ? null : parsed;
+    }
+
+    /** Accept only a non-negative JSON integer, using the supplied fallback otherwise. */
+    public static int nonNegativeInteger(Object value, int fallback) {
+        Integer parsed = nonNegativeInteger(value);
+        return parsed == null ? fallback : parsed;
+    }
+
+    /** Accept only a non-negative JSON integer without narrowing its long value. */
+    public static Long nonNegativeLong(Object value) {
+        Long parsed = strictLong(value);
+        return parsed == null || parsed < 0L ? null : parsed;
+    }
+
+    /** Accept only a non-negative JSON integer, using the supplied long fallback otherwise. */
+    public static long nonNegativeLong(Object value, long fallback) {
+        Long parsed = nonNegativeLong(value);
+        return parsed == null ? fallback : parsed;
+    }
+
     /** Accept only an Integer or Long without coercing strings or decimals. */
     public static Long strictLong(Object value) {
         if (value instanceof Integer integer) return integer.longValue();
