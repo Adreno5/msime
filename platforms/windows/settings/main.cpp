@@ -29,6 +29,7 @@
 #include "CandidatePalette.h"
 #include "CandidateWindowStyle.h"
 #include "GameProcessList.h"
+#include "PreferencePath.h"
 #include "AppInputModeRuleList.h"
 #include "SettingsDocumentFile.h"
 #include "SettingsNavigation.h"
@@ -491,25 +492,45 @@ std::wstring mcp_failure(std::wstring const &code, std::wstring const &name) {
   return L"无法写入 " + name + L" 的配置文件。";
 }
 
-// The stored value at a key, or null when it is absent. A key is either a top-level preference or `parent.leaf` one level down.
-IJsonValue lookup(JsonObject const &root, std::wstring_view key) {
-  if (!root)
-    return nullptr;
-  JsonObject object = root;
-  std::wstring_view leaf = key;
-  if (const auto separator = key.find(L'.');
-      separator != std::wstring_view::npos) {
-    const hstring parent(key.substr(0, separator));
-    if (!root.HasKey(parent))
-      return nullptr;
-    const auto nested = root.Lookup(parent);
-    if (nested.ValueType() != JsonValueType::Object)
-      return nullptr;
-    object = nested.GetObject();
-    leaf = key.substr(separator + 1);
+// PreferencePath.h walks preference paths over this: WinRT JSON objects share by reference, so a nested object found on the way is edited in place.
+struct JsonPreferenceTree {
+  using Object = JsonObject;
+  using Value = IJsonValue;
+  static std::optional<JsonObject> object(JsonObject const &parent, std::wstring const &name) {
+    const hstring key(name);
+    if (!parent.HasKey(key))
+      return std::nullopt;
+    const auto value = parent.Lookup(key);
+    if (value.ValueType() != JsonValueType::Object)
+      return std::nullopt;
+    return value.GetObject();
   }
-  const hstring name(leaf);
-  return object.HasKey(name) ? object.Lookup(name) : nullptr;
+  static IJsonValue value(JsonObject const &parent, std::wstring const &name) {
+    const hstring key(name);
+    return parent.HasKey(key) ? parent.Lookup(key) : nullptr;
+  }
+  static IJsonValue none() { return nullptr; }
+  static JsonObject copy(JsonObject const &source) { return JsonObject::Parse(source.Stringify()); }
+  static JsonObject empty() { return JsonObject(); }
+  static void set(JsonObject const &parent, std::wstring const &name, IJsonValue const &value) {
+    parent.SetNamedValue(hstring(name), value);
+  }
+  static void set_object(JsonObject const &parent, std::wstring const &name, JsonObject const &child) {
+    parent.SetNamedValue(hstring(name), child);
+  }
+  static void remove(JsonObject const &parent, std::wstring const &name) {
+    if (const hstring key(name); parent.HasKey(key))
+      parent.Remove(key);
+  }
+};
+
+std::optional<JsonObject> present(JsonObject const &object) {
+  return object ? std::optional<JsonObject>(object) : std::nullopt;
+}
+
+// The stored value at a path (see PreferencePath.h), or null when it is absent.
+IJsonValue lookup(JsonObject const &root, std::vector<std::wstring> const &path) {
+  return nav::find_preference<JsonPreferenceTree>(present(root), path);
 }
 
 uint64_t strict_revision(JsonObject const &object, std::wstring_view key,
@@ -582,15 +603,14 @@ public:
   uint64_t revision() const { return revision_; }
 
   // The stored value, else the shipped default, else null. A stored null (an unset optional field) is returned as it is.
+  // A key is a dotted path of any depth, such as `plugins.key_sound.enabled`.
   IJsonValue Value(std::wstring_view key) const {
-    if (auto value = lookup(preferences_, key))
-      return value;
-    return lookup(defaults_, key);
+    return value_at(nav::preference_path(key));
   }
 
   // The shipped default for a key, for the rows that restore defaults.
   IJsonValue Default(std::wstring_view key) const {
-    return lookup(defaults_, key);
+    return lookup(defaults_, nav::preference_path(key));
   }
 
   bool Boolean(std::wstring_view key, bool fallback) const {
@@ -638,13 +658,38 @@ public:
     SetValue(key, JsonValue::CreateNumberValue(value));
   }
 
+  // Stores the list sorted and without repeats, for the lists whose order means nothing.
   void SetStrings(std::wstring_view key, std::vector<std::wstring> values) {
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
+    SetOrderedStrings(key, values);
+  }
+
+  // Stores the list exactly as given, for the lists whose order is the user's.
+  void SetOrderedStrings(std::wstring_view key, std::vector<std::wstring> const &values) {
     JsonArray array;
     for (auto const &value : values)
       array.Append(JsonValue::CreateStringValue(hstring(value)));
     SetValue(key, array);
+  }
+
+  // One entry of a string map such as `ai_assistant.tokens`. The entry key is taken literally, dots included, so an origin can be a key.
+  std::wstring Entry(std::wstring_view map_key, std::wstring_view entry,
+                     std::wstring_view fallback) const {
+    const auto value = value_at(nav::preference_entry_path(map_key, entry));
+    return value && value.ValueType() == JsonValueType::String
+               ? std::wstring(value.GetString().c_str())
+               : std::wstring(fallback);
+  }
+
+  void SetEntry(std::wstring_view map_key, std::wstring_view entry, std::wstring_view value) {
+    set_at(nav::preference_entry_path(map_key, entry), JsonValue::CreateStringValue(hstring(value)));
+  }
+
+  void RemoveEntry(std::wstring_view map_key, std::wstring_view entry) {
+    if (preferences_)
+      nav::remove_preference<JsonPreferenceTree>(preferences_,
+                                                 nav::preference_entry_path(map_key, entry));
   }
 
   // Replaces a value with a copy of its shipped default. A key without a default is left as it is.
@@ -654,12 +699,15 @@ public:
       SetValue(key, JsonValue::Parse(value.Stringify()));
   }
 
+  // Creates the objects missing on the way, each from its shipped default (see PreferencePath.h).
   void SetValue(std::wstring_view key, IJsonValue const &value) {
-    if (!preferences_)
-      return;
-    const auto [object, leaf] = object_for_key(key, true);
-    if (object)
-      object.SetNamedValue(leaf, value);
+    set_at(nav::preference_path(key), value);
+  }
+
+  // Drops a stored key at any depth, so reads fall back to the shipped default. Nothing is created on the way.
+  void Remove(std::wstring_view key) {
+    if (preferences_)
+      nav::remove_preference<JsonPreferenceTree>(preferences_, nav::preference_path(key));
   }
 
 private:
@@ -690,28 +738,16 @@ private:
     }
   }
 
-  std::pair<JsonObject, hstring> object_for_key(std::wstring_view key,
-                                                bool create = false) const {
-    const auto separator = key.find(L'.');
-    if (separator == std::wstring_view::npos) {
-      return {preferences_, hstring(key)};
-    }
-    const auto parent = hstring(key.substr(0, separator));
-    const auto leaf = hstring(key.substr(separator + 1));
-    const auto existing = preferences_.HasKey(parent)
-                              ? preferences_.Lookup(parent)
-                              : IJsonValue(nullptr);
-    if (existing && existing.ValueType() == JsonValueType::Object)
-      return {existing.GetObject(), leaf};
-    if (!create)
-      return {JsonObject(nullptr), leaf};
-    // The store accepts a nested object only whole, so an absent one starts from its shipped default rather than from the single field being set.
-    JsonObject nested;
-    if (const auto fallback = lookup(defaults_, key.substr(0, separator));
-        fallback && fallback.ValueType() == JsonValueType::Object)
-      nested = JsonObject::Parse(fallback.Stringify());
-    preferences_.SetNamedValue(parent, nested);
-    return {nested, leaf};
+  // Value() and Entry() on a path already split.
+  IJsonValue value_at(std::vector<std::wstring> const &path) const {
+    if (auto value = lookup(preferences_, path))
+      return value;
+    return lookup(defaults_, path);
+  }
+
+  void set_at(std::vector<std::wstring> const &path, IJsonValue const &value) {
+    if (preferences_)
+      nav::set_preference<JsonPreferenceTree>(preferences_, present(defaults_), path, value);
   }
 
   JsonObject document_{nullptr};
