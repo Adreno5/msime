@@ -1242,10 +1242,11 @@ bool SendToNamedpipe(bool *deliveryAmbiguous = nullptr)
         }
     }
 
-    // 字段属性排在按键、状态快照和 FocusRestored 前面，同一条 Main 连接按序投递，Server 处理它们之前已经知道这个字段是不是密码框。也放在最终检查之后，理由同上：协商结果要等 Main 打开之后才有。只在协商到 FieldTraits 时发，旧 Server 会把这个事件当作非法帧断开连接。
+    // 字段属性排在 ClientActivated、按键、状态快照和 FocusRestored 前面，同一条 Main 连接按序投递，Server 处理它们之前已经知道这个字段是不是密码框：激活时 Server 先报属性再让会话成为背景音乐的所有者，用的就是这一次的属性。也放在最终检查之后，理由同上：协商结果要等 Main 打开之后才有。只在协商到 FieldTraits 时发，旧 Server 会把这个事件当作非法帧断开连接。
     if (fieldTraitsObserved && SupportsFieldTraits() &&
         (!fieldTraitsDelivered || deliveredFieldTraits != observedFieldTraits) &&
-        (packet.event_type == FanyImePipeEventType::KeyEvent ||
+        (packet.event_type == FanyImePipeEventType::ClientActivated ||
+         packet.event_type == FanyImePipeEventType::KeyEvent ||
          packet.event_type == FanyImePipeEventType::StatusSnapshot ||
          packet.event_type == FanyImePipeEventType::FocusRestored))
     {

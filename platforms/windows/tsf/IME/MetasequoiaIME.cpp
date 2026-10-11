@@ -2460,6 +2460,8 @@ LRESULT CALLBACK CMetasequoiaIME_WindowProc(HWND hWnd, UINT message, WPARAM wPar
         if (Global::g_connected)
         {
             const bool resetPending = pIME->_localSessionResetPending.load(std::memory_order_acquire);
+            // 重连要重发 ClientActivated：先记下此刻的字段属性，让它排在激活前面，Server 激活会话时用的是这一次的属性。
+            pIME->_NoteFieldTraitsForServer();
             const bool activated = !resetPending && EnsureNamedpipeFocusSessionActivated();
             if (activated)
             {
@@ -2556,6 +2558,8 @@ LRESULT CALLBACK CMetasequoiaIME_WindowProc(HWND hWnd, UINT message, WPARAM wPar
                 }
             }
 
+            // 同上：激活之前先记下字段属性。
+            pIME->_NoteFieldTraitsForServer();
             if (EnsureNamedpipeFocusSessionActivated())
             {
                 KillTimer(hWnd, TIMER_CONNECT_ALL_NAMEDPIPE);

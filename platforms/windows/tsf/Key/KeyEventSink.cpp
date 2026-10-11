@@ -2627,6 +2627,8 @@ void CMetasequoiaIME::_DrainOneDeferredKeyDown()
         PostOwnerMessageWithSyncFallback(_msgWndHandle, WM_IpcReconnect);
         return;
     }
+    // 补发的键之前可能要先发 ClientActivated：先记下字段属性，让它排在激活前面。
+    _NoteFieldTraitsForServer();
     if (_serverUnavailableFallbackActive)
     {
         // Every key typed into the offline lane is one more request for the

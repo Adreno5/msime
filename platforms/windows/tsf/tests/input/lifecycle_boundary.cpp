@@ -103,5 +103,16 @@ int main(int argc, char **argv) {
     expect(ipc, "FanyImeProtocol::GameHostCandidate | FanyImeProtocol::FieldTraits", true,
            "the Main hello announces FieldTraits");
     expect(ipc, "fieldTraitsDelivered = false;", true, "a new Main connection reports the traits again");
+    expect_order(ipc, "fieldTraitsObserved && SupportsFieldTraits() &&",
+                 "packet.event_type == FanyImePipeEventType::ClientActivated ||",
+                 "traits.event_type = FanyImePipeEventType::FieldTraits;",
+                 "the field traits precede ClientActivated, so the Server prepares the session with this field's traits");
+    // 补发键和重连之前可能先发 ClientActivated：激活前先记下属性。
+    expect_order(sink, "void CMetasequoiaIME::_DrainOneDeferredKeyDown()", "_NoteFieldTraitsForServer();",
+                 "EnsureNamedpipeFocusSessionActivated()",
+                 "the field traits are noted before a deferred key activates the focus session");
+    expect_order(ime, "case WM_IpcReconnect: {", "pIME->_NoteFieldTraitsForServer();",
+                 "EnsureNamedpipeFocusSessionActivated()",
+                 "the field traits are noted before a reconnect activates the focus session");
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
