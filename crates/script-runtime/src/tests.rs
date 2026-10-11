@@ -1549,3 +1549,32 @@ mod counting {
         NET.with(Cell::get)
     }
 }
+
+/// 解释器的原生栈不随执行的指令数增长：每个钩子都在 256 KiB 的线程栈上跑满自己的配额。dev 构建里 wasmi 打开 debug-assertions 时尾调用分派会失效，栈随指令线性增长，见根 `Cargo.toml` 的 `[profile.dev.package.wasmi]`。
+#[test]
+fn a_hook_running_out_of_fuel_fits_a_small_native_stack() {
+    for hook in [Hook::Input, Hook::Candidates, Hook::BeforeCommit] {
+        let outcome = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut script = instance(
+                    &module_wat("", "", "(loop $spin (br $spin)) i32.const 0"),
+                    declaration(&[], &[hook]),
+                );
+                let mut event = input_event();
+                event.hook = hook;
+                script.deliver(1, &event)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                failure: Failure::OutOfFuel,
+                fuel: limits::hook_fuel(hook),
+            },
+            "{hook:?}"
+        );
+    }
+}

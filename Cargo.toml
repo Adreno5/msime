@@ -103,8 +103,10 @@ opt-level = 3
 [profile.dev.package.msime-script-runtime]
 opt-level = 3
 
+# wasmi 的解释器按条指令尾调用下一条的处理函数，靠 LLVM 把它们优化成跳转（构建脚本在 opt-level 2、3 时选这条路）。打开 debug-assertions 时处理函数里的断言让这一步失效，每执行一条指令栈就深一层：dev 构建里一个死循环的 `candidates` 钩子（125 000 fuel）要 2 到 4 MiB 的原生栈，Windows Server 工作线程默认只有 1 MiB。关掉断言后和 release 一样，256 KiB 的栈跑满任何一个钩子的配额，`tests::a_hook_running_out_of_fuel_fits_a_small_native_stack` 守着它。
 [profile.dev.package.wasmi]
 opt-level = 3
+debug-assertions = false
 
 [profile.dev.package.wasmi_core]
 opt-level = 3
