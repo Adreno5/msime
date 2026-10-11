@@ -50,10 +50,14 @@ public final class ClipboardImagePolicy {
         return false;
     }
 
-    /** 副本文件的扩展名；有的应用按扩展名猜类型，所以常见的几种写对，其余一律 `img`。 */
+    /**
+     * 常见几种图片类型的扩展名，系统的 `MimeTypeMap` 不认这种类型时由服务拿来补位（`image/jpg` 这种非标准写法就靠它）；不在表里的为 null。
+     *
+     * <p>不给未知类型一个中性的扩展名：FileProvider 报给收图应用的类型只按扩展名经 `MimeTypeMap` 反查，`.img` 会被报成 `application/octet-stream`，和键盘在 commitContent 里声明的图片类型对不上。
+     */
     public static String extension(String mimeType) {
         String normalized = normalized(mimeType);
-        if (normalized == null) return "img";
+        if (normalized == null) return null;
         return switch (normalized) {
             case "image/png" -> "png";
             case "image/jpeg", "image/jpg" -> "jpg";
@@ -62,7 +66,7 @@ public final class ClipboardImagePolicy {
             case "image/heic" -> "heic";
             case "image/heif" -> "heif";
             case "image/bmp" -> "bmp";
-            default -> "img";
+            default -> null;
         };
     }
 

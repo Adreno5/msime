@@ -31,15 +31,16 @@ public final class ClipboardImageCache {
     }
 
     /**
-     * 清掉 `directory` 里的旧副本，再把 `source` 写成一个新文件并返回它。超过 `maxBytes` 抛 {@link TooLargeException}，读到的是空内容或写入失败时抛 IOException，两种情况都不留下半成品。文件名每次随机，免得收图的应用按 URI 缓存，把上一张图当成这一张。
+     * 清掉 `directory` 里的旧副本，再把 `source` 写成一个以 `extension` 结尾的新文件并返回它。超过 `maxBytes` 抛 {@link TooLargeException}，读到的是空内容或写入失败时抛 IOException，两种情况都不留下半成品。文件名每次随机，免得收图的应用按 URI 缓存，把上一张图当成这一张。
+     *
+     * <p>扩展名由调用方定：FileProvider 按它报出副本的类型，服务要保证它反查出来是图片（`MSIMEInputService.clipboardImageExtension`）。
      */
-    public static File replace(InputStream source, File directory, String mimeType, long maxBytes)
+    public static File replace(InputStream source, File directory, String extension, long maxBytes)
             throws IOException {
         if (source == null || directory == null) throw new IOException("clipboard image unavailable");
         SafePaths.ensureDirectory(directory.toPath());
         clear(directory);
-        File target = new File(directory,
-            "clip-" + UUID.randomUUID() + "." + ClipboardImagePolicy.extension(mimeType));
+        File target = new File(directory, "clip-" + UUID.randomUUID() + "." + extension);
         long total = 0;
         try (OutputStream output = Files.newOutputStream(target.toPath(),
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {

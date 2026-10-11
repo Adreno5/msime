@@ -672,9 +672,12 @@ if ! rg -q 'return RecentClipboardSuggestion\.enabled\(clipboardHistoryEnabled, 
   echo "Android recent-clip suggestion must stay off, and must not read the clipboard, while clipboard history is off; sensitive clips are never offered (#5692)" >&2
   exit 1
 fi
-# 「最近复制」的图片（#6781）只在当前输入框经 contentMimeTypes 声明收得下时占这一行；发出去的是本应用 FileProvider 给的缓存副本并带读权限，不是剪贴板里的原 URI，副本目录必须在 FileProvider 的路径表里。
+# 「最近复制」的图片（#6781）只在当前输入框经 contentMimeTypes 声明收得下、并且副本的扩展名经 FileProvider 反查仍是图片时占这一行；发出去的是本应用 FileProvider 给的缓存副本并带读权限，不是剪贴板里的原 URI，副本目录必须在 FileProvider 的路径表里。
 if ! rg -A 6 'boolean recentImageSendable\(' "$service_java" \
     | rg -q 'ClipboardImagePolicy\.accepts\(info\.contentMimeTypes, mimeType\)' \
+  || ! rg -A 7 'boolean recentImageSendable\(' "$service_java" \
+    | rg -q 'clipboardImageExtension\(mimeType\) != null' \
+  || ! rg -q 'ClipboardImageCache\.replace\(input, directory, extension,' "$service_java" \
   || ! rg -q 'boolean recentImage = recentAllowed && recentImageSendable\(nowMs\);' "$service_java" \
   || ! rg -q 'Uri uri = ClipboardImageCache\.contentUri\(this, copy\);' "$service_java" \
   || ! rg -q 'InputConnection\.INPUT_CONTENT_GRANT_READ_URI_PERMISSION' "$service_java" \

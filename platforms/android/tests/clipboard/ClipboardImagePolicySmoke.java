@@ -37,7 +37,10 @@ public final class ClipboardImagePolicySmoke {
 
         check("png".equals(ClipboardImagePolicy.extension("image/png")), "png extension");
         check("jpg".equals(ClipboardImagePolicy.extension("image/jpeg")), "jpeg extension");
-        check("img".equals(ClipboardImagePolicy.extension("image/x-synthetic")), "unknown types get a neutral extension");
+        check("jpg".equals(ClipboardImagePolicy.extension("image/jpg")), "the non-standard jpg type still gets an extension");
+        check(ClipboardImagePolicy.extension("image/x-synthetic") == null,
+            "unknown types get no extension, a neutral one would be served as application/octet-stream");
+        check(ClipboardImagePolicy.extension(null) == null, "no type, no extension");
         check(!ClipboardImagePolicy.identityText("content://a/1", "image/png")
                 .equals(ClipboardImagePolicy.identityText("content://a/2", "image/png")),
             "different URIs are different copies");
@@ -49,18 +52,18 @@ public final class ClipboardImagePolicySmoke {
         File directory = root.resolve(ClipboardImagePolicy.DIRECTORY).toFile();
         try {
             byte[] first = new byte[] {(byte) 0x89, 'P', 'N', 'G', 1, 2, 3};
-            File copy = ClipboardImageCache.replace(new ByteArrayInputStream(first), directory, "image/png", 64);
+            File copy = ClipboardImageCache.replace(new ByteArrayInputStream(first), directory, "png", 64);
             check(copy.getName().endsWith(".png") && Arrays.equals(first, Files.readAllBytes(copy.toPath())),
                 "the copy holds the clipboard bytes under the type's extension");
 
             byte[] second = new byte[] {'G', 'I', 'F', '8', '9', 'a'};
-            File next = ClipboardImageCache.replace(new ByteArrayInputStream(second), directory, "image/gif", 64);
+            File next = ClipboardImageCache.replace(new ByteArrayInputStream(second), directory, "gif", 64);
             check(!copy.exists() && next.exists(), "a new copy replaces the previous one");
             check(!copy.getName().equals(next.getName()), "every copy gets a fresh name");
             check(directory.listFiles().length == 1, "at most one copy is kept");
 
             try {
-                ClipboardImageCache.replace(new ByteArrayInputStream(new byte[65]), directory, "image/png", 64);
+                ClipboardImageCache.replace(new ByteArrayInputStream(new byte[65]), directory, "png", 64);
                 throw new AssertionError("an oversized image must be refused");
             } catch (ClipboardImageCache.TooLargeException expected) {
                 // 超过上限：拒绝，并且不留半成品。
@@ -68,7 +71,7 @@ public final class ClipboardImagePolicySmoke {
             check(directory.listFiles().length == 0, "an oversized image leaves nothing behind");
 
             try {
-                ClipboardImageCache.replace(new ByteArrayInputStream(new byte[0]), directory, "image/png", 64);
+                ClipboardImageCache.replace(new ByteArrayInputStream(new byte[0]), directory, "png", 64);
                 throw new AssertionError("an empty image must be refused");
             } catch (ClipboardImageCache.TooLargeException unexpected) {
                 throw new AssertionError("an empty image is not too large");
@@ -77,7 +80,7 @@ public final class ClipboardImagePolicySmoke {
             }
             check(directory.listFiles().length == 0, "an empty image leaves nothing behind");
 
-            ClipboardImageCache.replace(new ByteArrayInputStream(first), directory, "image/png", 64);
+            ClipboardImageCache.replace(new ByteArrayInputStream(first), directory, "png", 64);
             ClipboardImageCache.clear(directory);
             check(directory.listFiles().length == 0, "clearing removes the copy");
             ClipboardImageCache.clear(root.resolve("missing").toFile());

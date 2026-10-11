@@ -53,7 +53,8 @@ public final class ClipboardImageDeviceSmoke extends DeviceSmoke {
             stage = "image chip in image editor";
             tapFresh(described(SEND));
             stage = "image received intact";
-            String expected = "received:image/png:" + copied.substring("copied:".length());
+            // 声明的类型和 FileProvider 按副本扩展名报出的类型都是 image/png。
+            String expected = "received:image/png:image/png:" + copied.substring("copied:".length());
             String received = awaitStatus("received:");
             if (!expected.equals(received))
                 throw new AssertionError("editor received " + received + ", expected " + expected);

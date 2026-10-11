@@ -50,6 +50,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputContentInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.MimeTypeMap;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -5883,7 +5884,22 @@ public final class MSIMEInputService extends InputMethodService {
         String mimeType = recentClip.imageMimeType(nowMs);
         EditorInfo info = getCurrentInputEditorInfo();
         return mimeType != null && info != null
-            && ClipboardImagePolicy.accepts(info.contentMimeTypes, mimeType);
+            && ClipboardImagePolicy.accepts(info.contentMimeTypes, mimeType)
+            && clipboardImageExtension(mimeType) != null;
+    }
+
+    /**
+     * 缓存副本用的扩展名；这种图片发出去后收图应用看到的不是图片类型时为 null，这时不提供发送（#6781）。
+     *
+     * <p>FileProvider 报给收图应用的类型（`ContentResolver.getType`）只按文件扩展名经 `MimeTypeMap` 反查，查不到就是 `application/octet-stream`。所以扩展名先取系统表给这种类型的那个，系统表不认时用 {@link ClipboardImagePolicy#extension} 的常见写法补位，最后按 FileProvider 的做法反查一遍：反查出来不是图片，收图应用拿到的类型就和 commitContent 里声明的对不上，按类型校验的应用会拒收或当成普通文件。这种图仍在系统剪贴板上，长按输入框粘贴照样能用。
+     */
+    static String clipboardImageExtension(String mimeType) {
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        String extension = types.getExtensionFromMimeType(mimeType);
+        if (extension == null) extension = ClipboardImagePolicy.extension(mimeType);
+        if (extension == null) return null;
+        String served = types.getMimeTypeFromExtension(extension);
+        return served != null && served.startsWith("image/") ? extension : null;
     }
 
     /**
@@ -5917,11 +5933,12 @@ public final class MSIMEInputService extends InputMethodService {
         final File directory = new File(getCacheDir(), ClipboardImagePolicy.DIRECTORY);
         final android.content.ContentResolver resolver = getContentResolver();
         final Uri source = image.uri();
+        final String extension = clipboardImageExtension(mimeType);
         clipboardImageWorker.execute(() -> {
             File copy = null;
             String failure = null;
             try (InputStream input = resolver.openInputStream(source)) {
-                copy = ClipboardImageCache.replace(input, directory, mimeType, ClipboardImagePolicy.MAX_BYTES);
+                copy = ClipboardImageCache.replace(input, directory, extension, ClipboardImagePolicy.MAX_BYTES);
             } catch (ClipboardImageCache.TooLargeException error) {
                 failure = "图片太大，不能直接发送，可以长按输入框粘贴";
             } catch (IOException | RuntimeException error) {

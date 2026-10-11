@@ -139,7 +139,7 @@ public final class EditorActivity extends Activity {
         return total + ":" + hex.substring(0, 16);
     }
 
-    /** 输入法经 commitContent 交来的图片：按需取读权限，读完就放掉，状态行写成 `received:<类型>:<字节数>:<摘要>`。 */
+    /** 输入法经 commitContent 交来的图片：按需取读权限，读完就放掉，状态行写成 `received:<声明的类型>:<provider 报的类型>:<字节数>:<摘要>`。很多应用按 `ContentResolver.getType` 校验收到的内容，所以 provider 报的类型也要和声明的一致。 */
     private boolean receiveImage(InputContentInfo content, int flags) {
         boolean granted = (flags & InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0;
         try {
@@ -148,7 +148,8 @@ public final class EditorActivity extends Activity {
                 ? content.getDescription().getMimeType(0) : "";
             try (InputStream input = getContentResolver().openInputStream(content.getContentUri())) {
                 if (input == null) throw new IOException("no stream");
-                imageStatus.setText("received:" + type + ":" + describe(input));
+                String served = getContentResolver().getType(content.getContentUri());
+                imageStatus.setText("received:" + type + ":" + served + ":" + describe(input));
             }
             return true;
         } catch (IOException | SecurityException error) {
