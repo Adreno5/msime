@@ -36,6 +36,7 @@ import { pushMobileSettingsState } from "../settings/mobile-navigation";
 import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
+import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
 
 export type AccountUser = {
@@ -135,7 +136,6 @@ export type AccountCommunityDestination =
   | "published-reply"
   | "saved-reply";
 
-type Channel = "email" | "phone";
 type Confirmation = "logout-all" | "delete" | null;
 
 /** 触屏宿主在「我的」里推入的页面；鸿蒙手机还会推入「其他平台下载」。它们记在历史条目的 `accountSubpage` 里，所以系统返回手势能关掉它们。 */
@@ -1022,13 +1022,6 @@ function AccountDetailsPage({
   const [providers, setProviders] = useState<AccountProviders>({ email: false, phone: false });
   const [user, setUser] = useState<AccountUser | null>(null);
   const [profile, setProfile] = useState<AccountProfile | null>(null);
-  const [channel, setChannel] = useState<Channel | null>(null);
-  const [target, setTarget] = useState("");
-  const [code, setCode] = useState("");
-  const [challenge, setChallenge] = useState<AccountChallenge | null>(null);
-  const [expiresAt, setExpiresAt] = useState(0);
-  const [resendAt, setResendAt] = useState(0);
-  const [now, setNow] = useState(() => Date.now());
   const [name, setName] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [editingProfile, setEditingProfile] = useState(false);
@@ -1042,6 +1035,21 @@ function AccountDetailsPage({
     setError,
     setNotice,
   );
+  const {
+    channel,
+    setChannel,
+    target,
+    code,
+    setCode,
+    challenge,
+    setChallenge,
+    expiresAt,
+    resendSeconds,
+    expired,
+    selectChannel,
+    updateTarget,
+    sendCode,
+  } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
 
   useEffect(() => {
     googleWaitingRef.current = false;
@@ -1116,38 +1124,14 @@ function AccountDetailsPage({
     });
   }, [client, clientGeneration, mounted]);
 
-  useEffect(() => {
-    if (!challenge) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [challenge]);
-
-  const chooseChannel = (value: Channel) => {
+  const chooseChannel = (value: AccountChannel) => {
     cancelGoogle();
-    setChannel(value);
-    setTarget("");
-    setCode("");
-    setChallenge(null);
+    selectChannel(value);
     setError("");
     setNotice("");
   };
 
-  const requestCode = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!channel) return;
-      const normalized = target.trim();
-      if (!normalized) throw { code: "account_invalid" };
-      const value = await client.requestCode(channel, normalized);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      const timestamp = Date.now();
-      setNow(timestamp);
-      setChallenge(value);
-      setExpiresAt(timestamp + value.expiresIn * 1000);
-      setResendAt(timestamp + 60_000);
-      setCode("");
-      setNotice("验证码已发送，请查收。");
-    });
+  const requestCode = () => void perform(sendCode);
 
   const signIn = () =>
     void perform(async () => {
@@ -1313,8 +1297,6 @@ function AccountDetailsPage({
       />
     );
 
-  const resendSeconds = Math.max(0, Math.ceil((resendAt - now) / 1000));
-  const expired = Boolean(challenge) && expiresAt <= now;
   // Count only providers this host can render; the backend may enable Apple or Google for hosts without a native client for them.
   const appleAvailable = providers.apple === true && Boolean(client.appleLogin);
   const googleAvailable = providers.google === true && Boolean(client.googleLogin);
@@ -1750,9 +1732,7 @@ function AccountDetailsPage({
                 value={target}
                 disabled={busy}
                 onChange={(value) => {
-                  setTarget(value);
-                  setChallenge(null);
-                  setCode("");
+                  updateTarget(value);
                 }}
               />
               <ActionButton
