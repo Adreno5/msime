@@ -121,6 +121,7 @@ export function HomePage({
         preferences={preferences}
         actions={actions}
         onOpenPage={onOpenPage}
+        onOpenChat={onOpenChat}
         rootPages={rootPages}
       />
     );
@@ -143,17 +144,19 @@ const searchField =
 /**
  * 触屏首页，即「设置」根页（大标题由外壳绘制）：一个搜索胶囊、设置状态卡片，以及分组行形式的各页面。有查询时隐藏卡片和分组，列出标题或当前值包含查询的行，与 Android 的「设置」页一样；Escape 清空查询。
  *
- * 「试用键盘」在宿主有对应窗口时打开宿主的键盘，否则打开子页面「试用键盘」；宿主打开窗口失败时也回退到这里。
+ * 「试用键盘」在宿主有对应窗口时打开宿主的键盘，否则切到「对话」标签并弹出键盘，与 Android 和 iOS 一样：试键盘就是在那里打字发给 AI。没有对话的宿主打开子页面「试用键盘」；宿主打开窗口失败时也按同样的顺序回退。
  */
 function TouchHomePage({
   preferences,
   actions,
   onOpenPage,
+  onOpenChat,
   rootPages,
 }: {
   preferences: Preferences;
   actions?: HomePageActions;
   onOpenPage: (page: string) => void;
+  onOpenChat?: () => void;
   rootPages?: readonly RootPage[];
 }) {
   const [query, setQuery] = useState("");
@@ -169,13 +172,14 @@ function TouchHomePage({
         )
     : [];
 
+  const tryInPage = () => (onOpenChat ? onOpenChat() : onOpenPage("try-keyboard"));
   const tryKeyboard = () => {
     const openKeyboard = actions?.openKeyboard;
     if (!openKeyboard) {
-      onOpenPage("try-keyboard");
+      tryInPage();
       return;
     }
-    void openKeyboard().catch(() => onOpenPage("try-keyboard"));
+    void openKeyboard().catch(tryInPage);
   };
   const searchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Escape" || !query) return;

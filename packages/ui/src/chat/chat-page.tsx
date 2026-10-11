@@ -2,12 +2,19 @@ import MarkdownIt from "markdown-it";
 import { useEffect, useRef, useState } from "react";
 import { useConfirm } from "../core/confirm";
 import { errorCode } from "../core/error-code";
+import { errorMessage } from "../core/error-message";
+import { useToast } from "../core/toast";
 import { ActionButton } from "../core/action-button";
 import * as chat from "./chat-style";
 import { boundedHistory, chatMessageByteLength, MAX_MESSAGE_BYTES } from "./chat-history";
 import { chatError } from "./chat-errors";
 import { useAsyncGeneration } from "../settings/use-async-generation";
 import { useMountedRef } from "../settings/use-mounted-ref";
+import {
+  makeDefaultAction,
+  useImeSetupState,
+  type SetupActions,
+} from "../keyboard/setup-status-card";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -46,6 +53,8 @@ export function ChatPage({
   touch = false,
   active = true,
   onComposerFocusChange,
+  focusRequest = 0,
+  setup,
 }: {
   client: ChatClient;
   onLogin?: () => void;
@@ -54,6 +63,10 @@ export function ChatPage({
   active?: boolean;
   /** 触屏输入框获得或失去焦点：外壳在打字时把底部标签栏让开，键盘上方只留输入栏。 */
   onComposerFocusChange?: (focused: boolean) => void;
+  /** 每加一次就把焦点交给输入框，系统随之弹出键盘：首页的「试用键盘」切到这一页时用它。 */
+  focusRequest?: number;
+  /** 触屏上的设置引导：水杉没启用或不是当前输入法时，顶栏给一个去补完设置的胶囊，否则打出来的不是水杉。 */
+  setup?: SetupActions;
   /** A host with no hardware keyboard: the chord still works if one is attached, but naming it is noise. */
   touch?: boolean;
 }) {
@@ -73,6 +86,9 @@ export function ChatPage({
   const modelsRunning = useRef(false);
   const nextMessageId = useRef(1);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const setupState = useImeSetupState(setup?.setup);
+  const toast = useToast();
 
   const loadModels = async () => {
     if (!mounted.current || modelsRunning.current) return;
@@ -109,6 +125,10 @@ export function ChatPage({
   useEffect(() => {
     if (active) void loadModels();
   }, [active]);
+
+  useEffect(() => {
+    if (focusRequest) composer.current?.focus();
+  }, [focusRequest]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -197,12 +217,38 @@ export function ChatPage({
     );
   };
 
-  // 触屏：这一页是用来试键盘的（打字发给 AI，看候选、皮肤和手感），所以不给代写的开头，让用户自己打。顶部一行模型和「新对话」小胶囊，中间是气泡对话，底部圆角输入框加圆形发送键，和「试用键盘」同一套样子。没有登录、出错都写在对话里，不用红框。
+  const setupAction =
+    setupState?.enabled === false || setupState?.current === false
+      ? makeDefaultAction(setup, setupState)
+      : undefined;
+  const runSetup = (action: () => Promise<void>) =>
+    void action().catch((cause: unknown) => toast(errorMessage(cause)));
+
+  // 触屏：这一页是用来试键盘的（打字发给 AI，看候选、皮肤和手感），所以不给代写的开头，让用户自己打。顶部一行胶囊（设置没补完时的引导、打字时的「收起键盘」、「新对话」），中间是气泡对话，底部圆角输入框加圆形发送键，和「试用键盘」同一套样子。没有登录、出错都写在对话里，不用红框。
   if (touch)
     return (
       <section className={chat.touchPage} aria-label="AI 对话">
         {confirmation}
         <div className={chat.touchBar}>
+          {setupAction && (
+            <button type="button" className={chat.touchChip} onClick={() => runSetup(setupAction)}>
+              {setupState?.enabled === false
+                ? "水杉还没启用？点此开启"
+                : "当前不是水杉输入法？点此切换"}
+            </button>
+          )}
+          {composerFocused && (
+            <button
+              type="button"
+              className={chat.touchChip}
+              // 按下时不让按钮抢走焦点，否则输入框先失焦、这个按钮随之消失，点按落空。
+              onPointerDown={(event) => event.preventDefault()}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => composer.current?.blur()}
+            >
+              收起键盘
+            </button>
+          )}
           <button
             type="button"
             className={`${chat.touchChip} ml-auto`}
@@ -288,8 +334,14 @@ export function ChatPage({
             maxLength={16_384}
             placeholder="打几个字试试"
             enterKeyHint="send"
-            onFocus={() => onComposerFocusChange?.(true)}
-            onBlur={() => onComposerFocusChange?.(false)}
+            onFocus={() => {
+              setComposerFocused(true);
+              onComposerFocusChange?.(true);
+            }}
+            onBlur={() => {
+              setComposerFocused(false);
+              onComposerFocusChange?.(false);
+            }}
             onChange={(event) => {
               setDraft(event.target.value);
               resizeField();

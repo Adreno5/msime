@@ -3333,6 +3333,8 @@ function SettingsShell(props: SettingsPageProps) {
   const [chatMounted, setChatMounted] = useState(page === "chat");
   // 对话页的输入框正在打字：底部标签栏让开，键盘上方只留输入栏，和常见的聊天应用一样。
   const [chatTyping, setChatTyping] = useState(false);
+  // 首页「试用键盘」切到对话页时加一，对话页随即聚焦输入框、弹出键盘；点底部标签进来不加，不弹键盘。
+  const [chatFocusRequest, setChatFocusRequest] = useState(0);
   useEffect(() => {
     if (page === "chat") setChatMounted(true);
   }, [page]);
@@ -3649,7 +3651,13 @@ function SettingsShell(props: SettingsPageProps) {
                   preferences={draft}
                   actions={client.home}
                   onOpenPage={onOpenPage}
-                  onOpenChat={onOpenChat}
+                  onOpenChat={
+                    onOpenChat &&
+                    (() => {
+                      setChatFocusRequest((count) => count + 1);
+                      onOpenChat();
+                    })
+                  }
                   touchLayout={mobilePlatform}
                   ios={iosPlatform}
                   rootPages={mobileSecondaryGroups
@@ -3755,7 +3763,7 @@ function SettingsShell(props: SettingsPageProps) {
                   appVersion={currentAppVersion}
                 />
               )}
-              {/* 触屏上「对话」是常驻的底部标签：第一次打开后一直挂着，切到别的标签只是隐藏，对话记录和进行中的回复都不丢；点标签进来不弹键盘，点输入框才弹，与 Android 的对话标签一致。 */}
+              {/* 触屏上「对话」是常驻的底部标签：第一次打开后一直挂着，切到别的标签只是隐藏，对话记录和进行中的回复都不丢；点标签进来不弹键盘，点输入框或从首页「试用键盘」进来才弹，与 Android 的对话标签一致。 */}
               {client.chat && (page === "chat" || (mobilePlatform && chatMounted)) && (
                 <div className={page === "chat" ? "contents" : undefined} hidden={page !== "chat"}>
                   <ChatPage
@@ -3763,6 +3771,8 @@ function SettingsShell(props: SettingsPageProps) {
                     touch={mobilePlatform}
                     active={page === "chat"}
                     onComposerFocusChange={setChatTyping}
+                    focusRequest={chatFocusRequest}
+                    setup={client.home}
                     onLogin={openAccountLogin}
                   />
                 </div>
