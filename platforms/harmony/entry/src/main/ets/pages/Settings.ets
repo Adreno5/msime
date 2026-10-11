@@ -240,10 +240,6 @@ const BRIDGE_NAME: string = 'msimeHarmony';
 const PLATFORM: string = 'harmony';
 /** 欢迎开屏是否已播放过的标记，与应用主题文件同在状态目录。 */
 const SPLASH_SEEN_FILE: string = 'welcome-splash.json';
-// 启动画面的三种颜色，和系统启动窗、网页开屏第一帧（`onboarding-style.ts` 的 `hSplash`、`hSplashDiscVeil`、`hSplashFrameVeil`）相同，改一处就要改全部。
-const LAUNCH_BACKGROUND: string = '#0A0B0A';
-const LAUNCH_DISC: string = '#EDF0F0';
-const LAUNCH_FRAME: string = '#2E3A40';
 // 页面一直没报告第一帧上屏时，启动画面最多盖这么久。
 const LAUNCH_COVER_LIMIT_MS: number = 4000;
 /** The settings page and native save bridge hold one complete export in memory. */
@@ -597,9 +593,9 @@ struct Settings {
     this.bridge.onLaunchPainted = (): void => {
       this.launchCover = false;
     };
-    // 页面没能报告（脚本出错、桥接没连上）时也不能一直盖着：几秒后撤掉，露出页面自己的错误说明。
+    // 页面没能报告（脚本出错、桥接没连上）时也不能一直盖着：几秒后撤掉，露出页面自己的错误说明。走桥接的同一个入口，盖着期间存下的系统栏颜色也一并补上。
     setTimeout((): void => {
-      this.launchCover = false;
+      this.bridge.launchPainted();
     }, LAUNCH_COVER_LIMIT_MS);
     // Started here rather than on demand: the page reads the answer synchronously, and the reply
     // carries whether it is ready so the page waits instead of acting on a default.
@@ -758,19 +754,20 @@ struct Settings {
   }
 
   /**
-   * 冷启动时盖在网页上的启动画面，和系统启动窗画的是同一个画面：近黑底（`start_window_background`），正中一个浅色圆盘，盘上是还没描笔画的标志方块（`start_window_icon`）。网页开屏的第一帧也是这个画面（styles.css 的 `splash-veil`），页面报告第一帧上屏（`launchPainted`）后撤掉它，所以从启动窗到开屏看起来是同一个画面接着动起来，中间不露出还没画出东西的网页。
+   * 冷启动时盖在网页上的启动画面，和系统启动窗画的是同一个画面：启动窗底色上一个圆盘，盘里是水杉标志（`start_window_icon`）。底色和圆盘取资源（`start_window_background`、`launch_disc`），浅色和深色各一份，跟随系统外观；标志两种外观相同。页面报告设置已经画出来（`launchPainted`）后撤掉它，所以从点图标到设置页是同一个画面淡出，中间不露出还没画出东西的网页，也不露出「正在读取设置」。
    *
-   * 它和网页开屏一样按网页区域居中，尺寸照开屏换算：圆盘 180vp，标志方块是 100vp 标志框里 `msimeFramePath` 那个矩形，78.8 × 90.9vp。
+   * 它和首次启动的网页开屏一样按网页区域居中，尺寸照开屏换算：圆盘 180vp，标志是 100vp 标志框里按 116 × 132 等比放下的 `launch_logo.svg`，87.9 × 100vp。
    */
   @Builder
   launchCoverView() {
     Stack() {
-      Circle().width(180).height(180).fill(LAUNCH_DISC)
-      Rect().width(78.8).height(90.9).fill(LAUNCH_FRAME)
+      Circle().width(180).height(180).fill($r('app.color.launch_disc'))
+      // 同步解码：异步加载时盖板第一帧没有标志，从启动窗接过来会闪一下空圆盘。
+      Image($r('app.media.launch_logo')).width(87.9).height(100).syncLoad(true)
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(LAUNCH_BACKGROUND)
+    .backgroundColor($r('app.color.start_window_background'))
     .transition(TransitionEffect.OPACITY.animation({ duration: 120 }))
   }
 
@@ -860,6 +857,9 @@ class SettingsBridge {
   onPageBackground: ((colour: string) => void) | undefined = undefined;
   // 由页面组件设置：页面第一帧已上屏，撤掉启动画面。
   onLaunchPainted: (() => void) | undefined = undefined;
+  // 启动画面还盖着网页。这期间页面发来的系统栏颜色先存着，撤掉时再上：页面一挂载就给系统栏换成自己的颜色，盖板却要两帧后才撤，状态栏会先变色，和下面的启动画面错开一条色带。
+  private launchCovered: boolean = true;
+  private heldSystemBars: string | undefined = undefined;
   // 系统当前键盘改变时重新读取设置状态；在系统键盘对话框里选择键盘就会这样改变，而窗口始终没有离开前台。
   private imeChanged: (property: inputMethod.InputMethodProperty, subtype: InputMethodSubtype) => void =
     (property: inputMethod.InputMethodProperty, subtype: InputMethodSubtype): void => {
@@ -3074,6 +3074,10 @@ class SettingsBridge {
       return;
     }
     this.onPageBackground?.(bars.background);
+    if (this.launchCovered) {
+      this.heldSystemBars = document;
+      return;
+    }
     if (this.context === undefined) {
       return;
     }
@@ -3112,9 +3116,18 @@ class SettingsBridge {
     }
   }
 
-  /** 页面的第一帧已经上屏，撤掉盖在网页上的启动画面。 */
+  /** 页面的第一帧已经上屏（或宿主等够了时限），撤掉盖在网页上的启动画面，并补上盖着期间页面要的系统栏颜色。 */
   launchPainted(): void {
+    if (!this.launchCovered) {
+      return;
+    }
+    this.launchCovered = false;
     this.onLaunchPainted?.();
+    const held: string | undefined = this.heldSystemBars;
+    this.heldSystemBars = undefined;
+    if (held !== undefined) {
+      this.setSystemBars(held);
+    }
   }
 
   /** 设置页面加载完成前键盘请求打开的页面，只交出一次：第二次读取返回 null。 */
