@@ -5269,6 +5269,19 @@ fn the_full_list_holds_what_paging_would_have_reached() {
 }
 
 #[test]
+fn releasing_the_held_tail_publishes_a_new_generation() {
+    // 放出的尾部会重排座位，旧代次的 ID 若仍有效就会按新座位选中别的候选。release 构建不执行 `debug_assert!` 里的表达式，所以要在 `--release` 下也跑这条。
+    let mut runtime = withholding_runtime(12, 8, 5);
+    runtime.focus(true).unwrap();
+    type_key(&mut runtime);
+    let before = runtime.view().generation;
+    let full = runtime.all_candidates();
+    assert_eq!(full.candidates.len(), 20);
+    assert!(full.generation > before);
+    assert_eq!(runtime.view().generation, full.generation);
+}
+
+#[test]
 fn full_list_does_not_reorder_after_generation_identity_is_exhausted() {
     let mut runtime = withholding_runtime(12, 8, 5);
     runtime.focus(true).unwrap();
