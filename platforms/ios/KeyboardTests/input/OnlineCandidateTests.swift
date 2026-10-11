@@ -331,6 +331,21 @@ final class OnlineCandidateTests: XCTestCase {
     XCTAssertNotEqual(OnlineCandidateProvider.signature(splitCache), OnlineCandidateProvider.signature(splitIdentity))
   }
 
+  func testTheSignatureTracksProviderEligibility() {
+    let query: [String: Any] = [
+      "session_id": 1, "cache_key": "nihao", "identity": "q", "cloud_candidates": true,
+      "cloud_eligible": true, "ai_eligible": true,
+      "ai_assistant": ["enabled": true, "model": "a"],
+    ]
+    var cloudIneligible = query
+    cloudIneligible["cloud_eligible"] = false
+    XCTAssertNotEqual(OnlineCandidateProvider.signature(query), OnlineCandidateProvider.signature(cloudIneligible))
+
+    var aiIneligible = query
+    aiIneligible["ai_eligible"] = false
+    XCTAssertNotEqual(OnlineCandidateProvider.signature(query), OnlineCandidateProvider.signature(aiIneligible))
+  }
+
   func testCloudSuccessStillAllowsRetryWhenAIHasNoAnswer() {
     XCTAssertTrue(
       OnlineCandidateProvider.shouldRetryAfterFetch(

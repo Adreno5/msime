@@ -141,7 +141,7 @@ final class OnlineCandidateProvider {
       assistant = String(decoding: data, as: UTF8.self)
     }
     let session = (query["session_id"] as? NSNumber)?.stringValue ?? "0"
-    return "session=\(session)|cache=\(field(query["cache_key"] as? String))|identity=\(field(query["identity"] as? String))|cloud=\(query["cloud_candidates"] as? Bool == true)|assistant=\(field(assistant))"
+    return "session=\(session)|cache=\(field(query["cache_key"] as? String))|identity=\(field(query["identity"] as? String))|cloud=\(query["cloud_candidates"] as? Bool == true)|cloud_eligible=\(query["cloud_eligible"] as? Bool == true)|ai_eligible=\(query["ai_eligible"] as? Bool == true)|assistant=\(field(assistant))"
   }
 
   private static func field(_ value: String?) -> String {
