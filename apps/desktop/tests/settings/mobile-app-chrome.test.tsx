@@ -869,3 +869,15 @@ test("the 2-in-1 warns on 输入 and 关于 while the input method is not set up
   await settingsFormReady();
   expect(screen.queryByText("水杉输入法尚未在「系统 → 输入法」中添加")).toBeNull();
 });
+
+// 共享沙箱还没有 data-group-id 时，宿主照实报 `harmony_shared_sandbox: false`，但设置页不对用户显示这件事：这是开发和签名上的状态，用户对它无能为力。
+test("a HarmonyOS host without the shared sandbox shows no warning about it", async () => {
+  renderSettings("harmony", {
+    mobile_settings: true,
+    panel_windows: false,
+    harmony_shared_sandbox: false,
+  });
+  await settingsFormReady();
+  expect(screen.queryByText(/共享沙箱/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
