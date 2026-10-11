@@ -34,10 +34,13 @@ export function ChatPage({
   onLogin,
   autoFocus = false,
   touch = false,
+  active = true,
 }: {
   client: ChatClient;
   onLogin?: () => void;
   autoFocus?: boolean;
+  /** 触屏上对话是常驻的底部标签，切走时页面只是隐藏。每次重新显示都重读模型列表，在「我的」里登录或退出后回来，看到的就是新账号的状态；对话记录保留。 */
+  active?: boolean;
   /** A host with no hardware keyboard: the chord still works if one is attached, but naming it is noise. */
   touch?: boolean;
 }) {
@@ -90,6 +93,10 @@ export function ChatPage({
       modelsRunning.current = false;
     };
   }, [client]);
+
+  useEffect(() => {
+    if (active) void loadModels();
+  }, [active]);
 
   useEffect(() => {
     if (!autoFocus) return;

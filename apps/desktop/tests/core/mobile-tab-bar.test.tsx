@@ -2,7 +2,7 @@
 import { testHost } from "../support/host";
 import { settingsFormReady } from "../support/settings-form";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { SettingsPage, type Snapshot } from "@msime/ui";
 
 afterEach(() => {
@@ -219,6 +219,30 @@ test("the 对话 tab opens the AI chat page as a tab of its own", async () => {
   expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
   fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
   expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+});
+
+// 对话是常驻标签：点进来不弹键盘（输入框不自动聚焦），切到别的标签只是隐藏，回来时没发出去的文字还在。
+test("the 对话 tab keeps its conversation across tabs and does not raise the keyboard", async () => {
+  mount();
+  await settingsFormReady();
+  const bar = screen.getByRole("navigation", { name: "主要功能" });
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  const composer = await screen.findByRole("textbox", { name: "聊天消息" });
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  });
+  expect(document.activeElement).not.toBe(composer);
+  fireEvent.change(composer, { target: { value: "还没发出去的一句话" } });
+
+  fireEvent.click(within(bar).getByRole("button", { name: "统计" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "AI 对话" })).toBeNull();
+
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "聊天消息" }) as HTMLTextAreaElement).value).toBe(
+    "还没发出去的一句话",
+  );
 });
 
 // 进入 AI 对话的入口由标签页承担，「AI 辅助」页不再列第二个「AI 对话」行。

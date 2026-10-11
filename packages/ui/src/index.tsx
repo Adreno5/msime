@@ -3328,6 +3328,11 @@ function SettingsShell(props: SettingsPageProps) {
     closeCommunityGallery,
     currentAppVersion,
   } = model;
+  // 对话页第一次打开后就一直挂着（见下方渲染处），切走只隐藏。
+  const [chatMounted, setChatMounted] = useState(page === "chat");
+  useEffect(() => {
+    if (page === "chat") setChatMounted(true);
+  }, [page]);
   // 任一种 HarmonyOS 外观（手机或 2-in-1）：两者都用应用主题着色，并带有设计稿的 toast。
   const harmonyLook = settingsPlatform === "harmony" || settingsPlatform === "hm2";
   // HarmonyOS 手机外观：推入标签页的每个页面都带返回按钮并会滑入，另外三个标签页使用更紧凑的标签页列表。
@@ -3745,13 +3750,16 @@ function SettingsShell(props: SettingsPageProps) {
                   appVersion={currentAppVersion}
                 />
               )}
-              {client.chat && page === "chat" && (
-                <ChatPage
-                  client={client.chat}
-                  autoFocus={mobilePlatform}
-                  touch={mobilePlatform}
-                  onLogin={openAccountLogin}
-                />
+              {/* 触屏上「对话」是常驻的底部标签：第一次打开后一直挂着，切到别的标签只是隐藏，对话记录和进行中的回复都不丢；点标签进来不弹键盘，点输入框才弹，与 Android 的对话标签一致。 */}
+              {client.chat && (page === "chat" || (mobilePlatform && chatMounted)) && (
+                <div className={page === "chat" ? "contents" : undefined} hidden={page !== "chat"}>
+                  <ChatPage
+                    client={client.chat}
+                    touch={mobilePlatform}
+                    active={page === "chat"}
+                    onLogin={openAccountLogin}
+                  />
+                </div>
               )}
               {page === "community" && (
                 <CommunityPage
