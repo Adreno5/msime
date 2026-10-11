@@ -412,6 +412,31 @@ bool IsOnlyModifierPhysicallyDown(UINT keptDownVk)
     return (GetAsyncKeyState(keptDownVk) & 0x8000) != 0;
 }
 
+// 除 Caps Lock 自己以外还有键按着：Caps Lock 是组合键的一部分，不算轻点。
+bool IsKeyOtherThanCapsLockDown()
+{
+    for (UINT code = VK_BACK; code <= 0xfe; ++code)
+    {
+        if (code != VK_CAPITAL && (GetAsyncKeyState(code) & 0x8000) != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 撤回轻点打开的大写锁定：再按一次 Caps Lock，带上自己的标记，不会被当成又一次轻点。
+bool ReleaseCapsLockAfterTap()
+{
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CAPITAL;
+    inputs[0].ki.dwExtraInfo = CAPS_LOCK_SENDINPUT_EXTRA_INFO;
+    inputs[1] = inputs[0];
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT)) == ARRAYSIZE(inputs);
+}
+
 void ClearReleasedShiftModifierState()
 {
     if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0)
@@ -599,6 +624,11 @@ void CMetasequoiaIME::_TrackModifierHotkeyArming(WPARAM wParam, LPARAM lParam, b
     }
 
     const UINT code = LOWORD(wParam);
+    // 按着 Caps Lock 时按了别的键，是在用大写锁定打字，不再算轻点。Caps Lock 自己的自动重复不算。
+    if (code != VK_CAPITAL)
+    {
+        _capsLockTap.interrupt();
+    }
     const bool isShift = IsShiftVk(code);
     const bool isCtrl = IsControlVk(code);
     const bool isOtherModifier = IsAltVk(code) || IsWinVk(code);
@@ -732,6 +762,30 @@ bool CMetasequoiaIME::_MatchModifierReleaseHotkey(WPARAM wParam, _Out_ GUID *hot
     }
 
     return false;
+}
+
+void CMetasequoiaIME::_ArmCapsLockTap(bool lockWasOn)
+{
+    const bool enabled = FanyUtils::ReadConfiguredSwitchLanguageHotkeys().caps_lock && !_IsKeyboardDisabled();
+    _capsLockTap.press(static_cast<std::int64_t>(GetTickCount64()), enabled, lockWasOn, IsKeyOtherThanCapsLockDown());
+}
+
+bool CMetasequoiaIME::_QueueCapsLockTap(_In_ ITfContext *pContext, WPARAM wParam)
+{
+    if (pContext == nullptr || LOWORD(wParam) != VK_CAPITAL ||
+        !_capsLockTap.release(static_cast<std::int64_t>(GetTickCount64())))
+    {
+        return false;
+    }
+    // 撤不回大写锁定就不切换：切到英文却留着大写锁定，比什么都不做更糟。
+    if (!ReleaseCapsLockAfterTap())
+    {
+        return false;
+    }
+    // 和单按 Shift 走同一个切换：组字中先上屏原文再切换。
+    BOOL queued = FALSE;
+    (void)_QueueInputHotkey(pContext, Global::MetasequoiaIMEGuidImeModePreserveKey, &queued);
+    return true;
 }
 
 bool CMetasequoiaIME::_QueueKoreanHanjaTap(_In_ ITfContext *pContext, WPARAM wParam, LPARAM lParam)
@@ -2086,8 +2140,10 @@ STDAPI CMetasequoiaIME::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPARA
     // Only the first press toggles; auto-repeat would flip the prediction back.
     if (wParam == VK_CAPITAL && !IsAutoRepeat(lParam))
     {
-        Global::CapsLockEnabled.store((GetKeyState(VK_CAPITAL) & 0x0001) == 0, std::memory_order_relaxed);
+        const bool lockWasOn = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
+        Global::CapsLockEnabled.store(!lockWasOn, std::memory_order_relaxed);
         _RequestLanguageBarCapsIconRefresh();
+        _ArmCapsLockTap(lockWasOn);
     }
     PerfTimer onTestKeyDownTimer;
     Global::UpdateModifiers(wParam, lParam);
@@ -3153,6 +3209,13 @@ STDAPI CMetasequoiaIME::OnTestKeyUp(ITfContext *pContext, WPARAM wParam, LPARAM 
         return S_OK;
     }
 
+    // 和韩文汉字键一样排在屏障检查之前：切换排在还没处理完的键后面，顺序不乱。松开本身照常交给应用。
+    if (_QueueCapsLockTap(pContext, wParam))
+    {
+        *pIsEaten = FALSE;
+        return S_OK;
+    }
+
     // Ahead of the barrier check: the tap is queued behind any keys still waiting, which keeps it in order.
     if (_QueueKoreanHanjaTap(pContext, wParam, lParam))
     {
@@ -3231,6 +3294,13 @@ STDAPI CMetasequoiaIME::OnKeyUp(ITfContext *pContext, WPARAM wParam, LPARAM lPar
                         _IsComposing(),
                         _pCompositionProcessorEngine ? _pCompositionProcessorEngine->GetVirtualKeyLength() : 0, S_OK);
         ClearReleasedShiftModifierState();
+        *pIsEaten = FALSE;
+        return S_OK;
+    }
+
+    // 给不调 OnTestKeyUp 的宿主；OnTestKeyUp 已经认定过的话，判定已经清掉，这里不会再切换一次。
+    if (_QueueCapsLockTap(pContext, wParam))
+    {
         *pIsEaten = FALSE;
         return S_OK;
     }

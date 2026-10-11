@@ -36,6 +36,8 @@ struct SwitchLanguageHotkeys
     bool character_set_ctrl_shift_f = true;
     // keybindings.toggle_fullwidth_option_shift_h：中文模式下 Alt+Shift+H 切换全半角。
     bool fullwidth_alt_shift_h = true;
+    // 单按 Caps Lock 切换中英文，缺省关。
+    bool caps_lock = false;
 };
 // Read keybindings.switch_language_* from shared PreferencesStore, or the defaults when it is unreadable.
 SwitchLanguageHotkeys ReadConfiguredSwitchLanguageHotkeys();

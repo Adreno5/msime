@@ -5,6 +5,7 @@
 #include "MetasequoiaIMEBaseStructure.h"
 #include "Ipc.h"
 #include "JapaneseConversionPolicy.h"
+#include "../../../../shared/input/CapsLockTap.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -55,10 +56,12 @@ constexpr ULONG_PTR SMART_PUNCTUATION_SENDINPUT_EXTRA_INFO = 0x4D535050u;
 constexpr ULONG_PTR PAIRED_PUNCTUATION_SENDINPUT_EXTRA_INFO = 0x4D535051u;
 // Marker for a caret or editing key replayed after a queued Korean syllable commit. Key sinks and the bare-Shift hook must pass these events through to the host.
 constexpr ULONG_PTR KOREAN_SYLLABLE_SENDINPUT_EXTRA_INFO = 0x4D535052u;
+// 单按 Caps Lock 切换中英文后，为撤回大写锁定再按的那一次 Caps Lock。按键处理和裸 Shift 钩子都要放它过去，不能再当成一次轻点。
+constexpr ULONG_PTR CAPS_LOCK_SENDINPUT_EXTRA_INFO = 0x4D535053u;
 constexpr bool IsSelfGeneratedSendInputExtraInfo(ULONG_PTR extraInfo)
 {
     return extraInfo == SMART_PUNCTUATION_SENDINPUT_EXTRA_INFO || extraInfo == PAIRED_PUNCTUATION_SENDINPUT_EXTRA_INFO ||
-           extraInfo == KOREAN_SYLLABLE_SENDINPUT_EXTRA_INFO;
+           extraInfo == KOREAN_SYLLABLE_SENDINPUT_EXTRA_INFO || extraInfo == CAPS_LOCK_SENDINPUT_EXTRA_INFO;
 }
 constexpr ULONGLONG SMART_PUNCTUATION_REPEAT_INTERVAL_MS = 2000;
 // How long a queued rewrite stays valid. Unlike the interval above this is not
@@ -206,6 +209,9 @@ class CMetasequoiaIME : public ITfTextInputProcessorEx,
     HostComposedView _ReadHostComposedView() const;
     // A lone right Ctrl tap while a Korean syllable composes converts it as the Hanja key does: on the release the tap is queued as that key and true is returned. Checked ahead of the single-Ctrl language toggle, which it takes precedence over only in that state.
     bool _QueueKoreanHanjaTap(_In_ ITfContext *pContext, WPARAM wParam, LPARAM lParam);
+    // 单按 Caps Lock 切换中英文：按下时布防（lockWasOn 是按下前的大写锁定状态），松开时认定为轻点就先撤回大写锁定，撤回成功再排入和单按 Shift 相同的切换，返回 true。
+    void _ArmCapsLockTap(bool lockWasOn);
+    bool _QueueCapsLockTap(_In_ ITfContext *pContext, WPARAM wParam);
     // 向宿主会话发 MSIME_CANCEL；第一次只关闭了韩文或注音的列表、只把越南文词或藏文音节串重新显示为原文、或只退出了整句改字时再发一次，所以组字无论如何都会被丢弃。没有宿主会话时返回 true。
     bool _CancelHostComposition();
     // A caret or editing key that ended a Korean syllable behind the deferred-key barrier was eaten to keep its place in the queue; once the syllable is committed it is sent again through the input queue so the application still does its own work with it.
@@ -770,6 +776,8 @@ class CMetasequoiaIME : public ITfTextInputProcessorEx,
     bool _shiftHotkeyArmed;
     bool _ctrlHotkeyArmed;
     std::chrono::steady_clock::time_point _modifierHotkeyExpire;
+    // 单按 Caps Lock 切换中英文的判定，三个桌面宿主共用一套规则（shared/input/CapsLockTap.h）。
+    msime::input::CapsLockTap _capsLockTap;
 
     HHOOK _bareShiftHook;
     BYTE _bareShiftDownMask;
