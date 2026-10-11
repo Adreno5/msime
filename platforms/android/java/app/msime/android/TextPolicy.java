@@ -181,6 +181,12 @@ public final class TextPolicy {
         return !blank(value);
     }
 
+    /** Return whether text is non-blank, Unicode-valid and within a code-point bound. */
+    public static boolean validBoundedText(String value, int maximumCodePoints) {
+        return hasText(value) && withinCodePoints(value, maximumCodePoints)
+            && !hasControlExceptWhitespace(value) && validUnicode(value);
+    }
+
     /** Return whether text is non-blank, valid Unicode, control-free and within a UTF-8 byte bound. */
     public static boolean boundedNonBlank(String value, int maxBytes) {
         return hasText(value) && utf8Length(value) <= maxBytes
