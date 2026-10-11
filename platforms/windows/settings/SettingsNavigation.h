@@ -6,7 +6,7 @@
 // The page model of the native Windows settings window (main.cpp): which pages exist, in which sidebar group, which of them this process draws, and which it hands to the shared desktop app (MSIME.exe). Kept free of Windows and WinRT headers so a host unit test can check it against the route vocabulary of ShellSurfaces.h. Labels live beside the controls in main.cpp; this header stays ASCII.
 namespace msime::settings {
 
-// Who serves a page. Native pages are drawn by this window. Shell pages belong to the shared desktop app and are opened there on the matching route instead of being rewritten here.
+// Who serves a page. Native pages are drawn by this window. Shell pages belong to the shared desktop app and are opened there on the matching route instead of being rewritten here; since 账号与同步 became native there are none, and every setting is changed in this window.
 enum class PageHost { Native, Shell };
 
 // A surface of the shared desktop app, in the two-field form ShellSurfaceRequest carries: a settings category travels as `page` and a panel as `panel`, never both.
@@ -40,7 +40,7 @@ inline constexpr std::array<Page, 18> pages{{
     {"stats", 3, PageHost::Native, {}},
     {"plugins", 3, PageHost::Native, {}},
     {"ai", 3, PageHost::Native, {}},
-    {"account", 4, PageHost::Shell, {"", "account"}},
+    {"account", 4, PageHost::Native, {}},
     {"dev", 5, PageHost::Native, {}},
     {"feedback", 5, PageHost::Native, {}},
     {"about", 5, PageHost::Native, {}},
@@ -48,9 +48,11 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；云词库和云剪贴板面板；以及屏幕键盘、语音输入和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：社区皮肤库和皮肤发布（「主题」页的「社区皮肤」一行）；社区的词包与回复模板（「账号与同步」页「我的内容」的几行）；云词库和云剪贴板面板；以及屏幕键盘、语音输入和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget skin{"", "skin"};
+// The shared app's community page, which on Windows holds only the dictionary packs and reply templates; the 我的内容 rows of 账号与同步 open it. The route names no gallery view, so it opens on the community home.
+inline constexpr ShellTarget community{"", "community"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
 inline constexpr ShellTarget cloud_dictionary{"cloud-dictionary", ""};
 // The cloud clipboard is a panel of the shared app as well, opened from the 剪贴板 page.
@@ -59,8 +61,9 @@ inline constexpr ShellTarget cloud_clipboard{"cloud-clipboard", ""};
 inline constexpr ShellTarget voice_panel{"voice", ""};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
-inline constexpr std::array<ShellTarget, 6> all{
-    {skin, voice_panel, keyboard_panel, handwriting_panel, cloud_dictionary, cloud_clipboard}};
+inline constexpr std::array<ShellTarget, 7> all{{skin, community, voice_panel, keyboard_panel,
+                                                 handwriting_panel, cloud_dictionary,
+                                                 cloud_clipboard}};
 } // namespace shell_links
 
 struct RouteAlias {
@@ -68,7 +71,7 @@ struct RouteAlias {
   std::string_view page;
 };
 
-// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。桌面端没有社区页，社区皮肤在共享应用的主题页上，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页（Windows 不提供，见 README），`chat` 打开 AI 辅助。
+// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。本窗口没有社区页，社区皮肤在共享应用的主题页上，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页（Windows 不提供，见 README），`chat` 打开 AI 辅助。
 inline constexpr std::array<RouteAlias, 22> route_aliases{{
     {"account", "account"},
     {"chat", "ai"},

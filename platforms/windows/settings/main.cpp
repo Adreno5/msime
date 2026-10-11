@@ -34,6 +34,7 @@
 #include "GameProcessList.h"
 #include "PluginPageModel.h"
 #include "PreferencePath.h"
+#include "AccountPageModel.h"
 #include "AiSettings.h"
 #include "AppInputModeRuleList.h"
 #include "FeedbackReport.h"
@@ -97,6 +98,7 @@ namespace nav = msime::settings;
 namespace pg = msime::settings::plugins;
 namespace vs = msime::settings::voice;
 namespace ais = msime::settings::ai;
+namespace am = msime::settings::account;
 
 struct Response {
   std::string text;
@@ -474,6 +476,18 @@ std::filesystem::path account_directory() {
   }
   const auto directory =
       std::filesystem::path(local) / MSIME_EDITION_USER_DATA_DIRECTORY / L"account";
+  CoTaskMemFree(local);
+  return directory;
+}
+
+// Where older versions of the shared app kept the session (its Tauri app_local_data_dir, %LOCALAPPDATA%\<this edition's Tauri identifier>); msime_client_account moves a session found there into account_directory() the first time, as the shared app does on start. Empty when the known folder cannot be read.
+std::filesystem::path legacy_account_directory() {
+  PWSTR local = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+    CoTaskMemFree(local);
+    return {};
+  }
+  const auto directory = std::filesystem::path(local) / MSIME_EDITION_TAURI_IDENTIFIER;
   CoTaskMemFree(local);
   return directory;
 }
@@ -961,13 +975,6 @@ const PageLabel &page_label(std::string_view id) {
     if (label.id == id)
       return label;
   return page_labels[0];
-}
-
-// What each page of the shared app is for, on the card that opens it.
-const wchar_t *shell_page_description(std::string_view id) {
-  if (id == "account")
-    return L"登录水杉输入法账号，管理设置和词库在设备之间的同步。";
-  return L"";
 }
 
 // The line the search list shows when nothing matches. It is a list item, so it can be highlighted and submitted like a result; the search box treats it as neither.
@@ -2179,6 +2186,8 @@ struct MainWindow : WindowT<MainWindow> {
       flush_pending();
       // 本地模型的下载随窗口一起停下，下次安装时清掉没装完的临时文件。
       take_response(msime_client_voice_local_model_cancel(nullptr, 0));
+      // 等待中的 Google 登录也随窗口结束，回环端口不再等一个没人看的浏览器。
+      cancel_account_google();
     });
   }
 
@@ -2802,6 +2811,11 @@ private:
       reset_statistics_page();
     if (id == "plugins" && id != current_page_)
       enter_plugins_page();
+    // 账号页与共享页一样每次进入都重新读状态；离开时结束等待中的 Google 登录，在途的回答作废。
+    if (current_page_ == "account" && id != current_page_)
+      leave_account_page();
+    if (id == "account" && id != current_page_)
+      enter_account_page();
     // 每次进入「主题」页都重扫皮肤目录，与共享页重新显示时一样。
     if (id == "themes" && id != current_page_)
       skins_stale_ = true;
@@ -3870,6 +3884,8 @@ private:
       build_plugins_page(page);
     else if (id == "ai")
       build_ai_page(page);
+    else if (id == "account")
+      build_account_page(page);
     else if (id == "dev")
       build_dev_page(page);
     else if (id == "feedback")
@@ -3878,11 +3894,11 @@ private:
       build_about_page(page);
   }
 
-  // 账号与同步由各平台共用的共享应用提供，这个窗口只负责在那里打开它。
+  // 交给共享应用的设置页（现在没有这样的页）只有一行，在共享应用里打开它。
   void build_shell_page(nav::Page const &model, StackPanel const &page) {
     const auto &label = page_label(model.id);
     auto group = add_group(page, L"");
-    add_row(group, label.glyph, label.title, shell_page_description(model.id),
+    add_row(group, label.glyph, label.title, L"",
             button_control(L"打开", [this, target = model.shell] {
               open_shell(target);
             }));
@@ -3890,6 +3906,1340 @@ private:
                           12, palette_.faint);
     note.Margin(Thickness{4, 8, 4, 0});
     page.Children().Append(note);
+  }
+
+  // ---- 账号与同步 ----
+
+  // 共享账号页（packages/ui/src/account/account-page.tsx）在 Windows 上画的是桌面那一支：没有 App 图标卡片（只有手机有）、没有「我的设计」（Windows 没有触屏键盘皮肤）、没有「关于」一组和登录后返回的「取消」（都只给手机或从别的页面跳来登录时）。没登录时是登录卡片（Google、邮箱、手机号验证码登录，刷新登录方式，清除失效登录状态）；登录后是资料卡片（点开「编辑资料」对话框：更换和移除头像、社区昵称、账号信息）、「设置同步」卡片、「云端」一组（云词库和云剪贴板面板是输入工具，仍由共享应用打开）、「我的内容」一组（共享应用的社区页，Windows 上只有词包与回复模板）和「账号」一组（退出登录、退出所有设备、注销账号）。所有账号操作经 msime_client_account，用共享应用和输入法读的同一份会话文件，除状态和取消 Google 登录外都在工作线程上进行；文案和规则在 AccountPageModel.h。
+
+  struct AccountUser {
+    std::wstring id, display_name, created_at, email, avatar_url;
+    bool avatar_uploaded = false;
+  };
+
+  enum class AccountChannel { none, email, phone };
+
+  // One msime_client_account request: the account directory the shared app signs in to, and the directory older versions kept the session in.
+  static std::string account_body(JsonObject const &action) {
+    JsonObject request;
+    request.SetNamedValue(L"directory",
+                          JsonValue::CreateStringValue(hstring(account_directory().wstring())));
+    if (const auto legacy = legacy_account_directory(); !legacy.empty())
+      request.SetNamedValue(L"legacy_directory",
+                            JsonValue::CreateStringValue(hstring(legacy.wstring())));
+    request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
+    return utf8(request.Stringify());
+  }
+
+  static Response account_call(std::string const &body) {
+    return take_response(msime_client_account(reinterpret_cast<const uint8_t *>(body.data()),
+                                              body.size()));
+  }
+
+  static JsonObject account_action(wchar_t const *operation) {
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+    return action;
+  }
+
+  // The `value` of a successful answer, or null when it cannot be read.
+  static JsonValue account_value(Response const &response) {
+    try {
+      return JsonObject::Parse(text(response.text))
+          .GetNamedValue(L"value", JsonValue::CreateNullValue());
+    } catch (...) {
+      return JsonValue::CreateNullValue();
+    }
+  }
+
+  static std::optional<AccountUser> parse_account_user(JsonValue const &value) {
+    if (value.ValueType() != JsonValueType::Object)
+      return std::nullopt;
+    const auto object = value.GetObject();
+    AccountUser user;
+    user.id = named_string(object, L"id");
+    if (user.id.empty())
+      return std::nullopt;
+    user.display_name = named_string(object, L"displayName");
+    user.created_at = named_string(object, L"createdAt");
+    user.email = named_string(object, L"email");
+    user.avatar_url = named_string(object, L"avatarUrl");
+    const auto uploaded = object.GetNamedValue(L"avatarUploaded", JsonValue::CreateNullValue());
+    user.avatar_uploaded = uploaded.ValueType() == JsonValueType::Boolean && uploaded.GetBoolean();
+    return user;
+  }
+
+  // `{user}` (status, login): the user, or nothing when signed out.
+  static std::optional<AccountUser> status_user(JsonValue const &value) {
+    if (value.ValueType() != JsonValueType::Object)
+      return std::nullopt;
+    return parse_account_user(
+        value.GetObject().GetNamedValue(L"user", JsonValue::CreateNullValue()));
+  }
+
+  // Runs one account action off the UI thread; `done` gets the answer on it unless the page was left meanwhile.
+  void account_request(JsonObject const &action, std::function<void(Response const &)> done) {
+    const auto generation = account_generation_;
+    if (account_directory().empty()) {
+      // 读不到本机的应用数据目录，会话文件无从读写。
+      done(Response{"{\"ok\":false,\"error\":\"account_storage\"}", false});
+      return;
+    }
+    run_host([body = account_body(action)] { return account_call(body); },
+             [this, generation, done = std::move(done)](Response const &response) {
+               if (generation == account_generation_)
+                 done(response);
+             });
+  }
+
+  void redraw_account() {
+    if (closed_)
+      return;
+    if (account_dialog_refresh_)
+      account_dialog_refresh_();
+    if (current_page_ == "account")
+      queue_refresh();
+  }
+
+  // 共享页的 perform：一次只做一件；开始时清掉上一次的错误和提示。
+  bool account_begin() {
+    if (account_busy_)
+      return false;
+    account_busy_ = true;
+    account_error_.clear();
+    account_notice_.clear();
+    redraw_account();
+    return true;
+  }
+
+  // 结束一次操作；失败时（取消除外）在页面顶部说明。
+  void account_finish(std::wstring const &code = {}, std::wstring notice = {}) {
+    account_busy_ = false;
+    if (!code.empty()) {
+      if (!am::cancelled(code))
+        account_error_ = am::error_message(code);
+    } else if (!notice.empty()) {
+      account_notice_ = std::move(notice);
+    }
+    redraw_account();
+  }
+
+  static std::wstring account_failure(Response const &response) {
+    const auto code = response_error(response);
+    return code.empty() ? L"account_unavailable" : code;
+  }
+
+  // 共享页的 applyProfile：资料、用户和昵称输入一起换。applyAvatar 只换资料和用户，对话框里正在输入的昵称留着。
+  bool apply_account_profile(Response const &response, bool keep_name) {
+    const auto value = account_value(response);
+    if (value.ValueType() != JsonValueType::Object)
+      return false;
+    const auto object = value.GetObject();
+    auto user = parse_account_user(object.GetNamedValue(L"user", JsonValue::CreateNullValue()));
+    if (!user)
+      return false;
+    std::vector<std::wstring> providers;
+    const auto list = object.GetNamedValue(L"providers", JsonValue::CreateNullValue());
+    if (list.ValueType() == JsonValueType::Array)
+      for (auto const &item : list.GetArray())
+        if (item.ValueType() == JsonValueType::String)
+          providers.emplace_back(item.GetString().c_str());
+    account_user_ = std::move(user);
+    account_providers_linked_ = std::move(providers);
+    if (!keep_name)
+      account_name_ = account_user_->display_name;
+    return true;
+  }
+
+  void account_signed_out() {
+    account_user_.reset();
+    account_providers_linked_.clear();
+    account_name_.clear();
+    reset_settings_sync();
+  }
+
+  void enter_account_page() {
+    ++account_generation_;
+    account_stale_ = true;
+    account_loading_ = true;
+    account_busy_ = false;
+    account_error_.clear();
+    account_notice_.clear();
+    account_channel_ = AccountChannel::none;
+    account_target_.clear();
+    account_code_.clear();
+    account_challenge_.reset();
+    account_resend_at_ = {};
+    account_google_waiting_ = false;
+    account_avatar_requested_.clear();
+    reset_settings_sync();
+  }
+
+  void leave_account_page() {
+    cancel_account_google();
+    ++account_generation_;
+    account_busy_ = false;
+    account_google_waiting_ = false;
+    sync_busy_ = false;
+    if (account_timer_)
+      account_timer_.Stop();
+    account_resend_button_ = nullptr;
+    account_login_button_ = nullptr;
+    account_code_panel_ = nullptr;
+  }
+
+  // 共享页挂载时并行读状态和登录方式：登录方式读不到时报错；有用户时再读资料。都读完才画页面。
+  void load_account() {
+    account_stale_ = false;
+    account_loading_ = true;
+    account_pending_status_.reset();
+    account_pending_providers_.reset();
+    account_request(account_action(L"status"), [this](Response const &response) {
+      account_pending_status_ = response;
+      finish_account_load();
+    });
+    account_request(account_action(L"providers"), [this](Response const &response) {
+      account_pending_providers_ = response;
+      finish_account_load();
+    });
+  }
+
+  void finish_account_load() {
+    if (!account_pending_status_ || !account_pending_providers_)
+      return;
+    const auto status = std::move(*account_pending_status_);
+    const auto providers = std::move(*account_pending_providers_);
+    account_pending_status_.reset();
+    account_pending_providers_.reset();
+    if (providers.ok)
+      apply_account_providers(providers);
+    else if (const auto code = account_failure(providers); !am::cancelled(code))
+      account_error_ = am::error_message(code);
+    if (!status.ok) {
+      if (const auto code = account_failure(status); !am::cancelled(code))
+        account_error_ = am::error_message(code);
+      account_signed_out();
+      account_loading_ = false;
+      redraw_account();
+      return;
+    }
+    account_user_ = status_user(account_value(status));
+    if (!account_user_) {
+      account_signed_out();
+      account_loading_ = false;
+      redraw_account();
+      return;
+    }
+    account_name_ = account_user_->display_name;
+    account_request(account_action(L"profile"), [this](Response const &response) {
+      if (!response.ok || !apply_account_profile(response, false)) {
+        if (const auto code = account_failure(response); !am::cancelled(code))
+          account_error_ = am::error_message(code);
+      }
+      account_loading_ = false;
+      redraw_account();
+    });
+  }
+
+  void apply_account_providers(Response const &response) {
+    const auto value = account_value(response);
+    if (value.ValueType() != JsonValueType::Object)
+      return;
+    const auto object = value.GetObject();
+    auto flag = [&object](wchar_t const *key) {
+      const auto item = object.GetNamedValue(key, JsonValue::CreateNullValue());
+      return item.ValueType() == JsonValueType::Boolean && item.GetBoolean();
+    };
+    account_email_ = flag(L"email");
+    account_phone_ = flag(L"phone");
+    account_google_ = flag(L"google");
+  }
+
+  // 登录（验证码或 Google）之后：记下用户，读资料，成功时说「登录成功。」。
+  void account_signed_in(Response const &response) {
+    auto user = status_user(account_value(response));
+    if (!user) {
+      account_finish(L"account_unavailable");
+      return;
+    }
+    account_user_ = std::move(user);
+    account_name_ = account_user_->display_name;
+    account_providers_linked_.clear();
+    account_request(account_action(L"profile"), [this](Response const &profile) {
+      if (!profile.ok || !apply_account_profile(profile, false)) {
+        account_finish(account_failure(profile));
+        return;
+      }
+      account_finish({}, L"登录成功。");
+    });
+  }
+
+  void choose_account_channel(AccountChannel channel) {
+    cancel_account_google();
+    account_channel_ = channel;
+    account_target_.clear();
+    account_code_.clear();
+    account_challenge_.reset();
+    account_error_.clear();
+    account_notice_.clear();
+    redraw_account();
+  }
+
+  static int64_t account_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  }
+
+  void request_account_code() {
+    if (account_channel_ == AccountChannel::none || !account_begin())
+      return;
+    const auto target = am::normalize_name(account_target_);
+    if (target.empty()) {
+      account_finish(L"account_invalid");
+      return;
+    }
+    auto action = account_action(L"request_code");
+    action.SetNamedValue(L"provider", JsonValue::CreateStringValue(
+                                          account_channel_ == AccountChannel::email ? L"email"
+                                                                                     : L"phone"));
+    action.SetNamedValue(L"target", JsonValue::CreateStringValue(hstring(target)));
+    account_request(action, [this](Response const &response) {
+      if (!response.ok) {
+        account_finish(account_failure(response));
+        return;
+      }
+      const auto value = account_value(response);
+      if (value.ValueType() != JsonValueType::Object) {
+        account_finish(L"account_unavailable");
+        return;
+      }
+      const auto object = value.GetObject();
+      const auto id = named_string(object, L"challengeId");
+      const auto expires = object.GetNamedValue(L"expiresIn", JsonValue::CreateNullValue());
+      if (id.empty() || expires.ValueType() != JsonValueType::Number) {
+        account_finish(L"account_unavailable");
+        return;
+      }
+      const auto now = account_now_ms();
+      account_challenge_ = id;
+      account_expires_at_ = now + static_cast<int64_t>(std::llround(expires.GetNumber() * 1000));
+      account_resend_at_ = now + am::resend_interval_ms;
+      account_code_.clear();
+      start_account_timer();
+      account_finish({}, L"验证码已发送，请查收。");
+    });
+  }
+
+  void sign_in_with_code() {
+    if (!account_begin())
+      return;
+    if (!account_challenge_ || !am::six_digits(account_code_) ||
+        account_expires_at_ <= account_now_ms()) {
+      account_finish(L"account_invalid");
+      return;
+    }
+    auto action = account_action(L"login");
+    action.SetNamedValue(L"challenge_id", JsonValue::CreateStringValue(hstring(*account_challenge_)));
+    action.SetNamedValue(L"code", JsonValue::CreateStringValue(hstring(account_code_)));
+    account_request(action, [this](Response const &response) {
+      if (!response.ok) {
+        account_finish(account_failure(response));
+        return;
+      }
+      account_channel_ = AccountChannel::none;
+      account_challenge_.reset();
+      account_code_.clear();
+      account_signed_in(response);
+    });
+  }
+
+  // 共享页的 signInWithGoogle：Rust 监听回环端口、用系统浏览器打开授权页并等它回跳，最多约 5 分钟；等待时按钮显示在等浏览器，旁边是「取消 Google 登录」。
+  void sign_in_with_google() {
+    if (account_busy_)
+      return;
+    account_google_waiting_ = true;
+    account_begin();
+    account_request(account_action(L"google_login"), [this](Response const &response) {
+      account_google_waiting_ = false;
+      if (!response.ok) {
+        account_finish(account_failure(response));
+        return;
+      }
+      account_signed_in(response);
+    });
+  }
+
+  // 结束等待中的 Google 登录，它随后以取消结束。只是清掉内存里的等待，不联网，所以在 UI 线程上直接调用。
+  void cancel_account_google() {
+    if (!account_google_waiting_ || account_directory().empty())
+      return;
+    account_call(account_body(account_action(L"google_cancel")));
+  }
+
+  void refresh_account_providers() {
+    if (!account_begin())
+      return;
+    account_request(account_action(L"providers"), [this](Response const &response) {
+      if (!response.ok) {
+        account_finish(account_failure(response));
+        return;
+      }
+      apply_account_providers(response);
+      account_finish();
+    });
+  }
+
+  // 「清除失效登录状态」「退出登录」「退出所有设备」「注销账号」：成功后回到未登录，说明结束的方式。
+  void end_account_session(JsonObject const &action, std::wstring notice) {
+    if (!account_begin())
+      return;
+    account_request(action, [this, notice = std::move(notice)](Response const &response) {
+      if (!response.ok) {
+        account_finish(account_failure(response));
+        return;
+      }
+      account_signed_out();
+      account_finish({}, notice);
+    });
+  }
+
+  void sign_out_account(bool all) {
+    auto action = account_action(L"logout");
+    action.SetNamedValue(L"all", JsonValue::CreateBooleanValue(all));
+    end_account_session(action, all ? L"已退出所有设备。" : L"已退出登录。");
+  }
+
+  // 「退出所有设备」「注销账号」先确认（AccountConfirmation）。
+  fire_and_forget confirm_account_action(am::Confirmation which) {
+    if (account_busy_)
+      co_return;
+    auto strong = get_strong();
+    const auto copy = am::confirmation_text(which);
+    if (!co_await confirm(std::wstring(copy.label), std::wstring(copy.message),
+                          std::wstring(copy.label)))
+      co_return;
+    if (which == am::Confirmation::logout_all)
+      sign_out_account(true);
+    else
+      end_account_session(account_action(L"delete"), L"账号已注销。");
+  }
+
+  void rename_account() {
+    if (!account_begin())
+      return;
+    if (!am::valid_name(account_name_)) {
+      account_finish(L"account_invalid");
+      return;
+    }
+    auto action = account_action(L"rename");
+    action.SetNamedValue(L"display_name",
+                         JsonValue::CreateStringValue(hstring(am::normalize_name(account_name_))));
+    account_request(action, [this](Response const &response) {
+      if (!response.ok || !apply_account_profile(response, false)) {
+        account_finish(account_failure(response));
+        return;
+      }
+      account_finish({}, L"昵称已更新。");
+    });
+  }
+
+  // 共享应用的 account_choose_avatar：系统打开对话框（标题「选择头像」，只列 png、jpg、jpeg），取消时什么也不做；Rust 拒绝不是 1 MiB 以内 PNG 或 JPEG 的文件（account_invalid），这时说的是图片不对。
+  void choose_account_avatar() {
+    if (!account_begin())
+      return;
+    std::optional<std::filesystem::path> picked;
+    com_ptr<IFileOpenDialog> dialog;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(dialog.put())))) {
+      const COMDLG_FILTERSPEC filter{L"图片", L"*.png;*.jpg;*.jpeg"};
+      dialog->SetFileTypes(1, &filter);
+      dialog->SetTitle(L"选择头像");
+      FILEOPENDIALOGOPTIONS options = 0;
+      if (SUCCEEDED(dialog->GetOptions(&options)))
+        dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+      com_ptr<IShellItem> item;
+      PWSTR raw = nullptr;
+      if (dialog->Show(GetActiveWindow()) == S_OK && SUCCEEDED(dialog->GetResult(item.put())) &&
+          SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) && raw)
+        picked = std::filesystem::path(raw);
+      CoTaskMemFree(raw);
+    }
+    if (!picked) {
+      account_finish();
+      return;
+    }
+    auto action = account_action(L"upload_avatar");
+    action.SetNamedValue(L"path", JsonValue::CreateStringValue(hstring(picked->wstring())));
+    account_request(action, [this](Response const &response) {
+      if (!response.ok) {
+        const auto code = account_failure(response);
+        account_finish(code == L"account_invalid" ? L"account_avatar_invalid" : code);
+        return;
+      }
+      if (!apply_account_profile(response, true)) {
+        account_finish(L"account_unavailable");
+        return;
+      }
+      account_finish({}, L"头像已更新。");
+    });
+  }
+
+  void remove_account_avatar() {
+    if (!account_begin())
+      return;
+    account_request(account_action(L"remove_avatar"), [this](Response const &response) {
+      if (!response.ok || !apply_account_profile(response, true)) {
+        account_finish(account_failure(response));
+        return;
+      }
+      account_finish({}, L"已移除头像。");
+    });
+  }
+
+  // 共享页的 copyAccountId：复制完整的账号 ID，按钮显示「已复制」1.8 秒；复制不了时说明。
+  void copy_account_id() {
+    if (!account_user_)
+      return;
+    if (!copy_text(account_user_->id)) {
+      account_error_ = L"账号 ID 暂时无法复制，请稍后重试。";
+      redraw_account();
+      return;
+    }
+    account_id_copied_ = true;
+    if (!account_copied_timer_) {
+      account_copied_timer_ = DispatcherQueue().CreateTimer();
+      account_copied_timer_.Interval(std::chrono::milliseconds(1800));
+      account_copied_timer_.IsRepeating(false);
+      account_copied_timer_.Tick([this](Microsoft::UI::Dispatching::DispatcherQueueTimer const &,
+                                        Inspectable const &) {
+        account_id_copied_ = false;
+        if (account_dialog_refresh_)
+          account_dialog_refresh_();
+      });
+    }
+    account_copied_timer_.Stop();
+    account_copied_timer_.Start();
+    if (account_dialog_refresh_)
+      account_dialog_refresh_();
+  }
+
+  // ---- 头像 ----
+
+  // 页面不取远程图片：头像经 msime_client_account 的 avatar 取成 data: 地址再解码。avatarUrl 变了才再取；取不到时显示名字的第一个字。
+  void load_account_avatar() {
+    if (!account_user_ || account_user_->avatar_url.empty())
+      return;
+    const auto url = account_user_->avatar_url;
+    if (url == account_avatar_url_ || url == account_avatar_requested_)
+      return;
+    account_avatar_requested_ = url;
+    account_request(account_action(L"avatar"), [this, url](Response const &response) {
+      const auto value = account_value(response);
+      if (!response.ok || value.ValueType() != JsonValueType::String)
+        return;
+      show_account_avatar(url, std::wstring(value.GetString().c_str()));
+    });
+  }
+
+  fire_and_forget show_account_avatar(std::wstring url, std::wstring data) {
+    auto strong = get_strong();
+    const auto comma = data.find(L',');
+    if (!(data.starts_with(L"data:image/png;base64,") ||
+          data.starts_with(L"data:image/jpeg;base64,")) ||
+        comma == std::wstring::npos)
+      co_return;
+    Imaging::BitmapImage bitmap;
+    try {
+      const auto bytes =
+          Windows::Security::Cryptography::CryptographicBuffer::DecodeFromBase64String(
+              hstring(data.substr(comma + 1)));
+      Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+      co_await stream.WriteAsync(bytes);
+      stream.Seek(0);
+      co_await bitmap.SetSourceAsync(stream);
+    } catch (hresult_error const &) {
+      co_return;
+    }
+    if (closed_ || !account_user_ || account_user_->avatar_url != url)
+      co_return;
+    account_avatar_ = bitmap;
+    account_avatar_url_ = url;
+    redraw_account();
+  }
+
+  // 圆形头像（AccountAvatar）：取到的图片，或强调色底上名字的第一个字。`name` 是代替图片的那个名字。
+  FrameworkElement make_account_avatar(double size, double font_size, std::wstring const &name) {
+    Grid avatar;
+    avatar.Width(size);
+    avatar.Height(size);
+    Shapes::Ellipse circle;
+    circle.Fill(brush(palette_.accent));
+    avatar.Children().Append(circle);
+    const bool image = account_user_ && account_avatar_ && !account_user_->avatar_url.empty() &&
+                       account_user_->avatar_url == account_avatar_url_;
+    if (image) {
+      Shapes::Ellipse photo;
+      ImageBrush fill;
+      fill.ImageSource(account_avatar_);
+      fill.Stretch(Stretch::UniformToFill);
+      photo.Fill(fill);
+      avatar.Children().Append(photo);
+    } else {
+      auto letter = make_text(am::initial(name), font_size, palette_.on_accent);
+      letter.FontWeight(Windows::UI::Text::FontWeight{650});
+      letter.TextWrapping(TextWrapping::NoWrap);
+      letter.HorizontalAlignment(HorizontalAlignment::Center);
+      letter.VerticalAlignment(VerticalAlignment::Center);
+      avatar.Children().Append(letter);
+    }
+    return avatar;
+  }
+
+  // ---- 验证码 ----
+
+  // 「获取验证码」的倒计时和「登录」按钮随时间变（共享页每秒更新 now）；只改这两个按钮，不重画页面，输入框的焦点留着。重发倒计时没走完时也走，换了号码之后倒计时照样结束。
+  void start_account_timer() {
+    if (!account_timer_) {
+      account_timer_ = DispatcherQueue().CreateTimer();
+      account_timer_.Interval(std::chrono::seconds(1));
+      account_timer_.IsRepeating(true);
+      account_timer_.Tick([this](Microsoft::UI::Dispatching::DispatcherQueueTimer const &,
+                                 Inspectable const &) {
+        update_account_code_controls();
+        if ((!account_challenge_ && account_resend_at_ <= account_now_ms()) ||
+            current_page_ != "account")
+          account_timer_.Stop();
+      });
+    }
+    account_timer_.Start();
+  }
+
+  void update_account_code_controls() {
+    const auto now = account_now_ms();
+    const auto seconds = am::resend_seconds(account_resend_at_ - now);
+    const bool expired = account_challenge_ && account_expires_at_ <= now;
+    if (account_resend_button_) {
+      account_resend_button_.Content(box_value(hstring(am::resend_label(seconds))));
+      account_resend_button_.IsEnabled(!account_busy_ &&
+                                       !am::normalize_name(account_target_).empty() &&
+                                       seconds == 0);
+    }
+    if (account_login_button_) {
+      account_login_button_.Content(box_value(hstring(am::login_label(expired, account_busy_))));
+      account_login_button_.IsEnabled(!account_busy_ && !expired && am::six_digits(account_code_));
+    }
+  }
+
+  // 「加入水杉」：createdAt 在本机时区的日期（toLocaleDateString("zh-CN")），读不懂时为空。
+  static std::wstring account_join_date(std::wstring const &created_at) {
+    const auto milliseconds = am::parse_iso_time(created_at);
+    // FILETIME counts 100-nanosecond intervals from 1601.
+    if (!milliseconds || *milliseconds < -11644473600000LL || *milliseconds > 900000000000000LL)
+      return {};
+    ULARGE_INTEGER ticks{};
+    ticks.QuadPart = static_cast<uint64_t>(*milliseconds + 11644473600000LL) * 10000ULL;
+    const FILETIME utc{ticks.LowPart, ticks.HighPart};
+    SYSTEMTIME universal{}, local{};
+    if (!FileTimeToSystemTime(&utc, &universal) ||
+        !SystemTimeToTzSpecificLocalTime(nullptr, &universal, &local))
+      return {};
+    return am::zh_date(local.wYear, local.wMonth, local.wDay);
+  }
+
+  // ---- 设置同步 ----
+
+  // Windows 的设置同步卡片（SettingsSyncCard 的桌面卡片，createDesktopSettingsSync）：读字段表和云端设置，上传本机设置，下载并应用云端设置。只同步各平台共有的 input.* 设置，偏好目录与本窗口读写的相同。卡片有自己的忙碌状态和一行说明（错误和结果都写在这里）；换了账号就重新读。
+
+  void reset_settings_sync() {
+    ++sync_generation_;
+    sync_user_.clear();
+    sync_ready_ = false;
+    sync_cloud_.reset();
+    sync_busy_ = false;
+    sync_message_.clear();
+  }
+
+  // One settings sync action; the answer is dropped when the account or page changed meanwhile.
+  void sync_request(JsonObject const &action, std::function<void(Response const &)> done) {
+    const auto generation = sync_generation_;
+    account_request(action, [this, generation, done = std::move(done)](Response const &response) {
+      if (generation == sync_generation_)
+        done(response);
+    });
+  }
+
+  bool sync_begin() {
+    if (sync_busy_)
+      return false;
+    sync_busy_ = true;
+    sync_message_.clear();
+    redraw_account();
+    return true;
+  }
+
+  void sync_finish(std::wstring const &code = {}, std::wstring message = {}) {
+    sync_busy_ = false;
+    if (!code.empty()) {
+      if (!am::cancelled(code))
+        sync_message_ = am::error_message(code);
+    } else {
+      sync_message_ = std::move(message);
+    }
+    redraw_account();
+  }
+
+  // 云端设置文档 {revision, settings}；读不懂时为空。
+  static std::optional<JsonObject> sync_document(Response const &response) {
+    const auto value = account_value(response);
+    if (value.ValueType() != JsonValueType::Object)
+      return std::nullopt;
+    const auto object = value.GetObject();
+    const auto revision = object.GetNamedValue(L"revision", JsonValue::CreateNullValue());
+    const auto settings = object.GetNamedValue(L"settings", JsonValue::CreateNullValue());
+    if (revision.ValueType() != JsonValueType::Number ||
+        settings.ValueType() != JsonValueType::Object)
+      return std::nullopt;
+    return object;
+  }
+
+  // 卡片出现时和「刷新云端设置」：先读字段表，再读云端设置，两样都有了上传和应用才能用。
+  void load_settings_sync() {
+    if (!account_user_ || !sync_begin())
+      return;
+    sync_user_ = account_user_->id;
+    const auto generation = sync_generation_;
+    if (account_directory().empty()) {
+      sync_finish(L"account_storage");
+      return;
+    }
+    run_host(
+        [schema = account_body(account_action(L"preferences_schema")),
+         load = account_body(account_action(L"preferences_load"))] {
+          auto response = account_call(schema);
+          return response.ok ? account_call(load) : response;
+        },
+        [this, generation](Response const &response) {
+          if (generation != sync_generation_ || closed_)
+            return;
+          if (!response.ok) {
+            sync_finish(account_failure(response));
+            return;
+          }
+          auto document = sync_document(response);
+          if (!document) {
+            sync_finish(L"account_unavailable");
+            return;
+          }
+          sync_ready_ = true;
+          sync_cloud_ = std::move(*document);
+          sync_finish();
+        });
+  }
+
+  fire_and_forget upload_settings_sync() {
+    if (sync_busy_ || !sync_ready_ || !sync_cloud_)
+      co_return;
+    auto strong = get_strong();
+    if (!co_await confirm(L"确认上传本机设置", std::wstring(am::sync_upload_confirmation),
+                          L"确认上传"))
+      co_return;
+    // 上传的是已经保存的设置，先把还在等待的滑块修改存下。
+    flush_pending();
+    if (!sync_begin())
+      co_return;
+    auto action = account_action(L"preferences_upload");
+    action.SetNamedValue(L"preferences_directory",
+                         JsonValue::CreateStringValue(hstring(state_directory().wstring())));
+    sync_request(action, [this](Response const &response) {
+      if (!response.ok) {
+        sync_finish(account_failure(response));
+        return;
+      }
+      if (auto document = sync_document(response))
+        sync_cloud_ = std::move(*document);
+      sync_finish({}, std::wstring(am::sync_uploaded));
+    });
+  }
+
+  fire_and_forget apply_settings_sync() {
+    if (sync_busy_ || !sync_ready_ || !sync_cloud_ || !sync_has_settings())
+      co_return;
+    auto strong = get_strong();
+    if (!co_await confirm(L"确认应用云端设置", std::wstring(am::sync_apply_confirmation),
+                          L"确认应用"))
+      co_return;
+    flush_pending();
+    if (!sync_cloud_ || !sync_begin())
+      co_return;
+    auto action = account_action(L"preferences_apply");
+    action.SetNamedValue(L"preferences_directory",
+                         JsonValue::CreateStringValue(hstring(state_directory().wstring())));
+    action.SetNamedValue(L"user_id", JsonValue::CreateStringValue(hstring(sync_user_)));
+    action.SetNamedValue(L"preferences", JsonValue::Parse(sync_cloud_->Stringify()));
+    sync_request(action, [this](Response const &response) {
+      // 应用成功时本机设置已换成云端的那一份，写回被拒绝时也可能是别处刚改过，两种情况都重读，各页显示存下的值。
+      reload_document();
+      if (!response.ok) {
+        sync_finish(account_failure(response));
+        return;
+      }
+      sync_finish({}, std::wstring(am::sync_applied));
+    });
+  }
+
+  bool sync_has_settings() const {
+    return sync_cloud_ && sync_cloud_->GetNamedObject(L"settings").Size() > 0;
+  }
+
+  void build_settings_sync(StackPanel const &page) {
+    if (!indexing_ && account_user_ && sync_user_ != account_user_->id)
+      load_settings_sync();
+    auto group = add_group(page, L"设置同步");
+    record(L"设置同步", std::wstring(am::sync_description));
+    StackPanel body;
+    body.Spacing(12);
+    body.Padding(Thickness{25, 16, 25, 16});
+    body.Children().Append(make_text(am::sync_description, 13, palette_.sub));
+    if (sync_cloud_)
+      body.Children().Append(make_text(
+          L"云端版本：" +
+              std::to_wstring(std::llround(sync_cloud_->GetNamedNumber(L"revision", 0))),
+          12, palette_.sub));
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    actions.Children().Append(
+        button_control(L"刷新云端设置", [this] { load_settings_sync(); }, !sync_busy_));
+    auto upload = button_control(L"上传本机设置", [this] { upload_settings_sync(); },
+                                 !sync_busy_ && sync_ready_ && sync_cloud_.has_value());
+    make_primary(upload.as<Button>());
+    actions.Children().Append(upload);
+    actions.Children().Append(button_control(L"下载并应用云端设置",
+                                             [this] { apply_settings_sync(); },
+                                             !sync_busy_ && sync_ready_ && sync_has_settings()));
+    body.Children().Append(actions);
+    if (sync_busy_)
+      body.Children().Append(make_text(L"正在处理…", 12, palette_.sub));
+    if (!sync_message_.empty())
+      body.Children().Append(make_text(sync_message_, 12, palette_.text));
+    auto card = make_card();
+    card.Child(body);
+    A11y::SetName(card, L"设置同步");
+    group.Children().Append(card);
+    mark_search_target(L"设置同步", card);
+  }
+
+  // ---- 页面 ----
+
+  InfoBar account_message(std::wstring const &message, InfoBarSeverity severity) {
+    InfoBar bar;
+    bar.IsOpen(true);
+    bar.IsClosable(false);
+    bar.Severity(severity);
+    bar.Message(hstring(message));
+    bar.Margin(Thickness{0, 0, 0, 12});
+    return bar;
+  }
+
+  // 登录卡片里的一个大按钮（account.provider / account.submit）。
+  Button account_wide_button(std::wstring const &label, std::function<void()> click, bool enabled,
+                             bool accent = false) {
+    auto button = button_control(label, std::move(click), enabled).as<Button>();
+    button.Width(300);
+    button.Height(36);
+    button.HorizontalAlignment(HorizontalAlignment::Center);
+    if (accent)
+      make_primary(button);
+    return button;
+  }
+
+  // 卡片底部的小链接（account.link）。
+  HyperlinkButton account_link(std::wstring const &label, std::function<void()> click,
+                               bool enabled = true) {
+    HyperlinkButton link;
+    link.Content(box_value(hstring(label)));
+    link.FontSize(12);
+    link.IsEnabled(enabled);
+    link.Click([on_click = std::move(click)](Inspectable const &, RoutedEventArgs const &) {
+      on_click();
+    });
+    return link;
+  }
+
+  void build_account_page(StackPanel const &page) {
+    if (indexing_) {
+      // 搜索索引不读账号状态：记下这一页在各种状态下的主要条目，结果都打开这一页。
+      record(L"使用 Google 登录", L"");
+      record(L"邮箱登录", L"我们会发送一个 6 位验证码完成登录");
+      record(L"手机号登录", L"我们会发送一个 6 位验证码完成登录");
+      record(L"编辑资料", L"社区昵称");
+      record(L"设置同步", std::wstring(am::sync_description));
+      record(L"云词库", L"");
+      record(L"云剪贴板", L"");
+      record(L"退出登录", L"");
+      record(L"退出所有设备", L"");
+      record(L"注销账号", L"");
+      return;
+    }
+    if (account_stale_)
+      load_account();
+    account_resend_button_ = nullptr;
+    account_login_button_ = nullptr;
+    account_code_panel_ = nullptr;
+    if (account_loading_) {
+      auto status = make_text(L"正在读取账号状态…", 14, palette_.sub);
+      status.Margin(Thickness{4, 8, 4, 0});
+      page.Children().Append(status);
+      return;
+    }
+    if (!account_error_.empty())
+      page.Children().Append(account_message(account_error_, InfoBarSeverity::Error));
+    if (!account_notice_.empty())
+      page.Children().Append(account_message(account_notice_, InfoBarSeverity::Success));
+    if (account_user_) {
+      load_account_avatar();
+      build_account_profile_card(page);
+      build_settings_sync(page);
+      build_account_cloud(page);
+      build_account_content(page);
+      build_account_actions(page);
+    } else {
+      build_account_sign_in(page);
+    }
+    auto footnote = make_text(L"皮肤设计和打字统计保存在本机。只有你主动发布的作品会分享至社区；"
+                              L"账号登录不会自动上传本地设计或输入记录。",
+                              12, palette_.faint);
+    footnote.Margin(Thickness{4, 24, 4, 0});
+    page.Children().Append(footnote);
+  }
+
+  // 登录卡片：欢迎语和登录方式；选了邮箱或手机号后是号码、验证码和登录。
+  void build_account_sign_in(StackPanel const &page) {
+    auto group = add_group(page, L"");
+    StackPanel body;
+    body.Spacing(12);
+    body.Padding(Thickness{32, 32, 32, 28});
+    body.HorizontalAlignment(HorizontalAlignment::Stretch);
+
+    auto badge = make_account_avatar(84, 32, L"杉");
+    badge.HorizontalAlignment(HorizontalAlignment::Center);
+    body.Children().Append(badge);
+    const bool email = account_channel_ == AccountChannel::email;
+    const bool phone = account_channel_ == AccountChannel::phone;
+    auto heading = make_text(email ? L"邮箱登录" : phone ? L"手机号登录" : L"欢迎来到水杉", 17,
+                             palette_.text);
+    heading.FontWeight(Windows::UI::Text::FontWeight{600});
+    heading.HorizontalAlignment(HorizontalAlignment::Center);
+    heading.TextAlignment(TextAlignment::Center);
+    body.Children().Append(heading);
+    auto note = make_text(account_channel_ != AccountChannel::none
+                              ? L"我们会发送一个 6 位验证码完成登录"
+                              : L"登录后在设备之间同步设置和词库，还可以发布你的候选窗口皮肤",
+                          13, palette_.sub);
+    note.HorizontalAlignment(HorizontalAlignment::Center);
+    note.TextAlignment(TextAlignment::Center);
+    body.Children().Append(note);
+
+    if (account_channel_ == AccountChannel::none) {
+      if (account_google_)
+        body.Children().Append(account_wide_button(
+            account_google_waiting_ ? L"正在等待浏览器完成 Google 登录…" : L"使用 Google 登录",
+            [this] { sign_in_with_google(); }, !account_busy_));
+      if (account_google_waiting_) {
+        auto cancel = account_link(L"取消 Google 登录", [this] { cancel_account_google(); });
+        cancel.HorizontalAlignment(HorizontalAlignment::Center);
+        body.Children().Append(cancel);
+      }
+      // 与共享页一样，选择验证码登录方式不等进行中的操作：选了就结束等待中的 Google 登录。
+      if (account_email_)
+        body.Children().Append(account_wide_button(
+            L"邮箱登录", [this] { choose_account_channel(AccountChannel::email); }, true));
+      if (account_phone_)
+        body.Children().Append(account_wide_button(
+            L"手机号登录", [this] { choose_account_channel(AccountChannel::phone); }, true));
+      if (!account_email_ && !account_phone_ && !account_google_) {
+        auto none = make_text(L"当前没有可用的验证码登录方式，请稍后重试。", 12, palette_.sub);
+        none.HorizontalAlignment(HorizontalAlignment::Center);
+        none.TextAlignment(TextAlignment::Center);
+        body.Children().Append(none);
+      }
+      StackPanel footer;
+      footer.Orientation(Orientation::Horizontal);
+      footer.Spacing(16);
+      footer.HorizontalAlignment(HorizontalAlignment::Center);
+      footer.Children().Append(
+          account_link(L"刷新登录方式", [this] { refresh_account_providers(); }, !account_busy_));
+      footer.Children().Append(account_link(
+          L"清除失效登录状态",
+          [this] { end_account_session(account_action(L"forget"), L"已清除失效登录状态。"); },
+          !account_busy_));
+      body.Children().Append(footer);
+    } else {
+      build_account_code_form(body, email);
+    }
+
+    auto card = make_card();
+    card.Child(body);
+    group.Children().Append(card);
+    mark_search_target(L"使用 Google 登录", card);
+    mark_search_target(L"邮箱登录", card);
+    mark_search_target(L"手机号登录", card);
+  }
+
+  void build_account_code_form(StackPanel const &body, bool email) {
+    StackPanel form;
+    form.Spacing(12);
+    form.Width(300);
+    form.HorizontalAlignment(HorizontalAlignment::Center);
+    const auto label = email ? L"邮箱地址" : L"手机号（含国家区号）";
+    TextBox target;
+    target.Header(box_value(hstring(label)));
+    target.MaxLength(320);
+    target.Text(hstring(account_target_));
+    target.IsEnabled(!account_busy_);
+    A11y::SetName(target, hstring(label));
+    {
+      Input::InputScope scope;
+      Input::InputScopeName name;
+      name.NameValue(email ? Input::InputScopeNameValue::EmailSmtpAddress
+                           : Input::InputScopeNameValue::TelephoneNumber);
+      scope.Names().Append(name);
+      target.InputScope(scope);
+    }
+    target.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      account_target_ = std::wstring(sender.as<TextBox>().Text().c_str());
+      // 共享页改号码就丢掉已发的验证码：验证码一栏收起，不重画页面，输入框的焦点留着。
+      if (account_challenge_) {
+        account_challenge_.reset();
+        account_code_.clear();
+        if (account_code_panel_)
+          account_code_panel_.Visibility(Visibility::Collapsed);
+      }
+      update_account_code_controls();
+    });
+    form.Children().Append(target);
+
+    auto resend = button_control(L"获取验证码", [this] { request_account_code(); }).as<Button>();
+    resend.HorizontalAlignment(HorizontalAlignment::Stretch);
+    resend.Height(36);
+    if (!account_challenge_)
+      make_primary(resend);
+    form.Children().Append(resend);
+    account_resend_button_ = resend;
+
+    StackPanel code_panel;
+    code_panel.Spacing(12);
+    code_panel.Visibility(account_challenge_ ? Visibility::Visible : Visibility::Collapsed);
+    TextBox code;
+    code.Header(box_value(L"6 位验证码"));
+    code.MaxLength(6);
+    code.Text(hstring(account_code_));
+    code.IsEnabled(!account_busy_);
+    A11y::SetName(code, L"6 位验证码");
+    {
+      Input::InputScope scope;
+      Input::InputScopeName name;
+      name.NameValue(Input::InputScopeNameValue::Number);
+      scope.Names().Append(name);
+      code.InputScope(scope);
+    }
+    code.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      auto box = sender.as<TextBox>();
+      const std::wstring typed(box.Text().c_str());
+      const auto digits = am::code_digits(typed);
+      account_code_ = digits;
+      if (digits != typed) {
+        box.Text(hstring(digits));
+        box.SelectionStart(static_cast<int32_t>(digits.size()));
+      }
+      update_account_code_controls();
+    });
+    code_panel.Children().Append(code);
+    auto login = button_control(L"登录", [this] { sign_in_with_code(); }).as<Button>();
+    login.HorizontalAlignment(HorizontalAlignment::Stretch);
+    login.Height(36);
+    make_primary(login);
+    code_panel.Children().Append(login);
+    form.Children().Append(code_panel);
+    account_login_button_ = login;
+    account_code_panel_ = code_panel;
+
+    auto hint = make_text(L"验证码只用于本次登录，请勿向他人透露。", 12, palette_.sub);
+    hint.TextAlignment(TextAlignment::Center);
+    hint.HorizontalAlignment(HorizontalAlignment::Center);
+    form.Children().Append(hint);
+    auto cancel = account_link(L"取消", [this] {
+      account_channel_ = AccountChannel::none;
+      redraw_account();
+    }, !account_busy_);
+    cancel.HorizontalAlignment(HorizontalAlignment::Center);
+    form.Children().Append(cancel);
+    body.Children().Append(form);
+    update_account_code_controls();
+    if (account_challenge_ || account_resend_at_ > account_now_ms())
+      start_account_timer();
+  }
+
+  // 资料卡片：头像、名字和邮箱（没有时说已登录），点开「编辑资料」。
+  void build_account_profile_card(StackPanel const &page) {
+    auto group = add_group(page, L"");
+    const auto &user = *account_user_;
+    Grid content;
+    content.ColumnSpacing(16);
+    ColumnDefinition avatar_column;
+    avatar_column.Width(GridLength{1, GridUnitType::Auto});
+    ColumnDefinition text_column;
+    text_column.Width(GridLength{1, GridUnitType::Star});
+    ColumnDefinition chevron_column;
+    chevron_column.Width(GridLength{1, GridUnitType::Auto});
+    content.ColumnDefinitions().Append(avatar_column);
+    content.ColumnDefinitions().Append(text_column);
+    content.ColumnDefinitions().Append(chevron_column);
+    const auto name = am::preferred_name(user.display_name, user.id);
+    auto avatar = make_account_avatar(58, 24, name);
+    Grid::SetColumn(avatar, 0);
+    content.Children().Append(avatar);
+    StackPanel texts;
+    texts.Spacing(2);
+    texts.VerticalAlignment(VerticalAlignment::Center);
+    auto heading = make_text(name, 17, palette_.text);
+    heading.FontWeight(Windows::UI::Text::FontWeight{600});
+    texts.Children().Append(heading);
+    texts.Children().Append(
+        make_text(user.email.empty() ? L"水杉账号已登录" : user.email, 13, palette_.sub));
+    Grid::SetColumn(texts, 1);
+    content.Children().Append(texts);
+    auto chevron = make_icon(0xE76C, 14, palette_.sub);
+    chevron.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(chevron, 2);
+    content.Children().Append(chevron);
+
+    Button card;
+    card.Content(content);
+    card.HorizontalAlignment(HorizontalAlignment::Stretch);
+    card.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    card.Padding(Thickness{20, 16, 25, 16});
+    card.Background(brush(palette_.card));
+    card.BorderBrush(brush(palette_.stroke));
+    card.BorderThickness(Thickness{1, 1, 1, 1});
+    card.CornerRadius(CornerRadius{3, 3, 3, 3});
+    card.IsEnabled(!account_busy_);
+    A11y::SetName(card, L"编辑个人资料");
+    card.Click([this](Inspectable const &, RoutedEventArgs const &) { edit_account_profile(); });
+    group.Children().Append(card);
+    mark_search_target(L"编辑资料", card);
+  }
+
+  // 「编辑资料」对话框：头像（点击更换）、名字预览和「移除头像」，昵称输入框，账号信息；「保存修改」保存昵称后关上，忙的时候关不上。对话框开着时页面的状态变了（头像换了、资料读到了、「已复制」）由 account_dialog_refresh_ 就地更新。
+  fire_and_forget edit_account_profile() {
+    if (!account_user_ || account_busy_ || account_dialog_refresh_)
+      co_return;
+    auto strong = get_strong();
+    account_name_ = account_user_->display_name;
+
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(400);
+    Grid preview;
+    preview.ColumnSpacing(12);
+    ColumnDefinition avatar_column;
+    avatar_column.Width(GridLength{1, GridUnitType::Auto});
+    ColumnDefinition name_column;
+    name_column.Width(GridLength{1, GridUnitType::Star});
+    ColumnDefinition remove_column;
+    remove_column.Width(GridLength{1, GridUnitType::Auto});
+    preview.ColumnDefinitions().Append(avatar_column);
+    preview.ColumnDefinitions().Append(name_column);
+    preview.ColumnDefinitions().Append(remove_column);
+    Button avatar_button;
+    avatar_button.Padding(Thickness{0, 0, 0, 0});
+    avatar_button.BorderThickness(Thickness{0, 0, 0, 0});
+    avatar_button.Background(brush(transparent_color()));
+    avatar_button.CornerRadius(CornerRadius{23, 23, 23, 23});
+    A11y::SetName(avatar_button, L"更换头像");
+    ToolTipService::SetToolTip(avatar_button, box_value(L"更换头像"));
+    avatar_button.Click(
+        [this](Inspectable const &, RoutedEventArgs const &) { choose_account_avatar(); });
+    Grid::SetColumn(avatar_button, 0);
+    preview.Children().Append(avatar_button);
+    auto preview_name = make_text(L"", 18, palette_.text);
+    preview_name.FontWeight(Windows::UI::Text::FontWeight{600});
+    preview_name.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(preview_name, 1);
+    preview.Children().Append(preview_name);
+    auto remove = account_link(L"移除头像", [this] { remove_account_avatar(); });
+    remove.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(remove, 2);
+    preview.Children().Append(remove);
+    form.Children().Append(preview);
+    form.Children().Append(make_text(L"点头像可更换，支持 1 MiB 以内的 PNG 或 JPEG。", 12, palette_.sub));
+
+    TextBox nickname;
+    nickname.Header(box_value(L"社区昵称"));
+    nickname.MaxLength(static_cast<int32_t>(am::max_name_length));
+    nickname.Text(hstring(account_name_));
+    A11y::SetName(nickname, L"编辑社区昵称");
+    form.Children().Append(nickname);
+    form.Children().Append(
+        make_text(L"昵称会显示在社区作品中，已发布的作品也会同步更新。", 12, palette_.sub));
+
+    // AccountIdentityDetails：账号 ID（点按复制）、邮箱、登录方式和加入日期。
+    Grid details;
+    details.ColumnSpacing(24);
+    details.RowSpacing(6);
+    ColumnDefinition label_column;
+    label_column.Width(GridLength{1, GridUnitType::Auto});
+    ColumnDefinition value_column;
+    value_column.Width(GridLength{1, GridUnitType::Star});
+    details.ColumnDefinitions().Append(label_column);
+    details.ColumnDefinitions().Append(value_column);
+    int32_t row = 0;
+    auto add_detail = [&](wchar_t const *label, FrameworkElement const &value) -> TextBlock {
+      RowDefinition definition;
+      definition.Height(GridLength{1, GridUnitType::Auto});
+      details.RowDefinitions().Append(definition);
+      auto title = make_text(label, 13, palette_.sub);
+      title.VerticalAlignment(VerticalAlignment::Center);
+      Grid::SetRow(title, row);
+      Grid::SetColumn(title, 0);
+      details.Children().Append(title);
+      value.VerticalAlignment(VerticalAlignment::Center);
+      Grid::SetRow(value, row);
+      Grid::SetColumn(value, 1);
+      details.Children().Append(value);
+      ++row;
+      return title;
+    };
+    auto copy = account_link(L"", [this] { copy_account_id(); });
+    copy.FontFamily(Media::FontFamily(L"Consolas"));
+    add_detail(L"账号 ID", copy);
+    auto email = make_text(L"", 13, palette_.text);
+    email.IsTextSelectionEnabled(true);
+    auto email_label = add_detail(L"邮箱", email);
+    auto providers = make_text(L"", 13, palette_.text);
+    add_detail(L"登录方式", providers);
+    auto joined = make_text(L"", 13, palette_.text);
+    add_detail(L"加入水杉", joined);
+    form.Children().Append(details);
+
+    ContentDialog dialog;
+    dialog.Title(box_value(L"编辑资料"));
+    dialog.Content(form);
+    dialog.PrimaryButtonText(L"保存修改");
+    dialog.CloseButtonText(L"取消");
+    dialog.DefaultButton(ContentDialogButton::Primary);
+    dialog.XamlRoot(root_.XamlRoot());
+    dialog.RequestedTheme(palette_.dark ? ElementTheme::Dark : ElementTheme::Light);
+    // 与共享对话框一样，忙的时候「取消」和 Esc 都关不上。
+    dialog.Closing([this](ContentDialog const &, ContentDialogClosingEventArgs const &args) {
+      if (account_busy_)
+        args.Cancel(true);
+    });
+
+    account_dialog_refresh_ = [this, weak_dialog = make_weak(dialog),
+                               weak_avatar = make_weak(avatar_button),
+                               weak_name = make_weak(preview_name), weak_remove = make_weak(remove),
+                               weak_nickname = make_weak(nickname), weak_copy = make_weak(copy),
+                               weak_email = make_weak(email), weak_email_label = make_weak(email_label),
+                               weak_providers = make_weak(providers),
+                               weak_joined = make_weak(joined)] {
+      if (!account_user_) {
+        // 对话框开着时会话结束了（别处退出或会话失效），没有可编辑的资料。
+        if (auto shown = weak_dialog.get())
+          shown.Hide();
+        return;
+      }
+      const auto &user = *account_user_;
+      const auto typed = am::normalize_name(account_name_);
+      if (auto button = weak_avatar.get()) {
+        button.Content(make_account_avatar(46, 19, am::preferred_name(user.display_name, user.id)));
+        button.IsEnabled(!account_busy_);
+      }
+      if (auto label = weak_name.get())
+        label.Text(hstring(typed.empty() ? L"你的昵称" : typed));
+      if (auto link = weak_remove.get()) {
+        link.Visibility(user.avatar_uploaded ? Visibility::Visible : Visibility::Collapsed);
+        link.IsEnabled(!account_busy_);
+      }
+      if (auto box = weak_nickname.get())
+        box.IsEnabled(!account_busy_);
+      if (auto link = weak_copy.get())
+        link.Content(box_value(hstring(account_id_copied_ ? L"已复制" : am::id_label(user.id))));
+      const auto shown_email = user.email.empty() ? Visibility::Collapsed : Visibility::Visible;
+      if (auto value = weak_email.get()) {
+        value.Text(hstring(user.email));
+        value.Visibility(shown_email);
+      }
+      if (auto label = weak_email_label.get())
+        label.Visibility(shown_email);
+      if (auto value = weak_providers.get()) {
+        std::wstring names;
+        for (auto const &provider : account_providers_linked_)
+          names += (names.empty() ? L"" : L"、") + am::provider_name(provider);
+        value.Text(hstring(names.empty() ? L"正在读取" : names));
+      }
+      if (auto value = weak_joined.get())
+        value.Text(hstring(account_join_date(user.created_at)));
+      if (auto shown = weak_dialog.get())
+        shown.IsPrimaryButtonEnabled(!account_busy_ && typed != user.display_name);
+    };
+    nickname.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      account_name_ = std::wstring(sender.as<TextBox>().Text().c_str());
+      if (account_dialog_refresh_)
+        account_dialog_refresh_();
+    });
+    account_dialog_refresh_();
+    const bool save = co_await show_dialog(dialog);
+    account_dialog_refresh_ = nullptr;
+    if (save && account_user_)
+      rename_account();
+  }
+
+  // 「云端」：云词库和云剪贴板是输入工具的面板，仍由共享应用打开。
+  void build_account_cloud(StackPanel const &page) {
+    auto group = add_group(page, L"云端");
+    add_row(group, 0xE753, L"云词库", L"",
+            button_control(L"打开云词库",
+                           [this] { open_shell(nav::shell_links::cloud_dictionary); },
+                           !account_busy_));
+    add_row(group, 0xE77F, L"云剪贴板", L"",
+            button_control(L"打开云剪贴板",
+                           [this] { open_shell(nav::shell_links::cloud_clipboard); },
+                           !account_busy_));
+  }
+
+  // 「我的内容」：Windows 的社区页只有词包与回复模板（没有皮肤画廊，「我发布的皮肤」不在这里），由共享应用显示。共享应用的路由带不了要打开的列表，几行都打开社区首页，在那里选「我发布的」或「收藏」。
+  void build_account_content(StackPanel const &page) {
+    auto group = add_group(page, L"我的内容");
+    for (auto const *title : {L"我发布的词库", L"我发布的回复模板", L"收藏的词库", L"收藏的回复模板"})
+      add_row(group, 0xE8F1, title, L"",
+              button_control(L"在社区中打开",
+                             [this] { open_shell(nav::shell_links::community); },
+                             !account_busy_));
+  }
+
+  // 「账号」：这台设备退出、所有设备退出（先确认）和注销账号（先确认）。
+  void build_account_actions(StackPanel const &page) {
+    auto group = add_group(page, L"账号");
+    auto device = add_row(
+        group, 0xE7E8, L"这台设备",
+        L"退出后，设置同步、云词库、云剪贴板和发布作品都需要重新登录才能使用。",
+        button_control(L"退出登录", [this] { sign_out_account(false); }, !account_busy_));
+    mark_search_target(L"退出登录", device);
+    auto everywhere = add_row(
+        group, 0xE977, L"所有设备", L"所有已登录的设备都需要重新登录。",
+        button_control(L"退出所有设备",
+                       [this] { confirm_account_action(am::Confirmation::logout_all); },
+                       !account_busy_));
+    mark_search_target(L"退出所有设备", everywhere);
+    auto remove = button_control(L"注销账号",
+                                 [this] { confirm_account_action(am::Confirmation::remove); },
+                                 !account_busy_);
+    remove.as<Button>().Foreground(brush(palette_.dark ? rgba(0xFF, 0x99, 0xA4, 1)
+                                                       : rgba(0xC4, 0x2B, 0x1C, 1)));
+    add_row(group, 0xE74D, L"注销账号", L"删除账号及已发布的作品、评分等云端数据，无法撤销。",
+            remove);
   }
 
   // ---- 主题 ----
@@ -13061,6 +14411,45 @@ private:
   std::vector<std::function<void()>> ai_sync_;
   StackPanel ai_models_host_{nullptr};
   std::function<void()> ai_test_view_;
+
+  // 「账号与同步」页（共享账号页的组件状态，每次进入页面时重置）：读状态时等着的两份回答、用户和资料里已绑定的登录方式、可用的登录方式、选中的验证码方式、号码、验证码和这次的 challenge 及其过期和可重发的时刻（steady_clock 毫秒）、错误和提示、编辑资料里正在输入的昵称、「已复制」、是否在等浏览器完成 Google 登录。account_generation_ 在进出页面时递增，作废在途的回答；account_busy_ 是进行中的操作（共享页的 busy）。头像按 avatarUrl 缓存解码好的图片。设置同步卡片有自己的状态：卡片读的是哪个账号的、字段表和云端设置是否读到、云端设置文档、忙碌和一行说明；sync_generation_ 在换账号或进出页面时作废在途的回答。随时间变的两个按钮和验证码一栏是该页当前的那一组；对话框开着时 account_dialog_refresh_ 就地更新它。
+  bool account_stale_ = true;
+  bool account_loading_ = true;
+  bool account_busy_ = false;
+  uint64_t account_generation_ = 0;
+  std::optional<Response> account_pending_status_;
+  std::optional<Response> account_pending_providers_;
+  std::optional<AccountUser> account_user_;
+  std::vector<std::wstring> account_providers_linked_;
+  bool account_email_ = false;
+  bool account_phone_ = false;
+  bool account_google_ = false;
+  bool account_google_waiting_ = false;
+  AccountChannel account_channel_ = AccountChannel::none;
+  std::wstring account_target_;
+  std::wstring account_code_;
+  std::optional<std::wstring> account_challenge_;
+  int64_t account_expires_at_ = 0;
+  int64_t account_resend_at_ = 0;
+  std::wstring account_error_;
+  std::wstring account_notice_;
+  std::wstring account_name_;
+  bool account_id_copied_ = false;
+  std::wstring account_avatar_url_;
+  std::wstring account_avatar_requested_;
+  Imaging::BitmapImage account_avatar_{nullptr};
+  Button account_resend_button_{nullptr};
+  Button account_login_button_{nullptr};
+  StackPanel account_code_panel_{nullptr};
+  std::function<void()> account_dialog_refresh_;
+  Microsoft::UI::Dispatching::DispatcherQueueTimer account_timer_{nullptr};
+  Microsoft::UI::Dispatching::DispatcherQueueTimer account_copied_timer_{nullptr};
+  std::wstring sync_user_;
+  bool sync_ready_ = false;
+  std::optional<JsonObject> sync_cloud_;
+  bool sync_busy_ = false;
+  std::wstring sync_message_;
+  uint64_t sync_generation_ = 0;
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。
   bool update_checking_ = false;
