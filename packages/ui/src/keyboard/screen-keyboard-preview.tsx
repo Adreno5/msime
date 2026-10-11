@@ -6,7 +6,12 @@ import {
   skinColor,
   type TouchKeyboardSkinDesign,
 } from "./touch-keyboard-skin-design";
-import { actionKeyboardLabels, desktopKeyboardRows, touchKeyboardRows } from "./keyboard-layouts";
+import {
+  actionKeyboardLabels,
+  desktopKeyboardRows,
+  touchKeyboardRows,
+  type PreviewKey,
+} from "./keyboard-layouts";
 import { keyboardKeyPath } from "./keyboard-shape";
 import { msimeFramePath, msimeStrokePath } from "../core/brand-logo";
 import { readableKeyboardText } from "./keyboard-colors";
@@ -221,6 +226,7 @@ export function ScreenKeyboardPreview({
   rowSpacingTenths = 70,
   heightAdjustment = 0,
   layout,
+  touchRows,
 }: {
   theme: "dark" | "light";
   skin?: GlobalTheme;
@@ -232,11 +238,13 @@ export function ScreenKeyboardPreview({
   heightAdjustment?: number;
   /** 省略时取 `ScreenKeyboardLayoutContext`，即宿主自己的键盘。 */
   layout?: "desktop" | "touch";
+  /** 触屏键盘画哪几排键。省略时是通用的 26 键；HarmonyOS 的「尺寸」预览按当前的中文键盘传入（`harmonyTouchKeyboardRows`），切到 9 键或 14 键时预览跟着变。 */
+  touchRows?: PreviewKey[][];
 }) {
   const hostLayout = useContext(ScreenKeyboardLayoutContext);
   const touch = thumbnail || (layout ?? hostLayout) === "touch";
   const decorative = compact || thumbnail;
-  const layoutRows = touch ? touchKeyboardRows : desktopKeyboardRows;
+  const layoutRows = touch ? (touchRows ?? touchKeyboardRows) : desktopKeyboardRows;
   const custom = skin === "custom" && customDesign ? customDesign : undefined;
   const option = keyboardThemeLook(skin, theme);
   const palette = custom
