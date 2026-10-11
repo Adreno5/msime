@@ -592,6 +592,8 @@ pub struct ScriptInstance {
     usable: bool,
     turn: Option<u64>,
     turn_fuel_left: u64,
+    /// `before_commit` 本轮还剩的 fuel，和其余钩子的轮配额分开记，见 [`Self::deliver`]。
+    before_commit_fuel_left: u64,
     init_fuel: u64,
     snapshot: Option<Snapshot>,
     /// 最近一次投递暂存的动作。
@@ -663,6 +665,7 @@ impl ScriptInstance {
             usable: true,
             turn: None,
             turn_fuel_left: limits::TURN_FUEL,
+            before_commit_fuel_left: limits::BEFORE_COMMIT_FUEL,
             init_fuel,
             snapshot,
             actions: Actions::default(),
@@ -683,15 +686,21 @@ impl ScriptInstance {
         self.init_fuel
     }
 
-    /// 本轮还剩多少 fuel。轮次还没开始时是完整的一轮。
+    /// 本轮还剩多少 fuel（`before_commit` 之外的钩子）。轮次还没开始时是完整的一轮。
     pub fn turn_fuel_left(&self) -> u64 {
         self.turn_fuel_left
     }
 
-    /// 接着插件这一轮已经用掉的配额。宿主在同一轮里重建实例时（上一个实例因为换字段或属性变化被丢弃）把这一轮还剩多少交给新实例，轮配额按插件算，不按实例算。
-    pub fn resume_turn(&mut self, turn: u64, fuel_left: u64) {
+    /// `before_commit` 本轮还剩多少 fuel。轮次还没开始时是完整的一份。
+    pub fn before_commit_fuel_left(&self) -> u64 {
+        self.before_commit_fuel_left
+    }
+
+    /// 接着插件这一轮已经用掉的配额。宿主在同一轮里重建实例时（上一个实例因为换字段或属性变化被丢弃）把这一轮两份配额各还剩多少交给新实例，轮配额按插件算，不按实例算。
+    pub fn resume_turn(&mut self, turn: u64, fuel_left: u64, before_commit_fuel_left: u64) {
         self.turn = Some(turn);
         self.turn_fuel_left = fuel_left.min(limits::TURN_FUEL);
+        self.before_commit_fuel_left = before_commit_fuel_left.min(limits::BEFORE_COMMIT_FUEL);
     }
 
     /// 持久实例上出过 trap 之后返回 false：wasm 的状态（例如影子栈指针）可能停在一半，宿主应当丢弃这个实例。
@@ -710,6 +719,8 @@ impl ScriptInstance {
     }
 
     /// 投递一个事件。`turn` 是宿主的轮次计数（每个非 PASSTHROUGH 的 `msime_client_key` 加一），换了轮次就重新给满本轮配额；本次能用的 fuel 是本轮剩余和本钩子上限中较小的那个。`before_commit` 在 `msime_init` 之后的快照上运行，看不到之前任何事件留下的状态。
+    ///
+    /// `before_commit` 用自己的一份按轮配额（[`limits::BEFORE_COMMIT_FUEL`]），不从其余钩子的轮配额里扣，也不让它们扣：要是共用一份，持久实例在同一轮里先烧掉多少 fuel 就能决定快照上的改写会不会因为 fuel 耗尽被丢掉，之前事件攒下的状态借此影响上屏。它只被同一轮里之前的 `before_commit` 用掉，那些同样只看得到各自的上屏文本。
     pub fn deliver(&mut self, turn: u64, event: &Event<'_>) -> Outcome {
         self.actions.clear();
         if !self.module.declaration.hooks.contains(event.hook) {
@@ -724,15 +735,22 @@ impl ScriptInstance {
         if self.turn != Some(turn) {
             self.turn = Some(turn);
             self.turn_fuel_left = limits::TURN_FUEL;
+            self.before_commit_fuel_left = limits::BEFORE_COMMIT_FUEL;
         }
-        let allowed = self.turn_fuel_left.min(limits::hook_fuel(event.hook));
+        let before_commit = event.hook == Hook::BeforeCommit;
+        let left = if before_commit {
+            self.before_commit_fuel_left
+        } else {
+            self.turn_fuel_left
+        };
+        let allowed = left.min(limits::hook_fuel(event.hook));
         if allowed == 0 {
             return Outcome::Failed {
                 failure: Failure::OutOfFuel,
                 fuel: 0,
             };
         }
-        let (result, fuel) = if event.hook == Hook::BeforeCommit && self.snapshot.is_some() {
+        let (result, fuel) = if before_commit && self.snapshot.is_some() {
             self.run_on_snapshot(allowed, event)
         } else {
             let result = run(
@@ -747,7 +765,11 @@ impl ScriptInstance {
             }
             result
         };
-        self.turn_fuel_left -= fuel;
+        if before_commit {
+            self.before_commit_fuel_left -= fuel;
+        } else {
+            self.turn_fuel_left -= fuel;
+        }
         match result {
             Ok(status) => Outcome::Delivered { status, fuel },
             Err(failure) => Outcome::Failed { failure, fuel },

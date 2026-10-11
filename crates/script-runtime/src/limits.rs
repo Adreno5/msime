@@ -8,11 +8,11 @@ use crate::abi::Hook;
 pub const INIT_FUEL: u64 = 5_000_000;
 /// 每次 focus 之后所有插件初始化的合计。超出的插件推迟到下一轮再实例化，不算失败；由宿主一侧记账。
 pub const FOCUS_INIT_FUEL: u64 = 5_000_000;
-/// 每个插件每一轮（宿主的一次 `msime_client_key` 到下一次之间，跨同一轮内的多次 FFI）。
+/// 每个插件每一轮（宿主的一次 `msime_client_key` 到下一次之间，跨同一轮内的多次 FFI），`before_commit` 之外的钩子合计。
 pub const TURN_FUEL: u64 = 125_000;
 /// 单次 `candidates` 的上限。
 pub const CANDIDATES_FUEL: u64 = 125_000;
-/// 单次 `before_commit` 的上限。
+/// 单次 `before_commit` 的上限，也是每个插件每一轮 `before_commit` 的合计。它和 [`TURN_FUEL`] 分开记：快照上的改写能用多少 fuel 不能取决于持久实例这一轮用掉了多少，所以一个插件一轮最多用两者之和。
 pub const BEFORE_COMMIT_FUEL: u64 = 100_000;
 /// 其余观察类钩子单次的上限。
 pub const OBSERVE_FUEL: u64 = 25_000;

@@ -554,6 +554,56 @@ fn the_turn_quota_spans_deliveries_and_refills_on_the_next_turn() {
 }
 
 #[test]
+fn before_commit_has_its_own_turn_quota() {
+    // `before_commit` 循环 1 万次，其余钩子 1 千次。
+    let wat = module_wat(
+        "",
+        "",
+        &format!(
+            "(local $i i32)
+             (local.set $i (select (i32.const 10000) (i32.const 1000) (i32.eq (local.get $kind) (i32.const {before_commit}))))
+             (loop $again
+                (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                (br_if $again (local.get $i)))
+             i32.const 0",
+            before_commit = Hook::BeforeCommit.code(),
+        ),
+    );
+    let mut script = instance(&wat, declaration(&[], &[Hook::Input, Hook::BeforeCommit]));
+    let per_input = match script.deliver(3, &input_event()) {
+        Outcome::Delivered { fuel, .. } => fuel,
+        other => panic!("{other:?}"),
+    };
+    // 持久实例把这一轮的配额烧到放不下下一次 input。
+    while script.turn_fuel_left() >= per_input {
+        assert!(matches!(
+            script.deliver(3, &input_event()),
+            Outcome::Delivered { .. }
+        ));
+    }
+    let hooks_left = script.turn_fuel_left();
+    let event = before_commit_event("abc", "abc");
+    let spent = match script.deliver(3, &event) {
+        Outcome::Delivered { fuel, .. } => fuel,
+        other => panic!("{other:?}"),
+    };
+    // 共用一份配额时这次会 fuel 耗尽，改写被丢掉；现在它拿到的和持久实例用掉多少无关，也不扣其余钩子的配额。
+    assert!(spent > hooks_left);
+    assert_eq!(script.turn_fuel_left(), hooks_left);
+    assert_eq!(
+        script.before_commit_fuel_left(),
+        limits::BEFORE_COMMIT_FUEL - spent
+    );
+    // 新一轮两份都补满。
+    assert!(matches!(
+        script.deliver(4, &input_event()),
+        Outcome::Delivered { .. }
+    ));
+    assert_eq!(script.before_commit_fuel_left(), limits::BEFORE_COMMIT_FUEL);
+    assert_eq!(script.turn_fuel_left(), limits::TURN_FUEL - per_input);
+}
+
+#[test]
 fn one_plugin_burning_its_quota_does_not_touch_another() {
     let mut greedy = instance(
         &module_wat("", "", "(loop $spin (br $spin)) i32.const 0"),

@@ -44,8 +44,8 @@ struct Entry {
     instance: Option<Live>,
     /// 这次聚焦里 trap 过：实例已经丢弃，到下一次聚焦之前不再重建。否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍初始化。
     trapped: bool,
-    /// 这个插件最近一次投递所在的轮次和那一轮还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
-    turn: Option<(u64, u64)>,
+    /// 这个插件最近一次投递所在的轮次，和那一轮其余钩子、`before_commit` 各还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
+    turn: Option<(u64, u64, u64)>,
 }
 
 /// 一个活着的实例和它在内存总账里占的那份。
@@ -504,8 +504,10 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
         match ScriptInstance::new(module, entry.granted, budget) {
             Ok(mut instance) => {
                 *init_left = budget.saturating_sub(instance.init_fuel());
-                if let Some((last, left)) = entry.turn.filter(|(last, _)| *last == turn) {
-                    instance.resume_turn(last, left);
+                if let Some((last, left, before_commit_left)) =
+                    entry.turn.filter(|(last, ..)| *last == turn)
+                {
+                    instance.resume_turn(last, left, before_commit_left);
                 }
                 #[cfg(test)]
                 let instance = {
@@ -538,7 +540,11 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     let outcome = live.instance.deliver(turn, event);
     let slow = process::slow(started);
     if !matches!(outcome, Outcome::NotSubscribed) {
-        entry.turn = Some((turn, live.instance.turn_fuel_left()));
+        entry.turn = Some((
+            turn,
+            live.instance.turn_fuel_left(),
+            live.instance.before_commit_fuel_left(),
+        ));
     }
     match outcome {
         Outcome::NotSubscribed => {}

@@ -49,6 +49,8 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 
 每次 `before_commit` 都在复位到 `msime_init` 之后快照的新实例上运行（见 [沙箱运行时](2026-10-12-script-runtime-sandbox.md)），只改 body：`DispatchFacts::split_commit` 按字符数从末尾切出 tail，改写后的 body 接上原来的 tail 写回 `transition.commit`。多个插件按授权顺序依次改写，后面的插件读到的 body 和 COMMIT 是前面改写过的；每次改写的长度上限都按原 body 算，超出的那一次不采用。`commit` 事件带改写后的字符数和 `rewritten`，观察类插件读到的是改写后的文本；`candidate_selected` 的选中文本仍是原文。runtime 在 `dispatch` 里已经按原文调过 `remember_commit`（AI 上文和引擎的上文），改写不回灌引擎学习。插件 trap、fuel 耗尽、返回负数或结果不合规时上屏用原文。
 
+**`before_commit` 的 fuel 单独记。** 每个插件每轮给 `before_commit` 另一份 100 000 的配额，不从其余钩子每轮 125 000 的配额里扣，也不让它们扣；宿主在同一轮里重建实例时两份剩余都交回去（`resume_turn`）。共用一份时，持久实例在同一轮里先收到 `input`、`candidate_selected`、`candidates`，它按之前攒下的状态烧掉多少 fuel，就决定了快照上的改写会不会因为 fuel 耗尽被丢掉，改写结果不再只是本次 body 的函数。分开之后 `before_commit` 能用多少只取决于同一轮里之前的 `before_commit`，它们同样只看得到各自的上屏文本。
+
 ### dev 构建里 wasmi 关掉 debug-assertions
 
 根 `Cargo.toml` 的 `[profile.dev.package.wasmi]` 在 `opt-level = 3` 之外加 `debug-assertions = false`。wasmi 的构建脚本在 opt-level 2、3 时选尾调用分派：每条指令的处理函数尾调用下一条，靠 LLVM 优化成跳转。打开 debug-assertions 时这一步失效，每执行一条指令原生栈就深一层。实测（Mac Studio，`(loop (br 0))` 跑满单个钩子的配额，线程栈逐档缩小）：
@@ -64,7 +66,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 ## Testing
 
 - `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次；只改注释也推进 epoch；组字结束后记录清空。
-- `crates/script-runtime/src/tests.rs`：改写只在可改写的 `before_commit` 里、授予了能力时可用；换行、U+202E、U+200B、U+2028、U+2029、空串、非 UTF-8 被拒，256 个码元的上限和 4096 字节的上限，前一个插件缩短或放大了 body 时上限仍按原文算；返回负数、trap、越界之后不交出动作，下一次观察类投递清掉上一次的动作；三种候选修改的暂存结果、坏行号、重复、超长和带 Cf 或 U+2028 的注释、错的钩子、没授权、本地模式屏蔽；Cc、Cf 和行、段分隔符的判定；原生栈。
+- `crates/script-runtime/src/tests.rs`：改写只在可改写的 `before_commit` 里、授予了能力时可用；换行、U+202E、U+200B、U+2028、U+2029、空串、非 UTF-8 被拒，256 个码元的上限和 4096 字节的上限，前一个插件缩短或放大了 body 时上限仍按原文算；持久实例把这一轮的配额烧到连一次 `input` 都放不下之后，`before_commit` 仍能用掉比剩余更多的 fuel、不扣其余钩子的配额，新一轮两份都补满；返回负数、trap、越界之后不交出动作，下一次观察类投递清掉上一次的动作；三种候选修改的暂存结果、坏行号、重复、超长和带 Cf 或 U+2028 的注释、错的钩子、没授权、本地模式屏蔽；Cc、Cf 和行、段分隔符的判定；原生栈。
 - `crates/host-api/src/tests/script_plugins.rs`：两个插件依次改写、tail 原样接回、`commit` 观察者读到改写后的文本；第一个插件把 2 个码元的原文放大到 256 个，第二个插件的 600 个字母拿到 `LIMIT`，上屏停在第一个插件的结果；trap、返回负数、fuel 耗尽、改写成 `\n` 或 U+202E 都上屏原文；Windows 式在派发前后切换 `COMMIT_OBSERVE_ONLY` 时空格选词和回车原样上屏都只能看（`REWRITABLE == 0`，改写 `DENIED`），清掉后同样两条路径能改写，以词定字永远不能；SECURE、PRIVATE、ELEVATED 和未知字段不改写也不投递；经 C ABI 重排之后空格上屏显示的首行，`script_annotation` 跟着行走，读窗口的插件读不到别的插件的注释和顺序；隐藏的行不出现在视图里、数字选不到、引擎下标 0 隐藏不了；`apply_online_candidates` 和 `rerank_settled` 不运行脚本、重排按身份重放；本地模式不在白名单里时一个插件都不运行。
 
 ## Alternatives considered
@@ -75,6 +77,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 - **候选插件依次处理、后面的看到前面的结果。** 最强的理由是组合直观，和改写上屏一致。不用：结果取决于授权顺序里谁先看到谁，插件之间也多了一条读改动的通道；按原始窗口加身份合成，每个插件的输入都只是内置排序的结果。
 - **多个改写插件都针对原文、最后一个生效。** 最强的理由是和候选变换对称。不用：两个都改写的插件（例如中英间距加标点替换）会悄悄丢掉前一个的结果；依次改写、长度上限按原文算，既能组合又不会层层放大。
 - **不可改写时不投递 `before_commit`。** 最强的理由是每次上屏省掉一次重新实例化（几十到几百微秒）。不用：`REWRITABLE` 标量就没有意义，插件也无从得知一次上屏为什么没被改写；只声明了 `commit` 的插件不受这个开销影响。
+- **`before_commit` 和其余钩子共用每轮 125 000 的配额。** 最强的理由是每个插件每轮的总量守在设计 §4.4 的 125 000，8 个插件合计不超过 1 000 000。不用：共用时快照上的改写能用多少取决于持久实例这一轮用掉了多少，持久状态借此决定改写留不留得下，大约每次上屏 1 bit；给 `before_commit` 固定 100 000、事后再从共用配额里扣，同一轮里有几次上屏就能拿几份，没有上限。
 - **`candidates_shown` 也给插件变换之前的行。** 最强的理由是"读不到别的插件的改动"连顺序和隐藏都守住。不用：`page` 和 `highlighted` 指的是显示的列表，给变换前的行就对不上；顺序和隐藏是用户看得到的结果，插件注释这类文本仍然读不到。
 - **wasmi 开 `portable-dispatch` 特性，不靠 LLVM 的尾调用优化。** 最强的理由是任何构建配置下原生栈都不随指令增长。不用：它改的是批准过的特性组合，release 也换成更慢的循环分派；关掉 dev 构建里 wasmi 的 debug-assertions 只影响开发构建，release 本来就没有这些断言。
 
@@ -87,6 +90,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 - Cf 表按 Unicode 15.1 写死，之后版本新增的格式字符不在表里；ZWJ（U+200D）和标签字符是 Cf，含它们的 emoji 组合序列和旗帜不能出现在改写结果和注释里。
 - 改写不回灌引擎学习和 AI 上文，这一点由调用顺序保证（runtime 在 `dispatch` 里按原文记下，host-api 之后才改写），没有单独的测试；宿主之后照常做繁体转换和统计，作者文档要写明。
 - Windows Server 在派发前后切换 `COMMIT_OBSERVE_ONLY` 是第 2b 阶段的宿主改动，这里只验证了核心按位行事；整句改字时的空格和回车走同一个位，没有单独构造整句改字的会话。
+- 一个插件一轮最多用 225 000 fuel（其余钩子 125 000 加 `before_commit` 100 000），8 个插件合计 1 800 000，比设计 §4.4 的每轮合计 1 000 000 多；只有同时声明了 `before_commit` 并且每个钩子都烧满的插件才到这个数，按 wall-clock 的熔断照样管它。
 - 时延目标（`before_commit` p99 ≤ 1 ms、候选变换 p99 ≤ 2 ms）还没在真机上量；dev 构建里 64 页全脏的快照复位已经量到 0.68 ms。
 
 相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 推导出 `before_commit` 和可改写条件；[AI 座位的占位行](../feature/2026-10-11-ai-seat-placeholder.md) 定下了插件挪不动的 AI 座位。
