@@ -263,11 +263,15 @@ export class CloudClipboardPolicy {
       return null;
     }
     const device: unknown = raw.device;
+    const deviceCharacters: string[] =
+      typeof device === "string" ? TextPolicy.characters(device) : [];
     if (
       typeof raw.pinned !== "boolean" ||
       typeof device !== "string" ||
-      [...device].length > MAX_DEVICE_CHARS ||
-      [...device].some((character: string): boolean => isControl(character.codePointAt(0) ?? 0))
+      deviceCharacters.length > MAX_DEVICE_CHARS ||
+      deviceCharacters.some((character: string): boolean =>
+        isControl(character.codePointAt(0) ?? 0),
+      )
     ) {
       return null;
     }
