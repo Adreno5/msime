@@ -12,6 +12,8 @@ Android 原生宿主的底部导航原先是「设置 / 社区 / 统计 / 我的
 
 **底部导航只剩设置、统计、我的三个 tab。** `res/menu/bottom_tabs.xml` 去掉 `tab_community`，`HomeActivity` 不再创建社区 tab。`HostDeepLink` 的 `TAB_*` 下标保持原值（0 设置、1 社区、2 统计、3 我的），`HomeActivity.TAB_IDS` 在下标 1 上放 0 表示没有对应的底部项；收到 `TAB_COMMUNITY` 的深链打开社区皮肤的完整列表，`selectTabIndex(1)` 落到设置 tab，进程恢复时保存的 tab 不在底部导航里就回到第一个 tab。
 
+这一段关于底部 tab 的部分已被 [Android 底部第二格从「社区」换成「对话」](2026-10-11-android-chat-tab.md) 取代：底部仍是四格，第二格是 AI 对话，`TAB_COMMUNITY` 改名为 `TAB_CHAT`（值仍是 1），下标 1 打开对话 tab 而不再打开社区皮肤列表；社区内容并进各功能页的部分不变。
+
 **每一类作品的完整列表是压在功能页上面的子页。** `CommunityFragment` 不再是 tab，而是 `PageId.COMMUNITY` 登记的一页，参数 `kind`（`CommunityRequest.Kind.id()`）决定列哪一类，缺省是皮肤。`CommunityFragment.browse(context, kind)` 经 `SettingsNavigator` 把它压进同一个回退栈，返回回到打开它的功能页。页面去掉了三段的分段控件，换成和详情页一样的返回按钮加标题（社区皮肤、社区词库、社区短语、AI 回复模板）；搜索、皮肤分类筛选、详情面板、举报、作者改分类、获取/使用/添加都原样保留。短语列表不再在短语包后面接着翻回复模板，回复模板有自己的列表。举报对话框抽成 `CommunityReportDialog`，完整列表和 AI 页共用。`HomeActivity.openCommunity(kind)` 保留，改为打开对应的子页。
 
 **各类作品放进的功能页：**

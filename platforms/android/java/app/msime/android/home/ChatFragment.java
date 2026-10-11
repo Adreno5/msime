@@ -1,0 +1,571 @@
+package app.msime.android.home;
+
+import app.msime.android.LayoutPolicy;
+
+import app.msime.android.ThemeColorPolicy;
+import app.msime.android.DimensionPolicy;
+
+import app.msime.android.MainThreadPolicy;
+import app.msime.android.ThreadPolicy;
+
+import android.content.Context;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.SystemClock;
+import android.view.Gravity;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import app.msime.android.ColorPolicy;
+import app.msime.android.BoundsPolicy;
+import app.msime.android.DrawablePolicy;
+import app.msime.android.TextPolicy;
+import app.msime.android.ViewPolicy;
+import app.msime.android.WindowInsetsPolicy;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import com.google.android.material.button.MaterialButton;
+import app.msime.android.R;
+import app.msime.android.BackendAccount;
+import io.noties.markwon.AbstractMarkwonPlugin;
+import io.noties.markwon.Markwon;
+import io.noties.markwon.MarkwonConfiguration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * AI 对话，也是试用键盘：一个只为了把键盘调出来而存在的输入框，按设计做成聊天样式。
+ *
+ * <p>这里的键盘是绑定到这个输入框上的真正输入法，不是首页的静态预览。打的字不会被读取、保存或发送到任何地方；只有在用户登录、加载了 AI 模型并点发送之后，那一条消息才会作为 AI 对话发出去。没有加载模型时发送键保持禁用，对话区只有水杉的问候。
+ *
+ * <p>这一页有两种承载方式。主要的是 {@link HomeActivity} 底部第二格的「对话」tab：没有返回键，标题是「对话」，点 tab 进来不弹键盘，切走时收起键盘；设置首页状态卡上的「试用键盘」切到这个 tab 并经 {@link #focusInput} 把键盘弹出来。另一种是 {@link KeyboardTryoutActivity} 单独承载（参数 {@link #ARG_STANDALONE}），留给 Tauri 共享设置的「屏幕键盘」页：和原来的试用页一样有「‹ 设置」返回，一打开就弹键盘，账号变了就关掉。
+ */
+public final class ChatFragment extends HomeTabFragment {
+
+    /** boolean：由 {@link KeyboardTryoutActivity} 单独承载，而不是作为底部 tab。 */
+    static final String ARG_STANDALONE = "standalone";
+    /** 和 Apple 试用页同一个草稿上限，两个平台按同样的边界截断。 */
+    private static final int DRAFT_LIMIT = 2000;
+    /** 对话区最多保留的气泡数，超过时从最早的开始丢。 */
+    private static final int BUBBLE_LIMIT = 60;
+    /** 流式回复两次重画之间的最短间隔：最多每秒 20 次。 */
+    private static final long STREAM_FRAME_MS = 50;
+    private static final String FAILURE = "请求失败，请检查登录状态或稍后重试。";
+    /** 每次请求开头的系统约定：默认用简体中文回答。 */
+    private static final String SYSTEM_PROMPT =
+        "你是水杉输入法里的 AI 助手。除非用户明确要求使用其他语言，一律用简体中文回答，回答简洁。";
+    private final Handler mainHandler = MainThreadPolicy.mainHandler();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(
+        ThreadPolicy.namedFactory("msime-keyboard-tryout"));
+    private final ArrayList<BackendAccount.ChatModel> models = new ArrayList<>(BackendAccount.MAX_CHAT_MODELS);
+    private final List<BackendAccount.ChatMessage> messages = new ArrayList<>(13);
+    private Future<?> operation;
+    private int generation;
+    private boolean sending;
+    /** 模型目录正在加载。 */
+    private boolean loadingModels;
+    /** 页面绑定的真实账号会话；空值表示绑定时没有登录。 */
+    private String pageSessionId = "";
+    /** 目录还没到时就发出的一句：已经画成气泡，目录到了再真正发给模型。 */
+    private String pendingSend;
+    /** 正在流式到达的那条回复；没有请求在进行时为 null。只在界面线程上读写。 */
+    private StreamingReply streaming;
+    private boolean standalone;
+    @Nullable private EditText field;
+    @Nullable private MaterialButton sendAi;
+    @Nullable private LinearLayout chat;
+    @Nullable private ScrollView scroll;
+
+    /** 给 {@link KeyboardTryoutActivity} 用的单独承载版本。 */
+    static ChatFragment standalone() {
+        ChatFragment fragment = new ChatFragment();
+        Bundle arguments = new Bundle();
+        arguments.putBoolean(ARG_STANDALONE, true);
+        fragment.setArguments(arguments);
+        return fragment;
+    }
+
+    @Override public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup parent,
+                                       @Nullable Bundle state) {
+        return inflater.inflate(R.layout.page_chat, parent, false);
+    }
+
+    @Override public void onViewCreated(@NonNull View view, @Nullable Bundle state) {
+        Context context = requireContext();
+        standalone = getArguments() != null && getArguments().getBoolean(ARG_STANDALONE);
+        pageSessionId = new BackendAccount(context).sessionId();
+        field = view.findViewById(R.id.tryout_field);
+        sendAi = view.findViewById(R.id.tryout_ai_send);
+        chat = view.findViewById(R.id.tryout_chat);
+        scroll = view.findViewById(R.id.tryout_scroll);
+        EditText field = this.field;
+        MaterialButton sendAi = this.sendAi;
+        MaterialButton dismiss = view.findViewById(R.id.tryout_dismiss);
+
+        // 键盘是这一页的重点，所以按实际 inset 让位而不是假设一个值：键盘升起和收起时输入框都要留在它上面。单独承载时自己让开系统栏；作为 tab 时 HomeActivity 已经给内容区垫了顶部和左右，底部要让开的是 tab 栏加系统导航栏，键盘升起时改让键盘。
+        int tabs = standalone ? 0 : DimensionPolicy.pixels(context, Ui.TAB_BAR_HEIGHT);
+        ViewCompat.setOnApplyWindowInsetsListener(view, (target, windowInsets) -> {
+            Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+            Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
+            int bottom = WindowInsetsPolicy.bottomContentInset(bars.bottom, tabs, ime.bottom, 0);
+            if (standalone) ViewPolicy.setPadding(target, bars.left, bars.top, bars.right, bottom);
+            else ViewPolicy.setPadding(target, 0, 0, 0, bottom);
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(view);
+
+        TextView back = view.findViewById(R.id.tryout_back);
+        TextView title = view.findViewById(R.id.tryout_title);
+        if (standalone) {
+            ViewPolicy.bindClick(back, () -> requireActivity().finish());
+        } else {
+            // tab 是根页，没有可返回的地方；标题和底部那一格一样叫「对话」。
+            ViewPolicy.hide(back);
+            title.setText(R.string.tab_chat);
+        }
+
+        // 设计的输入栏：andCard 底、上面一条分隔线；输入框是页面底色的胶囊，描一圈 hair。
+        View inputBar = view.findViewById(R.id.tryout_input_bar);
+        ViewPolicy.setBackgroundColor(inputBar, ThemeColorPolicy.card(context));
+        // 固定 20 dp 圆角而不是全圆：单行 40 dp 高时看起来仍是胶囊，长到几行时是圆角矩形，不会撑成一个椭圆。
+        android.graphics.drawable.GradientDrawable pill = DrawablePolicy.outlined(ThemeColorPolicy.page(context),
+            DimensionPolicy.pixels(context, 20), DimensionPolicy.pixels(context, 1), ThemeColorPolicy.hairline(context));
+        ViewPolicy.setBackground(field, pill);
+        // 聊天页的回车是发送：键盘回车显示「发送」，按下等同右边的发送键，不再插入换行把输入框越撑越高。长句仍会折行显示，最多 4 行。
+        field.setHorizontallyScrolling(false);
+        ViewPolicy.setMaxLines(field, 4);
+        field.setOnEditorActionListener((editor, action, event) -> {
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEND) return false;
+            // 请求进行中按钮是「停止」：回车不去点它，只有点按钮才停。
+            if (!sending && sendAi.isEnabled()) sendAi.performClick();
+            return true;
+        });
+        int accent = ThemeColorPolicy.accent(context);
+        sendAi.setBackgroundTintList(ColorPolicy.stateList(
+            new int[][] {{-android.R.attr.state_enabled}, {}},
+            new int[] {ColorPolicy.withAlpha(accent, 0.38f), accent}));
+
+        // 系统的输入法选择器放在这里而不是首页：只有用户已经站在一个输入框前、发现弹出来的是别的键盘时，它才有用。
+        MaterialButton switchIme = view.findViewById(R.id.tryout_switch);
+        ViewPolicy.bindClick(switchIme, () ->
+            requireContext().getSystemService(InputMethodManager.class).showInputMethodPicker());
+
+        // 「收起键盘」只在键盘升起时有意义，和 Apple 一样。
+        ViewPolicy.hide(dismiss);
+        ViewPolicy.bindClick(dismiss, this::hideKeyboard);
+        field.setOnFocusChangeListener((editor, focused) -> {
+            if (focused) ViewPolicy.show(dismiss);
+            else ViewPolicy.hide(dismiss);
+        });
+
+        ViewPolicy.afterTextChanged(field, text -> {
+            if (text.length() > DRAFT_LIMIT) text.delete(DRAFT_LIMIT, text.length());
+            // 请求进行中按钮是「停止」，继续编辑或清空草稿都不能禁用取消操作。默认就能和 AI 对话：有字就能发，目录还没加载完时发出的那句等目录到了再发。
+            ViewPolicy.setEnabled(sendAi, sending || text.length() > 0);
+        });
+
+        ViewPolicy.bindClick(sendAi, () -> {
+            if (sending) cancelChat(sendAi);
+            else sendChat(field, sendAi);
+        });
+        ViewPolicy.bindClick(view.findViewById(R.id.tryout_clear), () -> clear(field, sendAi));
+
+        greet();
+        // 进页面就在后台加载模型目录，不再要用户先点「加载 AI」。
+        loadModels(field, sendAi);
+
+        // 单独打开这一页就是用户在要键盘，所以不等点按就把它弹出来；tab 由 HomeActivity 决定什么时候弹（见 focusInput）。
+        if (standalone) focusInput();
+    }
+
+    /** 把焦点交给输入框并弹出键盘：单独承载时一打开就调用，tab 上由设置首页的「试用键盘」经 {@link HomeActivity#openChat} 调用。 */
+    void focusInput() {
+        EditText field = this.field;
+        if (field == null) return;
+        field.requestFocus();
+        WindowCompat.getInsetsController(requireActivity().getWindow(), field).show(WindowInsetsCompat.Type.ime());
+    }
+
+    private void hideKeyboard() {
+        EditText field = this.field;
+        if (field == null) return;
+        field.clearFocus();
+        requireContext().getSystemService(InputMethodManager.class).hideSoftInputFromWindow(field.getWindowToken(), 0);
+    }
+
+    /** 每次回到眼前都核对一次账号：在「我的」里登录、退出或换了账号之后，这一页不能还拿着上一个账号的会话。 */
+    @Override protected void onBecameVisible() {
+        if (field != null && !pageSessionCurrent()) abortForSessionChange();
+    }
+
+    @Override public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        // 切到别的 tab 时把键盘收起来，不然它会盖在另一个 tab 上。
+        if (hidden) hideKeyboard();
+    }
+
+    /** 第一条气泡：水杉的问候。 */
+    private void greet() {
+        appendBubble("你好，我是" + getString(R.string.app_name) + "。打几个字发给我试试，比如 shuishan。", false);
+    }
+
+    /** 清空：停掉进行中的请求，清掉草稿、对话和上下文，回到只有问候的样子。 */
+    private void clear(EditText field, MaterialButton send) {
+        if (sending) cancelChat(send);
+        pendingSend = null;
+        messages.clear();
+        if (chat != null) chat.removeAllViews();
+        field.setText("");
+        greet();
+    }
+
+    /** 后台加载模型目录；成功后刷新发送键，并把目录到之前发出的那句真正发出去。 */
+    private void loadModels(EditText field, MaterialButton send) {
+        if (loadingModels) return;
+        loadingModels = true;
+        Context app = requireContext().getApplicationContext();
+        // 加载开始时绑定的会话：tab 上换了账号以后页面会改绑新会话并重新加载，旧账号那一次迟到的结果按它丢掉。
+        String session = pageSessionId;
+        operation = worker.submit(() -> {
+            try {
+                List<BackendAccount.ChatModel> loaded = new BackendAccount(app).chatModels(session);
+                mainHandler.post(() -> {
+                    if (!alive() || !session.equals(pageSessionId)) return;
+                    if (!pageSessionCurrent()) {
+                        abortForSessionChange();
+                        return;
+                    }
+                    models.clear();
+                    models.ensureCapacity(loaded.size());
+                    models.addAll(loaded);
+                    loadingModels = false;
+                    // 目录加载期间可能已经打了草稿。这里直接刷新按钮状态，不等下一次编辑通知。
+                    ViewPolicy.setEnabled(send, sending || field.length() > 0);
+                    flushPendingSend(send);
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (!alive() || !session.equals(pageSessionId)) return;
+                    if (!pageSessionCurrent()) {
+                        abortForSessionChange();
+                        return;
+                    }
+                    loadingModels = false;
+                    flushPendingSend(send);
+                });
+            }
+        });
+    }
+
+    /** 目录到了（或没拿到）时处理等着的那句：有模型就发，没有就在对话里说明。 */
+    private void flushPendingSend(MaterialButton send) {
+        String text = pendingSend;
+        pendingSend = null;
+        if (text == null) return;
+        if (models.isEmpty()) {
+            appendBubble(FAILURE, false);
+            finishChat(send);
+            return;
+        }
+        dispatchChat(text, send);
+    }
+
+    private void sendChat(EditText field, MaterialButton send) {
+        String text = TextPolicy.trimmed(field.getText() == null ? null : field.getText().toString());
+        if (text.isEmpty()) return;
+        field.setText("");
+        appendBubble(text, true);
+        if (models.isEmpty()) {
+            // 目录还没到：这句先画出来，按钮变成「停止」，目录到了再发。
+            pendingSend = text;
+            showStop(send);
+            loadModels(field, send);
+            return;
+        }
+        dispatchChat(text, send);
+    }
+
+    private void showStop(MaterialButton send) {
+        sending = true;
+        ViewPolicy.setEnabled(send, true);
+        send.setIconResource(R.drawable.ms_w2_home_stop);
+        send.setContentDescription("停止");
+    }
+
+    private void dispatchChat(String text, MaterialButton send) {
+        if (!pageSessionCurrent()) {
+            abortForSessionChange();
+            return;
+        }
+        // 请求最多 14 条：开头一条系统约定，加最近 13 条对话。
+        while (messages.size() >= 13) messages.remove(0);
+        messages.add(new BackendAccount.ChatMessage("user", text));
+        showStop(send);
+        int token = ++generation;
+        List<BackendAccount.ChatMessage> request = new ArrayList<>(messages.size() + 1);
+        request.add(new BackendAccount.ChatMessage("system", SYSTEM_PROMPT));
+        request.addAll(messages);
+        final String selectedModel = models.get(0).id();
+        final String session = pageSessionId;
+        Context app = requireContext().getApplicationContext();
+        StreamingReply reply = new StreamingReply(token);
+        streaming = reply;
+        operation = worker.submit(() -> {
+            try {
+                String full = new BackendAccount(app).chatStream(request, selectedModel, reply.call, reply::append,
+                    session);
+                mainHandler.post(() -> {
+                    if (token != generation || !alive()) return;
+                    if (!pageSessionCurrent()) {
+                        abortForSessionChange();
+                        return;
+                    }
+                    streaming = null;
+                    reply.show(full);
+                    messages.add(new BackendAccount.ChatMessage("assistant", full));
+                    finishChat(send);
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (token != generation || !alive()) return;
+                    if (!pageSessionCurrent()) {
+                        abortForSessionChange();
+                        return;
+                    }
+                    streaming = null;
+                    // 已经到了一部分就留着它；一个字都没到才说失败。
+                    if (!keepPartial(reply)) appendBubble(FAILURE, false);
+                    finishChat(send);
+                });
+            }
+        });
+    }
+
+    private void cancelChat(MaterialButton send) {
+        StreamingReply reply = streaming;
+        streaming = null;
+        generation++;
+        pendingSend = null;
+        if (reply != null) {
+            reply.call.cancel();
+            // 停止时保留已经到达的部分，并让它进入上下文，和屏幕上看到的一致。
+            keepPartial(reply);
+        }
+        if (operation != null) operation.cancel(true);
+        finishChat(send);
+    }
+
+    /** 把一条没收完的回复里已经到达的文字画出来并记进上下文；一个字都没到时返回 false。 */
+    private boolean keepPartial(StreamingReply reply) {
+        String partial = reply.text();
+        if (partial.isEmpty()) return false;
+        reply.show(partial);
+        messages.add(new BackendAccount.ChatMessage("assistant", partial));
+        return true;
+    }
+
+    /**
+     * 正在流式到达的一条回复。worker 线程把增量追加进 {@code received}，界面线程最多每 {@link #STREAM_FRAME_MS} 毫秒重画一次气泡；第一段增量到达时才创建气泡。
+     */
+    private final class StreamingReply {
+        final int token;
+        final BackendAccount.ChatCall call = new BackendAccount.ChatCall();
+        private final StringBuilder received = new StringBuilder(BackendAccount.MAX_CHAT_REPLY_BYTES);
+        private final AtomicBoolean scheduled = new AtomicBoolean();
+        /** 上一次重画的时刻；worker 线程读它算延迟，界面线程写。 */
+        private volatile long shownAt;
+        /** 只在界面线程上读写。 */
+        private TextView bubble;
+
+        StreamingReply(int token) {
+            this.token = token;
+        }
+
+        /** worker 线程：追加一段增量，没有排着的重画就排一次。 */
+        void append(String delta) {
+            synchronized (received) {
+                received.append(delta);
+            }
+            if (scheduled.compareAndSet(false, true)) {
+                long wait = BoundsPolicy.nonNegative(
+                    shownAt + STREAM_FRAME_MS - SystemClock.uptimeMillis());
+                mainHandler.postDelayed(this::render, wait);
+            }
+        }
+
+        String text() {
+            synchronized (received) {
+                return received.toString();
+            }
+        }
+
+        /** 界面线程：先清掉排队标记再取文字，这之后到的增量会再排一次重画，不会丢。 */
+        private void render() {
+            scheduled.set(false);
+            if (token != generation || !alive()) return;
+            if (!pageSessionCurrent()) {
+                abortForSessionChange();
+                return;
+            }
+            show(text());
+        }
+
+        /** 界面线程：把气泡更新成 {@code text}，第一次调用时创建气泡。 */
+        void show(String text) {
+            if (text.isEmpty()) return;
+            shownAt = SystemClock.uptimeMillis();
+            if (bubble == null) {
+                bubble = appendBubble(text, false);
+            } else {
+                setBubbleText(bubble, text, true);
+                scrollToEnd();
+            }
+        }
+    }
+
+    private void finishChat(MaterialButton send) {
+        sending = false;
+        send.setIconResource(R.drawable.ms_w2_home_send);
+        send.setContentDescription("发送");
+        EditText field = this.field;
+        ViewPolicy.setEnabled(send, field != null && field.getText() != null && field.length() > 0);
+    }
+
+    /**
+     * 页面所属账号已经改变：丢弃目录、草稿和聊天流。单独承载时关闭页面；tab 关不掉，就回到刚打开的样子，改绑现在的账号并重新加载模型目录。
+     */
+    private void abortForSessionChange() {
+        generation++;
+        pendingSend = null;
+        if (streaming != null) streaming.call.cancel();
+        streaming = null;
+        if (operation != null) operation.cancel(true);
+        if (standalone) {
+            requireActivity().finish();
+            return;
+        }
+        EditText field = this.field;
+        MaterialButton send = sendAi;
+        if (field == null || send == null) return;
+        pageSessionId = new BackendAccount(requireContext()).sessionId();
+        loadingModels = false;
+        models.clear();
+        messages.clear();
+        if (chat != null) chat.removeAllViews();
+        field.setText("");
+        finishChat(send);
+        greet();
+        loadModels(field, send);
+    }
+
+    private boolean pageSessionCurrent() {
+        return pageSessionId.equals(new BackendAccount(requireContext()).sessionId());
+    }
+
+    /** 回调到达时这一页还在：已经加在界面上、视图也还在。 */
+    private boolean alive() {
+        return isAdded() && field != null;
+    }
+
+    /**
+     * 加一个气泡：自己的消息靠右、accent 底 onAccent 字；水杉和 AI 的靠左、andCard 底。圆角 18，最宽到对话区的八成。
+     */
+    private TextView appendBubble(String text, boolean mine) {
+        Context context = requireContext();
+        LinearLayout chat = this.chat;
+        while (chat.getChildCount() >= BUBBLE_LIMIT) chat.removeViewAt(0);
+        TextView bubble = ViewPolicy.styledLabel(context, text, 15, 400,
+            mine ? ThemeColorPolicy.onAccent(context) : ThemeColorPolicy.text(context));
+        // 先设可选再放文字：setTextIsSelectable 会换成 ArrowKeyMovementMethod，放在后面就把 Markwon 装好的 LinkMovementMethod 冲掉，回复里的链接点不动。AI 的气泡再显式装上链接的点按处理，之后流式更新的 setMarkdown 会沿用它。
+        bubble.setTextIsSelectable(true);
+        setBubbleText(bubble, text, !mine);
+        if (!mine) bubble.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+        ViewPolicy.setLineSpacing(bubble, DimensionPolicy.pixels(context, 3), 1f);
+        ViewPolicy.setBackground(bubble, DrawablePolicy.rounded(mine ? ThemeColorPolicy.accent(context) : ThemeColorPolicy.card(context), DimensionPolicy.pixels(context, 18)));
+        ViewPolicy.setSymmetricPaddingDp(context, bubble, 14, 10);
+        bubble.setMaxWidth(Math.round(DimensionPolicy.screenWidthPixels(context) * 0.8f));
+        LinearLayout.LayoutParams params = LayoutPolicy.wrapParams();
+        params.gravity = mine ? Gravity.END : Gravity.START;
+        if (chat.getChildCount() > 0) params.topMargin = DimensionPolicy.pixels(context, 10);
+        chat.addView(bubble, params);
+        scrollToEnd();
+        return bubble;
+    }
+
+    /** AI 与水杉的气泡按 Markdown 渲染（加粗、列表、标题、引用、代码、链接）；自己发的那句原样显示。 */
+    private void setBubbleText(TextView bubble, String text, boolean markdown) {
+        String shown = TextPolicy.clipSurrogateSafe(text, 8_000);
+        if (markdown) markwon().setMarkdown(bubble, shown);
+        else bubble.setText(shown);
+    }
+
+    private Markwon markwon;
+
+    /** 只用 Markwon 的核心：不解释 HTML、不加载图片；链接与公告页一样只打开 http、https 和 mailto。 */
+    private Markwon markwon() {
+        if (markwon == null) {
+            markwon = Markwon.builder(requireContext())
+                .usePlugin(new AbstractMarkwonPlugin() {
+                    @Override public void configureConfiguration(@NonNull MarkwonConfiguration.Builder builder) {
+                        builder.linkResolver((view, link) -> openLink(link));
+                    }
+                })
+                .build();
+        }
+        return markwon;
+    }
+
+    private void openLink(String link) {
+        android.net.Uri uri = android.net.Uri.parse(link);
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+        if (!scheme.equals("https") && !scheme.equals("http") && !scheme.equals("mailto")) return;
+        try {
+            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, uri));
+        } catch (RuntimeException error) {
+            // 没有浏览器时链接只是文字。
+        }
+    }
+
+    private void scrollToEnd() {
+        LinearLayout chat = this.chat;
+        ScrollView scroll = this.scroll;
+        if (chat == null || scroll == null) return;
+        // 只滚动不移焦点：fullScroll 会把焦点交给可选中的气泡，键盘就收起了。
+        scroll.post(() -> scroll.smoothScrollTo(0, chat.getHeight()));
+    }
+
+    @Override public void onDestroyView() {
+        generation++;
+        pendingSend = null;
+        sending = false;
+        loadingModels = false;
+        if (streaming != null) streaming.call.cancel();
+        streaming = null;
+        mainHandler.removeCallbacksAndMessages(null);
+        if (operation != null) operation.cancel(true);
+        field = null;
+        sendAi = null;
+        chat = null;
+        scroll = null;
+        markwon = null;
+        super.onDestroyView();
+    }
+
+    @Override public void onDestroy() {
+        worker.shutdownNow();
+        super.onDestroy();
+    }
+}
