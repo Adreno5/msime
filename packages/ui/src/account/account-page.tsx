@@ -17,8 +17,7 @@ import { accountProviderName, preferredAccountName } from "./account-labels";
 import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
 import { AccountProfileActions, type HarmonyProfileAction } from "./account-profile-actions";
-import { AccountNicknameField } from "./account-nickname-field";
-import { AccountInputField } from "./account-input-field";
+import { AccountNicknameEditor, accountNicknameHelpText } from "./account-nickname-editor";
 import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
 import { AccountIdentityDetails, AccountIdentityRows } from "./account-identity-details";
@@ -241,20 +240,14 @@ function MobileAccountProfilePage({
       </section>
       <section className={`${account.section} ${account.stack}`}>
         <h2 className={account.heading}>社区昵称</h2>
-        <AccountNicknameField
+        <AccountNicknameEditor
+          variant="mobile"
           value={name}
           disabled={busy}
-          ariaLabel="编辑社区昵称"
+          normalizedName={normalizedName}
+          validName={validName}
           onChange={setName}
         />
-        <p className={`account-muted${!validName && normalizedName ? " error" : ""}`}>
-          {normalizedName
-            ? validName
-              ? "昵称会显示在社区作品中，已发布的作品也会同步更新。"
-              : "昵称最多 64 个字符，请勿使用换行或控制字符。"
-            : "取一个喜欢的名字，让大家记住你。"}
-        </p>
-        <p className={account.muted}>{[...normalizedName].length}/64</p>
         <div className={account.actionRow}>
           <ActionButton
             action={rename}
@@ -397,30 +390,19 @@ function HarmonyProfilePage({
       {renaming && (
         <BottomSheet
           title="昵称"
-          subtitle="昵称会显示在社区作品中，已发布的作品也会同步更新。"
+          subtitle={accountNicknameHelpText}
           closeDisabled={busy}
           onClose={() => setRenaming(false)}
         >
           <div className={account.sheetField}>
-            <AccountInputField
-              label={<span className="sr-only">社区昵称</span>}
-              ariaLabel="编辑社区昵称"
-              className={account.sheetInput}
-              maxLength={64}
+            <AccountNicknameEditor
+              variant="sheet"
               value={name}
               disabled={busy}
-              data-sheet-autofocus=""
+              normalizedName={normalizedName}
+              validName={validName}
               onChange={setName}
             />
-            <p
-              className={!validName && normalizedName ? account.sheetHintError : account.sheetHint}
-            >
-              {normalizedName
-                ? validName
-                  ? `${[...normalizedName].length}/64`
-                  : "昵称最多 64 个字符，请勿使用换行或控制字符。"
-                : "取一个喜欢的名字，让大家记住你。"}
-            </p>
           </div>
           <button
             type="button"
@@ -1037,7 +1019,7 @@ function AccountDetailsPage({
     setUser(value.user);
     setName(value.user.displayName);
   };
-  const { normalizedName, rename } = useAccountRename({
+  const { normalizedName, validName, rename } = useAccountRename({
     client,
     name,
     mounted,
@@ -1690,13 +1672,14 @@ function AccountDetailsPage({
             {client.chooseAvatar && (
               <p className={account.muted}>点头像可更换，支持 1 MiB 以内的 PNG 或 JPEG。</p>
             )}
-            <AccountNicknameField
+            <AccountNicknameEditor
+              variant="desktop"
               value={name}
               disabled={busy}
-              ariaLabel="编辑社区昵称"
+              normalizedName={normalizedName}
+              validName={validName}
               onChange={setName}
             />
-            <p className={account.muted}>昵称会显示在社区作品中，已发布的作品也会同步更新。</p>
             <AccountIdentityDetails
               user={user}
               providers={profile?.providers ?? []}
