@@ -340,7 +340,7 @@ struct Report {
     event: &'static str,
     status: String,
     fuel: u64,
-    /// 这个事件之前实例化时初始化用掉的 fuel（`msime_abi` 加 `msime_init`），没有实例化时不写。
+    /// 这个事件之前尝试实例化时初始化用掉的 fuel（`msime_abi` 加 `msime_init`）。`init:*` 和 `deferred` 行上也有，是失败或被本轮预算截断的那次尝试用掉的；没有尝试实例化时不写。
     #[serde(skip_serializing_if = "Option::is_none")]
     init_fuel: Option<u64>,
     actions: Vec<ActionLine>,
