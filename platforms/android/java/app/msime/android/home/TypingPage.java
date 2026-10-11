@@ -268,6 +268,11 @@ public final class TypingPage extends DetailPage {
         if (helpcodeOn) {
             aux.nav("辅助码方案", shuangpin ? "双拼" : "全拼", labelOf(state.helpcodeSchemas(), schema),
                 () -> pickHelpcode(family, shuangpin, state.helpcodeSchemas(), schema));
+            // 共享设置页的同一个开关（#6997）：只关显示，Shift 筛选照常可用。缺整个对象时按各自默认（双拼显示、全拼不显示），对象里缺这一项时按 serde 的默认显示。
+            boolean shownInCandidates = helpcode == null ? shuangpin : helpcode.optBoolean("show_in_candidate_window", true);
+            aux.toggle(shuangpin ? "在候选栏中显示双拼辅助码" : "在候选栏中显示全拼辅助码",
+                "关掉后候选旁不再标注辅助码，Shift 筛选照常可用", shownInCandidates,
+                checked -> saveHelpcode(family, shuangpin, "show_in_candidate_window", checked));
         }
 
         GroupCard translation = GroupCard.add(target, "翻译");
