@@ -66,11 +66,11 @@ struct TranslationProviderSettingsView: View {
         Section {
           TextField("https://example.com/translate", text: $customEndpoint).credentialField()
             .keyboardType(.URL)
-          SecureField("API Key（可选）", text: $customKey).credentialField()
+          SecureField("API Key（DeepL 必填）", text: $customKey).credentialField()
         } header: {
           SettingsGroupHeader(title: "自定义接口")
         } footer: {
-          Text("兼容 DeepLX 的 POST 接口。iOS 只允许 HTTPS 地址，HTTP 地址保存后不会被调用。")
+          Text("兼容 DeepLX 的 POST 接口，或 DeepL 官方 API 地址（https://api-free.deepl.com/v2/translate 或 https://api.deepl.com/v2/translate）配 DeepL 的 Auth Key；使用 DeepL 时候选词会发送到 DeepL，按 DeepL 的数据政策处理。iOS 只允许 HTTPS 地址，HTTP 地址保存后不会被调用。")
         }
         .designRow()
       }
