@@ -34,6 +34,12 @@ pub mod symbol_set;
 pub mod wordbook_pack;
 
 pub use failure::{remove_named, PluginFailure};
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub use import::load_script_source;
 pub use import::{import, import_from_settings, validate};
 
 use serde::{Deserialize, Serialize};
