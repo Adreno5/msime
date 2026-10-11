@@ -113,7 +113,7 @@ final class LoginSheet {
         appleResult = this::finishWith;
 
         LinearLayout root = LayoutPolicy.column(activity);
-        Ui.setPaddingDp(root, activity, 24, 0, 24, 20);
+        ViewPolicy.setPaddingDp(activity, root, 24, 0, 24, 20);
         root.addView(LayoutPolicy.sheetDragHandle(activity));
 
         LinearLayout header = LayoutPolicy.row(activity);
@@ -305,7 +305,7 @@ final class LoginSheet {
     private View button(Drawable icon, String label, int fill, int ink, int stroke, Runnable action) {
         LinearLayout button = LayoutPolicy.row(activity);
         ViewPolicy.setCentered(button);
-        Ui.setMinimumHeightDp(button, activity, 50);
+        ViewPolicy.setMinimumHeightDp(activity, button, 50);
         GradientDrawable face = stroke == 0
             ? DrawablePolicy.rounded(fill, DimensionPolicy.pixels(activity, 12))
             : DrawablePolicy.outlined(fill, DimensionPolicy.pixels(activity, 12), DimensionPolicy.atLeastOnePixel(activity, 1), stroke);

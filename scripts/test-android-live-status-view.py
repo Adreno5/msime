@@ -7,22 +7,22 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / "platforms/android/java/app/msime/android/home"
-# 动态状态文本工厂已从 Ui 挪到 ViewPolicy，颜色改由调用方传入。
-UI = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
+POLICY = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 
 
 def main() -> int:
     errors = []
-    ui = UI.read_text(encoding="utf-8")
+    policy = POLICY.read_text(encoding="utf-8")
     required = (
         "public static TextView liveStatus(Context context, int sizeSp, int color)",
         'TextView view = newTextView(context, "");',
         "style(view, sizeSp, 400, color);",
         "setPoliteLiveRegion(view);",
+        "return view;",
     )
     for snippet in required:
-        if snippet not in ui:
-            errors.append(f"{UI}: 动态状态文本工厂缺少：{snippet}")
+        if snippet not in policy:
+            errors.append(f"{POLICY}: 动态状态文本工厂缺少：{snippet}")
 
     consumers = {
         "SettingsSheet.java": "TextView status = ViewPolicy.liveStatus(context, 12, ThemeColorPolicy.subText(context));",

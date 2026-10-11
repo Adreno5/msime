@@ -63,6 +63,10 @@ def main() -> None:
         "public static void hideFromAccessibility(View view)",
         "public static void setSymmetricPaddingDp(Context context, View view, float horizontalDp,",
         "public static void setHorizontalPaddingDp(Context context, View view, float horizontalDp)",
+        "public static void setPaddingDp(Context context, View view, float leftDp, float topDp,",
+        "public static void setRowPadding(Context context, View view)",
+        "public static void setRowMinimumHeight(Context context, View view)",
+        "public static void setMinimumHeightDp(Context context, View view, float heightDp)",
         "public static TextView label(Context context, CharSequence text, float sizeSp, int color)",
         "public static void afterTextChanged(TextView view, Consumer<Editable> listener)",
     )
@@ -152,6 +156,26 @@ def main() -> None:
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.setHorizontalPaddingDp(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享水平 dp 内边距策略")
+    if "public static void setPaddingDp(" in ui:
+        raise AssertionError("Ui 仍保留四边 dp 内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setPaddingDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享四边 dp 内边距策略")
+    if "public static void setRowPadding(" in ui:
+        raise AssertionError("Ui 仍保留标准行内边距转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setRowPadding(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享行内边距策略")
+    if "public static void setRowMinimumHeight(" in ui:
+        raise AssertionError("Ui 仍保留标准行最小高度转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setRowMinimumHeight(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享行最小高度策略")
+    if "public static void setMinimumHeightDp(" in ui:
+        raise AssertionError("Ui 仍保留最小高度 dp 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.setMinimumHeightDp(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享最小高度 dp 策略")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.style(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文本样式策略")
@@ -262,6 +286,18 @@ def main() -> None:
     image_policy = (ANDROID_JAVA / "app/msime/android/ImageViewPolicy.java").read_text(encoding="utf-8")
     if "ViewPolicy.newSquareParamsPx(" not in image_policy:
         raise AssertionError("ImageViewPolicy 没有调用共享正方形布局参数工厂")
+    # isGone(null) 为假，`!isGone(x)` 不能代替判空；同一行接着改 x 的可见性却没判空，视图还没建好时就会空指针（6862a33265 在 ImeNineKeyPanel.dismiss 引入过）。
+    unguarded = re.compile(
+        r"!\s*ViewPolicy\.isGone\(([\w.]+)\)\)\s*\{?\s*ViewPolicy\."
+        r"(?:hide|show|setVisible|setVisibleIfChanged|setInvisible|setVisibilityForText)\(\1[,)]")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            match = unguarded.search(line)
+            if match and f"{match.group(1)} != null" not in line:
+                raise AssertionError(f"{path}:{number} 用 !ViewPolicy.isGone 代替了判空：{line.strip()}")
+    nine_key_panel = (ANDROID_JAVA / "app/msime/android/core/ImeNineKeyPanel.java").read_text(encoding="utf-8")
+    if "if (root != null && !ViewPolicy.isGone(root)) ViewPolicy.hide(root);" not in nine_key_panel:
+        raise AssertionError("ImeNineKeyPanel.dismiss 没有在 root 建好前判空")
     print("android view policy: recursive enabled state is shared")
 
 

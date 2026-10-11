@@ -261,6 +261,28 @@ public final class ViewPolicy {
         setHorizontalPadding(view, DimensionPolicy.pixels(context, horizontalDp));
     }
 
+    /** Apply four-sided padding expressed in density-independent pixels. */
+    public static void setPaddingDp(Context context, View view, float leftDp, float topDp,
+                                    float rightDp, float bottomDp) {
+        setPadding(view, DimensionPolicy.pixels(context, leftDp), DimensionPolicy.pixels(context, topDp),
+            DimensionPolicy.pixels(context, rightDp), DimensionPolicy.pixels(context, bottomDp));
+    }
+
+    /** Apply the standard detail-row horizontal and vertical insets. */
+    public static void setRowPadding(Context context, View view) {
+        setSymmetricPaddingDp(context, view, 16, 8);
+    }
+
+    /** Apply the standard detail-row minimum height. */
+    public static void setRowMinimumHeight(Context context, View view) {
+        setMinimumHeight(view, DimensionPolicy.pixels(context, 64));
+    }
+
+    /** Apply a caller-selected minimum height expressed in density-independent pixels. */
+    public static void setMinimumHeightDp(Context context, View view, float heightDp) {
+        setMinimumHeight(view, DimensionPolicy.pixels(context, heightDp));
+    }
+
     /** Clear all view padding. */
     public static void clearPadding(View view) {
         view.setPadding(0, 0, 0, 0);
@@ -462,7 +484,7 @@ public final class ViewPolicy {
         return view != null && view.getVisibility() == View.VISIBLE;
     }
 
-    /** 判断视图是否已从布局中隐藏。 */
+    /** 判断视图是否非空且已从布局中隐藏。null 返回 false，所以 {@code !isGone(view)} 不代表视图非空；hide、show 等改可见性的方法不接受 null，接着调用前调用方要自己判空。 */
     public static boolean isGone(View view) {
         return view != null && view.getVisibility() == View.GONE;
     }

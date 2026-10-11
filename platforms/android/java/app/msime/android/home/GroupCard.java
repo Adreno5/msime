@@ -46,7 +46,7 @@ public final class GroupCard {
         if (title != null && title.length() > 0) {
             TextView heading = ViewPolicy.headingLabel(context, title, Ui.TEXT_GROUP_TITLE, 500,
                 ThemeColorPolicy.accent(context));
-            Ui.setPaddingDp(heading, context, Ui.GROUP_TITLE_INSET, 0,
+            ViewPolicy.setPaddingDp(context, heading, Ui.GROUP_TITLE_INSET, 0,
                 Ui.GROUP_TITLE_INSET, 2);
             LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
             params.bottomMargin = DimensionPolicy.pixels(context, 2);
@@ -183,7 +183,7 @@ public final class GroupCard {
     /** 卡片下方的脚注，13sp 次要文字色，与组标题同样缩进。 */
     public TextView footer(CharSequence text) {
         TextView note = ViewPolicy.styledLabel(context, text, 13, 400, ThemeColorPolicy.subText(context));
-        Ui.setPaddingDp(note, context, Ui.GROUP_TITLE_INSET, 8,
+        ViewPolicy.setPaddingDp(context, note, Ui.GROUP_TITLE_INSET, 8,
             Ui.GROUP_TITLE_INSET, 0);
         group.addView(note, LayoutPolicy.matchWidthWrapParams());
         return note;
@@ -241,8 +241,8 @@ public final class GroupCard {
             } : new LinearLayout(context);
             view.setOrientation(LinearLayout.HORIZONTAL);
             ViewPolicy.setCenteredVertically(view);
-            Ui.setRowMinimumHeight(view, owner.context);
-            Ui.setRowPadding(view, owner.context);
+            ViewPolicy.setRowMinimumHeight(owner.context, view);
+            ViewPolicy.setRowPadding(owner.context, view);
 
             LinearLayout texts = LayoutPolicy.column(context);
             title = ViewPolicy.styledLabel(context, titleText, Ui.TEXT_ROW_TITLE, 400, ThemeColorPolicy.text(context));
