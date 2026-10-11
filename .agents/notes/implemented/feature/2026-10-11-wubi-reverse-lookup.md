@@ -62,7 +62,7 @@ Status: implemented
 
 ## Verification
 
-- `cargo test -p msime-engine --lib`：`wubi::scheme` 新增三条（开头 `z` 引导、反查上限 32 与四个字母不是完整码、中间 `z` 仍拒绝、退格离开；不允许时 `z` 被滤掉；宿主编辑整段保留反查原文），`host::tests` 新增六条：反查附码且单字是全码、跟随 98 码表、进入与离开（退格、取消、离开后五笔码照常）、混输里没有 `z` 反查、选走一部分后剩余拼音仍在反查且回车只上屏拼音、反查不学习（并以混输里同样的选择会写日志作对照，证明测得到学习）。不学习那条在去掉 `learn_candidate` 的判断后失败。
+- `cargo test -p msime-engine --lib`：`wubi::scheme` 新增三条（开头 `z` 引导、反查上限 32 与四个字母不是完整码、中间 `z` 仍拒绝、退格离开；不允许时 `z` 被滤掉；宿主编辑整段保留反查原文），`host::tests` 新增六条：反查附码且单字是全码、跟随 98 码表、进入与离开（退格、取消、离开后五笔码照常）、混输里没有 `z` 反查、选走一部分后剩余拼音仍在反查且回车只上屏拼音、反查不学习（并以混输里同样的选择会写日志作对照，证明测得到学习）。不学习那条在去掉 `learn_candidate` 的判断后失败。另有 `a_multi_pick_in_the_pinyin_lookup_creates_no_phrase`：打开学习，在反查里分两次选出码表没有的 `你号`，用户日志里没有这个新词；混输里同样分两次选会造出它，作为对照。去掉 `commit_selection` 里 `!self.engine.wubi_pinyin_lookup_active()` 那个条件后这一条失败。
 - `cargo test -p msime-engine --test golden`：更新后的三个场景与其余场景全部通过。
 - `cargo test -p msime-engine --lib -- wubi::lookup`：每个字全部编码短码在前、重复编码并成一个；非汉字跳过、重复的字只列一次、带标点的一段不当词查；码表没有的字列出但没有编码；缺 `wubi98` 表或整个文件时只有那一列为空；超过 64 个不同汉字截断。
 - `pnpm --filter @msime/desktop exec vitest run`（全量 524 个文件通过），其中 `tests/settings/wubi-code-lookup-section.test.tsx`：整段词在前、两列编码与当前码表标记；没有汉字和截断的提示；失败时报错并清掉旧结果；「输入」页在五笔方案且宿主有 `wubiCodes` 时画出这一组并用它查，全拼方案或宿主没给 `wubiCodes` 时不画。

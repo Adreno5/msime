@@ -3204,3 +3204,59 @@ fn the_pinyin_lookup_learns_nothing() {
     drop(session);
     assert!(journal_rows(&control) > 0);
 }
+
+#[test]
+fn a_multi_pick_in_the_pinyin_lookup_creates_no_phrase() {
+    // `你号` 不在码表里：分两次选出它时，打开学习的会话会把它当新词写进拼音词库。
+    let phrase_options = |root: &Path, mixed_pinyin: bool| {
+        let mut options = pinyin_lookup_options(root);
+        for directory in [&options.resources, &options.dictionaries] {
+            Connection::open(Path::new(directory).join("msime-pinyin.db"))
+                .unwrap()
+                .execute("INSERT INTO tbl_1_h VALUES('hao','h','号',50)", [])
+                .unwrap();
+        }
+        options.learning = true;
+        options.wubi_mixed_pinyin = mixed_pinyin;
+        options
+    };
+    let pick_in_two = |options: &EngineOptions, typed: &[u8]| {
+        let mut session = Session::new(options).unwrap();
+        type_text(&mut session, typed);
+        for word in ["你", "号"] {
+            let view = session.snapshot().unwrap();
+            let index = view
+                .candidates
+                .iter()
+                .position(|candidate| candidate == word)
+                .unwrap_or_else(|| panic!("{word} missing from {:?}", view.candidates));
+            assert_eq!(session.select(index).unwrap().commit, word);
+        }
+        assert_eq!(session.snapshot().unwrap().preedit, "");
+    };
+    let created_rows = |options: &EngineOptions| -> i64 {
+        let path = Path::new(&options.user_data).join("msime_user.db");
+        if !path.exists() {
+            return 0;
+        }
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM user_dictionary_operations WHERE value='你号' AND user_inserted=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let options = phrase_options(root.path(), false);
+    pick_in_two(&options, b"znihao");
+    assert_eq!(created_rows(&options), 0);
+
+    // 对照：混输里同样分两次选，会造出 `你号`，说明上面的零是反查没有造词，而不是这条路径走不到。
+    let control_root = tempfile::tempdir().unwrap();
+    let control = phrase_options(control_root.path(), true);
+    pick_in_two(&control, b"nihao");
+    assert_eq!(created_rows(&control), 1);
+}
