@@ -238,7 +238,7 @@ fn an_initialisation_failure_disables_the_plugin() {
     );
 }
 
-/// 同一轮里重建的实例接着用这一轮剩下的配额：六次 `composition_update` 用掉 108 114，`focus_in` 丢掉实例再重建，第七次只剩一万六千多，被本轮剩下的配额截断（`turn_exhausted`，不算失败，退出码为 0）；带 `key` 的 `focus_in` 开始新的一轮，重建的实例拿到满额。
+/// 同一轮里重建的实例接着用这一轮剩下的配额：六次 `composition_update` 用掉 108 114，`focus_in` 丢掉实例再重建，第七次只剩一万六千多，本轮配额耗尽（`turn_exhausted`，不算失败，所以退出码是 0）；带 `key` 的 `focus_in` 开始新的一轮，重建的实例拿到满额。
 #[test]
 fn an_instance_rebuilt_in_the_same_turn_resumes_its_fuel() {
     let declared = declaration(&[], &[Hook::FocusIn, Hook::CompositionUpdate]);

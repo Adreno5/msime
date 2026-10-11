@@ -1864,6 +1864,7 @@ fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
         InputClass::Cancel => "cancel",
         InputClass::HostCommit => "host_commit",
         InputClass::Other => "other",
+        InputClass::FocusLoss => "focus_loss",
     };
     check(
         values::INPUT_CLASS,
@@ -1877,6 +1878,7 @@ fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
             InputClass::Cancel,
             InputClass::HostCommit,
             InputClass::Other,
+            InputClass::FocusLoss,
         ]
         .map(|value| (class(value), value as u8)),
     );
