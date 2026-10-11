@@ -41,7 +41,7 @@ my-keys/            文件夹名随意；安装后的文件夹按 id 命名
 
 ```toml
 schema_version = 1
-kind = "sound"          # sound | music | command_table | effect | phrase_table | helpcode | wordbook | symbol_set
+kind = "sound"          # sound | music | command_table | effect | phrase_table | helpcode | wordbook | symbol_set | script（桌面专用）
 id = "my-keys"
 name = "我的按键音"
 version = "1.0.0"
@@ -54,7 +54,7 @@ permissions = []        # 可选，只能是空数组
 | 字段             | 规则                                                                                                                                          |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `schema_version` | 必须是整数 `1`（脚本插件写 `2`）                                                                                                              |
-| `kind`           | `sound`、`music`、`command_table`、`effect`、`phrase_table`、`helpcode`、`wordbook` 或 `symbol_set` 之一                                      |
+| `kind`           | `sound`、`music`、`command_table`、`effect`、`phrase_table`、`helpcode`、`wordbook` 或 `symbol_set` 之一；桌面上的脚本插件写 `script`         |
 | `id`             | 1 到 64 字节，只含小写字母、数字、`.`、`-`、`_`，以字母或数字开头；安装后的文件夹按 id 命名，源文件夹或压缩包里外层文件夹的名字不要求与它相同 |
 | `name`           | 必填，不超过 80 字节，不能全是空白，不能含控制字符                                                                                            |
 | `version`        | 必填，不超过 32 字节，同上                                                                                                                    |
@@ -407,7 +407,7 @@ memory_pages = 4                # 可选，1 到 64，默认 16
 - import 只能是 `msime` 下上表里的函数，签名必须一致。不能有 start 函数。
 - 可以用 MVP 加上 mutable-global、sign-ext、sat-float-to-int、multi-value、bulk-memory、reference-types；不能用 threads、memory64、multi-memory、exceptions、tail-call、extended-const、GC、SIMD。
 - 函数返回非负数表示成功（复制的字节数、字段值），负数是 `DENIED`（-1，没有授予所属能力）、`ABSENT`（-2，事件里没有这个字段，或者被隐私规则屏蔽，两者故意不可区分）、`INVALID`（-3，字段编号或参数不对）、`LIMIT`（-4，缓冲区放不下，什么都没复制）。
-- 文本都是 UTF-8。取文本的函数先检查整个目标缓冲区都在线性内存里，越界直接 trap。
+- 文本都是 UTF-8。取文本的函数依次检查能力（`DENIED`）、字段（`INVALID` 或 `ABSENT`）、整个目标缓冲区是否都在线性内存里（越界直接 trap）、放不放得下（`LIMIT`）。前两步返回时不看目标缓冲区，所以坏指针不一定 trap；复制之前一定已经检查过范围。
 - 编号的完整列表在 [sdk/msime_script.h](script-plugin-template/sdk/msime_script.h) 和 [sdk/msime_script.rs](script-plugin-template/sdk/msime_script.rs)，两份都和输入法里的定义逐项核对过。编号只会追加，不会改值。
 
 ### 限制

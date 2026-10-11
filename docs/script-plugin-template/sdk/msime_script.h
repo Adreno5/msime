@@ -11,7 +11,7 @@
  * - 必须导出 `memory`（恰好一块 32 位线性内存，不能导入）、`msime_abi`（返回 MSIME_ABI_VERSION）和 `msime_on_event`（参数是钩子编号，返回负数算这一次失败）；可选导出 `msime_init`，实例化后调用一次，返回负数算初始化失败。
  * - 不能有 start 函数，不能用 threads、memory64、multi-memory、exceptions、tail-call、extended-const、GC、SIMD。
  * - import 只能是下面声明的 `msime` 函数。导入了哪个能力域的函数，清单就必须申请那个能力；申请了的能力也必须至少导入一个属于它的函数。只声明不调用的函数不会成为 import，所以整个头文件都可以包含进来。
- * - 文本都是 UTF-8。取文本的函数先检查整个 [dst, dst + cap) 在线性内存里，越界直接 trap；放不下返回 MSIME_LIMIT，什么都不复制，先用对应的 *_scalar 读长度。
+ * - 文本都是 UTF-8。取文本的函数按这个顺序检查：没授予所属能力返回 MSIME_DENIED；字段编号不对返回 MSIME_INVALID，事件里没有或被隐私规则屏蔽返回 MSIME_ABSENT；然后检查整个 [dst, dst + cap) 在线性内存里，越界直接 trap；最后放不下返回 MSIME_LIMIT，什么都不复制，先用对应的 *_scalar 读长度。前两步返回时不看 dst，所以坏指针不一定 trap。
  * - 被隐私规则屏蔽的字段和事件里没有的字段一样，都返回 MSIME_ABSENT。
  *
  * 编号是插件和宿主之间的契约，只会追加，不会改值。完整说明见仓库的 docs/plugins.md「脚本插件」一节。
