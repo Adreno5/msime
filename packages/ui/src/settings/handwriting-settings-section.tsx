@@ -150,7 +150,7 @@ export function HandwritingSettingsSection({
 }) {
   const form = useOptionalSettingsForm();
   const padSettings = form?.mobileKeyboardFeedback;
-  // HarmonyOS 手机以手写板的「书写」和「笔迹」两组开头，隐私说明移到「笔迹」下方作为脚注，启用手写的入口放在它们之后。只有上报了这些字段的键盘才会读取它们，所以其他键盘上不显示这两组。
+  // HarmonyOS 手机只有手写板的「书写」和「笔迹」两组，隐私说明是「笔迹」的脚注，与 Android 的 `HandwritingPage` 一样不再附启用说明：启用输入法归首页状态卡片和欢迎流程，用户能走到这页调手写板，说明键盘已经在用。只有上报了这些字段的键盘才会读取它们，其他键盘上不显示这两组，页面退回启用说明。
   const harmonyPad =
     harmony && mobile && padSettings?.handwritingDelayMs !== undefined ? padSettings : undefined;
   const systemSettingsRow = (title: string, label: string) =>
@@ -186,14 +186,13 @@ export function HandwritingSettingsSection({
       {sdkPrivacyRow}
     </GroupList>
   ) : harmony ? (
-    <>
-      {harmonyPad && form && (
-        <HarmonyHandwritingPadGroups
-          value={harmonyPad}
-          busy={form.mobileKeyboardFeedbackBusy}
-          onChange={(value) => void form.saveMobileKeyboardFeedback(value)}
-        />
-      )}
+    harmonyPad && form ? (
+      <HarmonyHandwritingPadGroups
+        value={harmonyPad}
+        busy={form.mobileKeyboardFeedbackBusy}
+        onChange={(value) => void form.saveMobileKeyboardFeedback(value)}
+      />
+    ) : (
       <GroupList title="HarmonyOS 键盘手写">
         <SettingsGroupNote>
           {mobile
@@ -201,9 +200,9 @@ export function HandwritingSettingsSection({
             : "请在系统输入法设置中启用水杉输入法；2-in-1 候选窗口不绘制键面，请先从悬浮工具栏打开屏幕键盘，再从方案选择器切换到“手写”。"}
         </SettingsGroupNote>
         {systemSettingsRow("系统输入法设置", "打开系统输入法设置")}
-        {!harmonyPad && <SettingsGroupNote>{handwritingPrivacyText("harmony")}</SettingsGroupNote>}
+        <SettingsGroupNote>{handwritingPrivacyText("harmony")}</SettingsGroupNote>
       </GroupList>
-    </>
+    )
   ) : macos ? (
     <GroupList title="macOS 手写识别板">
       <SettingsGroupNote>
