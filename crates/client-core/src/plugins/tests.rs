@@ -2352,9 +2352,20 @@ fn wordbook_parser_preserves_column_boundaries() {
 }
 
 #[test]
-fn wordbook_parser_reserves_its_bounded_entry_capacity() {
-    let entries = wordbook_pack::parse_words(b"synthetic\tmeaning\n", "words.tsv").unwrap();
+fn wordbook_parser_reserves_capacity_from_input_size() {
+    let input = b"synthetic\tmeaning\n";
+    let entries = wordbook_pack::parse_words(input, "words.tsv").unwrap();
     assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries.capacity(),
+        (input.len().saturating_add(1) / 4).min(wordbook::MAX_ENTRIES)
+    );
+
+    let full: String = (0..wordbook::MAX_ENTRIES)
+        .map(|index| format!("synthetic-{index:05}\tmeaning\n"))
+        .collect();
+    let entries = wordbook_pack::parse_words(full.as_bytes(), "words.tsv").unwrap();
+    assert_eq!(entries.len(), wordbook::MAX_ENTRIES);
     assert_eq!(entries.capacity(), wordbook::MAX_ENTRIES);
 }
 
