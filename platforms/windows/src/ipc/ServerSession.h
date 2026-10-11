@@ -89,6 +89,9 @@ public:
   std::optional<nlohmann::json> apply_ai_candidates(uint64_t epoch,
                                                     const std::string &query,
                                                     const std::string &candidates);
+  /// AI 回答为空、失败或被拒：AI 座位上的占位行换成「—」；视图没变时为空。
+  std::optional<nlohmann::json> resolve_ai_candidates(uint64_t epoch,
+                                                      const std::string &query);
   std::optional<std::string> translation_query(uint64_t epoch);
   std::optional<nlohmann::json>
   apply_translations(uint64_t epoch, uint64_t generation,

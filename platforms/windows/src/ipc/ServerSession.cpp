@@ -450,6 +450,24 @@ ServerSession::apply_ai_candidates(uint64_t epoch, const std::string &query,
     return std::nullopt;
   }
 }
+std::optional<nlohmann::json>
+ServerSession::resolve_ai_candidates(uint64_t epoch, const std::string &query) {
+  check_active(epoch);
+  if (query.empty() || query.size() > 16384)
+    return std::nullopt;
+  try {
+    const auto value = response(msime_client_resolve_online_candidates(
+        session_, reinterpret_cast<const uint8_t *>(query.data()), query.size(),
+        1));
+    if (!value.is_object() || !value.value("applied", false) ||
+        !value.contains("view") || !value.at("view").is_object())
+      return std::nullopt;
+    return value.at("view");
+  } catch (...) {
+    // 占位行换不了就留着「…」，不因此停下输入。
+    return std::nullopt;
+  }
+}
 std::optional<std::string> ServerSession::translation_query(uint64_t epoch) {
   check_active(epoch);
   try {

@@ -30,6 +30,8 @@ struct PresentationCandidate {
   std::string wubi_code_hint{};
   // A Korean Hanja's 훈음 (나라 이름 한), which the Engine sends as the row's annotation. It is drawn on the smaller secondary line whatever the translation preferences say, above the translation when there is one, and it is display only: nothing commits it, and `translation` keeps only what the Engine applied as a translation.
   std::string gloss{};
+  // AI 座位上的占位行（Engine 候选来源 12）：等回答时是「…」，回答为空或失败后是「—」。画成次要色，选它什么都不上屏（#6888）。
+  bool pending = false;
 };
 // Whether this view's candidates are a Korean Hanja list: the Korean scheme under its own rules, outside the dedicated English mode and every local mode, where the Engine lists candidates only after MSIME_CONVERT_HANJA. ReplyComposer::korean_hanja reads the same three fields.
 inline bool korean_hanja_view(const nlohmann::json &view) {
@@ -145,6 +147,7 @@ candidate_presentation_from_view(const FocusLease &lease,
         candidate.value("fixed_position", uint8_t{}),
         candidate.value("translation", std::string{}),
         candidate_actions_available(view.value("scheme", 0u), candidate_source)};
+    item.pending = candidate_source == candidate_source_ai_pending;
     if (hanja)
       move_korean_hanja_gloss(item);
     if (item.session != output.session ||
@@ -213,6 +216,7 @@ candidate_presentation(const FocusLease &lease, const PendingReply &reply,
         candidate.value("fixed_position", uint8_t{}),
         candidate.value("translation", std::string{}),
         candidate_actions_available(view.value("scheme", 0u), candidate_source)};
+    item.pending = candidate_source == candidate_source_ai_pending;
     if (hanja)
       move_korean_hanja_gloss(item);
     if (item.session != output.session ||

@@ -326,6 +326,13 @@ InputState::apply_ai_candidates(const FocusLease &lease,
   return owner ? owner->apply_ai_candidates(lease, query, candidates)
                : std::nullopt;
 }
+std::optional<nlohmann::json>
+InputState::resolve_ai_candidates(const FocusLease &lease,
+                                  const std::string &query) {
+  check_thread();
+  auto *owner = session(lease.transport);
+  return owner ? owner->resolve_ai_candidates(lease, query) : std::nullopt;
+}
 std::optional<std::string>
 InputState::translation_query(const FocusLease &lease) {
   check_thread();
