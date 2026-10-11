@@ -59,6 +59,7 @@ fi
 # - fourteen-key-table: 全拼 14 键的键面由 Android、iOS、HarmonyOS 各画一份，解码只在引擎的 `KeyGrid::FourteenKey`。某一端把一个字母画到相邻的键上照样能编译、能打字、能出候选，只是那一端按下的组和引擎认的组不再是同一组；`Fourteen*` 键位 id 拼错一个，宿主上报的整批统计会被 client-core 拒掉。只有把四处的表放在一起比才看得出来。
 # - editions: `shared/contracts/editions.json` 是各版本的单一事实源，Rust、平台构建和打包脚本都从它取值。默认方案不在方案列表里、带了功能却没带它要的词库、两个版本的标识撞车，这些都能编译、能打包，只在某个版本装到机器上才暴露；冻结基线还保证版本 id 和平台标识写入后不被改写。各版本的资源锁由 `scripts/editions.py` 生成并提交，这里同时比较它们与生成结果，手改或忘了重新生成都会让某个版本按错误的清单校验资源。
 # - gate-pipe-early-exit: 门禁脚本都开着 pipefail，而 `rg -q`、`grep -q` 命中即退出，上游还没写完的 printf、sed、rg 再写就收到 SIGPIPE，整条管道随输出分块的时机偶发失败。check-host.sh 的「android host java」守卫就这样让推送和 CI 时过时不过；源码不变、重跑又过，没有哪次失败指得出原因，只有逐行扫描能在写进来时就拦下。
+# - chat-system-prompt-parity: AI 对话的系统提示词告诉模型它在输入法里、对面多半在试键盘。共享设置页有一份，Android 和 iOS 的原生对话页各拷一份，没有东西把它们连起来：鸿蒙的「AI 对话」标签页和 iOS 键盘对话干脆一条都没发，模型就按出厂设定自称「我是 MiniMax-M3」。这里检查各份逐字相同，并且每个对话页都真的把它放进了请求。
 #
 # Each special check as name=file-that-runs-it. The first three run inline in verify-local.sh, which holds the locks and toolchains they need; the Playwright pair needs a served fixture plus --url and --csp, which packages/ui/UPSTREAM.md describes; android-json-null-reads runs inside "android host java".
 special_checks="windows-32bit-compile=scripts/verify-local.sh

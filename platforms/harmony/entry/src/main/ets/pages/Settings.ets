@@ -240,6 +240,8 @@ const BRIDGE_NAME: string = 'msimeHarmony';
 const PLATFORM: string = 'harmony';
 /** 欢迎开屏是否已播放过的标记，与应用主题文件同在状态目录。 */
 const SPLASH_SEEN_FILE: string = 'welcome-splash.json';
+// 页面一直没报告第一帧上屏时，启动画面最多盖这么久。
+const LAUNCH_COVER_LIMIT_MS: number = 4000;
 /** The settings page and native save bridge hold one complete export in memory. */
 const MAX_DICTIONARY_EXPORT_BYTES: number = 32 * 1024 * 1024;
 
@@ -574,6 +576,8 @@ struct Settings {
   @State noticeHeld: boolean = true;
   // 页面上次要求状态栏采用的颜色，即页面自己的背景（应用主题下为当季背景）；页面提出前为空，此时由资源默认值代替。通知卡片背后的列也用这个颜色，让卡片边距露出的是页面，而不是另一种灰色的色带。
   @State pageBackground: string = '';
+  // 页面第一帧上屏之前盖在网页上的启动画面，见 `launchCoverView`。
+  @State launchCover: boolean = true;
   /** Bumped for every notice fetch and when the page disappears, so late answers cannot repaint it. */
   private noticeRequest: number = 0;
 
@@ -586,6 +590,13 @@ struct Settings {
     this.bridge.onPageBackground = (colour: string): void => {
       this.pageBackground = colour;
     };
+    this.bridge.onLaunchPainted = (): void => {
+      this.launchCover = false;
+    };
+    // 页面没能报告（脚本出错、桥接没连上）时也不能一直盖着：几秒后撤掉，露出页面自己的错误说明。走桥接的同一个入口，盖着期间存下的系统栏颜色也一并补上。
+    setTimeout((): void => {
+      this.bridge.launchPainted();
+    }, LAUNCH_COVER_LIMIT_MS);
     // Started here rather than on demand: the page reads the answer synchronously, and the reply
     // carries whether it is ready so the page waits instead of acting on a default.
     this.bridge.refreshSetupState();
@@ -742,47 +753,72 @@ struct Settings {
     this.bridge.unwatchSetup();
   }
 
+  /**
+   * 冷启动时盖在网页上的启动画面，和系统启动窗画的是同一个画面：启动窗底色上一个圆盘，盘里是水杉标志（`start_window_icon`）。底色和圆盘取资源（`start_window_background`、`launch_disc`），浅色和深色各一份，跟随系统外观；标志两种外观相同。页面报告设置已经画出来（`launchPainted`）后撤掉它，所以从点图标到设置页是同一个画面淡出，中间不露出还没画出东西的网页，也不露出「正在读取设置」。
+   *
+   * 它和首次启动的网页开屏一样按网页区域居中，尺寸照开屏换算：圆盘 180vp，标志是 100vp 标志框里按 116 × 132 等比放下的 `launch_logo.svg`，87.9 × 100vp。
+   */
+  @Builder
+  launchCoverView() {
+    Stack() {
+      Circle().width(180).height(180).fill($r('app.color.launch_disc'))
+      // 同步解码：异步加载时盖板第一帧没有标志，从启动窗接过来会闪一下空圆盘。
+      Image($r('app.media.launch_logo')).width(87.9).height(100).syncLoad(true)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.start_window_background'))
+    .transition(TransitionEffect.OPACITY.animation({ duration: 120 }))
+  }
+
   build() {
     Column() {
       if (this.notices.length > 0 && !this.noticeHeld) {
         this.noticeCard()
       }
-      Web({ src: $rawfile('settings/index.html'), controller: this.controller })
-        .javaScriptAccess(true)
-        .domStorageAccess(true)
-        .fileAccess(true)
-        // 页面按 `prefers-color-scheme` 自己绘制深色主题。`WebDarkMode.Auto` 把系统的模式传给这个媒体查询；强制深色保持关闭，因为反转一个本就有深色配色的页面会把它反转回浅色。
-        .darkMode(WebDarkMode.Auto)
-        .forceDarkAccess(false)
-        // Web 组件自己的底色和背后的页面一样：页面画出第一帧之前不再先闪一下 WebView 默认的白色（冷启动时它夹在深色启动窗和开屏之间）。
-        .backgroundColor(this.pageBackground.length > 0 ? this.pageBackground : $r('app.color.settings_page_background'))
-        .onPageEnd((event: OnPageEndEvent): void => {
-          this.bridge.pageLoaded();
-        })
-        // Registered through the controller rather than the attribute: the attribute form takes an
-        // async list but never settles the promises it hands the page, which is worse than the bug
-        // it was meant to fix — the page hangs on its startup screen instead of quietly receiving
-        // nothing. onControllerAttached runs before the first load, so the page still finds the
-        // object already there rather than racing it.
-        .onControllerAttached(() => {
-          try {
-            this.controller.registerJavaScriptProxy(this.bridge, BRIDGE_NAME,
-              ['loadPreferences', 'savePreferences', 'hostCapabilities', 'appVersion',
-                'scanSkinCatalog', 'readSkinImage', 'readSkinFont', 'readSkinToolbarCss',
-                'dictionaryManifest', 'dictionary', 'cloudDictionaryDownload',
-                'typingStatistics', 'openExternalUrl', 'copyText',
-                'openSystemKeyboardSettings', 'listVoiceCaptureDevices', 'listFontFamilies',
-                'keyboardFeedback', 'onboardingStatus',
-                'showInputMethodPicker', 'importSkinFolder', 'startRequest', 'plugins',
-                'setupStatus', 'appTheme', 'setSystemBars', 'splashSeen', 'markSplashSeen',
-                'onboardingStarted', 'onboardingFinished', 'pendingPage'],
-              []);
-          } catch (error) {
-            KeyboardLog.error(`settings bridge not registered: ${describeError(error)}`);
-          }
-        })
-        .width('100%')
-        .layoutWeight(1)
+      Stack() {
+        Web({ src: $rawfile('settings/index.html'), controller: this.controller })
+          .javaScriptAccess(true)
+          .domStorageAccess(true)
+          .fileAccess(true)
+          // 页面按 `prefers-color-scheme` 自己绘制深色主题。`WebDarkMode.Auto` 把系统的模式传给这个媒体查询；强制深色保持关闭，因为反转一个本就有深色配色的页面会把它反转回浅色。
+          .darkMode(WebDarkMode.Auto)
+          .forceDarkAccess(false)
+          // Web 组件自己的底色和背后的页面一样：页面画出第一帧之前不再先闪一下 WebView 默认的白色（冷启动时它夹在深色启动窗和开屏之间）。
+          .backgroundColor(this.pageBackground.length > 0 ? this.pageBackground : $r('app.color.settings_page_background'))
+          .onPageEnd((event: OnPageEndEvent): void => {
+            this.bridge.pageLoaded();
+          })
+          // Registered through the controller rather than the attribute: the attribute form takes an
+          // async list but never settles the promises it hands the page, which is worse than the bug
+          // it was meant to fix — the page hangs on its startup screen instead of quietly receiving
+          // nothing. onControllerAttached runs before the first load, so the page still finds the
+          // object already there rather than racing it.
+          .onControllerAttached(() => {
+            try {
+              this.controller.registerJavaScriptProxy(this.bridge, BRIDGE_NAME,
+                ['loadPreferences', 'savePreferences', 'hostCapabilities', 'appVersion',
+                  'scanSkinCatalog', 'readSkinImage', 'readSkinFont', 'readSkinToolbarCss',
+                  'dictionaryManifest', 'dictionary', 'cloudDictionaryDownload',
+                  'typingStatistics', 'openExternalUrl', 'copyText',
+                  'openSystemKeyboardSettings', 'listVoiceCaptureDevices', 'listFontFamilies',
+                  'keyboardFeedback', 'onboardingStatus',
+                  'showInputMethodPicker', 'importSkinFolder', 'startRequest', 'plugins',
+                  'setupStatus', 'appTheme', 'setSystemBars', 'splashSeen', 'markSplashSeen',
+                  'onboardingStarted', 'onboardingFinished', 'pendingPage', 'launchPainted'],
+                []);
+            } catch (error) {
+              KeyboardLog.error(`settings bridge not registered: ${describeError(error)}`);
+            }
+          })
+          .width('100%')
+          .height('100%')
+        if (this.launchCover) {
+          this.launchCoverView()
+        }
+      }
+      .width('100%')
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')
@@ -819,6 +855,11 @@ class SettingsBridge {
   onNoticeHold: ((held: boolean) => void) | undefined = undefined;
   // 由页面组件设置：告知网页绘制的背景，即页面随系统栏颜色最后一次发来的值。
   onPageBackground: ((colour: string) => void) | undefined = undefined;
+  // 由页面组件设置：页面第一帧已上屏，撤掉启动画面。
+  onLaunchPainted: (() => void) | undefined = undefined;
+  // 启动画面还盖着网页。这期间页面发来的系统栏颜色先存着，撤掉时再上：页面一挂载就给系统栏换成自己的颜色，盖板却要两帧后才撤，状态栏会先变色，和下面的启动画面错开一条色带。
+  private launchCovered: boolean = true;
+  private heldSystemBars: string | undefined = undefined;
   // 系统当前键盘改变时重新读取设置状态；在系统键盘对话框里选择键盘就会这样改变，而窗口始终没有离开前台。
   private imeChanged: (property: inputMethod.InputMethodProperty, subtype: InputMethodSubtype) => void =
     (property: inputMethod.InputMethodProperty, subtype: InputMethodSubtype): void => {
@@ -3033,6 +3074,10 @@ class SettingsBridge {
       return;
     }
     this.onPageBackground?.(bars.background);
+    if (this.launchCovered) {
+      this.heldSystemBars = document;
+      return;
+    }
     if (this.context === undefined) {
       return;
     }
@@ -3068,6 +3113,20 @@ class SettingsBridge {
   markSplashSeen(): void {
     if (!this.writeStateFile(SPLASH_SEEN_FILE, '{"seen":true}')) {
       KeyboardLog.error('splash flag not saved');
+    }
+  }
+
+  /** 页面的第一帧已经上屏（或宿主等够了时限），撤掉盖在网页上的启动画面，并补上盖着期间页面要的系统栏颜色。 */
+  launchPainted(): void {
+    if (!this.launchCovered) {
+      return;
+    }
+    this.launchCovered = false;
+    this.onLaunchPainted?.();
+    const held: string | undefined = this.heldSystemBars;
+    this.heldSystemBars = undefined;
+    if (held !== undefined) {
+      this.setSystemBars(held);
     }
   }
 

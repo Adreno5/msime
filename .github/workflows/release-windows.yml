@@ -157,11 +157,12 @@ jobs:
           pattern: msime-rust-windows-*-${{ needs.source.outputs.version }}
           path: ${{ runner.temp }}/msime-rust
           merge-multiple: true
-      - name: Fetch offline candidate glosses and language dictionaries
-        # bash 在第一条失败的命令处停下，多行的 pwsh 步骤只报告最后一条的结果。粤拼和注音词库要等 resources/language-dictionaries.lock.json 锁定发布版本后才下载。落定重排模型和手写模型不进安装包，由设置应用按需下载。
+      - name: Fetch offline candidate glosses, English gloss tables and language dictionaries
+        # bash 在第一条失败的命令处停下，多行的 pwsh 步骤只报告最后一条的结果。粤拼和注音词库要等 resources/language-dictionaries.lock.json 锁定发布版本后才下载。落定重排模型和手写模型不进安装包，由设置应用按需下载。英文释义表（单字、词、读音）由 Prepare-PackageFiles.ps1 从 target/<表名> 装进 resources 旁边。
         shell: bash
         run: |
           python scripts/fetch_offline_glosses.py
+          python scripts/fetch_gloss_tables.py
           python scripts/fetch_language_dictionaries.py
       # Build-Client.ps1 takes installed dependency prefixes rather than a vcpkg toolchain, so the manifest is installed into one prefix per architecture: x64 for the Server, Watchdog and 64-bit TSF DLL, x86 for the 32-bit TSF DLL.
       # Restore and save separately so a run that fails after this point still keeps the installed dependencies for the retry.

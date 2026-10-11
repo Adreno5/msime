@@ -239,7 +239,7 @@ msime-dictionary 原样收录了 `stroke.dict.yaml`（`sources/stroke/stroke.dic
 | 产物 | `pronunciations/en-phonetic.db`（`en_phonetics(word, phonetic)`，`meta.kind = en_phonetic`，`user_version = 1`，约 18.8 万词、5.7 MB），外加 `pronunciations-NOTICE.txt`（含 ECDICT 的 LICENSE 全文） |
 | 取词范围 | 纯 ASCII 字母词（可含 `-`、`'`），键为小写；同键时取小写词头那一行；`phonetic` 只取第一种读法，西里尔 `ә`、ASCII `'`/`:`/`,` 等写法规范成 IPA，规范后仍含 IPA 以外字符（中文注释、私用区字符、不配对括号）的整条丢弃；ECDICT 约七成条目是旧式英式注音（`dei`、`həˈləu`、`bəːd`、`buk`），生成时按规则改成现行学习词典的写法（`deɪ`、`həˈləʊ`、`bɜːd`、`bʊk`），词尾与元音前的 `i` 保留 happY 惯例，已是现行写法的部分不变 |
 
-同样**放在 resources 的兄弟目录 `pronunciations/`**，理由与 `offline-glosses/` 相同。目前只在本地生成（同一份输入、同一 SQLite 版本逐字节相同），还没有发布位置，也还没接入各平台的发布工作流。
+同样**放在 resources 的兄弟目录 `pronunciations/`**，理由与 `offline-glosses/` 相同。生成物发布在 [`metasequoiaime/chinese-ime-lm` 的 `pronunciations-ecdict-82c9872`](https://github.com/metasequoiaime/chinese-ime-lm/releases/tag/pronunciations-ecdict-82c9872)，锁的 `built` 记它们的地址、长度和 SHA-256；`scripts/fetch_gloss_tables.py` 下载到 `target/pronunciations`，macOS 与 Windows 的发布工作流在打包前调用它（本节与下面两节的三张表共用这个脚本）。
 
 退出方式：不安装 `pronunciations/` 即可。`msime_client_pronunciation_request` 返回空结果，释义照旧显示、只是没有音标。日语罗马音在 macOS 上由系统的 `CFStringTokenizer` 生成，不需要数据文件。
 
@@ -256,7 +256,7 @@ msime-dictionary 原样收录了 `stroke.dict.yaml`（`sources/stroke/stroke.dic
 | 产物 | `character-glosses/zh-en.db`（与离线释义同一结构：`zh_glosses(chinese, gloss, source)`，`meta.target_language = en`，`user_version = 1`，约 2.3 万字、1.2 MB），外加含许可全文的 `character-glosses-NOTICE.txt` |
 | 取词范围 | 去掉辞书附注（部首编号、姓氏、干支、星宿、`numerary adjunct` 之类、括号注记），每字最多两个义项、每义项最多三个词；Unihan 标注「simp. for」的义项排到前面；简化字本身没有释义时取其繁体的释义；少数简化字 Unihan 只给了其本字的冷僻义（几、里、干等），在脚本的 `CORRECTIONS` 表里逐字改写 |
 
-候选恰好是一个字时 host-api 先查这张表，再查下一节的词表（`english.db` 本就没有单字）；用户自己已学的释义不被替换，表缺失或损坏时保持原样。退出方式：不安装 `character-glosses/` 即可。
+候选恰好是一个字时 host-api 先查这张表，再查下一节的词表（`english.db` 本就没有单字）；用户自己已学的释义不被替换，表缺失或损坏时保持原样。生成物发布在 [`metasequoiaime/chinese-ime-lm` 的 `character-glosses-unihan-17.0.0`](https://github.com/metasequoiaime/chinese-ime-lm/releases/tag/character-glosses-unihan-17.0.0)，由 `scripts/fetch_gloss_tables.py` 按锁的 `built` 下载。退出方式：不安装 `character-glosses/` 即可。
 
 ## 词语英文释义（`resources/word-glosses.lock.json`）
 
@@ -265,13 +265,13 @@ msime-dictionary 原样收录了 `stroke.dict.yaml`（`sources/stroke/stroke.dic
 | 项 | 值 |
 | --- | --- |
 | 来源 | [CC-CEDICT](https://cc-cedict.org/)，MDBG 发布的社区汉英词典；CEDICT - Copyright (C) 1997, 1998 Paul Andrew Denisowski |
-| 文件 | `https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip`，2026-09-23 导出，`sha256:5189396e…6fe5`，3,975,894 字节 |
+| 文件 | `cedict_1_0_ts_utf-8_mdbg.zip`，2026-10-11 导出，`sha256:25bd79c7…e324`，3,980,433 字节；锁里的地址指向 `metasequoiaime/chinese-ime-lm` 上的镜像 |
 | 许可 | CC BY-SA 4.0，与非英语离线释义相同，可单向兼容到 GPL-3.0 |
 | 生成器 | `scripts/build_word_glosses.py`，只用 Python 标准库；离线测试 `scripts/test-word-glosses.py` 用真实词条 |
 | 产物 | `word-glosses/zh-en.db`（离线释义同一结构，`meta.target_language = en`，约 9.8 万条、4.8 MB），外加 `word-glosses-NOTICE.txt` |
 | 取词范围 | 去掉量词 `CL:`、`variant of`、`see`、姓氏、`abbr. for`、台湾读音等非释义项与交叉引用的拼音，每条最多两个义项、每义项最多三个短语；一个简体词有多个读音条目（便宜 biànyí/piányi）时各取第一个义项；专名（拼音首字母大写）排在最后 |
 
-MDBG 每天用新导出覆盖同一个地址，所以锁里的摘要只对应 2026-09-23 这一份；换新导出要同时更新锁，能复现构建的是锁住的那份文件。与 `offline-glosses/` 一样，适合由维护者把生成物发布到固定位置。
+MDBG 每天用新导出覆盖同一个地址（`https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip`），所以锁住的 2026-10-11 导出镜像在 [`metasequoiaime/chinese-ime-lm` 的 `word-glosses-2026.10.11`](https://github.com/metasequoiaime/chinese-ime-lm/releases/tag/word-glosses-2026.10.11)，锁的 `artifact.url` 指向它，从锁重建得到与发布物逐字节相同的产物。生成物也发布在同一个 release，由 `scripts/fetch_gloss_tables.py` 按锁的 `built` 下载。换新导出要先镜像、再同时更新锁。
 
 这个输入法也是学英语的工具，所以释义以准确为先：词表有的词，显示词表的释义而不是 `english.db` 的（`english.db` 有些释义过于宽泛，漂亮 → chic、电源 → ps）；`english.db` 只回答词表没有的词和英文候选，用户自己已学的释义始终保留。CC-CEDICT 同一个字的多个读音按拼音排序而不是按常用程度（要 yāo 在 yào 前），所以 host-api 对单字先查 Unihan 表，词表只补 Unihan 没有的字；对词语直接查词表。**分发义务**：发布时必须随附 `word-glosses-NOTICE.txt` 并保持 CC BY-SA 4.0。退出方式：不安装 `word-glosses/` 即可。
 

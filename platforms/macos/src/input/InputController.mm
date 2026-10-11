@@ -218,12 +218,17 @@ static void MSIMERecordKeyPresses(NSString *directory, msime::mac::KeyPressFlush
     });
 }
 
-static NSString *MSIMEAICacheKey(NSDictionary *online) {
+static NSString *MSIMETranslationProviderScope(NSString *service, NSDictionary *configuration);
+
+static NSString *MSIMEAICacheKey(NSDictionary *online, NSDictionary *descriptor) {
     NSDictionary *config = online[@"ai_assistant"];
     NSArray *segments = online[@"pinyin_segments"];
     if (![config isKindOfClass:NSDictionary.class] || !MSIMEStrictBoolean(config[@"enabled"]) ||
         ![segments isKindOfClass:NSArray.class] || !segments.count ||
+        ![descriptor isKindOfClass:NSDictionary.class] ||
         ![NSJSONSerialization isValidJSONObject:segments]) return nil;
+    NSString *descriptorScope = MSIMETranslationProviderScope(@"ai", descriptor);
+    if (!descriptorScope.length) return nil;
     NSString *context = [online[@"ai_context"] isKindOfClass:NSString.class] ? online[@"ai_context"] : @"";
     NSData *contextBytes = [context dataUsingEncoding:NSUTF8StringEncoding];
     if (!contextBytes || contextBytes.length > UINT32_MAX) return nil;
@@ -238,6 +243,7 @@ static NSString *MSIMEAICacheKey(NSDictionary *online) {
         @"prompt_custom_1": [config[@"prompt_custom_1"] isKindOfClass:NSString.class] ? config[@"prompt_custom_1"] : @"",
         @"prompt_custom_2": [config[@"prompt_custom_2"] isKindOfClass:NSString.class] ? config[@"prompt_custom_2"] : @"",
         @"prompt_custom_3": [config[@"prompt_custom_3"] isKindOfClass:NSString.class] ? config[@"prompt_custom_3"] : @"",
+        @"descriptor_scope": descriptorScope,
         @"ai_context_sha256": contextHash,
         @"pinyin_segments": segments };
     NSData *data = [NSJSONSerialization dataWithJSONObject:identity options:0 error:nil];
@@ -1893,7 +1899,18 @@ static NSImage *MSIMECandidateLogoImage() {
     NSDictionary *query = @{ @"online": online, @"config": config };
     if ([_aiQuery isEqual:query]) return;
     [self cancelAITranslations]; _aiQuery = query;
-    NSString *cacheKey = MSIMEAICacheKey(online);
+    NSDictionary *descriptor = [_session aiRequestForQuery:online error:nil];
+    if (!descriptor) {
+        // A malformed or temporarily unavailable provider descriptor must not
+        // poison this query identity. A later render may observe corrected
+        // settings and should be allowed to construct a fresh request.
+        _aiQuery = nil;
+        // 这次发不出请求：AI 座位上的占位行不能一直等下去，换成「—」（#6888）。已经换过时 applied 为 NO，不会再触发渲染。
+        NSDictionary *resolved = [_session resolveOnlineCandidatesForSource:1 query:online error:nil];
+        if (MSIMEStrictBoolean(resolved[@"applied"])) [self apply:resolved];
+        return;
+    }
+    NSString *cacheKey = MSIMEAICacheKey(online, descriptor);
     NSArray<NSString *> *cachedCandidates = (!_view || !MSIMEViewContainsAICandidate(_view)) && cacheKey
         ? _aiCandidateCache[cacheKey] : nil;
     if (cachedCandidates.count) {
@@ -1909,17 +1926,6 @@ static NSImage *MSIMECandidateLogoImage() {
             [self apply:transition];
             return;
         }
-    }
-    NSDictionary *descriptor = [_session aiRequestForQuery:online error:nil];
-    if (!descriptor) {
-        // A malformed or temporarily unavailable provider descriptor must not
-        // poison this query identity. A later render may observe corrected
-        // settings and should be allowed to construct a fresh request.
-        _aiQuery = nil;
-        // 这次发不出请求：AI 座位上的占位行不能一直等下去，换成「—」（#6888）。已经换过时 applied 为 NO，不会再触发渲染。
-        NSDictionary *resolved = [_session resolveOnlineCandidatesForSource:1 query:online error:nil];
-        if (MSIMEStrictBoolean(resolved[@"applied"])) [self apply:resolved];
-        return;
     }
     NSArray *items = @[ @{ @"text": @"ai", @"request": descriptor,
         @"candidate_limit": config[@"candidate_limit"] ?: @3 } ];
@@ -6934,12 +6940,6 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     content.backgroundImage = skin.backgroundPath.empty() ? nil : [_appearance backgroundImageForDark:dark];
     content.backgroundFit = skin.backgroundFit;
     content.backgroundOpacity = skin.backgroundOpacity;
-    // The package's own translucent surface asks for frosted glass. Inspect the
-    // unstyled skin so the opacity slider alone never turns an opaque skin into
-    // a material, and leave fully clear package surfaces transparent.
-    const auto originalSkin = [_appearance resolvedSkinForDark:dark];
-    content.frostedMaterialEnabled = !originalSkin.candidateSkin.empty() &&
-        originalSkin.tokens.surface.a > 0.0f && originalSkin.tokens.surface.a < 1.0f;
     NSArray<MSIMECandidateButton *> *candidateButtons = [content.subviews filteredArrayUsingPredicate:
         [NSPredicate predicateWithBlock:^BOOL(NSView *view, NSDictionary *_) {
             return ([view isKindOfClass:MSIMECandidateButton.class] ||

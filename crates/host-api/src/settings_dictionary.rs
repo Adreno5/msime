@@ -1,4 +1,6 @@
-//! A settings-page dictionary request, with an import split into requests the host accepts.
+//! A settings-page dictionary request: the input hosts let go of the dictionaries before a write, an import is split into requests the host accepts, and a refusal comes back as the code the settings pages word.
+//!
+//! The Tauri settings shell (Windows, macOS, Linux) and the native Windows settings window (through `msime_client_settings_dictionary`) both send their page's requests through [`request`], so neither carries its own copy of the release protocol, the batching or the refusal codes.
 //!
 //! `msime_host_api::dictionary_request_json` takes at most 64 KiB per request and reads at most `import::MAX_ENTRIES` rows from one import. That is the contract `msime-client-dictionary` documents, so it stays as it is. The page instead sends a file of up to [`MAX_IMPORT_TEXT_BYTES`] as a run of line-aligned requests under both bounds and answers with one report for the whole file, the way the Windows settings page imports a file whole. Each request carries its own ID, `<id>-<n>`, so the host's per-row receipts still make a repeated import a no-op.
 
@@ -9,7 +11,7 @@ use msime_client_core::dictionary::is_han_character;
 use serde_json::{json, Value};
 
 /// The largest file text the page imports. The page refuses files over 32 MiB (`MAX_DICTIONARY_FILE_BYTES` in `packages/ui/src/dictionary/dictionary-file.ts`) before reading them, and a file that size decodes to at most 48 MiB of UTF-8, since a two-byte GBK or UTF-16 character becomes three; this is that bound, so a file the page accepted is never refused here. At 60 KiB a request, text this size is at least 820 requests, and more for a file of short lines, since a request also carries at most `import::MAX_ENTRIES` rows. That takes longer than the 30 seconds input sessions stay released, so every request renews the release before it goes: the lease through `QuiescedHosts::run` on Linux and macOS, the Server's DictionaryQuiesce on Windows.
-pub(crate) const MAX_IMPORT_TEXT_BYTES: usize = 3 * 16 * 1024 * 1024;
+pub const MAX_IMPORT_TEXT_BYTES: usize = 3 * 16 * 1024 * 1024;
 
 /// One serialized request, below the host's 65536-byte limit with room to spare.
 const BATCH_REQUEST_BYTES: usize = 60 * 1024;
@@ -344,6 +346,84 @@ impl ImportTotal {
             "first_failures": self.failures,
         })
     }
+}
+
+/// Send one settings-page dictionary action, `{operation, ...}` as `msime_client_dictionary` takes it, against the host options `options`. An edit, import or reset first has the input hosts let go of the dictionaries and is retried until they have (on Windows the Server over its auxiliary pipe, on Linux and macOS a lease their hosts watch); `announce` runs once when that release first goes up, for a host that can also be told directly. A refusal is answered as one of [`error_code`]'s codes.
+pub fn request(
+    options: &Value,
+    action: &Value,
+    announce: impl FnMut(),
+) -> Result<Value, &'static str> {
+    let host = |bytes: &[u8]| crate::dictionary_request_json(bytes);
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let result = {
+        let requires_quiesce = action_requires_quiesce(action);
+        let user_data = options["user_data"].as_str().map(str::to_owned);
+        // Renewed before each later request, so a large import that runs past the 30 second bound keeps the hosts released; let go when `hosts` goes, after the last request, whatever the outcome.
+        let mut hosts = msime_client_core::dictionary::quiesce::QuiescedHosts::new(
+            user_data.as_deref(),
+            announce,
+        );
+        send_dictionary_action(options, action, |bytes| {
+            if requires_quiesce {
+                hosts.run(|| host(bytes))
+            } else {
+                host(bytes)
+            }
+        })
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let result = {
+        let _ = announce;
+        send_dictionary_action(options, action, host)
+    };
+    result.map_err(|reason| error_code(&reason))
+}
+
+/// Only a write needs the dictionaries to itself; a list, count or export reads alongside the input sessions.
+pub fn action_requires_quiesce(action: &Value) -> bool {
+    matches!(
+        action.get("operation").and_then(Value::as_str),
+        Some("edit" | "import" | "reset")
+    )
+}
+
+/// Keep the host's reason instead of flattening every failure to "storage".
+///
+/// The host distinguishes three things the user can actually act on - the
+/// dictionary is locked by another process, the edit itself was refused, and
+/// the store could not be opened - and the page used to print one identical
+/// sentence for all of them.
+pub fn error_code(reason: &str) -> &'static str {
+    match reason {
+        "dictionary maintenance busy" => "dictionary_busy",
+        // A request over the host's 64 KiB, which the batched desktop import only gives for a file over its own bound or a single line too long for any request. The shared parser's own "dictionary import is too large" is deliberately not mapped here: only Android, which sends the whole file in one request, reaches it, and there the limit is 64 KiB rather than the 32 MB this code's message names.
+        "invalid dictionary buffer" => "dictionary_too_large",
+        "dictionary import rejected" => "dictionary_import_rejected",
+        "dictionary read rejected" => "dictionary_read_rejected",
+        "dictionary pinyin unavailable" => "dictionary_pinyin_unavailable",
+        "dictionary access unavailable" => "dictionary_unavailable",
+        "learned-data reset rejected" => "dictionary_reset_rejected",
+        "bundled dictionary entry is read-only" => "dictionary_bundled_readonly",
+        // The host appends which rule the entry broke. The page words a code refusal per dictionary kind, so a word or weight refusal must not share that code, or it would send the user to fix a code that is already valid.
+        reason if reason == crate::INVALID_DICTIONARY_ENTRY => "dictionary_invalid_entry",
+        reason => match reason
+            .strip_prefix(crate::INVALID_DICTIONARY_ENTRY)
+            .and_then(|rest| rest.strip_prefix(": "))
+        {
+            Some(rule) if invalid_entry_rule_is_about_word(rule) => "dictionary_invalid_word",
+            Some(_) => "dictionary_invalid_entry",
+            None => "storage",
+        },
+    }
+}
+
+/// Does a refusal reason name the word or the weight rather than the code? These are the host's `validate_entry` rules (`word ...`, `weight ...`) and the Engine's own sentences for the same rules in `validate_personal_dictionary_entry`.
+fn invalid_entry_rule_is_about_word(rule: &str) -> bool {
+    rule.starts_with("word ")
+        || rule.starts_with("weight ")
+        || rule == "Weight must be between 1 and 100000000"
+        || rule == "The word contains an unsupported control character"
 }
 
 #[cfg(test)]

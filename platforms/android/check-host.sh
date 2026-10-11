@@ -792,7 +792,7 @@ if ! sed -n '/private void applyEditorPreferences(JSONObject preferences,$/,/^  
   echo "Android candidate strip must not start each editor from the factory-default preference copy" >&2
   exit 1
 fi
-# 键距、行距、语音快捷键、数字键顺序、双拼键位提示和 26 键数字键盘同理：按副本算，调过键距的用户每换一个输入框键盘都先按出厂间距排一帧。只有实时偏好重算键盘几何，冷启动的第一帧按皮肤片段算，片段里要记着这几个字段。
+# 键距、行距、语音快捷键、数字键顺序、双拼键位提示和「26 键按 123」同理：按副本算，调过键距的用户每换一个输入框键盘都先按出厂间距排一帧。只有实时偏好重算键盘几何，冷启动的第一帧按皮肤片段算，片段里要记着这几个字段。
 if ! sed -n '/private void applyEditorPreferences(JSONObject preferences,$/,/^    }$/p' "$account_service" \
     | rg_q_stdin '^\s*if \(live\) applyTouchGeometry\(preferences\);' \
   || ! sed -n '/JSONObject hint = readSkinHint();/,/^        }$/p' "$account_service" \
