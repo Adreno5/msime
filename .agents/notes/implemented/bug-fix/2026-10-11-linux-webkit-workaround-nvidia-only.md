@@ -31,6 +31,8 @@ issue #6847：Arch Linux、niri 26.04 Wayland 会话、Mesa 26.2、webkit2gtk-4.
 
 所有面向用户的入口本来就经过这个启动器：桌面文件的每条 `Exec=`、IBus 与 Fcitx5 宿主的 `MSIME_EDITION_SETTINGS_PROGRAM`、首次配置引导、Omarchy 钩子与菜单。`MSIME_CLIENT_SETTINGS_COMMAND` 仍按原样优先于默认命令，由用户自己的命令决定环境。设置外壳是单实例的，先启动的那个进程的环境一直生效到它退出，排查时要先退出旧进程。
 
+有一条启动不经过启动器：升级后的交接。旧的设置进程在关窗后还会留十分钟，这期间升级再打开设置，单实例插件只把参数和工作目录转给旧进程，它的 `hand_over_to_replaced_program`（`apps/desktop/src-tauri/src/lib.rs`）发现自身程序已被替换，就直接以 `Command::new` 启动新的 `msime-linux-desktop`，新程序继承旧进程的环境。旧启动器无条件导出过两个 `1`，所以从旧版本升级上来的第一个新进程仍走非合成路径，并且它自己关窗后也会再留十分钟。交接这里不清掉继承来的 `WEBKIT_DISABLE_*`：进程无从分辨这两个值是旧启动器的默认还是用户显式设的，清掉会丢掉用户真正的覆盖；改为经同目录的 `msime-linux-settings` 重新拉起也没用，继承来的 `1` 在启动器看来就是显式值。这只影响升级那一次，进程链退出后就不再出现，所以只在 README 里写明升级后要先让旧的设置进程完全退出，并请报告者复测前照做。
+
 ### 测试
 
 `platforms/linux/tests/core/settings_launcher_contract.py` 把两个探测路径换成临时目录里的路径，分别检查：都不存在时四个入口两个变量都未设置；只有 `version` 文件、只有 `module` 目录时都默认为 `1`；每种情况下空值取默认、`0` 和 `1` 原样传下去，`GDK_BACKEND` 不变。
@@ -47,6 +49,7 @@ issue #6847：Arch Linux、niri 26.04 Wayland 会话、Mesa 26.2、webkit2gtk-4.
 - 没有 NVIDIA 专有驱动的机器回到 WebKit 的合成路径：niri 上的闪烁应当消失，滚动由合成器平移图层，#6403 量到的每步整块重绘也随之不再出现。代价是这些机器上 WebKit 的 GPU 路径重新暴露出来：其他项目报告过个别 AMD/Intel 或虚拟机组合上 DMA-BUF 渲染器空白、EGL 初始化失败，我们手上没有这些报告，遇到时用户可以在 `~/.config/environment.d/` 里设变量绕开，README 写了做法。
 - NVIDIA 专有驱动的机器行为不变，仍走非合成路径，所以 Linux 设置页不放带模糊阴影的约束继续成立。
 - 判断只看内核模块。装了驱动却完全不用 NVIDIA 渲染的双显卡机器仍会套用规避，这是有意偏向安全的一侧：它与以前的行为相同，不会变差。
+- 从旧版本升级时，如果旧的设置进程还在，升级后的交接会把它环境里的两个 `1` 带进新程序（见上文「入口」），新默认值要等这条进程链完全退出才生效，最长是关窗后十分钟。用户和 #6847 的报告者复测前都要先确认 `pgrep -af msime-linux-desktop` 没有输出，README 写了做法；不确认就复测，会误以为修复没有效果。
 
 ## Verification
 

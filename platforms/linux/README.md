@@ -126,6 +126,8 @@ msime-linux-setup --update --download   # 升级之后只取回过期的那几�
 WEBKIT_DISABLE_COMPOSITING_MODE=0 WEBKIT_DISABLE_DMABUF_RENDERER=0 msime-linux-settings
 ```
 
+从早先的版本升级上来后，同样要先让旧的设置进程完全退出，新的默认值才会生效。早先的启动器在所有机器上都把两个变量设成 `1`，这个值留在它拉起的设置进程的环境里。升级时这个进程如果还在（关掉窗口后的十分钟内都算），再打开设置会由它把启动交给新程序（见上文「安装后首次使用」里升级后设置应用的那一段）：新程序是旧进程直接启动的，没有经过新的启动器，继承的仍是两个 `1`，窗口照旧闪烁；它关掉窗口后同样会留十分钟，这期间再打开都复用它。所以升级后先关掉设置窗口，等到 `pgrep -af msime-linux-desktop` 没有输出（等十分钟，或关窗几秒后执行 `pkill -f msime-linux-desktop`）再打开设置。这一步只需做一次，之后的设置进程都由新的启动器拉起。
+
 要让终端、应用菜单和 IBus/Fcitx5 菜单里的「设置」都用同样的值，把它们写进 `~/.config/environment.d/` 下的一个文件，例如 `~/.config/environment.d/msime-webkit.conf`：
 
 ```ini
