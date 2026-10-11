@@ -88,7 +88,8 @@ fn clone_matching_rows(
 impl InputSession {
     /// input_session.cpp:1274-1319; `index` is in ranking order.
     pub(super) fn learn_candidate(&mut self, index: usize) -> Option<String> {
-        if !self.learning_enabled {
+        // 五笔的临时拼音反查只是查编码：选中的拼音词不调词频、不记整句，免得一次查询改了拼音的排序。
+        if !self.learning_enabled || self.engine.wubi_pinyin_lookup_active() {
             return None;
         }
         let selected_source = self.ranking_list().get(index)?.source;

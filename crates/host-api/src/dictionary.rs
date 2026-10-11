@@ -233,6 +233,32 @@ enum Operation {
     QueueHabitsMerge {
         source: String,
     },
+    /// 五笔查码，只读：`text` 里每个不同汉字（以及整段作为一个词）在 86 和 98 码表里的编码（[`wubi_codes_json`]）。
+    WubiCodes {
+        text: String,
+    },
+}
+
+/// 五笔查码一次接受的文字上限（字节）。查码只列出前 `MAX_WUBI_LOOKUP_CHARACTERS` 个不同汉字，更长的粘贴没有意义。
+const MAX_WUBI_LOOKUP_TEXT: usize = 4096;
+
+/// `wubi_codes` 的回答：`{phrase, characters, truncated}`，`phrase` 和每个字都是 `{text, wubi86, wubi98}`，编码短码在前。
+///
+/// 只读五笔码表（会话用的同一份），不拿词库的维护租约：码表由 SQLite 只读打开，维护进行时读到的是替换前或替换后的完整文件，而一次查码不该让维护等它，也不该在 Android 设置进程里因为键盘进程持有维护而失败。移动端的个人词库队列也直接回答它，因为它不改任何东西。
+fn wubi_codes_json(
+    options: &msime_engine::host::EngineOptions,
+    text: &str,
+) -> Result<serde_json::Value, String> {
+    if text.len() > MAX_WUBI_LOOKUP_TEXT {
+        return Err("invalid wubi lookup".into());
+    }
+    let lookup = msime_engine::host::wubi_code_lookup(options, text);
+    let item = |codes: &msime_engine::host::WubiTextCodes| json!({ "text": codes.text, "wubi86": codes.wubi86, "wubi98": codes.wubi98 });
+    Ok(json!({
+        "phrase": lookup.phrase.as_ref().map(item),
+        "characters": lookup.characters.iter().map(item).collect::<Vec<_>>(),
+        "truncated": lookup.truncated,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -885,6 +911,7 @@ pub fn dictionary_request_json(bytes: &[u8]) -> Result<serde_json::Value, String
             )
             .map_err(str::to_owned)
         }
+        Operation::WubiCodes { text } => wubi_codes_json(&options, &text),
     }
 }
 
@@ -1144,6 +1171,10 @@ pub fn personal_dictionary_request_json(bytes: &[u8]) -> Result<serde_json::Valu
                 .map_err(personal_dictionary_error)?;
             let state = store.read().map_err(personal_dictionary_error)?;
             Ok(json!({ "pending_count": state.pending_count() }))
+        }
+        // 查码只读五笔码表，不经过个人词库队列：Android 的设置页把所有词库操作都送到这里，而这一个不必等键盘空闲。
+        Operation::WubiCodes { text } => {
+            wubi_codes_json(&request.options.clone().into_engine_options(), &text)
         }
     }
 }

@@ -3048,3 +3048,274 @@ fn schemes_without_the_main_dictionary_run_on_english_alone() {
         assert!(!dictionaries.join("msime-pinyin.db").exists());
     }
 }
+
+/// `z` 临时拼音反查的码表：全拼有词组和单字，五笔 86 与 98 各有编码。
+const PINYIN_LOOKUP_SQL: &str = "CREATE TABLE tbl_1_n(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+     INSERT INTO tbl_1_n VALUES('ni','n','你',100);
+     CREATE TABLE tbl_1_h(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+     INSERT INTO tbl_1_h VALUES('hao','h','好',100);
+     INSERT INTO wubi86 VALUES('wqvb','你好',300),('wq','你',200),('wqiy','你',100),('vbg','好',100);
+     CREATE TABLE wubi98(key TEXT,value TEXT,weight INTEGER);
+     INSERT INTO wubi98 VALUES('abcd','你好',300);";
+
+fn pinyin_lookup_options(root: &Path) -> EngineOptions {
+    let mut options = helpcode_fixture(root, PINYIN_LOOKUP_SQL, "");
+    options.scheme = SchemeType::Wubi as u8;
+    options.wubi_mixed_pinyin = false;
+    options.show_helpcode = false;
+    options
+}
+
+fn annotation_of(view: &EngineSnapshot, word: &str) -> String {
+    let index = view
+        .candidates
+        .iter()
+        .position(|candidate| candidate == word)
+        .unwrap_or_else(|| panic!("{word} missing from {:?}", view.candidates));
+    view.candidate_annotations[index].clone()
+}
+
+#[test]
+fn z_opens_a_pinyin_lookup_annotated_with_wubi_codes() {
+    let root = tempfile::tempdir().unwrap();
+    let options = pinyin_lookup_options(root.path());
+    let mut session = Session::new(&options).unwrap();
+    for character in b"znihao" {
+        assert!(session.character(*character, false).unwrap().handled);
+    }
+    let view = session.snapshot().unwrap();
+    assert_eq!(view.preedit, "znihao");
+    assert_eq!(view.local_mode, "none");
+    // 反查只出拼音候选，不查五笔码表。
+    assert!(view.answered_by_pinyin_fallback);
+    assert!(!view.wubi_unique_four_code);
+    assert!(annotation_of(&view, "你好").contains("wqvb"));
+    // 单字显示全码，不是简码。
+    let single = annotation_of(&view, "你");
+    assert!(single.contains("wqiy"), "{single}");
+    assert!(!single.split(' ').any(|code| code == "wq"), "{single}");
+}
+
+#[test]
+fn the_pinyin_lookup_follows_the_wubi_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options = pinyin_lookup_options(root.path());
+    options.wubi_profile = 1;
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"znihao");
+    let view = session.snapshot().unwrap();
+    let annotation = annotation_of(&view, "你好");
+    assert!(annotation.contains("abcd"), "{annotation}");
+    assert!(!annotation.contains("wqvb"), "{annotation}");
+}
+
+#[test]
+fn the_pinyin_lookup_is_entered_and_left_without_touching_wubi_codes() {
+    let root = tempfile::tempdir().unwrap();
+    let options = pinyin_lookup_options(root.path());
+    let mut session = Session::new(&options).unwrap();
+
+    // 只打 `z`：进入反查，还没有拼音，也就没有候选。
+    assert!(session.character(b'z', false).unwrap().handled);
+    let view = session.snapshot().unwrap();
+    assert_eq!(view.preedit, "z");
+    assert!(view.candidates.is_empty());
+    // 退格删掉 `z` 就离开反查。
+    assert!(session.command(Command::Backspace).unwrap().handled);
+    assert_eq!(session.snapshot().unwrap().preedit, "");
+
+    // 单独的 `z` 回车什么也不上屏；没有候选时选词上屏的是拼音，不带 `z`。
+    type_text(&mut session, b"z");
+    assert_eq!(session.command(Command::CommitRaw).unwrap().commit, "");
+    assert_eq!(session.snapshot().unwrap().preedit, "");
+    type_text(&mut session, b"zq");
+    assert!(session.snapshot().unwrap().candidates.is_empty());
+    assert_eq!(session.finish(0).unwrap().commit, "q");
+    assert_eq!(session.snapshot().unwrap().preedit, "");
+
+    // 离开后照常是五笔码。
+    type_text(&mut session, b"wqvb");
+    let view = session.snapshot().unwrap();
+    assert_eq!(view.candidates.first().map(String::as_str), Some("你好"));
+    assert!(!view.answered_by_pinyin_fallback);
+    session.command(Command::Cancel).unwrap();
+
+    // 取消同样结束反查，下一个码不受影响；五笔码中间的 `z` 仍交回宿主。
+    type_text(&mut session, b"zni");
+    session.command(Command::Cancel).unwrap();
+    type_text(&mut session, b"wq");
+    assert!(!session.character(b'z', false).unwrap().handled);
+    assert_eq!(session.snapshot().unwrap().preedit, "wq");
+}
+
+#[test]
+fn a_mixed_pinyin_session_has_no_z_lookup() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options = pinyin_lookup_options(root.path());
+    options.wubi_mixed_pinyin = true;
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"znihao");
+    // 混输里 `z` 是拼音字母：`znihao` 不是一个拼音，没有 `你好`。
+    let view = session.snapshot().unwrap();
+    assert!(!view.candidates.iter().any(|word| word == "你好"));
+}
+
+#[test]
+fn committing_from_the_pinyin_lookup_keeps_the_rest_in_the_lookup() {
+    let root = tempfile::tempdir().unwrap();
+    let options = pinyin_lookup_options(root.path());
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"znihao");
+    let view = session.snapshot().unwrap();
+    let index = view
+        .candidates
+        .iter()
+        .position(|word| word == "你")
+        .unwrap();
+    let result = session.select(index).unwrap();
+    assert_eq!(result.commit, "你");
+    // 剩下的 `hao` 仍是反查，不会被当成五笔码 `hao`。
+    let view = session.snapshot().unwrap();
+    assert_eq!(view.preedit, "zhao");
+    assert!(annotation_of(&view, "好").contains("vbg"));
+    let index = view
+        .candidates
+        .iter()
+        .position(|word| word == "好")
+        .unwrap();
+    assert_eq!(session.select(index).unwrap().commit, "好");
+    assert_eq!(session.snapshot().unwrap().preedit, "");
+
+    // 回车上屏的是拼音本身，引导键 `z` 不上屏。
+    type_text(&mut session, b"zhello");
+    let result = session.command(Command::CommitRaw).unwrap();
+    assert_eq!(result.commit, "hello");
+}
+
+#[test]
+fn the_pinyin_lookup_learns_nothing() {
+    let journal_rows = |options: &EngineOptions| -> i64 {
+        let path = Path::new(&options.user_data).join("msime_user.db");
+        if !path.exists() {
+            return 0;
+        }
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM user_dictionary_operations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    };
+    let pick_second = |options: &EngineOptions| {
+        let mut session = Session::new(options).unwrap();
+        type_text(&mut session, b"znihao");
+        let view = session.snapshot().unwrap();
+        let index = view
+            .candidates
+            .iter()
+            .position(|word| word == "拟好")
+            .unwrap();
+        assert!(index > 0, "{:?}", view.candidates);
+        assert_eq!(session.select(index).unwrap().commit, "拟好");
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let mut options = pinyin_lookup_options(root.path());
+    options.learning = true;
+    pick_second(&options);
+    pick_second(&options);
+    assert_eq!(journal_rows(&options), 0);
+    // 五笔码照旧，拼音的排序也没被反查里的选择改动。
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"wqvb");
+    assert_eq!(session.snapshot().unwrap().candidates, vec!["你好"]);
+    session.command(Command::Cancel).unwrap();
+    type_text(&mut session, b"znihao");
+    let view = session.snapshot().unwrap();
+    let first = view
+        .candidates
+        .iter()
+        .position(|word| word == "你好")
+        .unwrap();
+    let second = view
+        .candidates
+        .iter()
+        .position(|word| word == "拟好")
+        .unwrap();
+    assert!(first < second, "{:?}", view.candidates);
+
+    // 对照：混输里同样的选择会学习，说明上面的零确实是反查没有学，而不是测不到。
+    let control_root = tempfile::tempdir().unwrap();
+    let mut control = pinyin_lookup_options(control_root.path());
+    control.learning = true;
+    control.wubi_mixed_pinyin = true;
+    let mut session = Session::new(&control).unwrap();
+    type_text(&mut session, b"nihao");
+    let view = session.snapshot().unwrap();
+    let index = view
+        .candidates
+        .iter()
+        .position(|word| word == "拟好")
+        .unwrap();
+    session.select(index).unwrap();
+    drop(session);
+    assert!(journal_rows(&control) > 0);
+}
+
+#[test]
+fn a_multi_pick_in_the_pinyin_lookup_creates_no_phrase() {
+    // `你号` 不在码表里：分两次选出它时，打开学习的会话会把它当新词写进拼音词库。
+    let phrase_options = |root: &Path, mixed_pinyin: bool| {
+        let mut options = pinyin_lookup_options(root);
+        for directory in [&options.resources, &options.dictionaries] {
+            Connection::open(Path::new(directory).join("msime-pinyin.db"))
+                .unwrap()
+                .execute("INSERT INTO tbl_1_h VALUES('hao','h','号',50)", [])
+                .unwrap();
+        }
+        options.learning = true;
+        options.wubi_mixed_pinyin = mixed_pinyin;
+        options
+    };
+    let pick_in_two = |options: &EngineOptions, typed: &[u8]| {
+        let mut session = Session::new(options).unwrap();
+        type_text(&mut session, typed);
+        for word in ["你", "号"] {
+            let view = session.snapshot().unwrap();
+            let index = view
+                .candidates
+                .iter()
+                .position(|candidate| candidate == word)
+                .unwrap_or_else(|| panic!("{word} missing from {:?}", view.candidates));
+            assert_eq!(session.select(index).unwrap().commit, word);
+        }
+        assert_eq!(session.snapshot().unwrap().preedit, "");
+    };
+    let created_rows = |options: &EngineOptions| -> i64 {
+        let path = Path::new(&options.user_data).join("msime_user.db");
+        if !path.exists() {
+            return 0;
+        }
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM user_dictionary_operations WHERE value='你号' AND user_inserted=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let options = phrase_options(root.path(), false);
+    pick_in_two(&options, b"znihao");
+    assert_eq!(created_rows(&options), 0);
+
+    // 对照：混输里同样分两次选，会造出 `你号`，说明上面的零是反查没有造词，而不是这条路径走不到。
+    let control_root = tempfile::tempdir().unwrap();
+    let control = phrase_options(control_root.path(), true);
+    pick_in_two(&control, b"nihao");
+    assert_eq!(created_rows(&control), 1);
+}

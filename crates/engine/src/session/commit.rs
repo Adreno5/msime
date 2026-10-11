@@ -198,6 +198,10 @@ impl InputSession {
             {
                 None
             }
+            // 五笔临时拼音反查没有候选时上屏键入的拼音，引导键 `z` 同样只是标记。
+            None if self.engine.wubi_pinyin_lookup_active() => {
+                Some(self.preedit().split_off(1)).filter(|text| !text.is_empty())
+            }
             None => Some(self.preedit()),
         };
         let diagnostic = self
@@ -310,9 +314,11 @@ impl InputSession {
             self.discard_abandoned_phrase_progress();
             return committed(text, diagnostic);
         }
+        // 反查是查编码用的，不造词：它的词条不该因为一次查询进到用户词库。
         if !self.phrase_progress.word.is_empty()
             && progress.can_store
             && self.learning_enabled
+            && !self.engine.wubi_pinyin_lookup_active()
             && self
                 .store_user_phrase_from_canonical_pinyin(&progress.pinyin, &progress.word)
                 .is_err()

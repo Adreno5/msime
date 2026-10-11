@@ -1732,6 +1732,13 @@ impl InputSession {
         {
             raw.remove(0);
         }
+        // 五笔临时拼音反查的引导键 `z` 同样是标记：回车上屏的是键入的拼音。
+        if self.local_mode == LocalInputMode::None
+            && !self.dedicated_english
+            && self.engine.wubi_pinyin_lookup_active()
+        {
+            raw.remove(0);
+        }
         let mut diagnostic = None;
         if self.dedicated_english
             && learn_entered_english_word(

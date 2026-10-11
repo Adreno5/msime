@@ -1577,6 +1577,11 @@ group("allows reads during composition without restarting the session", () => {
   const decision = DictionaryMaintenancePolicy.decide("list", true);
   check(decision.allowed, "dictionary reads remain available while composing");
   check(!decision.maintenance, "dictionary reads do not request maintenance");
+  // 设置页的五笔查码只读码表：组字时也能查，不停掉键盘会话，也不进个人词库队列。
+  const lookup = DictionaryMaintenancePolicy.decide("wubi_codes", true);
+  check(lookup.allowed, "wubi_codes is answered while composing");
+  check(!lookup.maintenance, "wubi_codes does not request maintenance");
+  check(!lookup.queued, "wubi_codes goes to the Engine, not the queue");
 });
 
 group("opens an exclusive window for idle mutations", () => {
