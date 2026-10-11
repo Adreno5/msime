@@ -13086,6 +13086,21 @@ fn credential_test_export_answers_incomplete_configurations_offline() {
         voice("voice.asr", json!({"provider": "local"})),
         "此识别服务的凭据测试尚未接入。"
     );
+    // The AI page's check accepts local-network http, so only a missing token or model stops it offline.
+    assert_eq!(
+        voice(
+            "ai.assistant",
+            json!({"token": "", "endpoint": "https://ai.example/v1", "model": "m"})
+        ),
+        "请先填写有效的 API Key。"
+    );
+    assert_eq!(
+        voice(
+            "ai.assistant",
+            json!({"token": "synthetic", "endpoint": "http://ai.example/v1", "model": "m"}),
+        ),
+        "请填写有效的接口地址（https://，或本机、局域网的 http://）和模型名。"
+    );
     assert_eq!(
         voice(
             "voice.polish",
@@ -13108,6 +13123,97 @@ fn credential_test_export_answers_incomplete_configurations_offline() {
     assert_eq!(
         read(unsafe { msime_client_test_api_credential(oversized.as_ptr(), oversized.len()) })
             ["ok"],
+        false
+    );
+}
+
+// Only requests the checks reject before building a client, so nothing reaches the network.
+#[test]
+fn ai_settings_exports_reject_invalid_requests_offline() {
+    let models =
+        |request: &str| read(unsafe { msime_client_ai_models(request.as_ptr(), request.len()) });
+    let polish =
+        |request: &str| read(unsafe { msime_client_ai_test(request.as_ptr(), request.len()) });
+    for request in [
+        json!({"endpoint": "http://ai.example/v1/chat/completions", "token": "synthetic"}),
+        json!({"endpoint": "https://ai.example/v1/chat/completions", "token": ""}),
+        json!({"endpoint": "https://ai.example/v1/chat/completions"}),
+        json!({"endpoint": "https://ai.example/v1/chat/completions", "token": 7}),
+    ] {
+        let reply = models(&request.to_string());
+        assert_eq!(reply["ok"], false, "{request}");
+        assert_eq!(reply["error"], "ai_invalid", "{request}");
+    }
+    let valid = json!({
+        "endpoint": "https://ai.example/v1/chat/completions",
+        "model": "m",
+        "prompt": "",
+        "token": "synthetic",
+        "text": "文字",
+    });
+    for (field, value) in [
+        ("endpoint", json!("https://user:secret@ai.example/v1")),
+        ("model", json!("")),
+        ("prompt", json!("bad\0prompt")),
+        ("token", json!("")),
+        ("text", json!("")),
+        ("text", Value::Null),
+    ] {
+        let mut request = valid.clone();
+        request[field] = value;
+        let reply = polish(&request.to_string());
+        assert_eq!(reply["ok"], false, "{field}");
+        assert_eq!(reply["error"], "ai_invalid", "{field}");
+    }
+    for call in [models as fn(&str) -> Value, polish] {
+        assert_eq!(call("not json")["error"], "ai_invalid");
+        let oversized = "x".repeat(256 * 1024 + 1);
+        assert_eq!(call(&oversized)["error"], "ai_invalid");
+    }
+    assert_eq!(
+        read(unsafe { msime_client_ai_models(std::ptr::null(), 0) })["ok"],
+        false
+    );
+    assert_eq!(
+        read(unsafe { msime_client_ai_test(std::ptr::null(), 0) })["ok"],
+        false
+    );
+}
+
+#[test]
+fn ai_endpoint_check_export_reports_the_origin_problem_and_hint() {
+    let check = |endpoint: &str| {
+        read(unsafe { msime_client_ai_endpoint_check(endpoint.as_ptr(), endpoint.len()) })["value"]
+            .clone()
+    };
+    assert_eq!(
+        check("https://API.example.test/v1/chat/completions"),
+        json!({"origin": "https://api.example.test:443", "problem": null, "hint": ""})
+    );
+    assert_eq!(
+        check("http://192.168.1.20:1234/v1")["origin"],
+        "http://192.168.1.20:1234"
+    );
+    let public = check("http://api.example.test/v1");
+    assert_eq!(public["origin"], Value::Null);
+    assert_eq!(public["problem"], "cleartext_public");
+    assert_eq!(
+        public["hint"],
+        "http:// 只能用于本机或局域网地址（如 localhost、127.0.0.1、192.168.x.x、10.x.x.x、*.local）；公网服务请使用 https://，以免 API Token 明文经过互联网。"
+    );
+    let empty = check("");
+    assert_eq!(empty["problem"], "invalid");
+    assert_eq!(
+        empty["hint"],
+        "请填写完整的接口地址：https://，或本机、局域网的 http://，且不能包含用户名、密码或 # 片段。"
+    );
+    assert_eq!(
+        read(unsafe { msime_client_ai_endpoint_check(std::ptr::null(), 0) })["ok"],
+        false
+    );
+    let invalid_utf8 = [0xff_u8];
+    assert_eq!(
+        read(unsafe { msime_client_ai_endpoint_check(invalid_utf8.as_ptr(), 1) })["ok"],
         false
     );
 }

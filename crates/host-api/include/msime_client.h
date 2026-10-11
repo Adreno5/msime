@@ -482,6 +482,29 @@ char *msime_client_test_api_credential(const uint8_t *request, size_t length);
  * credentials or fragment, remote http), "" when there is none; accepted is whether the
  * preferences store saves it (empty, https, or http to localhost/127.0.0.1/[::1]). No I/O. */
 char *msime_client_translation_endpoint_issue(const uint8_t *endpoint, size_t length);
+/* Pure check of an AI assistant endpoint (UTF-8, <=64 KiB), for the AI settings page. Value
+ * {origin,problem,hint}: origin is the "scheme://host:port" key ai_assistant.tokens stores the
+ * token under (aiCredentialOrigin), null when the endpoint is not usable; problem is null,
+ * "invalid" or "cleartext_public" (http to a host that is not this machine or the local network);
+ * hint is the Chinese line the shared page shows under the field (aiEndpointHint), "" when usable.
+ * No I/O. */
+char *msime_client_ai_endpoint_check(const uint8_t *endpoint, size_t length);
+/* The AI settings page's 「获取模型」, the Tauri settings shell's ai_models. Request <=256 KiB:
+ * {endpoint,token}, the token being ai_assistant.tokens[origin]. GETs the /models sibling of the
+ * endpoint without following redirects (http only to this machine or the local network, never
+ * through a proxy). Value: up to 128 model ids, in the service's order. Error: a stable code,
+ * ai_invalid (request or endpoint/token rejected, nothing sent), ai_models_unavailable (no
+ * connection, timeout or error status) or ai_models_invalid (reply too large or no ids). Blocks
+ * up to about 15 s: call off the UI thread. The request carries the token: never log it. */
+char *msime_client_ai_models(const uint8_t *request, size_t length);
+/* The AI settings page's 「测试」, the Tauri settings shell's ai_test. Request <=256 KiB:
+ * {endpoint,model,prompt,token,text}: model non-empty <=256 bytes; prompt (may be empty) and
+ * text (non-empty) <=16 KiB each, newlines and tabs allowed. POSTs one non-streaming chat
+ * request (prompt as system, text as user) to the endpoint without following redirects. Value:
+ * the trimmed reply text. Error: ai_invalid, ai_test_unavailable or ai_test_invalid, as for
+ * msime_client_ai_models. Blocks up to about 15 s: call off the UI thread. The request carries
+ * the token and the user's text: never log it or the reply. */
+char *msime_client_ai_test(const uint8_t *request, size_t length);
 // Pure AI descriptor from {config:AI preferences,input:{segmented_pinyin,context,candidate_limit}}.
 // Input <=64KiB. Result contains credentials; never log it. Host must forbid redirects.
 char *msime_client_ai_http_request(const uint8_t *request, size_t length);
