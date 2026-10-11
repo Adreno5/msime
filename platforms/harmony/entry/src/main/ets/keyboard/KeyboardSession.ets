@@ -1548,7 +1548,8 @@ export class KeyboardSession implements HardwareKeyTarget {
   /** One mode of the global theme. A refused request draws the native tokens rather than failing the session. */
   private resolveTheme(preferences: PreparedPreferences, dark: boolean): ResolvedTheme | null {
     const request: ResolveThemeRequest = {
-      global_theme: preferences.global_theme,
+      // 固定明暗的主题在另一种明暗下按跟随系统解析，见 `GlobalTheme.fitsMode`。两种明暗于是不再一致，`fixedAppearance` 也就不再把各界面钉在那种明暗上。
+      global_theme: GlobalTheme.effectiveId(this.themeCatalog, preferences.global_theme, dark),
       custom_theme: preferences.custom_theme,
       dark: dark,
       layout: preferences.candidate_layout === 'horizontal' ? 'horizontal' : 'vertical',
@@ -1885,12 +1886,14 @@ export class KeyboardSession implements HardwareKeyTarget {
   keyboardSkin(dark: boolean): KeyboardSkin {
     this.refreshAppTheme(false);
     const seed: AppThemeSeed | null = this.appThemeSeed(dark);
-    const title: string = this.themeTitle(this.globalThemeId);
-    if (this.globalThemeId === 'custom' && this.customDesign !== null) {
+    // 面板按这个 id 标出选中的卡片：所选主题属于另一种明暗时，生效的是「跟随系统」。
+    const id: string = GlobalTheme.effectiveId(this.themeCatalog, this.globalThemeId, dark);
+    const title: string = this.themeTitle(id);
+    if (id === 'custom' && this.customDesign !== null) {
       return KeyboardSkin.fromDesign(title, this.customDesign, dark, seed);
     }
     const theme: ResolvedTheme | null = dark ? this.themeDark : this.themeLight;
-    return KeyboardSkin.fromTheme(this.globalThemeId, title, theme === null ? null : theme.keyboard, dark, seed);
+    return KeyboardSkin.fromTheme(id, title, theme === null ? null : theme.keyboard, dark, seed);
   }
 
   /** 某一模式解析出的季节种子；应用主题无法解析时为 `null`。 */
@@ -1986,7 +1989,10 @@ export class KeyboardSession implements HardwareKeyTarget {
     if (this.themeCatalog.length === 0) {
       return [this.keyboardSkin(dark)];
     }
-    return this.themeCatalog.map((entry: ThemeCatalogEntry): KeyboardSkin => {
+    // 只列当前明暗下能用的主题，见 `GlobalTheme.fitsMode`。
+    const offered: ThemeCatalogEntry[] = this.themeCatalog.filter((entry: ThemeCatalogEntry): boolean =>
+      GlobalTheme.fitsMode(entry.appearance, dark));
+    return offered.map((entry: ThemeCatalogEntry): KeyboardSkin => {
       if (entry.id === this.globalThemeId) {
         return this.keyboardSkin(GlobalTheme.surfaceDark(entry.appearance, dark));
       }
