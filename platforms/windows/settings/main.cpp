@@ -1106,6 +1106,89 @@ struct Option {
   std::wstring label;
 };
 
+// ---- 辅助码方案的来源 ----
+
+// 资源目录 helpcodes/custom 下的自定义辅助码表，与 Tauri 的 list_helpcode_schemas 相同：资源目录是输入法宿主选项（runtime-options.json）的 resources。还没有宿主选项时是失败的响应，页面当作没有自定义码表。读目录，只在 UI 线程之外调用。
+Response helpcode_schemas_call() {
+  const auto options = runtime_options_document();
+  std::string resources;
+  if (options) {
+    try {
+      resources = utf8(JsonObject::Parse(text(*options)).GetNamedString(L"resources", L""));
+    } catch (...) {
+      resources.clear();
+    }
+  }
+  if (resources.empty())
+    return {"{\"ok\":false,\"error\":\"no host options\"}", false};
+  return take_response(msime_client_helpcode_schemas(
+      reinterpret_cast<const uint8_t *>(resources.data()), resources.size()));
+}
+
+// 数据目录下 plugins 里已安装的插件，与 Tauri 的 plugin_catalog 是同一份 msime_client_plugins catalog。辅助码表插件都是装上的包，所以不传内置声音包的目录。读目录，只在 UI 线程之外调用。
+Response plugin_catalog_call() {
+  const auto root = state_directory();
+  if (root.empty() || !root.is_absolute())
+    return {"{\"ok\":false,\"error\":\"no state directory\"}", false};
+  JsonObject action;
+  action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"catalog"));
+  JsonObject request;
+  request.SetNamedValue(L"state_root", JsonValue::CreateStringValue(hstring(root.wstring())));
+  request.SetNamedValue(L"sound_packs", JsonValue::CreateNullValue());
+  request.SetNamedValue(L"action", action);
+  const auto body = utf8(request.Stringify());
+  return take_response(
+      msime_client_plugins(reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+}
+
+// 自定义码表在下拉框里的名字，与共享页的 customSchemaLabel 相同：中英文名都有且不同时是「中文名 (英文名)」，否则依次退到中文名、英文名、文件名和方案 id。
+std::wstring custom_helpcode_label(JsonObject const &schema) {
+  const auto name = named_string(schema, L"name");
+  const auto name_en = named_string(schema, L"name_en");
+  if (!name.empty() && !name_en.empty() && name != name_en)
+    return name + L" (" + name_en + L")";
+  for (auto const &label : {name, name_en, named_string(schema, L"file_stem")})
+    if (!label.empty())
+      return label;
+  return named_string(schema, L"schema");
+}
+
+// msime_client_helpcode_schemas 的回答变成下拉框选项（值是 custom/<文件名>）；失败或读不懂时没有自定义码表。
+std::vector<Option> custom_helpcode_options(Response const &response) {
+  std::vector<Option> options;
+  if (!response.ok)
+    return options;
+  try {
+    for (auto const &item : JsonObject::Parse(text(response.text)).GetNamedArray(L"value")) {
+      const auto schema = item.GetObject();
+      const auto value = named_string(schema, L"schema");
+      if (value.starts_with(L"custom/"))
+        options.push_back({value, custom_helpcode_label(schema)});
+    }
+  } catch (...) {
+    options.clear();
+  }
+  return options;
+}
+
+// catalog 里种类为 helpcode 的包，按 catalog 的顺序：值是插件 id，标签是插件名。失败或读不懂时没有插件可选，与共享页的 useHelpcodePacks 相同。
+std::vector<Option> helpcode_pack_options(Response const &response) {
+  std::vector<Option> packs;
+  if (!response.ok)
+    return packs;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    for (auto const &item : value.GetNamedArray(L"packages")) {
+      const auto pack = item.GetObject();
+      if (named_string(pack, L"kind") == L"helpcode")
+        packs.push_back({named_string(pack, L"id"), named_string(pack, L"name")});
+    }
+  } catch (...) {
+    packs.clear();
+  }
+  return packs;
+}
+
 struct Check {
   std::wstring label;
   bool on = false;
@@ -1787,6 +1870,9 @@ private:
       return;
     if (remember && id != current_page_)
       history_.push_back(current_page_);
+    // 每次进入「输入」页都重读已安装的辅助码表插件。
+    if (id == "typing" && id != current_page_)
+      helpcode_packs_stale_ = true;
     current_page_ = id;
     select_navigation_item();
     render_page(false);
@@ -3703,14 +3789,13 @@ private:
     const bool quanpin_helpcode = edition_offers_scheme(L"quanpin");
     const bool shuangpin_helpcode = edition_offers_scheme(L"shuangpin");
     if (quanpin_helpcode || shuangpin_helpcode) {
+      if (!indexing_)
+        load_helpcode_sources();
       auto helpcode = add_group(page, L"辅助码");
       if (quanpin_helpcode)
-        helpcode_rows(helpcode, L"全拼", L"quanpin_helpcode");
+        helpcode_rows(helpcode, L"全拼", L"quanpin", true, L"ziranma", false);
       if (shuangpin_helpcode)
-        helpcode_rows(helpcode, L"双拼", L"shuangpin_helpcode");
-      shell_row(helpcode, 0xE8A7, L"辅助码插件",
-                L"在水杉输入法应用的「输入 › 辅助码」中选用已安装的辅助码插件", L"打开",
-                nav::shell_links::input);
+        helpcode_rows(helpcode, L"双拼", L"shuangpin", true, L"lantian", true);
     }
 
     auto frequency = add_group(page, L"拼音方案调频");
@@ -3741,19 +3826,102 @@ private:
     }, true);
   }
 
+  // 一族（全拼或双拼）的辅助码：fallback 是 client-core 的 default_quanpin_helpcode / default_shuangpin_helpcode，只在拿不到出厂偏好时用到。
+  // 方案下拉框照共享的 HelpcodeSettingsGroup 排列：内置方案、资源目录里的自定义码表、已安装的辅助码表插件（值为 pack:<插件 id>）。选插件只写 plugins.helpcode_pack_<族>，原来的方案留着；选内置或自定义方案时不再使用辅助码表插件，同时清空它。
   void helpcode_rows(StackPanel const &group, std::wstring const &label,
-                     std::wstring const &prefix) {
-    const bool enabled = document_.Boolean(prefix + L".enabled", false);
+                     std::wstring const &family, bool enabled_fallback,
+                     std::wstring const &schema_fallback, bool show_fallback) {
+    const std::wstring prefix = family + L"_helpcode";
+    const std::wstring schema_key = prefix + L".schema";
+    const std::wstring pack_key = L"plugins.helpcode_pack_" + family;
+    const bool enabled = document_.Boolean(prefix + L".enabled", enabled_fallback);
     bool_row(group, 0xE8CB, label + L"辅助码",
              L"再输入的字母作为辅助码交给输入引擎，用于缩小候选。五笔、粤拼、注音、笔画、日语、韩语、越南语和快捷模式不使用辅助码。",
-             prefix + L".enabled", false, true);
-    select_row(group, 0xE8D2, label + L"辅助码方案", L"", prefix + L".schema",
-               {{L"lantian", L"蓝天小雨点"}, {L"ziranma", L"自然码"},
-                {L"shouyou2_0", L"首右2.0"}, {L"shouyouplus", L"首右plus"},
-                {L"xiaohe", L"小鹤"}, {L"jiajia", L"加加"}, {L"wubi86", L"五笔 86"}},
-               L"lantian", false, enabled);
+             prefix + L".enabled", enabled_fallback, true);
+
+    const auto schema = document_.String(schema_key, schema_fallback);
+    const auto selected_pack = document_.String(pack_key, L"");
+    std::vector<Option> options{
+        {L"lantian", L"蓝天小雨点"}, {L"ziranma", L"自然码"},
+        {L"shouyou2_0", L"首右2.0"}, {L"shouyouplus", L"首右plus"},
+        {L"xiaohe", L"小鹤"}, {L"jiajia", L"加加"}, {L"wubi86", L"五笔 86"}};
+    options.insert(options.end(), helpcode_custom_schemas_.begin(),
+                   helpcode_custom_schemas_.end());
+    const auto listed = [&options](std::wstring const &value) {
+      return std::any_of(options.begin(), options.end(),
+                         [&value](Option const &option) { return option.value == value; });
+    };
+    // 资源目录被更换或暂时读不到时，之前选中的自定义码表仍留在列表里。
+    if (schema.starts_with(L"custom/") && !listed(schema))
+      options.push_back({schema, schema});
+    const std::wstring pack_prefix = L"pack:";
+    bool pack_found = false;
+    for (auto const &pack : helpcode_packs_) {
+      options.push_back({pack_prefix + pack.value, pack.label + L"（插件）"});
+      pack_found = pack_found || pack.value == selected_pack;
+    }
+    if (!selected_pack.empty() && !pack_found)
+      options.push_back({pack_prefix + selected_pack, selected_pack + L"（插件，未找到）"});
+
+    const auto title = label + L"辅助码方案";
+    add_row(group, 0xE8D2, title, L"",
+            select_control(title, std::move(options),
+                           selected_pack.empty() ? schema : pack_prefix + selected_pack,
+                           [this, schema_key, pack_key, pack_prefix](std::wstring const &value) {
+                             change([&](PreferencesDocument &doc) {
+                               if (value.starts_with(pack_prefix)) {
+                                 doc.SetString(pack_key, value.substr(pack_prefix.size()));
+                                 return;
+                               }
+                               doc.SetString(schema_key, value);
+                               if (!doc.String(pack_key, L"").empty())
+                                 doc.SetString(pack_key, L"");
+                             }, true);
+                           },
+                           enabled));
     bool_row(group, 0xE8FD, L"在候选窗口中显示" + label + L"辅助码", L"",
-             prefix + L".show_in_candidate_window", false, false, enabled);
+             prefix + L".show_in_candidate_window", show_fallback, false, enabled);
+  }
+
+  // 方案下拉框的两份来源。自定义码表只读一次，与共享页一样；辅助码表插件每次进入「输入」页重读，在别处导入或删除的包下次进来就能看到。两者都在 UI 线程之外读，读完内容有变化才重画。
+  void load_helpcode_sources() {
+    if (!helpcode_schemas_requested_) {
+      helpcode_schemas_requested_ = true;
+      run_host(helpcode_schemas_call, [this](Response const &response) {
+        auto schemas = custom_helpcode_options(response);
+        if (!same_options(schemas, helpcode_custom_schemas_)) {
+          helpcode_custom_schemas_ = std::move(schemas);
+          redraw_typing();
+        }
+      });
+    }
+    if (helpcode_packs_stale_ && !helpcode_packs_busy_) {
+      helpcode_packs_stale_ = false;
+      helpcode_packs_busy_ = true;
+      run_host(plugin_catalog_call, [this](Response const &response) {
+        helpcode_packs_busy_ = false;
+        auto packs = helpcode_pack_options(response);
+        if (!same_options(packs, helpcode_packs_)) {
+          helpcode_packs_ = std::move(packs);
+          redraw_typing();
+        } else if (helpcode_packs_stale_ && !closed_ && current_page_ == "typing") {
+          // 读取期间又进了一次「输入」页：按那一次再读。
+          load_helpcode_sources();
+        }
+      });
+    }
+  }
+
+  static bool same_options(std::vector<Option> const &a, std::vector<Option> const &b) {
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                      [](Option const &x, Option const &y) {
+                        return x.value == y.value && x.label == y.label;
+                      });
+  }
+
+  void redraw_typing() {
+    if (!closed_ && current_page_ == "typing")
+      render_page(true);
   }
 
   // ---- 标点与翻译 ----
@@ -5176,6 +5344,12 @@ private:
   std::wstring vocabulary_message_;
   // A ContentDialog of this window is showing.
   bool dialog_open_ = false;
+  // 辅助码方案下拉框的自定义码表和辅助码表插件（值是插件 id、标签是插件名）。自定义码表只请求一次；插件在进入「输入」页时标为过期，下一次绘制时重读，同一时间只有一次读取。
+  std::vector<Option> helpcode_custom_schemas_;
+  bool helpcode_schemas_requested_ = false;
+  std::vector<Option> helpcode_packs_;
+  bool helpcode_packs_stale_ = true;
+  bool helpcode_packs_busy_ = false;
 
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。

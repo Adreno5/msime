@@ -13,9 +13,9 @@
 - 反馈不跳共享应用：「帮助与反馈」页照共享页（`packages/ui/src/settings/pages/feedback-page.tsx`）画「提交可复现的问题」和「反馈与交流」。选反馈类型、写描述（最多 4000 字），「复制报告」把「### 类型 / ### 描述 / ### 环境」格式的报告放进剪贴板，「在 GitHub 提交」用默认浏览器打开 `https://github.com/metasequoiaime/msime/issues/new?title=…&body=…`，正文截到 4000 个字符；附上的信息是版本号、系统版本（`RtlGetVersion`）和当前输入方案。渠道是 GitHub Issues、QQ 交流群（复制群号 829919142）和 Telegram 群组（https://t.me/msimegroup）。报告格式和地址编码在 `FeedbackReport.h`，由 `tests/ui/feedback_report.cpp` 核对。
 - 其他平台下载不单独成页：「关于」页的「版本与更新」组可以打开产品下载页或复制链接。
 
-原生页面不绘制的部分（候选字体选择、皮肤与自定义主题编辑、词库管理、背单词、辅助码插件、语音识别服务、屏幕键盘的详细设置）以按钮的形式跳到共享应用的对应路由，路由 id 与托盘和其他启动方使用的相同。
+原生页面不绘制的部分（候选字体选择、皮肤与自定义主题编辑、词库管理、背单词、语音识别服务、屏幕键盘的详细设置）以按钮的形式跳到共享应用的对应路由，路由 id 与托盘和其他启动方使用的相同。
 
-「输入」页的辅助码方案和共享设置的辅助码下拉框（`packages/ui/src/settings/pages/helpcode-page.tsx`）规则相同：该方案选用了辅助码插件（`plugins.helpcode_pack_quanpin` / `helpcode_pack_shuangpin`）时，输入引擎用插件替换内置方案，这一行把插件列为当前项并说明已被替换，选内置方案会同时清掉插件。本窗口不扫描插件目录，只显示插件 id，选用插件仍在共享应用里。
+「输入」页的辅助码方案下拉框和共享设置的 `HelpcodeSettingsGroup`（`packages/ui/src/settings/pages/helpcode-page.tsx`）规则相同，辅助码插件也在这里选，不跳共享应用。选项依次是内置方案、资源目录 `helpcodes/custom` 里的自定义码表（`custom/<文件名>`，由 `msime_client_helpcode_schemas` 读宿主选项的 `resources`，名字是「中文名 (英文名)」）和已安装的辅助码表插件（「插件名（插件）」，取自 `msime_client_plugins` 的 `catalog` 中种类为 `helpcode` 的包）。选插件只写 `plugins.helpcode_pack_quanpin` / `helpcode_pack_shuangpin`，输入引擎用它替换内置方案；选内置或自定义方案时同时清空插件。已选的插件不在了显示为「id（插件，未找到）」，资源目录读不到时已选的自定义码表也留在列表里。自定义码表只读一次，插件每次进入「输入」页重读，都在工作线程上读。
 
 `--route=settings:<id>` 指定打开的页面，可以是共享路由的设置分类 id（`appearance`、`dictionary`、`about` 等，映射见 `route_aliases`），也可以是本窗口的页面 id；其他值打开默认的「输入」页。
 
