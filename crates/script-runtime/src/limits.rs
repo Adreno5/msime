@@ -56,6 +56,22 @@ pub const MAX_ENABLED_SCRIPTS: usize = 8;
 /// 候选类事件里交给插件的行数上限（窗口内前 20 行）。
 pub const MAX_CANDIDATE_ROWS: usize = 20;
 
+/// 插件给一个候选加的注释最多几个 UTF-16 码元。
+pub const MAX_ANNOTATION_UTF16: usize = 32;
+/// 改写后的 body 最多几个 UTF-8 字节。
+pub const MAX_REWRITE_BYTES: usize = 4096;
+/// 改写后的 body 最多是原文 UTF-16 码元数的几倍。
+pub const REWRITE_GROWTH: usize = 4;
+/// 原文很短时改写后 body 的 UTF-16 码元上限的下限，让一个字也能改写成一小段话。
+pub const MIN_REWRITE_UTF16: usize = 256;
+
+/// 原文 body 有 `original_utf16` 个 UTF-16 码元时，改写结果最多几个：原文的 [`REWRITE_GROWTH`] 倍，至少 [`MIN_REWRITE_UTF16`]。
+pub fn rewrite_utf16_limit(original_utf16: usize) -> usize {
+    original_utf16
+        .saturating_mul(REWRITE_GROWTH)
+        .max(MIN_REWRITE_UTF16)
+}
+
 /// 进程里全部脚本合计的内存总账：线性内存预留、翻译后的字节码和解释器值栈。授权和启用时按它做准入检查，超出就拒绝启用，而不是让脚本在运行时争抢。
 pub const PROCESS_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 /// 编译结果（翻译后的代码、模块里的各种表，以及 Engine 留着复用的翻译缓冲）相对模块大小的倍数的上界。普通代码约 3.3 倍；专门构造的模块实测到约 110 倍（`block` 嵌套每层 3 字节，翻译缓冲却要约 330 字节），取 128。产品里量不到真实的编译结果（库不能替宿主进程装全局分配器），准入检查和内存总账都按它估算，`tests::expansion` 守着它确实是上界。

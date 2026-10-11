@@ -1,4 +1,4 @@
-//! 用 WAT 写的模块测 ABI 校验、资源限制、配额隔离、快照复位和观察类 import。仓库不提交 `.wasm`；wasmi 的 `wat` 特性只在 dev-dependencies 里打开。
+//! 用 WAT 写的模块测 ABI 校验、资源限制、配额隔离、快照复位、观察类和修改类 import。仓库不提交 `.wasm`；wasmi 的 `wat` 特性只在 dev-dependencies 里打开。
 
 use crate::abi::{candidate_field, commit_field, composition_field, event_field, status};
 use crate::limits;
@@ -934,24 +934,397 @@ fn grants_beyond_the_declaration_are_ignored() {
     );
 }
 
-#[test]
-fn modification_imports_are_denied_in_this_phase() {
+// ---- 修改类 import ----
+
+/// 读 body、改写上屏的模块：`data` 是放在 [64..) 的数据段，`body` 是 `msime_on_event` 的函数体。
+fn rewriter(data: &str, body: &str) -> ScriptInstance {
     let wat = module_wat(
-        r#"(import "msime" "commit_text" (func (param i32 i32 i32) (result i32)))
+        r#"(import "msime" "commit_text" (func $commit_text (param i32 i32 i32) (result i32)))
            (import "msime" "rewrite_commit" (func $rewrite (param i32 i32) (result i32)))"#,
-        "",
-        "(i32.sub (i32.const 0) (call $rewrite (i32.const 0) (i32.const 3)))",
+        &format!(r#"(data (i32.const 64) "{data}")"#),
+        body,
+    );
+    instance(
+        &wat,
+        declaration(
+            &[Capability::ReadCommit, Capability::RewriteCommit],
+            &[Hook::Commit, Hook::BeforeCommit],
+        ),
+    )
+}
+
+/// 一次可改写的 `before_commit`，body 是 `body`，尾巴是一个全角逗号。
+fn before_commit_event(body: &'static str, full: &'static str) -> Event<'static> {
+    let mut event = Event::new(Hook::BeforeCommit);
+    event.scalars.local_mode = Some(0);
+    event.scalars.origin = Some(0);
+    event.scalars.rewritable = Some(true);
+    event.commit.commit = Some(full);
+    event.commit.body = Some(body);
+    event
+}
+
+/// 改写 [64, 64 + len) 并返回 `rewrite_commit` 的返回码加 10：成功是 10，`DENIED` 是 9，`INVALID` 是 7，`LIMIT` 是 6。
+fn rewrite_status(data: &str, len: usize, event: &Event<'_>) -> (i32, Option<String>) {
+    let mut script = rewriter(
+        data,
+        &format!("(i32.add (call $rewrite (i32.const 64) (i32.const {len})) (i32.const 10))"),
+    );
+    let status = status_of(script.deliver(1, event));
+    (status, script.actions().rewrite.clone())
+}
+
+#[test]
+fn rewrite_commit_stages_a_valid_body() {
+    let event = before_commit_event("你好world", "你好world，");
+    let pangu = "你好 world";
+    assert_eq!(
+        rewrite_status(pangu, pangu.len(), &event),
+        (10, Some(pangu.to_owned()))
+    );
+}
+
+#[test]
+fn rewrite_commit_rejects_controls_formats_empty_and_oversized_text() {
+    let event = before_commit_event("abc", "abc");
+    // 换行是 Cc，U+202E（从右到左覆盖）和 U+200B（零宽空格）是 Cf，U+2028、U+2029 和换行一样断行。
+    assert_eq!(rewrite_status("\\0a", 1, &event), (7, None));
+    assert_eq!(rewrite_status("a\\e2\\80\\aeb", 5, &event), (7, None));
+    assert_eq!(rewrite_status("a\\e2\\80\\8bb", 5, &event), (7, None));
+    assert_eq!(rewrite_status("a\\e2\\80\\a8b", 5, &event), (7, None));
+    assert_eq!(rewrite_status("a\\e2\\80\\a9b", 5, &event), (7, None));
+    assert_eq!(rewrite_status("", 0, &event), (7, None));
+    // 不是 UTF-8。
+    assert_eq!(rewrite_status("\\ff", 1, &event), (7, None));
+    // 原文 3 个码元，上限取 256：257 个字母放不下，256 个正好。
+    let long = "a".repeat(257);
+    assert_eq!(rewrite_status(&long, 257, &event), (6, None));
+    assert_eq!(rewrite_status(&long, 256, &event).0, 10);
+    // 超过 4096 字节，不论原文多长。
+    let huge = "a".repeat(limits::MAX_REWRITE_BYTES + 1);
+    let mut long_body = before_commit_event("", "");
+    let original: &'static str = "b".repeat(2000).leak();
+    long_body.commit.body = Some(original);
+    long_body.commit.commit = Some(original);
+    assert_eq!(rewrite_status(&huge, huge.len(), &long_body), (6, None));
+}
+
+#[test]
+fn the_rewrite_limit_follows_the_original_body_not_an_earlier_rewrite() {
+    // 前一个插件把 100 个码元的原文缩成了 3 个：上限仍是 400，300 个字母放得下。
+    let mut shortened = before_commit_event("abc", "abc");
+    shortened.commit.original_body_utf16 = Some(100);
+    let three_hundred = "a".repeat(300);
+    assert_eq!(rewrite_status(&three_hundred, 300, &shortened).0, 10);
+    // 前一个插件把 2 个码元的原文放大到 256 个：上限仍是 256，不是 1024。
+    let grown: &'static str = "b".repeat(256).leak();
+    let mut lengthened = before_commit_event(grown, grown);
+    lengthened.commit.original_body_utf16 = Some(2);
+    assert_eq!(rewrite_status(&three_hundred, 300, &lengthened), (6, None));
+    assert_eq!(rewrite_status(&three_hundred, 256, &lengthened).0, 10);
+}
+
+#[test]
+fn rewrite_commit_is_denied_outside_a_rewritable_before_commit() {
+    let mut observe_only = before_commit_event("abc", "abc");
+    observe_only.scalars.rewritable = Some(false);
+    assert_eq!(rewrite_status("xyz", 3, &observe_only), (9, None));
+    let mut commit = before_commit_event("abc", "abc");
+    commit.hook = Hook::Commit;
+    assert_eq!(rewrite_status("xyz", 3, &commit), (9, None));
+    // 声明了能力却没被授予。
+    let wat = module_wat(
+        r#"(import "msime" "commit_text" (func $commit_text (param i32 i32 i32) (result i32)))
+           (import "msime" "rewrite_commit" (func $rewrite (param i32 i32) (result i32)))"#,
+        r#"(data (i32.const 64) "xyz")"#,
+        "(i32.add (call $rewrite (i32.const 64) (i32.const 3)) (i32.const 10))",
     );
     let declared = declaration(
         &[Capability::ReadCommit, Capability::RewriteCommit],
         &[Hook::BeforeCommit],
     );
     let module = compile_wat(&wat, declared).unwrap();
-    let mut script =
-        ScriptInstance::new(&module, declared.capabilities, limits::INIT_FUEL).unwrap();
-    let mut event = commit_event("abc");
-    event.hook = Hook::BeforeCommit;
-    assert_eq!(status_of(script.deliver(1, &event)), -status::DENIED);
+    let mut script = ScriptInstance::new(
+        &module,
+        CapabilitySet::EMPTY.with(Capability::ReadCommit),
+        limits::INIT_FUEL,
+    )
+    .unwrap();
+    assert_eq!(
+        status_of(script.deliver(1, &before_commit_event("abc", "abc"))),
+        9
+    );
+}
+
+#[test]
+fn a_failed_hook_hands_over_no_actions() {
+    let event = before_commit_event("abc", "abc");
+    // 改写之后返回负数、trap、越界：这一次暂存的改写全部丢弃。
+    for (body, expected) in [
+        (
+            "(drop (call $rewrite (i32.const 64) (i32.const 3))) (i32.const -1)",
+            Failure::NegativeReturn,
+        ),
+        (
+            "(drop (call $rewrite (i32.const 64) (i32.const 3))) unreachable",
+            Failure::Unreachable,
+        ),
+        (
+            "(drop (call $rewrite (i32.const -8) (i32.const 100))) (i32.const 0)",
+            Failure::MemoryOutOfBounds,
+        ),
+    ] {
+        let mut script = rewriter("xyz", body);
+        assert_eq!(failure(script.deliver(1, &event)), expected, "{body}");
+        assert!(script.actions().is_empty(), "{body}");
+    }
+    // 下一次正常返回，只交出这一次的改写。
+    let mut script = rewriter(
+        "xyz",
+        "(drop (call $rewrite (i32.const 64) (i32.const 3))) (i32.const 0)",
+    );
+    status_of(script.deliver(1, &event));
+    assert_eq!(script.actions().rewrite.as_deref(), Some("xyz"));
+    // 不是修改类钩子的投递把上一次的动作清掉。
+    status_of(script.deliver(2, &commit_event("abc")));
+    assert!(script.actions().is_empty());
+}
+
+const CANDIDATE_IMPORTS: &str = r#"(import "msime" "candidate_count" (func $count (result i32)))
+    (import "msime" "candidates_order" (func $order (param i32 i32) (result i32)))
+    (import "msime" "candidates_hide" (func $hide (param i32 i32) (result i32)))
+    (import "msime" "candidates_annotate" (func $annotate (param i32 i32 i32) (result i32)))"#;
+
+const TRANSFORMS: [Capability; 4] = [
+    Capability::ReadCandidates,
+    Capability::RerankCandidates,
+    Capability::AnnotateCandidates,
+    Capability::FilterCandidates,
+];
+
+/// 候选变换的模块：[0..) 是数据段 `data`。
+fn transformer(data: &str, body: &str, grants: &[Capability]) -> ScriptInstance {
+    let wat = module_wat(
+        CANDIDATE_IMPORTS,
+        &format!(r#"(data (i32.const 0) "{data}")"#),
+        body,
+    );
+    let module = compile_wat(
+        &wat,
+        declaration(&TRANSFORMS, &[Hook::Candidates, Hook::CandidatesShown]),
+    )
+    .unwrap();
+    ScriptInstance::new(&module, grants.iter().copied().collect(), limits::INIT_FUEL).unwrap()
+}
+
+const WINDOW: [CandidateRow<'static>; 3] = [
+    CandidateRow {
+        text: "你好",
+        code: "nihao",
+        annotation: "",
+        source: 0,
+    },
+    CandidateRow {
+        text: "拟好",
+        code: "nihao",
+        annotation: "",
+        source: 0,
+    },
+    CandidateRow {
+        text: "泥好",
+        code: "nihao",
+        annotation: "",
+        source: 0,
+    },
+];
+
+fn candidates_event(hook: Hook, local_mode: u8) -> Event<'static> {
+    let mut event = Event::new(hook);
+    event.scalars.local_mode = Some(local_mode);
+    event.candidates = Some(Candidates {
+        rows: &WINDOW,
+        page: None,
+        highlighted: None,
+    });
+    event
+}
+
+/// 跑一次 `body` 并返回它的返回值（返回码加 10）。
+fn transform_status(data: &str, body: &str, event: &Event<'_>) -> i32 {
+    status_of(transformer(data, body, &TRANSFORMS).deliver(1, event))
+}
+
+#[test]
+fn candidate_imports_stage_order_hide_and_annotations() {
+    // [0..8) 是行号 2、0；[8..12) 是行号 1；[16..) 是注释"常用"。
+    let data = r"\02\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\e5\b8\b8\e7\94\a8";
+    let mut script = transformer(
+        data,
+        "(drop (call $order (i32.const 0) (i32.const 2)))
+         (drop (call $hide (i32.const 8) (i32.const 1)))
+         (drop (call $hide (i32.const 8) (i32.const 1)))
+         (drop (call $annotate (i32.const 2) (i32.const 16) (i32.const 6)))
+         (i32.const 0)",
+        &TRANSFORMS,
+    );
+    status_of(script.deliver(1, &candidates_event(Hook::Candidates, 0)));
+    assert_eq!(
+        script.actions(),
+        &Actions {
+            rewrite: None,
+            order: vec![2, 0],
+            hidden: vec![1],
+            annotations: vec![(2, "常用".to_owned())],
+        }
+    );
+}
+
+#[test]
+fn candidate_imports_reject_bad_rows_and_text() {
+    let event = candidates_event(Hook::Candidates, 0);
+    let call = |call: &str| format!("(i32.add {call} (i32.const 10))");
+    // 重复的行号、越界的行号、比窗口还多的行。
+    assert_eq!(
+        transform_status(
+            r"\00\00\00\00\00\00\00\00",
+            &call("(call $order (i32.const 0) (i32.const 2))"),
+            &event
+        ),
+        7
+    );
+    assert_eq!(
+        transform_status(
+            r"\03\00\00\00",
+            &call("(call $hide (i32.const 0) (i32.const 1))"),
+            &event
+        ),
+        7
+    );
+    assert_eq!(
+        transform_status(
+            "",
+            &call("(call $order (i32.const 0) (i32.const 4))"),
+            &event
+        ),
+        7
+    );
+    assert_eq!(
+        transform_status(
+            "",
+            &call("(call $order (i32.const 0) (i32.const -1))"),
+            &event
+        ),
+        7
+    );
+    // 注释：33 个码元放不下，32 个正好；格式字符、行分隔符和越界的行号不行。
+    let a33 = "a".repeat(33);
+    assert_eq!(
+        transform_status(
+            &a33,
+            &call("(call $annotate (i32.const 0) (i32.const 0) (i32.const 33))"),
+            &event
+        ),
+        6
+    );
+    assert_eq!(
+        transform_status(
+            &a33,
+            &call("(call $annotate (i32.const 0) (i32.const 0) (i32.const 32))"),
+            &event
+        ),
+        10
+    );
+    assert_eq!(
+        transform_status(
+            r"a\e2\80\8b",
+            &call("(call $annotate (i32.const 0) (i32.const 0) (i32.const 4))"),
+            &event
+        ),
+        7
+    );
+    assert_eq!(
+        transform_status(
+            r"a\e2\80\a8",
+            &call("(call $annotate (i32.const 0) (i32.const 0) (i32.const 4))"),
+            &event
+        ),
+        7
+    );
+    assert_eq!(
+        transform_status(
+            "a",
+            &call("(call $annotate (i32.const 3) (i32.const 0) (i32.const 1))"),
+            &event
+        ),
+        7
+    );
+    // 行号区间越界直接 trap。
+    let mut script = transformer(
+        "",
+        "(call $order (i32.const -4) (i32.const 2))",
+        &TRANSFORMS,
+    );
+    assert_eq!(
+        failure(script.deliver(1, &event)),
+        Failure::MemoryOutOfBounds
+    );
+}
+
+#[test]
+fn candidate_imports_need_the_candidates_hook_the_grant_and_an_allowed_mode() {
+    let order = "(i32.add (call $order (i32.const 0) (i32.const 1)) (i32.const 10))";
+    // `candidates_shown` 只能读，不能改。
+    assert_eq!(
+        transform_status(
+            r"\00\00\00\00",
+            order,
+            &candidates_event(Hook::CandidatesShown, 0)
+        ),
+        9
+    );
+    // 本地模式不在白名单里（提及）：窗口按屏蔽处理。
+    assert_eq!(
+        transform_status(
+            r"\00\00\00\00",
+            order,
+            &candidates_event(Hook::Candidates, 6)
+        ),
+        8
+    );
+    // 只授予了读：三种修改都 DENIED。
+    let mut script = transformer(
+        r"\00\00\00\00",
+        "(i32.add (i32.add (call $order (i32.const 0) (i32.const 1)) (call $hide (i32.const 0) (i32.const 1)))
+             (i32.add (call $annotate (i32.const 0) (i32.const 0) (i32.const 1)) (i32.const 10)))",
+        &[Capability::ReadCandidates],
+    );
+    assert_eq!(
+        status_of(script.deliver(1, &candidates_event(Hook::Candidates, 0))),
+        10 + 3 * status::DENIED
+    );
+    assert!(script.actions().is_empty());
+}
+
+#[test]
+fn the_plugin_text_check_rejects_cc_cf_and_line_separators() {
+    for c in [
+        '\n',
+        '\u{7f}',
+        '\u{ad}',
+        '\u{200b}',
+        '\u{200d}',
+        '\u{202e}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{2066}',
+        '\u{feff}',
+        '\u{e0041}',
+    ] {
+        assert!(abi::is_forbidden_plugin_char(c), "{c:?}");
+    }
+    for c in ['a', ' ', '你', '\u{3000}', '\u{fe0f}', '😀'] {
+        assert!(!abi::is_forbidden_plugin_char(c), "{c:?}");
+    }
 }
 
 #[test]
