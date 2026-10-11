@@ -22,14 +22,18 @@ import app.msime.android.ResourcePackService;
 import app.msime.android.ResourcePacks;
 import app.msime.android.TextPolicy;
 import app.msime.android.VoiceConfiguration;
+import app.msime.android.VoicePolishPolicy;
+import app.msime.android.VoicePolishSettingsPolicy;
 import app.msime.android.VoiceProviderPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -62,14 +66,20 @@ public final class VoicePage extends DetailPage {
      * @param resolvedProvider 共享解析给出的识别服务，没有可用配置（键盘用系统识别）时为 null
      * @param models 共享目录里手机可用的本地模型
      * @param modelsError 读模型目录失败时的错误码，读到了为 null
+     * @param polishConfigured 共享解析给出了润色配置：开关打开时键盘会润色
      */
     private record State(JSONObject preferences, AndroidLocalSettings.Snapshot local, boolean punctuationSupported,
             boolean runtimeReady, @Nullable ResourcePacks.Pack runtimePack, @Nullable String resolvedProvider,
-            List<LocalVoiceModels.Model> models, @Nullable String modelsError) {}
+            List<LocalVoiceModels.Model> models, @Nullable String modelsError, boolean polishConfigured) {}
+
+    /** 一次「测试」的结果：{@code message} 是共享层给的中文结果，不含凭据。 */
+    private record TestResult(boolean ok, String message) {}
 
     @Nullable private LinearLayout column;
     @Nullable private GroupCard.Row contributeRow;
     @Nullable private State lastState;
+    /** 正在测试的服务（`voice.asr` / `voice.polish`）：测试中再点同一行不再发请求，免得排起一串请求和对话框。 */
+    private final Set<String> testing = new HashSet<>(2);
     /** 「从文件导入」等着文件选择器结果的那一项：资源包 id 或模型键、模型名（资源包为 null）和要的文件长度。 */
     private record ImportTarget(String pack, @Nullable String title, long[] sizes) {}
     @Nullable private ImportTarget pendingImport;
@@ -118,6 +128,8 @@ public final class VoicePage extends DetailPage {
         column = null;
         contributeRow = null;
         lastState = null;
+        // HostTask fences its callback to this view, so a test still in flight when the view goes away never reports back; the marker must not lock the rebuilt page out of testing again.
+        testing.clear();
         super.onDestroyView();
     }
 
@@ -143,7 +155,7 @@ public final class VoicePage extends DetailPage {
             // 按用户选的服务判断，而不是按解析结果：选了豆包还没填密钥时开关照样能设，填好后生效，不该说「当前识别服务不支持」。
             DoubaoAsrPolicy.PROVIDER.equals(InputViewValuePolicy.textOr(preferences.optJSONObject("voice_input"),
                 "asr_provider", "")), runtimeReady, runtime, configuration.provider(),
-            models, modelsError);
+            models, modelsError, configuration.polish() != null);
     }
 
     /** 安装包自带语音运行库：按名字能载入。没带时载入失败，按需下载的资源包补上它。 */
@@ -199,6 +211,8 @@ public final class VoicePage extends DetailPage {
         triggerRow[0] = recognition.nav("启动方式", null, TRIGGER_LABELS[trigger],
             () -> pickTrigger(trigger, triggerRow[0]));
 
+        polishGroup(target, voice, state);
+
         GroupCard privacy = GroupCard.add(target, "隐私");
         boolean contribute = local.bool(AndroidLocalSettings.VOICE_CONTRIBUTE_AUDIO);
         contributeRow = privacy.toggle("上传语音以改进识别", "语音片段匿名处理，可随时关闭", contribute,
@@ -228,23 +242,25 @@ public final class VoicePage extends DetailPage {
                     () -> editAppId(provider, appId));
             }
             String tokenTitle = legacy ? "Access Token" : "API Key";
-            service.nav(tokenTitle, null, hasToken ? "已设置" : "未设置", () -> editToken(provider, tokenTitle));
+            service.nav(tokenTitle, null, hasToken ? "已设置" : "未设置", () -> editToken("asr", provider, tokenTitle));
             service.nav("识别接口", VoiceProviderPolicy.endpointProblem(provider, endpoint),
                 VoiceProviderPolicy.doubaoEndpointLabel(endpoint), () -> pickDoubaoEndpoint(provider, endpoint));
             String resource = InputViewValuePolicy.textOr(voice, "asr_resource_id", "").trim();
             service.nav("资源 ID", null, resource.isEmpty() ? "默认" : shorten(resource), () -> editText("资源 ID",
                 "火山引擎控制台里开通的识别资源；留空使用 volc.seedasr.sauc.duration", resource,
                 value -> saveVoice("asr_resource_id", value)));
+            testRow(service, "voice.asr");
             service.footer("在火山引擎控制台开通豆包流式语音识别后获取密钥。密钥只保存在本机，不随设置同步。");
             return;
         }
-        service.nav("API Key", null, hasToken ? "已设置" : "未设置", () -> editToken(provider, "API Key"));
+        service.nav("API Key", null, hasToken ? "已设置" : "未设置", () -> editToken("asr", provider, "API Key"));
         String model = InputViewValuePolicy.textOr(voice, "asr_model", "").trim();
         service.nav("模型", null, model.isEmpty() ? "默认" : shorten(model), () -> editText("模型",
             "留空使用该服务的默认识别模型", model, value -> saveVoice("asr_model", value)));
         String problem = VoiceProviderPolicy.endpointProblem(provider, endpoint);
         service.nav("接口地址", problem, endpoint.isEmpty() ? "默认" : shorten(endpoint),
-            () -> editEndpoint(provider, endpoint));
+            () -> editEndpoint("asr", provider, endpoint));
+        testRow(service, "voice.asr");
         service.footer("说完后录音上传到所选服务识别。API Key 只保存在本机，不随设置同步。");
     }
 
@@ -466,14 +482,19 @@ public final class VoicePage extends DetailPage {
             () -> saveVoice("asr_endpoint", VoiceProviderPolicy.DOUBAO_NOSTREAM));
         sheet.option("双向流式（增量结果）", "双向流式".equals(label),
             () -> saveVoice("asr_endpoint", VoiceProviderPolicy.DOUBAO_ASYNC));
-        sheet.option("自定义地址…", "自定义地址".equals(label), () -> editEndpoint(provider, endpoint));
+        sheet.option("自定义地址…", "自定义地址".equals(label), () -> editEndpoint("asr", provider, endpoint));
         sheet.show();
     }
 
-    /** 密钥框不回显旧值；留空删除这个服务的密钥（当前框和它的槽一起清）。确认时服务已被键盘或别的页面换掉就不写。 */
-    private void editToken(String provider, String title) {
-        InputDialog dialog = new InputDialog(requireContext(), title,
-            VoiceProviderPolicy.label(provider) + " 的" + title + "，只保存在本机");
+    /**
+     * 密钥框不回显旧值；留空删除这个服务的密钥（当前框和它的槽一起清）。确认时服务已被键盘或别的页面换掉就不写。
+     *
+     * @param prefix 字段前缀：识别是 {@code asr}（`asr_provider`、`asr_token`、`asr_tokens`），润色是 {@code polish}
+     */
+    private void editToken(String prefix, String provider, String title) {
+        String label = "asr".equals(prefix) ? VoiceProviderPolicy.label(provider)
+            : VoicePolishSettingsPolicy.providerLabel(provider);
+        InputDialog dialog = new InputDialog(requireContext(), title, label + " 的" + title + "，只保存在本机");
         EditText field = dialog.addField("留空表示删除", "",
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         dialog.setValidator(values -> {
@@ -483,10 +504,10 @@ public final class VoicePage extends DetailPage {
         });
         dialog.setPrimary("保存", values -> save(preferences -> {
             JSONObject voice = KeyboardSheets.child(preferences, "voice_input");
-            if (!provider.equals(InputViewValuePolicy.textOr(voice, "asr_provider", "")))
+            if (!provider.equals(InputViewValuePolicy.textOr(voice, prefix + "_provider", "")))
                 throw new JSONException("provider changed");
-            voice.put("asr_token", values.get(0).trim());
-            KeyboardSheets.child(voice, "asr_tokens").remove(provider);
+            voice.put(prefix + "_token", values.get(0).trim());
+            KeyboardSheets.child(voice, prefix + "_tokens").remove(provider);
         }));
         dialog.show();
     }
@@ -503,7 +524,8 @@ public final class VoicePage extends DetailPage {
         dialog.show();
     }
 
-    private void editEndpoint(String provider, String current) {
+    /** @param prefix 字段前缀，写 `asr_endpoint` 或 `polish_endpoint` */
+    private void editEndpoint(String prefix, String provider, String current) {
         boolean streaming = DoubaoAsrPolicy.isStreaming(provider);
         InputDialog dialog = new InputDialog(requireContext(), "接口地址",
             streaming ? "豆包流式识别的 wss:// 地址" : "留空使用该服务的默认地址；代理或专属地址填完整的 https:// 地址");
@@ -514,7 +536,7 @@ public final class VoicePage extends DetailPage {
             field.setError(problem);
             return problem == null;
         });
-        dialog.setPrimary("保存", values -> saveVoice("asr_endpoint", values.get(0).trim()));
+        dialog.setPrimary("保存", values -> saveVoice(prefix + "_endpoint", values.get(0).trim()));
         dialog.show();
     }
 
@@ -543,6 +565,125 @@ public final class VoicePage extends DetailPage {
 
     private static String shorten(String value) {
         return value.length() <= 24 ? value : value.substring(0, 23) + "…";
+    }
+
+    /** 「润色」组：开关，打开后是服务、密钥、模型、接口、方案和「测试」。键盘读的同样是这些 `polish_*` 字段。 */
+    private void polishGroup(LinearLayout target, JSONObject voice, State state) {
+        GroupCard polish = GroupCard.add(target, "润色");
+        boolean enabled = VoicePolishPolicy.requested(voice.optBoolean("polish_enabled", false),
+            voice.optBoolean("polish_text", false));
+        String provider = InputViewValuePolicy.textOr(voice, "polish_provider", "");
+        String box = InputViewValuePolicy.textOr(voice, "polish_token", "").trim();
+        JSONObject slots = voice.optJSONObject("polish_tokens");
+        boolean hasToken = !box.isEmpty() || (slots != null && !slots.optString(provider, "").trim().isEmpty());
+        String status = VoicePolishSettingsPolicy.status(enabled, state.polishConfigured(), hasToken);
+        // 两个开关在共享设置页一起写，任一个开着键盘就会润色，所以关的时候两个都关。
+        polish.toggle("润色识别结果", status != null ? status : "识别后交给大模型整理文字再上屏", enabled, checked -> save(
+            preferences -> {
+                JSONObject next = KeyboardSheets.child(preferences, "voice_input");
+                next.put("polish_text", checked);
+                next.put("polish_enabled", checked);
+            }));
+        if (!enabled) return;
+        polish.nav("润色服务", null, VoicePolishSettingsPolicy.providerLabel(provider), () -> pickPolishProvider(provider));
+        polish.nav("润色 API Key", null, hasToken ? "已设置" : "未设置", () -> editToken("polish", provider, "API Key"));
+        String model = InputViewValuePolicy.textOr(voice, "polish_model", "").trim();
+        polish.nav("润色模型", null, model.isEmpty() ? "默认" : shorten(model), () -> editText("润色模型",
+            "留空使用该服务的默认模型", model, value -> saveVoice("polish_model", value)));
+        String endpoint = InputViewValuePolicy.textOr(voice, "polish_endpoint", "").trim();
+        polish.nav("润色接口地址", VoiceProviderPolicy.endpointProblem(provider, endpoint),
+            endpoint.isEmpty() ? "默认" : shorten(endpoint), () -> editEndpoint("polish", provider, endpoint));
+        String prompt = InputViewValuePolicy.textOr(voice, "polish_prompt_id", "");
+        polish.nav("润色方案", null, VoicePolishSettingsPolicy.promptLabel(prompt), () -> pickPrompt(prompt));
+        String field = VoicePolishSettingsPolicy.customField(prompt);
+        if (field != null) {
+            String custom = InputViewValuePolicy.textOr(voice, field, "");
+            polish.nav("方案内容", null, custom.trim().isEmpty() ? "未填写" : shorten(custom.trim()),
+                () -> editCustomPrompt(field, custom));
+        }
+        testRow(polish, "voice.polish");
+        polish.footer("识别出的文字会发给所选服务整理后再上屏。API Key 只保存在本机，不随设置同步。");
+    }
+
+    private void pickPolishProvider(String selected) {
+        OptionSheet sheet = new OptionSheet(requireContext(), "润色服务", null);
+        String current = selected.isEmpty() ? VoicePolishSettingsPolicy.PROVIDERS[0] : selected;
+        for (String provider : VoicePolishSettingsPolicy.PROVIDERS) {
+            sheet.option(VoicePolishSettingsPolicy.providerLabel(provider), provider.equals(current), () -> {
+                if (!provider.equals(current)) savePolishProvider(provider);
+            });
+        }
+        sheet.show();
+    }
+
+    /** 换润色服务：与识别服务相同，凭据换槽，接口和模型清空交给共享层补该服务的默认值。 */
+    private void savePolishProvider(String provider) {
+        save(preferences -> {
+            JSONObject voice = KeyboardSheets.child(preferences, "voice_input");
+            String from = InputViewValuePolicy.textOr(voice, "polish_provider", "");
+            if (provider.equals(from)) return;
+            VoiceProviderPolicy.Tokens tokens = VoiceProviderPolicy.switchTokens(from, provider,
+                InputViewValuePolicy.textOr(voice, "polish_token", ""), slots(voice.optJSONObject("polish_tokens")));
+            voice.put("polish_provider", provider);
+            voice.put("polish_token", tokens.token());
+            JSONObject next = new JSONObject();
+            for (Map.Entry<String, String> entry : tokens.tokens().entrySet()) next.put(entry.getKey(), entry.getValue());
+            voice.put("polish_tokens", next);
+            voice.put("polish_endpoint", "");
+            voice.put("polish_model", "");
+        });
+    }
+
+    private void pickPrompt(String selected) {
+        OptionSheet sheet = new OptionSheet(requireContext(), "润色方案", "自定义方案可以写自己的提示词");
+        String current = selected.isEmpty() ? VoicePolishSettingsPolicy.PROMPTS[0] : selected;
+        for (String id : VoicePolishSettingsPolicy.PROMPTS) {
+            sheet.option(VoicePolishSettingsPolicy.promptLabel(id), id.equals(current),
+                () -> saveVoice("polish_prompt_id", id));
+        }
+        sheet.show();
+    }
+
+    private void editCustomPrompt(String field, String current) {
+        InputDialog dialog = new InputDialog(requireContext(), "方案内容",
+            "写给大模型的提示词，识别出的文字会放在 <asr_text> 标签里交给它");
+        dialog.addField("提示词", current,
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        dialog.setValidator(values -> !TextPolicy.hasControlExceptNewline(values.get(0)));
+        dialog.setPrimary("保存", values -> saveVoice(field, values.get(0).trim()));
+        dialog.show();
+    }
+
+    /** 「测试」行：按存着的配置在网络线程上发一次请求，结果用对话框给出（文案可能超过 Toast 的两行）。请求最长约 15 秒，不能占着设置页读写偏好的那条串行线程。 */
+    private void testRow(GroupCard group, String service) {
+        group.button("测试连接", "用现在保存的设置发一次请求，最长约 15 秒", "测试", () -> {
+            MsToast.show(requireContext(), "正在测试…");
+            if (!testing.add(service)) return;
+            HostTask.runNetwork(this, context -> runTest(context, service), result -> {
+                testing.remove(service);
+                if (!isAdded()) return;
+                new MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(VoicePolishSettingsPolicy.testTitle(result.ok()))
+                    .setMessage(result.message())
+                    .setPositiveButton("好", null)
+                    .show();
+            });
+        });
+    }
+
+    private static TestResult runTest(Context context, String service) {
+        try {
+            JSONObject request = new JSONObject()
+                .put("preferences_directory", HostStore.directory(context))
+                .put("service", service);
+            JSONObject envelope = new JSONObject(NativeClient.testVoiceCredential(request.toString()));
+            JSONObject value = envelope.optJSONObject("value");
+            if (!envelope.optBoolean("ok", false) || value == null) return new TestResult(false, "测试没能完成，请稍后重试。");
+            return new TestResult(value.optBoolean("ok", false), value.optString("message", ""));
+        } catch (JSONException | RuntimeException | LinkageError error) {
+            // 共享库没加载上、响应读不懂都按测试没完成处理，不让设置页崩掉。
+            return new TestResult(false, "测试没能完成，请稍后重试。");
+        }
     }
 
     private void pickLanguage(String selected, GroupCard.Row row) {

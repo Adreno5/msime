@@ -497,6 +497,8 @@ char *msime_client_niutrans_translation_http_request(const uint8_t *request, siz
  * otherwise this sends one request and blocks up to about 15 s: call off the UI thread.
  * The request carries credentials: never log it. */
 char *msime_client_test_api_credential(const uint8_t *request, size_t length);
+/* The same check for a settings page without its own copy of the provider defaults (the Android native app). Request <=64 KiB: {preferences_directory, service}, service voice.asr or voice.polish; the configuration is resolved from the stored preferences exactly as the keyboard resolves it. Value {ok,message} as above; a provider with nothing to test (system, local, unknown) is answered without the network. Blocks up to about 15 s: call off the UI thread. */
+char *msime_client_test_voice_credential(const uint8_t *request, size_t length);
 /* Pure check of a custom translation endpoint (UTF-8, <=64 KiB), for the settings page. Value
  * {issue,accepted}: issue is the Chinese hint the shared page shows under the endpoint field
  * (translationEndpointIssue: empty endpoint, too long, control characters, not a URL,
