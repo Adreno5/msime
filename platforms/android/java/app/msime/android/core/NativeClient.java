@@ -375,7 +375,7 @@ public final class NativeClient {
         localSpeechRuntimeRaw(utf8(sherpaLibrary));
     }
 
-    /** 资源包安装的进度。在调用 {@link #resourcePackInstall} 的工作线程上调用；phase 是 "download"、"verify" 或 "done"。不要在这里抛异常或做耗时的事。 */
+    /** 资源包安装的进度。在调用 {@link #resourcePackInstall} 的工作线程上调用；phase 是 "download"（从本地文件安装时是 "import"）、"verify" 或 "done"。不要在这里抛异常或做耗时的事。 */
     public interface ResourcePackProgress {
         void onProgress(String phase, long done, long total);
     }
@@ -399,7 +399,7 @@ public final class NativeClient {
         resourcePackCancelRaw(pack == null ? null : pack.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** 本地语音模型安装的进度：{@code {id, stage, downloaded, total}} 的 JSON 字节，stage 是 "download"、"verify"、"extract" 或 "done"。在调用 {@link #voiceLocalModelInstall} 的工作线程上调用；不要在这里抛异常或做耗时的事。 */
+    /** 本地语音模型安装的进度：{@code {id, stage, downloaded, total}} 的 JSON 字节，stage 是 "download"（从本地文件安装时是 "import"）、"verify"、"extract" 或 "done"。在调用 {@link #voiceLocalModelInstall} 的工作线程上调用；不要在这里抛异常或做耗时的事。 */
     public interface LocalModelProgress {
         void onProgress(byte[] json);
     }
