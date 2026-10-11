@@ -1584,12 +1584,12 @@ fn korean_hanja_conversion_crosses_the_host_boundary() {
     assert!(refused["value"]["commit"].is_null());
     assert_eq!(refused["value"]["view"]["preedit"], "ㄱ");
 
-    // 17 和 18 是整句改字的光标键，韩文里进不了改字，与字母光标键一样写出音节；18 是导航命令前的最后一个，下一个编号仍未定义。
+    // 17 和 18 是整句改字的光标键，韩文里进不了改字，与字母光标键一样写出音节；19 是宿主自己上屏后的取消（MSIME_CANCEL_AFTER_HOST_COMMIT），是导航命令前的最后一个，下一个编号仍未定义。
     let left = read(msime_client_command(handle, 17));
     assert_eq!(left["value"]["handled"], false);
     assert_eq!(left["value"]["commit"], "ㄱ");
     assert_eq!(
-        read(msime_client_command(handle, 19))["error"],
+        read(msime_client_command(handle, 20))["error"],
         "unknown input command"
     );
     read(msime_client_destroy(handle));
@@ -13718,3 +13718,5 @@ fn voice_capture_device_export_lists_wasapi_endpoints_on_windows_only() {
         assert_eq!(reply["error"], "voice capture devices unavailable");
     }
 }
+
+mod lifecycle_traces;

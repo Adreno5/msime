@@ -45,6 +45,8 @@ macOS 的打字特效面板（`platforms/macos/src/input/TypingEffectPanel.mm`�
 - **收益**：Windows 的火花、Power Mode、多色特效包、徽标弹跳和候选窗不在时的特效都和 macOS 一致；设置页的样式说明不再为 Windows 改写。没有组字时的空格、回车、退格、数字也出按键音、计入连击。数值集中在一个纯头文件里，主机上可以单测。
 - **代价与已知上限**：光标位置先取前台线程的系统光标（`InputModeHudWindow::system_caret`，只认每显示器 DPI 感知的窗口）。取不到时用最近一次组字的锚点往上估 20 个设备无关像素一行。不建系统光标的应用里，交给应用的键的火花落在上次组字的位置，不在真正的光标处。macOS 的火花是加法混合的软圆点贴图，这里用两层不同不透明度的圆近似。全屏应用在前台时卡片闪光仍照 Windows 原来的行为画，没有像 macOS 那样一并关掉。交给应用的键在 Server 卡住时最多晚到 250 毫秒，再晚就丢。以下几点只在 macOS 上做过 MinGW 语法检查和纯策略的本机测试，要在 Windows 真机上确认：浮层的点击穿透、层级、帧率和观感，交给应用的键的出声延迟。若真机上分层窗口每帧上传的开销明显，或者火花被候选窗以外的置顶窗口挡住，就要重访第一条备选。
 
+- **后续**：桌面生命周期核心（[2026-10-11-desktop-lifecycle-core](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md)）的第 2 阶段会让 Server 打开 `FEEDBACK`，按键音和按键特效改由 `msime_client_key` 驱动、移到引擎处理之前，上屏音和上屏特效改由核心的上屏事件驱动，音乐改走 `msime_client_set_active` 的所有者仲裁；本篇的浮层、调色板和 Aux 管道路径不变。
+
 ## Verification
 
 - `platforms/windows/tests/candidate/typing_effect_overlay_policy.cpp`（`windows-typing-effect-overlay-policy`）：颗数、颜色轮换、轨迹范围、闪光、抖动、弹跳、摆放、调色板打包和上屏标记。

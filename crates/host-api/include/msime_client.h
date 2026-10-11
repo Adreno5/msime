@@ -633,6 +633,8 @@ enum MsimeCommand {
     MSIME_CONVERT_HANJA = 16,
     MSIME_OPEN_CANDIDATE_LIST = 16,
     MSIME_CONVERSION_LEFT = 17, MSIME_CONVERSION_RIGHT = 18,
+    /* 宿主已经自己把文本写进了文档，再丢弃组字：对会话的作用同 MSIME_CANCEL（一次，组字没结束时照旧再发一次），区别只在生命周期里结束原因记 HostCommit、不出取消音。 */
+    MSIME_CANCEL_AFTER_HOST_COMMIT = 19,
     MSIME_NEXT_PAGE = 100, MSIME_PREVIOUS_PAGE = 101,
     MSIME_NEXT_CANDIDATE = 102, MSIME_PREVIOUS_CANDIDATE = 103,
     MSIME_FIRST_CANDIDATE = 104, MSIME_LAST_CANDIDATE = 105
@@ -945,6 +947,35 @@ void msime_client_set_diagnostic_sink(msime_client_diagnostic_sink sink);
 bool msime_client_key_sound(uint64_t session, uint32_t key_class);
 bool msime_client_commit_sound(uint64_t session);
 bool msime_client_music_set_active(uint64_t session, bool active);
+/* 生命周期核心（桌面宿主选择加入；移动端宿主不调用，行为和 transition JSON 都不变）。以下调用都在会话所在线程上进行，不落盘，不分配要释放的内存；未知会话、错线程、重入调用或内部 panic 时返回 0 或 false。
+ * msime_client_set_lifecycle：让会话选择加入，或换一组位；返回实际启用的位，其余位被忽略。没调用过它的会话不推导任何事件。
+ *   MSIME_LIFECYCLE_FEEDBACK：按键音、上屏音、打字特效和背景音乐改由核心驱动。按键音和按键特效来自 msime_client_key；上屏音和上屏特效（typing_effect 事件 4）来自核心的上屏事件，派发类调用的回复里多一个 "feedback":{"typing_effect":N} 键，N 的位布局同 msime_client_typing_effect，没有上屏时为 0；音乐由 msime_client_set_active 仲裁所有者。本会话的 msime_client_key_sound、msime_client_commit_sound、msime_client_typing_effect（事件 0-4）和 msime_client_music_set_active 随之变为空操作（返回 false 或 0）。typing_effect 事件 5（绕过按键音的删除）不经过 msime_client_key，核心看不到，仍由宿主调用。失焦上屏不出声也不画。字段属性带 SECURE 时没有任何声音和特效，音乐关闭；带 FULLSCREEN 时声音静音、特效照画（同 typing_effect 的位 9）。
+ *   MSIME_LIFECYCLE_COMMIT_OBSERVE_ONLY：之后的上屏只能观察、不能改写，可随时切换。TIP 已经从自己的会话把文字写进文档的路径（Windows），Server 在派发前设上、派发后清掉。
+ *   MSIME_LIFECYCLE_HOST_HOLDS_PIECES：宿主自己暂存部分选词（Windows）。
+ * 顺序契约。轮次：宿主每把一个物理按下交给输入法，都要在为这个键调用任何派发之前先调一次 msime_client_key，它开启新的一轮；到下一次 msime_client_key 之前的所有派发和 focus 调用都属于这一轮，同一个键可能触发多次派发（如 Windows 对同一个键再发一次 MSIME_CANCEL）。指针点选和翻页先调 msime_client_key(session, MSIME_KEY_POINTER)。带 MSIME_KEY_PASSTHROUGH 的键（Windows 交给应用、由 TIP 经 Aux 管道异步上报的键）不开新的一轮，也不承诺先于应用处理。所以"打字前"只承诺先于本轮的第一次派发。
+ * 同一次调用内的事件顺序：input（派发前）→ selection_retracted → candidate_selected → before_commit → commit → composition_end 或 composition_start → composition_update → candidates_shown 或 candidates_hidden，每次调用最多一个候选事件。focus 调用没有 input，focus_in/focus_out 排在它自己的上屏和组字结束之后；失焦上屏一律不可改写。destroy 先发 composition_end{Destroyed}，最后是会话结束。组字状态只在调用边界前后各采样一次。一次 transition 同时带着上屏和新组字时（韩文音节延续）只发 commit{continues}，不发 end 和 start。apply_online_*、resolve_online_candidates、clear_online_candidates、apply_cloud_response、rerank_settled、apply_translations 这些旁路调用，以及 set_english_mode、set_chinese_punctuation、set_punctuation_lock、update_preferences、set_ai_credential 这些可能在组字中途改动组字或候选的设置调用，只给核心发视图类事件（composition_end{Other}、candidates_shown/hidden 等）。派发、focus 和上面这些调用报错时照样推导事件：runtime 可能在报错前已经结束或改动了组字，start 和 end 始终成对。事件不带文本，也不写进任何逐键记录。
+ * Windows TIP 会话的约束：TIP 在应用进程里自己的会话只给 Server 转述，不调用以下任何一个函数；字段属性和激活由 Server 的会话报告。
+ * msime_client_key：key 的位 0-6 是按键类别 0-3（同 key_sound），位 7（MSIME_KEY_POINTER）是指针调用，类别被忽略，不出声不画；位 8（MSIME_KEY_REPEAT）是自动重复，画但不计连击；位 10（MSIME_KEY_PASSTHROUGH）见上。其余位忽略，类别超出 0-3 时什么都不做。返回值是 FEEDBACK 下这个键的打字特效，位布局同 msime_client_typing_effect；没开 FEEDBACK 时为 0。
+ * msime_client_set_field_traits：宿主在每个键之前比较一次字段属性，变了就先调它，再调 msime_client_key。没有 MSIME_TRAIT_KNOWN 位时属性按未知处理：上屏不可改写；但 SECURE 和 FULLSCREEN 位本身仍然生效，声音、特效和音乐照样按上面的规则关闭或静音。返回现在生效的属性（不认识的位被丢掉）；会话没选择加入时返回 0。
+ * msime_client_set_active：输入法在这个会话里激活（true）或停用（false）。FEEDBACK 下，true 让调用者成为背景音乐的所有者，只有所有者能开关音乐，所有者被销毁时音乐自动关闭；实际的音乐状态是"是所有者、处于激活、字段既不是 SECURE 也不是 FULLSCREEN"。会话已选择加入时返回 true。 */
+#define MSIME_LIFECYCLE_FEEDBACK 0x1u
+#define MSIME_LIFECYCLE_COMMIT_OBSERVE_ONLY 0x4u
+#define MSIME_LIFECYCLE_HOST_HOLDS_PIECES 0x8u
+#define MSIME_KEY_POINTER 0x80u
+#define MSIME_KEY_REPEAT 0x100u
+#define MSIME_KEY_PASSTHROUGH 0x400u
+#define MSIME_TRAIT_SECURE 0x01u
+#define MSIME_TRAIT_PRIVATE 0x02u
+#define MSIME_TRAIT_NO_SPELLCHECK 0x04u
+#define MSIME_TRAIT_FULLSCREEN 0x08u
+#define MSIME_TRAIT_VOICE_ACTIVE 0x10u
+#define MSIME_TRAIT_HOST_ENGLISH 0x20u
+#define MSIME_TRAIT_ELEVATED 0x40u
+#define MSIME_TRAIT_KNOWN 0x80000000u
+uint32_t msime_client_set_lifecycle(uint64_t session, uint32_t flags);
+uint32_t msime_client_key(uint64_t session, uint32_t key);
+uint32_t msime_client_set_field_traits(uint64_t session, uint32_t traits);
+bool msime_client_set_active(uint64_t session, bool active);
 /* The typing effect of one key, for the host to draw beside the caret: the session's combo count and the resolved style: the selected effect pack's (preferences.plugins.effect_pack) when one is set, preferences.plugins.effect_style otherwise. Also for the key path: integer arithmetic on the session's own state, no lock, no allocation, no file, no free; it works on every platform, iOS, Android and HarmonyOS included. Call it once per key the host handles while effect_style is not "off", effect_pack is set or combo_counter is on, alongside key_sound, and once per commit; skip keys typed into a secure (password) field.
  * event bits 0-7: 0 any other key, 1 space, 2 enter, 3 backspace (the key_sound classes), 4 commit, 5 backspace by any other route (a delete that bypasses key_sound). 0-2 count one key; 3 and 5 end the combo; 4 counts nothing and only reports the state.
  * event bit 8 (0x100): the key is an auto-repeat of a held key; drawn, not counted. Bit 9 (0x200): sounds must stay quiet now (a full-screen foreground application on Windows); the tier-up sound is neither queued nor reported due. Other bits are ignored.

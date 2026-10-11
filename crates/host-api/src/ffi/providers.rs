@@ -126,8 +126,11 @@ pub unsafe extern "C" fn msime_client_set_ai_credential(
                     token,
                 }
             });
-            // 只有会话密钥的宿主（iOS）到这时才知道 AI 请求发不发得出去。
-            session.refresh_ai_seat()?;
+            // 只有会话密钥的宿主（iOS）到这时才知道 AI 请求发不发得出去。AI 座位可能在组字中途出现或消失，按旁路调用推导。
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
+            let refreshed = session.refresh_ai_seat();
+            session.lifecycle_on_error(pending, refreshed)?;
+            session.lifecycle_settle(pending);
             Ok(Value::Bool(true))
         })
     })

@@ -125,6 +125,8 @@ mod diagnostics;
 pub use diagnostics::{msime_client_set_diagnostic_sink, DiagnosticSink};
 mod dictionary_snapshot;
 mod key_sound;
+// 生命周期核心；`pub` 是为了让集成测试（零分配断言）直接调用纯推导函数。
+pub mod lifecycle;
 mod plugin_tables;
 mod voice_capture;
 pub use dictionary_snapshot::{
@@ -271,6 +273,8 @@ struct HostSession {
     settled_model: Option<PathBuf>,
     /// 聚焦时发现落定重排模型的文件变了（资源包刚装好或被移除），`settled_model` 已经更新，新模型在后台线程加载到这个槽里；槽有值后，下一次输入空闲的 `apply_pending` 把它换上并清掉这一项。为 `None` 时没有待换的模型。
     settled_model_loading: Option<SettledModelSlot>,
+    /// 生命周期核心的状态，只由 `msime_client_set_lifecycle` 设上。为 `None` 时（移动端宿主从不调用它）不推导任何事件，transition JSON 逐字节不变。
+    lifecycle: Option<Box<lifecycle::LifecycleState>>,
     // Declared after runtime so the Engine is dropped before releasing access.
     _dictionary_access: DictionaryAccess,
 }
@@ -2139,20 +2143,27 @@ fn with_session(
 }
 
 fn dispatch(handle: u64, action: Action) -> *mut c_char {
+    dispatch_call(handle, action, false)
+}
+
+/// 派发一个动作。`host_commit` 只对命令 19 为真：动作同 Cancel，生命周期里结束原因记 HostCommit。
+///
+/// 选择加入生命周期的会话按这个顺序：调用前采样并发 `input` → `runtime.dispatch` → 统计 → 读派发事实 → `complete_transition`（全角转换在这里，之后才是宿主拿到的字节）→ `before_commit` 发出点（本阶段不改写）→ 其余事件和内置消费者 → 序列化，FEEDBACK 开着时插入 `feedback`。没选择加入的会话只走原来的几步。
+fn dispatch_call(handle: u64, action: Action, host_commit: bool) -> *mut c_char {
     response(|| {
         with_session(handle, |session| {
             // 大写锁定改道先于其余处理，后面看到的都是改道后的动作。
             let action = session.caps_lock_punctuation(action);
+            let pending = session.lifecycle_input(&action, host_commit);
             // Which row the user reached for, read before dispatching because the view it is
             // relative to is gone afterwards. Every platform host routes candidate selection
             // through here, so counting it here covers all of them without a line of platform
             // code; doing it per host would have meant six chances to forget.
             let position = selected_position(&action);
             let efficiency = position.and_then(|_| session.efficiency_candidate(&action));
-            let result = session
-                .runtime
-                .dispatch(action)
-                .map_err(|e| e.to_string())?;
+            let result = session.runtime.dispatch(action).map_err(|e| e.to_string());
+            // 报错前 runtime 可能已经改了组字，生命周期照样收尾。
+            let result = session.lifecycle_on_error(pending, result)?;
             // Text the Engine generated (a calculator result, a command, a mention) was picked, not typed, and stays out of the statistics the way it stays out of learning.
             let counts_as_typing = result
                 .commit_context
@@ -2167,8 +2178,14 @@ fn dispatch(handle: u64, action: Action) -> *mut c_char {
                     session.count_selection(position);
                 }
             }
+            let facts = session.runtime.facts();
             let result = session.complete_transition(result);
-            serde_json::to_value(result).map_err(|e| e.to_string())
+            let feedback = session.lifecycle_after(pending, facts, &result);
+            let mut value = serde_json::to_value(result).map_err(|e| e.to_string())?;
+            if let (Some(effect), Value::Object(fields)) = (feedback, &mut value) {
+                fields.insert("feedback".into(), json!({ "typing_effect": effect }));
+            }
+            Ok(value)
         })
     })
 }
