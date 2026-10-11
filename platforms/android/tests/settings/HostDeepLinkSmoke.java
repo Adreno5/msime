@@ -13,7 +13,8 @@ public final class HostDeepLinkSmoke {
         check(HostDeepLink.FLAGS == (0x10000000 | 0x04000000 | 0x20000000), "flags are new task, clear top and single top");
 
         check(HostDeepLink.TAB_SETTINGS == 0 && HostDeepLink.TAB_COMMUNITY == 1
-            && HostDeepLink.TAB_STATISTICS == 2 && HostDeepLink.TAB_ACCOUNT == 3, "tab indices follow the bottom bar");
+            && HostDeepLink.TAB_STATISTICS == 2 && HostDeepLink.TAB_ACCOUNT == 3,
+            "tab indices keep their values after the community tab was retired");
         for (int tab = 0; tab <= 3; tab++) check(HostDeepLink.isTab(tab), "tab " + tab + " is accepted");
         check(!HostDeepLink.isTab(-1) && !HostDeepLink.isTab(4) && !HostDeepLink.isTab(Integer.MAX_VALUE), "out-of-range tabs are rejected");
         check(!HostDeepLink.isTab(HostDeepLink.NO_TAB), "the missing-tab marker is not a tab");

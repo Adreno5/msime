@@ -36,7 +36,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 词库页：已安装（内置拼音词库加各个命名词库），管理组（新建、导入、导出、刷新），发现词库（社区），学习组「记忆新词」，以及只在 Tauri 合包里出现的「更多」组（背单词、云词库，P21）。
+ * 词库页：已安装（内置拼音词库加各个命名词库），管理组（新建、导入、导出、刷新），发现词库（社区里的前几个，末尾「浏览更多词库」进社区词库的完整列表），学习组「记忆新词」，以及只在 Tauri 合包里出现的「更多」组（背单词、云词库，P21）。
  *
  * <p>导入、导出和刷新原先是大标题行右侧的三个胶囊，窄屏上把「词库」两个字挤成「词…」（#5682），现在和新建一起放在「已安装」下面那张卡片里，行间有分隔线；大标题和其他详情页一样只放标题。
  *
@@ -162,6 +162,9 @@ public final class LexiconPage extends DetailPage {
         } else {
             for (CommunityCatalog.Item item : items) community.addView(discoverRow(item, current.view()));
         }
+        // 这里只列前几个，完整列表（搜索、详情、举报）压在词库页上面，返回回到这里。
+        community.nav("浏览更多词库", "搜索社区里的全部词库", null,
+            () -> CommunityFragment.browse(context, CommunityRequest.Kind.DICTIONARY));
 
         GroupCard learning = GroupCard.add(target, "学习");
         InputFeatureToggle toggle = InputFeatureToggle.LEARNING;

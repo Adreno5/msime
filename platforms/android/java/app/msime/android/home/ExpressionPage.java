@@ -17,7 +17,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 表达页：标点（使用英文标点、自动补全成对标点、智能标点）、智能（整句联想三档、英文联想、候选带 emoji、候选带颜文字）和发现短语（社区短语包）。
+ * 表达页：标点（使用英文标点、自动补全成对标点、智能标点）、智能（整句联想三档、英文联想、候选带 emoji、候选带颜文字）和发现短语（社区里的前几个短语包，末尾「浏览更多短语」进社区短语的完整列表）。
  *
  * <p>「使用英文标点」是 `chinese_punctuation` 取反显示、写入时取反；整句联想三档写 `sentence_association`：关闭是 `word_lattice=false`，标准是 `word_lattice`，增强是 `word_lattice` 加 `neural_keyboard`。发现短语列社区里 `phrase` 类的资源，「添加」经 {@link CommonPhrasesStore#installPack} 装进本机无编码常用语（它会标记云同步的「常用语」），已经装过的包显示「已添加」。
  */
@@ -128,6 +128,9 @@ public final class ExpressionPage extends DetailPage {
         } else {
             for (CommunityCatalog.Item item : items) phrases.addView(phraseRow(context, item));
         }
+        // 这里只列前几个，完整列表（搜索、详情、举报）压在表达页上面，返回回到这里。
+        phrases.nav("浏览更多短语", "搜索社区里的全部短语包", null,
+            () -> CommunityFragment.browse(context, CommunityRequest.Kind.PHRASE));
     }
 
     private android.view.View phraseRow(Context context, CommunityCatalog.Item item) {

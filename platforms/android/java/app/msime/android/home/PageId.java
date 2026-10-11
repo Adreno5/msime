@@ -14,11 +14,12 @@ import java.util.List;
  *
  * <p>页面类的约束见 {@link DetailPage}：必须是 public 类、有 public 无参构造器、参数只放在 arguments Bundle 里。
  *
- * <p>关键词取自对应设计图上的行标题，搜索时与标题一起匹配；{@link #LEXICON_DETAIL} 和 {@link #CLIPBOARD_EDIT} 需要参数才能打开，所以没有关键词，不出现在搜索结果里。页面里新加的开关、导航和滑块行要同时把行标题加进这里，否则设置首页搜不到它（#6132 的「浮动键盘」就是这样漏掉的）；`tests/home/SettingsSearchIndexSmoke.java` 逐页核对。
+ * <p>关键词取自对应设计图上的行标题，搜索时与标题一起匹配；{@link #LEXICON_DETAIL} 和 {@link #CLIPBOARD_EDIT} 需要参数才能打开，{@link #COMMUNITY} 要从功能页带着作品类型进去，所以都没有关键词，不出现在搜索结果里。页面里新加的开关、导航和滑块行要同时把行标题加进这里，否则设置首页搜不到它（#6132 的「浮动键盘」就是这样漏掉的）；`tests/home/SettingsSearchIndexSmoke.java` 逐页核对。
  */
 public enum PageId {
     SKINS("SkinsPage", "皮肤", HostDeepLink.TAB_SETTINGS,
-        "跟随系统", "水杉四季", "水杉", "浅色", "纸白", "夜青", "墨", "春芽", "夏荫", "秋杉", "冬雪", "AI 设计皮肤"),
+        "跟随系统", "水杉四季", "水杉", "浅色", "纸白", "夜青", "墨", "春芽", "夏荫", "秋杉", "冬雪", "AI 设计皮肤",
+        "社区皮肤", "浏览更多皮肤"),
     AI_SKIN("AiSkinPage", "AI 设计皮肤", HostDeepLink.TAB_SETTINGS,
         "描述一句话生成", "配色", "按键音效", "按键动画", "生成皮肤"),
     KEYBOARD_OPTIONS("KeyboardOptionsPage", "键盘", HostDeepLink.TAB_SETTINGS,
@@ -27,7 +28,7 @@ public enum PageId {
         "滑动输入符号", "滑动方向", "下滑", "上滑", "九键滑动输入数字", "九键滑动距离", "滑行输入", "空格键滑动移动光标", "长按空格语音输入", "键盘工具栏", "显示方式", "表情", "常用语",
         "皮肤", "剪贴板", "输入方式", "文本编辑", "按键间距", "行间距", "剪贴板排列", "单列", "双列", "工具栏显示最近复制", "最近复制"),
     AI_SETTINGS("AiSettingsPage", "AI 润色与回复", HostDeepLink.TAB_SETTINGS,
-        "启用 AI 入口", "端点 URL", "模型", "凭据", "润色提示词"),
+        "启用 AI 入口", "端点 URL", "模型", "凭据", "润色提示词", "社区回复模板", "浏览更多回复模板"),
     TYPING("TypingPage", "输入", HostDeepLink.TAB_SETTINGS,
         "语言与方案", "普通话", "粤语", "英语", "日语", "韩语", "越南语", "藏语", "添加语言", "中文", "中文字符集", "简体", "繁体",
         "拼音纠错", "模糊音", "只出单字", "云候选", "辅助码", "启用辅助码", "辅助码方案", "辅助码模式", "翻译", "候选词翻译",
@@ -36,12 +37,12 @@ public enum PageId {
         "查汉字的五笔编码", "五笔编码", "86 五笔", "98 五笔", "反查"),
     EXPRESSION("ExpressionPage", "表达", HostDeepLink.TAB_SETTINGS,
         "标点", "使用英文标点", "自动补全成对标点", "智能标点", "智能", "整句联想", "英文自动纠正", "英文联想",
-        "候选带 emoji", "候选带颜文字", "发现短语"),
+        "候选带 emoji", "候选带颜文字", "发现短语", "社区短语", "浏览更多短语"),
     LEXICON("LexiconPage", "词库", HostDeepLink.TAB_SETTINGS,
-        "已安装", "拼音词库", "新建词库", "导入词库", "导出", "发现词库", "记忆新词", "学习", "背单词", "云词库"),
+        "已安装", "拼音词库", "新建词库", "导入词库", "导出", "发现词库", "社区词库", "浏览更多词库", "记忆新词", "学习", "背单词", "云词库"),
     LEXICON_DETAIL("LexiconDetailPage", "词库详情", HostDeepLink.TAB_SETTINGS),
     PHRASES("PhrasesPage", "常用语", HostDeepLink.TAB_SETTINGS,
-        "添加常用语", "修改常用语", "删除常用语"),
+        "添加常用语", "修改常用语", "删除常用语", "浏览社区短语包"),
     VOICE("VoicePage", "语音输入", HostDeepLink.TAB_SETTINGS,
         "识别", "识别语言", "自动添加标点", "离线识别", "启动方式", "长按空格", "隐私", "上传语音以改进识别"),
     HANDWRITING("HandwritingPage", "手写输入", HostDeepLink.TAB_SETTINGS,
@@ -73,7 +74,9 @@ public enum PageId {
         "设备"),
     PRIVACY("PrivacyPage", "隐私", HostDeepLink.TAB_ACCOUNT,
         "本地优先", "联网功能", "本机数据", "剪贴板历史", "匿名使用统计", "用水杉账号翻译候选", "隐私模式",
-        "隐私政策");
+        "隐私政策"),
+    /** 一类社区作品的完整列表，参数 `kind` 选类型（见 {@link CommunityFragment#ARG_KIND}）；从各功能页的「浏览更多…」进来，本身不进设置搜索，搜索里出现的是那几个功能页。 */
+    COMMUNITY("CommunityFragment", "社区", HostDeepLink.TAB_SETTINGS);
 
     private static final String PACKAGE = "app.msime.android.home.";
 
