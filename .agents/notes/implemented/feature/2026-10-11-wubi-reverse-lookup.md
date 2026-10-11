@@ -1,4 +1,4 @@
-# Agent Note: 五笔反查：`z` 引导临时拼音
+# Agent Note: 五笔反查：`z` 引导临时拼音与设置页查码
 
 Status: implemented
 
@@ -18,6 +18,19 @@ Status: implemented
 - **不学习**：反查只是查编码。反查里的选择不调词频、不记整句（`learn_candidate` 直接返回），多段选择也不造词（`commit_selection` 的 `store_user_phrase_from_canonical_pinyin` 跳过）。五笔码表从来不会因为反查写入；拼音词库也不会，否则一个五笔用户偶尔查一次字，就会改掉他在拼音方案里的候选顺序。
 - **宿主不用改**：快照里反查就是一个五笔组字，`answered_by_pinyin_fallback` 为真，所以 `input-runtime` 的四码顶字（`wubi_four_code_is_complete`）和四码唯一自动上屏都不会对 `zhao` 这样的四个字母动手。各宿主本来就把五笔里的小写字母交给引擎，由引擎决定收不收，所以 Windows、macOS、Linux、Android、iOS、HarmonyOS 不需要各自加一份判断。
 
+## 汉字查码的数据通路
+
+另一半是「已经有汉字，想知道它怎么打」。`msime_engine::host::wubi_code_lookup`（实现在 `crates/engine/src/wubi/lookup.rs`）给一段文字列出每个不同汉字在 `wubi86` 和 `wubi98` 两张表里的全部编码，短码在前（你 → `wq`、`wqiy`），整段是 2 到 16 个汉字时再把整段当一个词查一次。它读会话用的同一份五笔码表（`wubi_database` 选出的文件），所以用户自己加的五笔词也查得到；一次最多 64 个不同汉字，超出时标 `truncated`。
+
+宿主经已有的词库请求入口拿到它：`dictionary_request_json` 新增只读操作 `{operation:"wubi_codes",text}`，`personal_dictionary_request_json` 给出同样的回答。
+
+- **走词库请求，不另开 C 接口**：设置页在每个宿主上都已经有一条词库请求通路——桌面和 iOS 的 Tauri 命令 `dictionary_request`、Android 的个人词库队列入口、HarmonyOS 设置页的 `dictionary` 桥方法（经 `KeyboardSession.dictionary` 到 `msime_client_dictionary`）。新操作沿着它们走，不需要给 C ABI、JNI、NAPI 或 Harmony 的 `registerJavaScriptProxy` 方法表加任何东西。Harmony 的 `DictionaryMaintenancePolicy` 把不认识的操作当作只读，所以查码在组字时也能用、不会停掉键盘会话。
+- **不拿维护租约**：码表以 SQLite 只读方式打开，维护进行时读到的是替换前或替换后的完整文件。其余只读操作用 `DictionaryAccess::try_session` 是因为它们读用户日志和词库代次；查码只读码表，拿租约只会让它在维护时报忙，也会让 Android 设置进程里的一次查码挡住键盘进程的维护。
+- **Android 不进队列**：Android 设置页把所有词库操作送进个人词库队列（`personal_dictionary_request_json`），队列是为了等键盘空闲再写词库。查码不写任何东西，所以在入口直接回答，不排队，也不建 `PersonalDictionary` 目录。
+- **上限**：`text` 超过 4096 字节报 `invalid wubi lookup`。粘贴一整篇文章时只列前 64 个不同汉字，结果里标出截断。
+
+字根拆分不做：仓库里没有授权清楚的 86/98 拆分数据（`resources/helpcodes` 里只有拼音辅助码用的字根数据），而且很多字根不是 Unicode 字符，要另配字体或图片。
+
 ## Golden 基准
 
 三个场景原本记录的是参考实现「五笔里 `z` 被拒绝」的行为，现在按新行为更新：`wubi_mixed_plain_mode` 和 `wubi_mixed_matched_code` 在混输关闭时键入的 `zi` 记录为反查组字 `zi`；`wubi_select_and_gates` 把 `z` 的拒绝挪到五笔码中间（`wqb` 之后）检验，四码、第五码和撇号的检验不变。`tools/engine-golden/gen_scenarios.py` 同步改了这两个场景的步骤与说明。
@@ -27,6 +40,7 @@ Status: implemented
 - **新增一个 `LocalInputMode`（像 `R` 临时日文那样切换方案）**：最强的理由是隔离得干净，预编辑可以显示成独立的模式，选词和学习各走本地模式那一套，不碰五笔组字的代码。没有采用：`LocalInputMode` 的名字是跨进程契约，六个宿主都有各自的模式标签、打字统计和中文输出策略按名字分支（Linux `CandidateLocalModeLabels.h`、Android `LocalInputMode.java`、Harmony `LocalInputMode.ts` 等），新增一个值要在每个宿主补一遍；本地模式的选择总是整段上屏，也就没法选走一部分拼音再接着反查。留在五笔组字里，宿主侧一行都不用改，现有的编码提示规则直接生效。
 - **只告诉用户去打开「五笔拼音混输」**：不改代码。没有采用：混输会让每个五笔码后面都跟着拼音候选，打不出的码还会延长到拼音；只想偶尔查一个字的五笔用户不该为此改变整个输入手感。
 - **加一个反查开关**：可以让不想要的人关掉。没有采用：`z` 在混输关闭的五笔里原本没有任何作用，占用它不会挡住任何五笔码；开关要进共享偏好、账号同步、MCP 偏好和六个宿主的设置界面，而它保护的只是「误按 `z` 时原样输入一个 `z`」，这时按退格或回车（回车上屏的是 `z` 之后的字母，单独的 `z` 什么也不上屏）即可。真有用户要求关掉，再按 [四码唯一自动上屏开关](2026-10-08-wubi-auto-commit-unique-preference.md) 那条路接进共享偏好。
+- **查码给一个新的 C 接口（`msime_client_wubi_codes`）**：语义更直接，调用方不用知道它和词库请求共用一个入口。没有采用：每个宿主都要为它接一遍 JNI、NAPI、Tauri 命令和 Harmony 桥方法表，而词库请求通路已经在所有宿主上通到设置页，多一种只读操作只是多一个 `operation` 值。
 - **反查里照常学习**：选过的拼音词下次排前面，查同一个字更快。没有采用：学习写进的是拼音词库，五笔用户在反查里的一次选择会改掉拼音方案（和混输）里的候选顺序；反查查的是编码，不是输入习惯。
 
 ## Consequences
@@ -39,3 +53,5 @@ Status: implemented
 
 - `cargo test -p msime-engine --lib`：`wubi::scheme` 新增三条（开头 `z` 引导、反查上限 32 与四个字母不是完整码、中间 `z` 仍拒绝、退格离开；不允许时 `z` 被滤掉；宿主编辑整段保留反查原文），`host::tests` 新增六条：反查附码且单字是全码、跟随 98 码表、进入与离开（退格、取消、离开后五笔码照常）、混输里没有 `z` 反查、选走一部分后剩余拼音仍在反查且回车只上屏拼音、反查不学习（并以混输里同样的选择会写日志作对照，证明测得到学习）。不学习那条在去掉 `learn_candidate` 的判断后失败。
 - `cargo test -p msime-engine --test golden`：更新后的三个场景与其余场景全部通过。
+- `cargo test -p msime-engine --lib -- wubi::lookup`：每个字全部编码短码在前、重复编码并成一个；非汉字跳过、重复的字只列一次、带标点的一段不当词查；码表没有的字列出但没有编码；缺 `wubi98` 表或整个文件时只有那一列为空；超过 64 个不同汉字截断。
+- `cargo test -p msime-host-api --lib -- dictionary::tests::wubi`：两个入口对同一请求给出相同回答，个人词库队列不建目录、用户数据目录不变；超长文字两个入口都拒绝。
