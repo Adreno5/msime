@@ -12,6 +12,7 @@ export interface InputModeShortcutPreferences {
   switch_language_ctrl_alt_space: boolean;
   toggle_character_set_ctrl_shift_f: boolean;
   toggle_fullwidth_option_shift_h: boolean;
+  switch_language_caps_lock?: boolean;
   input_mode_hud?: boolean;
 }
 
@@ -28,6 +29,8 @@ export interface InputModeShortcutsSectionProps {
   showFullwidthChord: boolean;
   fullwidthChord?: string;
   windows: boolean;
+  /** 宿主实现了单按 Caps Lock 切换中英文（`HostCapabilities.caps_lock_language_switch`），显示它的开关。 */
+  capsLockLanguageSwitch?: boolean;
   /** HarmonyOS 手机的「通用」分组：只列出其硬件按键路由处理的组合键，每项都是一个可选「无」的选择，并且没有分组说明。 */
   harmonyPhone?: boolean;
 }
@@ -76,6 +79,17 @@ function languageSwitchPatch(
   };
 }
 
+/** 轻点与长按的分界在三个桌面宿主上相同（`shared/input/CapsLockTap.h` 的 300 毫秒）；各平台的限制写在说明里。 */
+function capsLockLanguageSwitchDescription(macos: boolean, linux: boolean): string {
+  const base =
+    "轻点 Caps Lock（300 毫秒内松开）切换中英文，不打开大写锁定；按住更久照常打开大写锁定，大写锁定开着时按一下照常关掉。";
+  if (macos)
+    return `${base}若在系统设置 › 键盘 › 文字输入中打开了「使用大写锁定键切换 ABC」，系统会先截走轻点，请把它关掉。`;
+  if (linux)
+    return `${base}只在 X11 会话中可用；Wayland 会话里大写锁定由桌面环境掌管，轻点照常打开大写锁定。`;
+  return base;
+}
+
 /** Shortcut toggles shared by hosts that expose input mode controls. */
 export function InputModeShortcutsSection({
   keybindings,
@@ -89,6 +103,7 @@ export function InputModeShortcutsSection({
   showFullwidthChord,
   fullwidthChord = "Alt+Shift+H",
   windows,
+  capsLockLanguageSwitch = false,
   harmonyPhone = false,
 }: InputModeShortcutsSectionProps) {
   if (!showModeSwitchShortcuts) return null;
@@ -130,6 +145,15 @@ export function InputModeShortcutsSection({
             Ctrl+Space 未选用或关闭后水杉不处理此组合键；若 IBus 或 Fcitx5
             配置了同名全局快捷键，需在框架设置中另行关闭。
           </SettingsGroupNote>
+        )}
+        {/* 和上面的切换键互不排斥：Caps Lock 是另加的一个键，打开它不关掉 Shift 等已选的切换键。 */}
+        {capsLockLanguageSwitch && (
+          <SwitchRow
+            title="单按 Caps Lock 切换中英文"
+            description={capsLockLanguageSwitchDescription(macos, linux)}
+            checked={keybindings.switch_language_caps_lock ?? false}
+            onChange={(checked) => onChange({ switch_language_caps_lock: checked })}
+          />
         )}
         <SwitchRow
           title={characterSetLabel}

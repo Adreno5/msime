@@ -1223,6 +1223,7 @@ fn session_options(scheme: Scheme, paths: RuntimePaths) -> SessionOptions {
         expression: false,
         command: false,
         mention: false,
+        shift_letter_entry: false,
     };
     options.english = EnglishInputOptions {
         mixed_candidates: false,

@@ -102,6 +102,8 @@ pub struct EngineOptions {
     pub local_command: bool,
     /// `@`: `mention_entries`.
     pub local_mention: bool,
+    /// Shift+字母进入快捷模式的总开关（`LocalModeOptions::shift_letter_entry`）。
+    pub local_shift_letter_entry: bool,
     /// The `/` mode's commands beyond the built-in ones. Rows the engine cannot use are dropped, and at most `local::command::TABLE_LIMIT` are kept.
     pub command_table: Vec<CommandTableEntry>,
     /// The `@` mode's names and places, the user's own list. Entries the engine cannot use are dropped, and at most `local::mention::LIST_LIMIT` are kept.
@@ -197,6 +199,7 @@ pub fn prepare_options_for(
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_shift_letter_entry: true,
         command_table: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
@@ -290,6 +293,7 @@ pub fn session_options(options: &EngineOptions) -> Result<SessionOptions> {
         expression: options.local_expression,
         command: options.local_command,
         mention: options.local_mention,
+        shift_letter_entry: options.local_shift_letter_entry,
     };
     session.command_table = options.command_table.clone();
     session.mention_entries = options.mention_entries.clone();

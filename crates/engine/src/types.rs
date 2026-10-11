@@ -1108,6 +1108,8 @@ pub struct LocalModeOptions {
     pub expression: bool,
     pub command: bool,
     pub mention: bool,
+    /// 总开关：没有组字时 Shift+字母（U/T/K/E/M/J/Y/R/V）能否进入对应的快捷模式。关掉后这些键照常打出大写字母，各模式自己的开关不变；`/` 和 `@` 不经过它。
+    pub shift_letter_entry: bool,
 }
 
 impl Default for LocalModeOptions {
@@ -1124,6 +1126,7 @@ impl Default for LocalModeOptions {
             expression: false,
             command: false,
             mention: false,
+            shift_letter_entry: true,
         }
     }
 }

@@ -588,6 +588,7 @@ impl HostSession {
         options.local_expression = preferences.local_modes.expression;
         options.local_command = preferences.local_modes.command;
         options.local_mention = preferences.local_modes.mention;
+        options.local_shift_letter_entry = preferences.local_modes.shift_letter_entry;
         // 先定下辅助码设置：插件表的戳要看当前方案的辅助码是否打开、选了哪个辅助码表包。
         let helpcode = helpcode_for_scheme(&preferences, scheme);
         options.helpcode = helpcode.enabled;
@@ -1255,6 +1256,7 @@ impl HostOptions {
             local_expression: self.preferences.local_modes.expression,
             local_command: self.preferences.local_modes.command,
             local_mention: self.preferences.local_modes.mention,
+            local_shift_letter_entry: self.preferences.local_modes.shift_letter_entry,
             command_table: Vec::new(),
             mention_entries: Vec::new(),
             quick_phrase_table: Vec::new(),

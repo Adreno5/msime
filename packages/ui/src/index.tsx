@@ -1583,6 +1583,8 @@ export type KeybindingPreferences = {
   switch_language_ctrl_alt_space: boolean;
   toggle_character_set_ctrl_shift_f: boolean;
   toggle_fullwidth_option_shift_h: boolean;
+  /** 单按 Caps Lock 切换中英文，长按照常是大写锁定。缺省为关。 */
+  switch_language_caps_lock?: boolean;
 };
 export type HostPlatform = "windows" | "macos" | "linux" | "android" | "ios" | "harmony";
 /** Mirrors `client-core::preferences::InputScheme`. */
@@ -1707,6 +1709,10 @@ export interface HostCapabilities {
   typing_effects: boolean;
   /** 宿主向会话报告大写锁定状态，「大写锁定时使用英文标点」在这里有效（目前只有 macOS）。 */
   caps_lock_punctuation?: boolean;
+  /** 宿主能分辨 Caps Lock 的轻点和长按并撤回大写锁定，「单按 Caps Lock 切换中英文」在这里有效（三个桌面宿主）。 */
+  caps_lock_language_switch?: boolean;
+  /** 快捷模式只从实体键盘的 Shift+字母进入，「Shift+字母进入快捷模式」总开关在这里有意义（三个桌面宿主）。 */
+  shift_letter_entry_switch?: boolean;
   /** 背单词书目列出单词本插件（`pack-<插件 id>` 词书）。 */
   wordbook_packs: boolean;
   /** 符号面板显示已安装的符号集插件。 */

@@ -293,6 +293,7 @@ export function InputSettingsPage() {
               mentions={showPluginTriggers && Boolean(client.plugins)}
               translationService={translationProvider !== "none"}
               temporaryJapanese={temporaryJapanese}
+              shiftLetterEntrySwitch={host?.shift_letter_entry_switch ?? false}
               onChange={onLocalModesChange}
             />
             {/* 临时日语只是一个快捷模式，不为它自动下载 60 多 MB 的词库，由用户手动下载。当前方案是日文时方案组里已有同一行，这里不再重复。 */}

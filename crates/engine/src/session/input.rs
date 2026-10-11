@@ -1551,6 +1551,10 @@ impl InputSession {
 
     fn local_mode_for_entry(&self, value: u8) -> Option<LocalInputMode> {
         let options = self.local_mode_options;
+        // 总开关关掉时 Shift+字母一律不进模式，大写字母照常交给宿主输出。
+        if !options.shift_letter_entry {
+            return None;
+        }
         let (mode, enabled) = match value {
             b'U' => (LocalInputMode::Unicode, options.unicode),
             b'T' => (LocalInputMode::DateTime, options.date_time),

@@ -1,6 +1,7 @@
 #include "../src/core/ClientEngine.h"
 #include "../../../common/HostApiString.h"
 #include "msime_client.h"
+#include "system/CapsLockRelease.h"
 #include <algorithm>
 #include <cstdlib>
 #include <fcntl.h>
@@ -352,7 +353,8 @@ GVariant *call(GDBusConnection *connection, const char *destination,
 
 int main(int argc, char **argv) {
   if (argc != 2 && !(argc == 3 && (std::string(argv[2]) == "--page-number" ||
-                                  std::string(argv[2]) == "--ctrl-space")))
+                                  std::string(argv[2]) == "--ctrl-space" ||
+                                  std::string(argv[2]) == "--caps-lock")))
     return 2;
   try {
     // This fixture asserts RegisterProperties and must exercise the real menu path.
@@ -588,6 +590,96 @@ int main(int argc, char **argv) {
       invoke("Disable");
       finish();
       std::cout << "IBus Ctrl+Space defaults, passthrough, hot-reload and repeat passed\n";
+      return 0;
+    }
+    // 单按 Caps Lock 切换中英文，从真实的 process_key 驱动。撤回大写锁定换成测试的实现：数撤回了几次，也能让它失败，不碰 X 服务器。按下事件带按下前的锁定状态，松开事件带按下后的。
+    if (argc == 3 && std::string(argv[2]) == "--caps-lock") {
+      static int releases = 0;
+      static bool release_works = true;
+      msime::linux_host::replace_caps_lock_release_for_testing(+[] { return true; }, +[] {
+        ++releases;
+        return release_works;
+      });
+      msime_ibus_configure(options.dump());
+      invoke("FocusIn");
+      require(wait_until([&] { return seen.input_enabled; }), "Caps Lock test does not start in Chinese");
+      // 大写锁定从关到开的一次按下和松开；松开本身永远不吃掉，和裸 Shift 一样。
+      const auto tap = [&](guint extra = 0) {
+        require(!key(IBUS_Caps_Lock, extra), "Caps Lock press was consumed");
+        require(!key(IBUS_Caps_Lock, extra | IBUS_LOCK_MASK | IBUS_RELEASE_MASK), "Caps Lock release was consumed");
+      };
+      // 缺省关：轻点只是大写锁定，不撤回也不切换。
+      tap();
+      require(seen.input_enabled && releases == 0, "Caps Lock switched with the preference off");
+      const auto set_binding = [&](bool enabled) {
+        nlohmann::json snapshot;
+        std::ifstream(root / "preferences.json") >> snapshot;
+        snapshot["revision"] = snapshot.at("revision").get<uint64_t>() + 1;
+        snapshot["preferences"]["keybindings"]["switch_language_caps_lock"] = enabled;
+        std::ofstream(root / "next.json") << snapshot.dump();
+        std::filesystem::rename(root / "next.json", root / "preferences.json");
+      };
+      set_binding(true);
+      // wait_until 到点后还会再问一次，所以认定之后不再轻点。
+      bool switched = false;
+      require(wait_until([&] {
+                if (!switched) {
+                  tap();
+                  switched = !seen.input_enabled;
+                }
+                return switched;
+              }),
+              "Enabling Caps Lock switching did not hot-reload");
+      require(releases == 1, "a tap released Caps Lock other than once");
+      // 英文透传时同样处理，切回中文。
+      tap();
+      require(seen.input_enabled && releases == 2, "a Caps Lock tap did not switch back from English passthrough");
+      // 按住超过 300 毫秒是要大写锁定。
+      require(!key(IBUS_Caps_Lock), "held Caps Lock press was consumed");
+      g_usleep(350 * 1000);
+      require(!key(IBUS_Caps_Lock, IBUS_LOCK_MASK | IBUS_RELEASE_MASK), "held Caps Lock release was consumed");
+      require(seen.input_enabled && releases == 2, "a long Caps Lock press switched or released the lock");
+      // 大写锁定开着时按 Caps Lock 是关掉它。
+      require(!key(IBUS_Caps_Lock, IBUS_LOCK_MASK) && !key(IBUS_Caps_Lock, IBUS_RELEASE_MASK),
+              "Caps Lock that turns the lock off was consumed");
+      require(seen.input_enabled && releases == 2, "turning Caps Lock off switched");
+      // 按着 Caps Lock 打字是在用大写锁定。
+      require(!key(IBUS_Caps_Lock), "Caps Lock press before a letter was consumed");
+      require(!key('A', IBUS_LOCK_MASK) && !key('A', IBUS_LOCK_MASK | IBUS_RELEASE_MASK),
+              "a Caps Lock letter was composed");
+      require(!key(IBUS_Caps_Lock, IBUS_LOCK_MASK | IBUS_RELEASE_MASK), "Caps Lock release after a letter was consumed");
+      require(seen.input_enabled && releases == 2, "typing while Caps Lock was held switched");
+      // 和修饰键一起按是组合键。
+      tap(IBUS_SHIFT_MASK);
+      require(seen.input_enabled && releases == 2, "Shift+Caps Lock switched");
+      // 撤不回大写锁定就不切换。
+      release_works = false;
+      tap();
+      require(seen.input_enabled && releases == 3, "a Caps Lock tap switched although the lock stayed on");
+      release_works = true;
+      // 组字中先上屏原文再切换，和裸 Shift 一样。
+      const auto committed = seen.committed;
+      require(key('n') && key('i') && seen.preedit == "ni", "Caps Lock composition test did not compose");
+      tap();
+      require(!seen.input_enabled && seen.committed == committed + "ni" && releases == 4,
+              "a Caps Lock tap did not commit the reading before switching");
+      tap();
+      require(seen.input_enabled, "a Caps Lock tap did not switch back after the commit");
+      set_binding(false);
+      bool ignored = false;
+      require(wait_until([&] {
+                if (!ignored) {
+                  const int before = releases;
+                  tap();
+                  ignored = releases == before;
+                }
+                return ignored;
+              }),
+              "Disabling Caps Lock switching did not hot-reload");
+      invoke("Disable");
+      finish();
+      msime::linux_host::replace_caps_lock_release_for_testing(nullptr, nullptr);
+      std::cout << "IBus Caps Lock tap, long press, chords, failed release and hot-reload passed\n";
       return 0;
     }
     if (argc == 3) {

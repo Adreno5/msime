@@ -107,6 +107,37 @@ fn ctrl_space_defaults_on_and_persists_an_explicit_disable() {
 }
 
 #[test]
+fn caps_lock_language_switch_defaults_off_and_persists_an_explicit_enable() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PreferencesStore::new(directory.path());
+    let snapshot = store.load().unwrap();
+    assert!(!snapshot.preferences.keybindings.switch_language_caps_lock);
+    // 早于这个开关的文档没有这个键，读出来是关。
+    let mut value = serde_json::to_value(&snapshot.preferences).unwrap();
+    assert_eq!(
+        value["keybindings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("switch_language_caps_lock"),
+        Some(false.into())
+    );
+    let legacy: Preferences = serde_json::from_value(value.clone()).unwrap();
+    assert!(!legacy.keybindings.switch_language_caps_lock);
+    // 打开它不改动其他切换键。
+    value["keybindings"]["switch_language_caps_lock"] = true.into();
+    let enabled: Preferences = serde_json::from_value(value).unwrap();
+    store.save(snapshot.revision, enabled).unwrap();
+    let keybindings = store.load().unwrap().preferences.keybindings;
+    assert_eq!(
+        keybindings,
+        KeybindingPreferences {
+            switch_language_caps_lock: true,
+            ..KeybindingPreferences::default()
+        }
+    );
+}
+
+#[test]
 fn voice_commit_mode_defaults_for_legacy_documents() {
     let mut value = serde_json::to_value(Preferences::default()).unwrap();
     value["voice_input"]
@@ -981,6 +1012,42 @@ fn generated_local_modes_are_off_by_default_and_when_absent() {
     let mut unknown = serde_json::to_value(Preferences::default()).unwrap();
     unknown["local_modes"]["calculator"] = true.into();
     assert!(serde_json::from_value::<Preferences>(unknown).is_err());
+}
+
+#[test]
+fn shift_letter_entry_defaults_on_and_survives_a_save() {
+    assert!(LocalModePreferences::default().shift_letter_entry);
+
+    // 早于总开关的文档没有这个键，读出来仍是开，其余模式开关照原样。
+    let dir = tempfile::tempdir().unwrap();
+    let store = PreferencesStore::new(dir.path());
+    let mut sparse = serde_json::to_value(PreferencesSnapshot::default()).unwrap();
+    let local_modes = sparse["preferences"]["local_modes"]
+        .as_object_mut()
+        .unwrap();
+    assert_eq!(local_modes.remove("shift_letter_entry"), Some(true.into()));
+    local_modes.insert("date_time".into(), false.into());
+    fs::write(store.path(), serde_json::to_vec(&sparse).unwrap()).unwrap();
+    let loaded = store.load().unwrap().preferences.local_modes;
+    assert!(loaded.shift_letter_entry && !loaded.date_time && loaded.unicode);
+
+    // 关掉总开关只改它自己，各模式开关保留。
+    let mut value = serde_json::to_value(Preferences::default()).unwrap();
+    value["local_modes"]["shift_letter_entry"] = false.into();
+    let saved = store
+        .save(0, serde_json::from_value(value).unwrap())
+        .unwrap();
+    let modes = store.load().unwrap();
+    assert_eq!(modes, saved);
+    let modes = modes.preferences.local_modes;
+    assert!(!modes.shift_letter_entry);
+    assert_eq!(
+        modes,
+        LocalModePreferences {
+            shift_letter_entry: false,
+            ..LocalModePreferences::default()
+        }
+    );
 }
 
 #[test]

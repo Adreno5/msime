@@ -3023,6 +3023,32 @@ fn disabled_local_modes_leave_the_key_to_the_host() {
 }
 
 #[test]
+fn shift_letter_entry_switch_off_types_every_capital() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.local_modes.shift_letter_entry = false;
+        options.local_modes.expression = true;
+        options.local_modes.command = true;
+    });
+    // 总开关关掉：每个入口字母都交还宿主打出大写，不进模式，也不留组字。
+    for letter in *b"UTKEMJYRV" {
+        let result = session.character(letter, true);
+        assert!(!result.handled, "{}", letter as char);
+        assert_eq!(session.input.local_mode, LocalInputMode::None);
+        assert!(!session.input.has_composition());
+    }
+    // 各模式自己的开关没被改动；`/` 不是 Shift+字母，照常打开指令模式。
+    assert!(session.input.local_mode_options.date_time);
+    assert!(session.character(b'/', false).handled);
+    assert_eq!(session.input.local_mode, LocalInputMode::Command);
+
+    // 对照：总开关开着时同一个键进入日期时间模式。
+    let mut session = fixture.session();
+    assert!(session.character(b'T', true).handled);
+    assert_eq!(session.input.local_mode, LocalInputMode::DateTime);
+}
+
+#[test]
 fn dedicated_english_offers_the_typed_word_when_unknown() {
     let fixture = Fixture::new(QUANPIN_FIXTURE).with_english(ENGLISH_FIXTURE);
     let mut session = fixture.session();
