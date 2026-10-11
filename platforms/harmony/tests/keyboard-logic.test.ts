@@ -310,6 +310,7 @@ import {
   CLOUD_CLIPBOARD_EMPTY,
   CLOUD_CLIPBOARD_FAILED,
   CLOUD_CLIPBOARD_LOADING,
+  CLOUD_CLIPBOARD_PENDING,
   CLOUD_CLIPBOARD_SEND,
   CLOUD_CLIPBOARD_SEND_FAILED,
   CLOUD_CLIPBOARD_SENT,
@@ -11309,12 +11310,23 @@ group("cloud clipboard text follows the shared clipboard bounds", () => {
 
 group("cloud clipboard listings are read whole", () => {
   const id = (digit: string) => digit.repeat(64);
-  const page = (items: unknown[], enabled = true) =>
-    JSON.stringify({ ok: true, value: { enabled, items } });
+  // 端到端加密驱动 `list` 的结果形状，见 docs/cloud-clipboard-e2e.md 的「结果」。
+  const page = (items: unknown[], enabled = true, status = enabled ? "ready" : "disabled") =>
+    JSON.stringify({
+      ok: true,
+      value: {
+        enabled,
+        retention_days: 0,
+        items,
+        e2e: { status, code: "0421 9873 5530 1176", pending_devices: 0, undecryptable: 0 },
+      },
+    });
   const item = (digit: string, text: string) => ({
     id: id(digit),
     text,
     updated_at: "2026-10-01T08:00:00Z",
+    pinned: false,
+    device: "Synthetic Laptop",
   });
 
   const ready = CloudClipboardPolicy.parseList(
@@ -11327,6 +11339,25 @@ group("cloud clipboard listings are read whole", () => {
       ready.items[1].text === "两行\n文本" &&
       ready.items[0].updatedAt === "2026-10-01T08:00:00Z",
     "items keep their order, id, text and time",
+  );
+  check(
+    ready.items[0].pinned === false && ready.items[0].device === "Synthetic Laptop",
+    "and say whether they are pinned and which device wrote them",
+  );
+  const pending = CloudClipboardPolicy.parseList(page([], true, "pending"));
+  check(
+    pending.state === CloudClipboardState.PENDING && pending.items.length === 0,
+    "a device waiting for approval reads as pending with nothing to show",
+  );
+  check(
+    CloudClipboardPolicy.parseList(page([item("a", "hidden")], true, "disabled")).state ===
+      CloudClipboardState.DISABLED,
+    "the driver's disabled status hides items too",
+  );
+  check(
+    CloudClipboardPolicy.parseList(page([{ ...item("a", "无设备名"), device: "" }])).items[0]
+      .device === "",
+    "an item may come without a device name",
   );
   check(
     CloudClipboardPolicy.parseList(page([])).state === CloudClipboardState.READY &&
@@ -11361,6 +11392,13 @@ group("cloud clipboard listings are read whole", () => {
     page([{ id: id("a"), text: "long time", updated_at: "9".repeat(129) }]),
     page([item("a", "fine"), null]),
     page(Array.from({ length: 51 }, (_unused, index) => item("c", `item ${index}`))),
+    '{"ok":true,"value":{"enabled":true,"items":[]}}',
+    page([], true, "unknown"),
+    page([{ ...item("a", "no pinned"), pinned: undefined }]),
+    page([{ ...item("a", "string pinned"), pinned: "false" }]),
+    page([{ ...item("a", "no device"), device: undefined }]),
+    page([{ ...item("a", "control in device"), device: "Lap\ntop" }]),
+    page([{ ...item("a", "long device"), device: "设".repeat(65) }]),
   ]) {
     const listing = CloudClipboardPolicy.parseList(failure);
     check(
@@ -11429,6 +11467,15 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
     "an unreadable clipboard is not written to",
   );
   check(
+    CloudClipboardPolicy.sendBlock(CloudClipboardState.PENDING, "hello") ===
+      CLOUD_CLIPBOARD_PENDING,
+    "a device waiting for approval does not upload",
+  );
+  check(
+    !CLOUD_CLIPBOARD_PENDING.includes("\n") && CLOUD_CLIPBOARD_PENDING.includes("允许"),
+    "the pending hint is one line that says where to approve",
+  );
+  check(
     CloudClipboardPolicy.sendBlock(CloudClipboardState.READY, "hello") === null,
     "ready and valid may be sent",
   );
@@ -11450,8 +11497,17 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
   );
   check(
     CloudClipboardPolicy.parseSend('{"ok":false,"error":"account_invalid"}') ===
-      CloudClipboardSendOutcome.INVALID,
+      CloudClipboardSendOutcome.INVALID &&
+      CloudClipboardPolicy.parseSend('{"ok":false,"error":"invalid_clipboard_text"}') ===
+        CloudClipboardSendOutcome.INVALID,
     "refused text is named",
+  );
+  check(
+    CloudClipboardPolicy.parseSend('{"ok":false,"error":"clipboard_device_pending"}') ===
+      CloudClipboardSendOutcome.PENDING &&
+      CloudClipboardPolicy.sendNotice(CloudClipboardSendOutcome.PENDING) ===
+        CLOUD_CLIPBOARD_PENDING,
+    "a refusal while waiting for approval says so",
   );
   check(
     CloudClipboardPolicy.parseSend('{"ok":false,"error":"account_unavailable"}') ===
@@ -11481,6 +11537,10 @@ group("sending to the cloud clipboard needs a signed-in account with the clipboa
       "登录水杉账号后可在设备间同步剪贴板" &&
       CloudClipboardPolicy.notice(CloudClipboardState.DISABLED, false, 0) === "云剪贴板未开启",
     "signed-out and disabled use the shared wording",
+  );
+  check(
+    CloudClipboardPolicy.notice(CloudClipboardState.PENDING, false, 0) === CLOUD_CLIPBOARD_PENDING,
+    "a pending device shows the approval hint instead of an empty clipboard",
   );
 });
 
