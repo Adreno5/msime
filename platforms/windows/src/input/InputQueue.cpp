@@ -355,6 +355,12 @@ InputState::translation_query(const FocusLease &lease) {
   auto *owner = session(lease.transport);
   return owner ? owner->translation_query(lease) : std::nullopt;
 }
+std::optional<std::string>
+InputState::ai_request(const FocusLease &lease, const std::string &query) {
+  check_thread();
+  auto *owner = session(lease.transport);
+  return owner ? owner->ai_request(lease, query) : std::nullopt;
+}
 std::optional<std::pair<FocusLease, std::string>>
 InputState::current_translation_request() {
   check_thread();

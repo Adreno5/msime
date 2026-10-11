@@ -74,6 +74,8 @@ public:
                                                   const std::string &query,
                                                   const std::string &body);
   std::optional<std::string> translation_query(const FocusLease &lease);
+  std::optional<std::string> ai_request(const FocusLease &lease,
+                                        const std::string &query);
   std::optional<std::pair<FocusLease, std::string>>
   current_translation_request();
   std::optional<nlohmann::json>
