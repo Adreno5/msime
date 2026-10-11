@@ -51,6 +51,15 @@ const groupWithFooter = "flex min-w-0 flex-col gap-[var(--p-g-title-gap)]";
 const groupFooter =
   "m-0 [padding:var(--p-g-title-pad)] text-[13px] leading-[18px] [color:var(--p-sub)]";
 
+/** HarmonyOS 手机上豆包「服务配置」行的状态，与键盘的 `DoubaoCredentialPolicy` 同一套判断：密钥取当前框，空时取 `asr_tokens.doubao`；一项都没填时键盘用系统识别，填了一部分时键盘报缺项。 */
+export function doubaoServiceStatus(voiceInput: VoiceInputPreferences): string {
+  const token = (voiceInput.asr_token ?? "").trim() || (voiceInput.asr_tokens?.doubao ?? "").trim();
+  const appKey = (voiceInput.asr_app_key ?? "").trim();
+  if (!token && !appKey) return "未填写，暂用系统识别";
+  if (!token || (voiceInput.doubao_auth_mode === "legacy" && !appKey)) return "未填写完整";
+  return "已填写";
+}
+
 export interface VoiceSettingsContentProps {
   disabled: boolean;
   hidden: boolean;
@@ -345,11 +354,13 @@ export function VoiceSettingsContent({
   );
   if (harmonyPlatform && mobilePlatform) {
     const punctuationSupported = voiceInput.asr_provider === "doubao";
-    // 「服务配置」行右侧的状态：网络服务看有没有填密钥，本地识别看有没有选模型；系统识别不用配置，不画这一行。
+    // 「服务配置」行右侧的状态：网络服务看有没有填密钥，本地识别看有没有选模型；系统识别不用配置，不画这一行。豆包是出厂选项，一项凭据都没填时键盘用的其实是系统识别，要照实说；填了一部分时键盘会报缺项，这里说没填完整。
     const serviceStatus = serviceVoice
-      ? (voiceInput.asr_token ?? "").trim()
-        ? "已填写"
-        : "未填写"
+      ? voiceInput.asr_provider === "doubao"
+        ? doubaoServiceStatus(voiceInput)
+        : (voiceInput.asr_token ?? "").trim()
+          ? "已填写"
+          : "未填写"
       : localVoice
         ? voiceInput.asr_model_path
           ? "已选模型"

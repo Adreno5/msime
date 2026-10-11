@@ -271,6 +271,7 @@ import {
   DEFAULT_VOICE_INPUT_CONFIGURATION,
   VoiceInputConfiguration,
   VoiceInputConfigurationPolicy,
+  DoubaoCredentialPolicy,
 } from "../entry/src/main/ets/keyboard/input/VoiceInputConfiguration";
 import {
   AccountCloudBridge,
@@ -1349,6 +1350,80 @@ group("describes the configured voice provider accurately", () => {
     "system voice keeps the platform description",
   );
 });
+
+group(
+  "an untouched Doubao default stays on the system recognizer, a partial one says what is missing",
+  () => {
+    const doubao = { ...DEFAULT_VOICE_INPUT_CONFIGURATION, asr_provider: "doubao" };
+    // The shipped default is doubao with no credential at all: that is "not configured", not an error.
+    check(
+      !DoubaoCredentialPolicy.attempted(doubao),
+      "the shipped default does not route to Doubao",
+    );
+    check(DoubaoCredentialPolicy.missing(doubao) === null, "the shipped default raises no error");
+    check(
+      VoiceInputConfigurationPolicy.description(doubao).includes("暂用 HarmonyOS 系统语音识别"),
+      "the voice panel says the system recognizer is in use",
+    );
+    check(
+      !DoubaoCredentialPolicy.attempted({
+        ...DEFAULT_VOICE_INPUT_CONFIGURATION,
+        asr_provider: "system",
+        asr_token: "synthetic-token",
+      }),
+      "another provider never routes to Doubao",
+    );
+
+    const keyed = { ...doubao, asr_token: " synthetic-token " };
+    check(
+      DoubaoCredentialPolicy.attempted(keyed) && DoubaoCredentialPolicy.missing(keyed) === null,
+      "a key alone is a complete API-key configuration",
+    );
+    check(DoubaoCredentialPolicy.token(keyed) === "synthetic-token", "the key is trimmed");
+    const slotted = { ...doubao, asr_tokens: { doubao: "slot-token" } };
+    check(
+      DoubaoCredentialPolicy.attempted(slotted) &&
+        DoubaoCredentialPolicy.token(slotted) === "slot-token",
+      "a key kept in the per-provider slot counts, as in the shared resolver",
+    );
+    check(
+      DoubaoCredentialPolicy.token({ ...slotted, asr_token: "box-token" }) === "box-token",
+      "the current box wins over the slot",
+    );
+    check(
+      VoiceInputConfigurationPolicy.description(keyed).includes("豆包实时语音识别"),
+      "a configured Doubao is described as Doubao",
+    );
+
+    const appOnly = { ...doubao, asr_app_key: "synthetic-app" };
+    check(
+      DoubaoCredentialPolicy.attempted(appOnly),
+      "an App ID alone means the user is setting up Doubao",
+    );
+    check(
+      DoubaoCredentialPolicy.missing(appOnly) === "豆包缺少 API Key，请在设置中填写",
+      "a missing API key is named instead of silently using the system recognizer",
+    );
+    check(
+      DoubaoCredentialPolicy.missing({ ...appOnly, doubao_auth_mode: "legacy" }) ===
+        "豆包缺少 Access Token，请在设置中填写",
+      "legacy mode names its access token",
+    );
+    check(
+      DoubaoCredentialPolicy.missing({ ...keyed, doubao_auth_mode: "legacy" }) ===
+        "豆包旧版鉴权缺少 App ID，请在设置中填写",
+      "legacy mode without an App ID names it",
+    );
+    check(
+      DoubaoCredentialPolicy.missing({
+        ...keyed,
+        doubao_auth_mode: "legacy",
+        asr_app_key: "synthetic-app",
+      }) === null,
+      "a complete legacy configuration has nothing missing",
+    );
+  },
+);
 
 group("keeps desktop-only chrome off touch devices", () => {
   check(KeyboardFormFactorPolicy.isDesktop("2in1"), "a 2-in-1 gets the desktop candidate window");
