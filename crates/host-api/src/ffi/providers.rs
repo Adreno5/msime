@@ -126,6 +126,8 @@ pub unsafe extern "C" fn msime_client_set_ai_credential(
                     token,
                 }
             });
+            // 只有会话密钥的宿主（iOS）到这时才知道 AI 请求发不发得出去。
+            session.refresh_ai_seat()?;
             Ok(Value::Bool(true))
         })
     })

@@ -140,6 +140,38 @@ pub unsafe extern "C" fn msime_client_apply_online_candidates(
     })
 }
 
+/// AI 回答为空、失败，或 `msime_client_apply_online_candidates` 返回 `applied:false` 时调用：这次查询在 AI 座位上的占位行换成暗色的「—」，留到组字变化为止，后面的候选不挪位（#6888）。只认来源 1（AI）；过期查询、AI 已关或座位上已经是 AI 候选时 `applied` 为 false，视图不变。
+///
+/// # Safety
+/// `query` must reference `query_length` readable bytes; it is read for the duration of this call and never retained.
+#[no_mangle]
+pub unsafe extern "C" fn msime_client_resolve_online_candidates(
+    handle: u64,
+    query: *const u8,
+    query_length: usize,
+    source: u8,
+) -> *mut c_char {
+    response(|| {
+        if query.is_null() || query_length > 16384 || source > 1 {
+            return Err("invalid online resolve buffer".into());
+        }
+        let query = serde_json::from_slice::<OnlineQuery>(unsafe {
+            std::slice::from_raw_parts(query, query_length)
+        })
+        .map_err(|_| "invalid online query document")?;
+        with_session(handle, |session| {
+            if source != 1 || !session.ai_query_is_current(&query) {
+                return Ok(json!({"applied":false,"view":session.runtime.view()}));
+            }
+            let applied = session
+                .runtime
+                .resolve_online_candidates_owned(query, source)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "applied": applied, "view": session.runtime.view() }))
+        })
+    })
+}
+
 /// Remove cached and visible rows for one online source (0 = cloud, 1 = AI).
 #[no_mangle]
 pub extern "C" fn msime_client_clear_online_candidates(handle: u64, source: u8) -> *mut c_char {
