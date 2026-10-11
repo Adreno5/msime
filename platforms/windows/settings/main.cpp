@@ -54,6 +54,7 @@
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.h>
@@ -62,6 +63,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.h>
+#include <winrt/Windows.Security.Cryptography.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
@@ -1209,11 +1211,206 @@ struct ThemePreview {
   Color background, panel, accent, text;
 };
 
+// A theme's touch keyboard colours as the shared preview draws them (`keyboardThemeLook` in packages/ui/src/keyboard/screen-keyboard-preview.tsx): the catalog's `function_key` paints the action keys and its `text` labels both kinds.
+struct KeyboardColors {
+  Color background, key, foreground, accent, action, action_foreground;
+};
+
 struct ThemeEntry {
   std::wstring id;
   std::wstring title;
   std::optional<ThemePreview> preview;
+  std::optional<KeyboardColors> keyboard;
 };
+
+// How the 屏幕键盘 page paints its keyboard preview, read the way the shared `ScreenKeyboardPreview` (packages/ui/src/keyboard/screen-keyboard-preview.tsx) reads a theme or a custom keyboard design. Fields a design leaves out keep the theme's look: no border, no pattern, rounded flat keys.
+struct KeyboardArt {
+  KeyboardColors colors;
+  double corner_radius = 8;
+  double border_width = 0;
+  // A design's own border colour; the accent otherwise.
+  std::optional<Color> border_color;
+  double border_opacity = 0.28;
+  bool monospaced = false;
+  int pattern = 0;
+  double pattern_opacity = 0.15;
+  std::wstring key_shape = L"rounded";
+  std::wstring key_material = L"flat";
+  double key_opacity = 1;
+  std::optional<Color> gradient_end;
+  bool gradient_horizontal = false;
+  // Base64 image bytes drawn under a shade, and where the cropped picture is anchored (below 0.34 the start, above 0.66 the end).
+  std::wstring photo;
+  double photo_shade = 0.25;
+  double photo_position = 0.5;
+};
+
+Color opaque(uint8_t red, uint8_t green, uint8_t blue) { return Color{255, red, green, blue}; }
+
+// `system`, and any theme without a keyboard palette, previews the design's iOS system keyboard tokens, as the shared preview does: there is no Windows palette to ask for.
+KeyboardColors system_keyboard(bool dark) {
+  return dark ? KeyboardColors{opaque(0x2B, 0x2B, 0x2D), opaque(0x6B, 0x6B, 0x6E),
+                               opaque(0xFF, 0xFF, 0xFF), opaque(0x5F, 0xBF, 0x84),
+                               opaque(0x46, 0x46, 0x48), opaque(0xFF, 0xFF, 0xFF)}
+              : KeyboardColors{opaque(0xD1, 0xD4, 0xDB), opaque(0xFF, 0xFF, 0xFF),
+                               opaque(0x00, 0x00, 0x00), opaque(0x2C, 0x7A, 0x4B),
+                               opaque(0xAB, 0xB0, 0xBB), opaque(0x00, 0x00, 0x00)};
+}
+
+// `native` is offered only on iOS, so this window's catalog never lists it; a custom theme synced from an iPhone can still name it as its base, and the shared preview then draws the iOS 26 system keyboard.
+KeyboardColors native_keyboard(bool dark) {
+  return dark ? KeyboardColors{opaque(0x22, 0x22, 0x23), opaque(0x46, 0x46, 0x46),
+                               opaque(0xFF, 0xFF, 0xFF), opaque(0x40, 0x9C, 0xFF),
+                               opaque(0x46, 0x46, 0x46), opaque(0xFF, 0xFF, 0xFF)}
+              : KeyboardColors{opaque(0xE2, 0xE3, 0xE8), opaque(0xFF, 0xFF, 0xFF),
+                               opaque(0x00, 0x00, 0x00), opaque(0x00, 0x40, 0xDD),
+                               opaque(0xFF, 0xFF, 0xFF), opaque(0x00, 0x00, 0x00)};
+}
+
+uint32_t skin_rgb(double value) {
+  return static_cast<uint32_t>(std::clamp(std::round(value), 0.0, 16777215.0));
+}
+
+// A keyboard design stores its colours as 0xRRGGBB numbers (`skinColor` in touch-keyboard-skin-design.ts).
+Color skin_color(double value) {
+  const auto rgb = skin_rgb(value);
+  return opaque(static_cast<uint8_t>((rgb >> 16) & 0xFF), static_cast<uint8_t>((rgb >> 8) & 0xFF),
+                static_cast<uint8_t>(rgb & 0xFF));
+}
+
+// Black or white, whichever reads on `background` (`readableSkinText`): black above a relative luminance of 0.179.
+Color readable_skin_text(double background) {
+  const auto rgb = skin_rgb(background);
+  auto channel = [rgb](int shift) {
+    const double value = static_cast<double>((rgb >> shift) & 255) / 255.0;
+    return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+  };
+  const double luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
+  return luminance > 0.179 ? opaque(0, 0, 0) : opaque(255, 255, 255);
+}
+
+Color faded(Color color, double opacity) {
+  color.A = static_cast<uint8_t>(std::lround(std::clamp(opacity, 0.0, 1.0) * 255));
+  return color;
+}
+
+Windows::Foundation::Point point_at(double x, double y) {
+  return {static_cast<float>(x), static_cast<float>(y)};
+}
+
+// One key's outline in each shape a keyboard design offers, the same path as `keyboardKeyPath` (packages/ui/src/keyboard/keyboard-shape.ts).
+PathFigure key_outline(double x, double y, double width, double height, std::wstring_view shape,
+                       double radius) {
+  PathFigure figure;
+  figure.IsClosed(true);
+  figure.IsFilled(true);
+  auto line = [&figure](double px, double py) {
+    LineSegment segment;
+    segment.Point(point_at(px, py));
+    figure.Segments().Append(segment);
+  };
+  auto quad = [&figure](double cx, double cy, double px, double py) {
+    QuadraticBezierSegment segment;
+    segment.Point1(point_at(cx, cy));
+    segment.Point2(point_at(px, py));
+    figure.Segments().Append(segment);
+  };
+  auto cubic = [&figure](double ax, double ay, double bx, double by, double px, double py) {
+    BezierSegment segment;
+    segment.Point1(point_at(ax, ay));
+    segment.Point2(point_at(bx, by));
+    segment.Point3(point_at(px, py));
+    figure.Segments().Append(segment);
+  };
+  auto arc = [&figure](double r, double px, double py) {
+    ArcSegment segment;
+    segment.Size({static_cast<float>(r), static_cast<float>(r)});
+    segment.Point(point_at(px, py));
+    segment.SweepDirection(SweepDirection::Counterclockwise);
+    figure.Segments().Append(segment);
+  };
+  const double w = width;
+  const double h = height;
+  if (shape == L"pebble") {
+    figure.StartPoint(point_at(x + w * 0.35, y));
+    cubic(x + w * 0.83, y, x + w, y + h * 0.04, x + w, y + h * 0.3);
+    cubic(x + w, y + h * 0.85, x + w * 0.9, y + h, x + w * 0.68, y + h);
+    cubic(x + w * 0.18, y + h, x, y + h * 0.97, x, y + h * 0.7);
+    cubic(x, y + h * 0.2, x + w * 0.06, y, x + w * 0.35, y);
+  } else if (shape == L"ticket") {
+    // A notch in each side, cut by an arc that turns the way SVG's sweep flag 0 does.
+    const double r = std::min(w, h) * 0.12;
+    figure.StartPoint(point_at(x, y));
+    line(x + w, y);
+    line(x + w, y + h / 2 - r);
+    arc(r, x + w, y + h / 2 + r);
+    line(x + w, y + h);
+    line(x, y + h);
+    line(x, y + h / 2 + r);
+    arc(r, x, y + h / 2 - r);
+  } else {
+    const double r = shape == L"capsule" ? h / 2 : std::min({radius, h / 2, w / 2});
+    figure.StartPoint(point_at(x + r, y));
+    line(x + w - r, y);
+    quad(x + w, y, x + w, y + r);
+    line(x + w, y + h - r);
+    quad(x + w, y + h, x + w - r, y + h);
+    line(x + r, y + h);
+    quad(x, y + h, x, y + h - r);
+    line(x, y + r);
+    quad(x, y, x + r, y);
+  }
+  return figure;
+}
+
+// A key of the desktop on-screen keyboard the shared preview draws on Windows (`desktopKeyboardRows` in packages/ui/src/keyboard/keyboard-layouts.ts), with its share of the row's width.
+struct PreviewKey {
+  std::wstring label;
+  double weight;
+};
+
+std::vector<std::vector<PreviewKey>> const &desktop_keyboard_rows() {
+  static const std::vector<std::vector<PreviewKey>> rows = [] {
+    auto letters = [](std::wstring_view text, std::vector<PreviewKey> &row) {
+      for (const wchar_t c : text)
+        row.push_back({std::wstring(1, c), 1});
+    };
+    std::vector<std::vector<PreviewKey>> result(5);
+    letters(L"`1234567890-=", result[0]);
+    result[0].push_back({L"Backspace", 1.9});
+    result[1].push_back({L"Tab", 1.5});
+    letters(L"qwertyuiop[]", result[1]);
+    result[1].push_back({L"\\", 1.4});
+    result[2].push_back({L"Caps Lock", 1.85});
+    letters(L"asdfghjkl;'", result[2]);
+    result[2].push_back({L"Enter", 2});
+    result[3].push_back({L"Shift", 2.35});
+    letters(L"zxcvbnm,./", result[3]);
+    result[3].push_back({L"Shift", 2.15});
+    result[4] = {{L"Ctrl", 1.25}, {L"Win", 1.25}, {L"Alt", 1.25}, {L"Space", 6.7},
+                 {L"Alt", 1.25},  {L"Win", 1.25}, {L"Del", 1.25}, {L"Ctrl", 1.25}};
+    return result;
+  }();
+  return rows;
+}
+
+// The keys painted in the action colour (`actionKeyboardLabels`).
+bool action_key(std::wstring_view label) {
+  return label == L"Backspace" || label == L"Enter" || label == L"Shift" || label == L"Del";
+}
+
+// Decodes a design's photo into `bitmap`; a photo that cannot be decoded leaves the keyboard's own background showing.
+fire_and_forget show_keyboard_photo(Imaging::BitmapImage bitmap, std::wstring base64) {
+  try {
+    const auto bytes = Windows::Security::Cryptography::CryptographicBuffer::DecodeFromBase64String(
+        hstring(base64));
+    Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+    co_await stream.WriteAsync(bytes);
+    stream.Seek(0);
+    co_await bitmap.SetSourceAsync(stream);
+  } catch (hresult_error const &) {
+  }
+}
 
 // The sample the candidate preview draws. It illustrates the layout, page size and font size; it is not a dictionary.
 constexpr std::array<std::pair<const wchar_t *, const wchar_t *>, 9>
@@ -1298,6 +1495,22 @@ private:
           if (background && panel && accent && foreground)
             entry.preview =
                 ThemePreview{*background, *panel, *accent, *foreground};
+        }
+        const auto keyboard =
+            theme.GetNamedValue(L"keyboard", JsonValue::CreateNullValue());
+        if (keyboard.ValueType() == JsonValueType::Object) {
+          const auto colors = keyboard.GetObject();
+          auto color = [&colors](const wchar_t *key) {
+            return parse_hex(colors.GetNamedString(key, L"").c_str());
+          };
+          const auto background = color(L"background");
+          const auto key = color(L"key");
+          const auto action = color(L"function_key");
+          const auto foreground = color(L"text");
+          const auto accent = color(L"accent");
+          if (background && key && action && foreground && accent)
+            entry.keyboard = KeyboardColors{*background, *key, *foreground,
+                                            *accent, *action, *foreground};
         }
         themes_.push_back(std::move(entry));
       }
@@ -2458,6 +2671,17 @@ private:
                                   std::function<void(double)> apply,
                                   bool enabled = true, double step = 1,
                                   std::wstring const &suffix = L"") {
+    return formatted_slider_control(
+        name, minimum, maximum, value, std::move(apply),
+        [suffix](double shown) { return number_text(shown) + suffix; }, enabled, step);
+  }
+
+  // The same slider with the value beside it written by `format`, for values not shown as a plain whole number.
+  FrameworkElement formatted_slider_control(std::wstring const &name, double minimum,
+                                            double maximum, double value,
+                                            std::function<void(double)> apply,
+                                            std::function<std::wstring(double)> format,
+                                            bool enabled = true, double step = 1) {
     StackPanel box;
     box.Orientation(Orientation::Horizontal);
     box.Spacing(16);
@@ -2472,19 +2696,18 @@ private:
     slider.VerticalAlignment(VerticalAlignment::Center);
     slider.IsEnabled(enabled && loaded_);
     A11y::SetName(slider, hstring(name));
-    auto label = make_text(
-        number_text(std::clamp(value, minimum, maximum)) + suffix, 14,
-        palette_.text);
+    auto label = make_text(format(std::clamp(value, minimum, maximum)), 14,
+                           palette_.text);
     label.Width(60);
     label.TextAlignment(TextAlignment::Right);
     label.VerticalAlignment(VerticalAlignment::Center);
     slider.ValueChanged(
         [weak_label = make_weak(label), on_slide = std::move(apply), step,
-         suffix](Inspectable const &,
+         format](Inspectable const &,
                  Controls::Primitives::RangeBaseValueChangedEventArgs const &args) {
           const double rounded = std::round(args.NewValue() / step) * step;
           if (auto block = weak_label.get())
-            block.Text(number_text(rounded) + suffix);
+            block.Text(hstring(format(rounded)));
           on_slide(rounded);
         });
     box.Children().Append(slider);
@@ -4718,12 +4941,565 @@ private:
 
   // ---- 屏幕键盘、语音、手写 ----
 
+  // 共享的「屏幕键盘」页（packages/ui/src/settings/pages/screen-keyboard-page.tsx 和 touch-keyboard-geometry-section.tsx）在 Windows 上画四组：「屏幕键盘」（打开面板和可拖动的预览）、「尺寸」（高度、两种间距和恢复默认）、「工具栏」，以及指向「主题」的「外观」。Windows 不是 `touch_toolbar_components` 的宿主，「工具栏」里只有顶部语音入口；「布局」「手势」两组和触屏反馈只在手机上画，这里也不画。面板本身是输入工具，仍由共享应用打开。
   void build_osk_page(StackPanel const &page) {
-    auto group = add_group(page, L"");
-    shell_row(group, 0xE92E, L"屏幕键盘", L"在屏幕上显示键盘，点击按键向当前窗口输入",
-              L"打开", nav::shell_links::keyboard_panel);
-    shell_row(group, 0xE713, L"屏幕键盘设置", L"在水杉输入法应用中调整屏幕键盘", L"设置",
-              nav::shell_links::screen_keyboard);
+    if (!indexing_) {
+      osk_drag_.reset();
+      osk_preview_ = nullptr;
+      osk_key_slider_ = nullptr;
+      osk_row_slider_ = nullptr;
+    }
+
+    auto keyboard = add_group(page, L"屏幕键盘");
+    add_row(keyboard, 0xE92E, L"打开屏幕键盘", L"使用鼠标或触控方式输入文字与快捷按键",
+            button_control(L"打开", [this] { open_shell(nav::shell_links::keyboard_panel); }));
+    if (!indexing_)
+      keyboard.Children().Append(make_osk_preview_card());
+
+    // 滑块旁的数值与共享页的说明相同：高度是带符号的 dp，间距以十分之一 dp 存、显示一位小数。
+    auto size = add_group(page, L"尺寸");
+    size.Children().Append(group_note(
+        L"只改变触屏键位的外观，不改变输入方案；也可以直接在上方预览上左右拖动调节键距、上下拖动调节行距。"));
+    add_row(size, 0xE740, L"键盘高度", L"",
+            formatted_slider_control(
+                L"键盘高度", -12, 48,
+                document_.Number(L"touch_keyboard_height_adjustment", 0),
+                [this](double value) {
+                  set_touch_geometry(L"touch_keyboard_height_adjustment", 0, value);
+                },
+                [](double value) {
+                  return std::wstring(value > 0 ? L"+" : L"") + number_text(value) + L" dp";
+                },
+                true));
+    auto key_slider = formatted_slider_control(
+        L"按键间距", 30, 60, document_.Number(L"touch_key_spacing_tenths", 60),
+        [this](double value) { set_touch_geometry(L"touch_key_spacing_tenths", 60, value); },
+        tenths_text, true);
+    add_row(size, 0xE8E4, L"按键间距", L"", key_slider);
+    auto row_slider = formatted_slider_control(
+        L"行间距", 40, 100, document_.Number(L"touch_row_spacing_tenths", 70),
+        [this](double value) { set_touch_geometry(L"touch_row_spacing_tenths", 70, value); },
+        tenths_text, true);
+    add_row(size, 0xE8FD, L"行间距", L"", row_slider);
+    if (!indexing_) {
+      osk_key_slider_ = key_slider.as<StackPanel>().Children().GetAt(0).as<Slider>();
+      osk_row_slider_ = row_slider.as<StackPanel>().Children().GetAt(0).as<Slider>();
+    }
+    // 恢复默认也管下面的「工具栏」组，所以和共享页一样放在它重置的第一组末尾。
+    auto reset = button_control(L"恢复默认", [this] { reset_screen_keyboard(); }, loaded_);
+    A11y::SetName(reset, L"恢复屏幕键盘默认设置");
+    add_row(size, 0xE777, L"恢复默认", L"高度、间距、顶部语音入口和工具栏按钮回到默认", reset);
+
+    auto toolbar = add_group(page, L"工具栏");
+    bool_row(toolbar, 0xE720, L"顶部语音入口", L"在键盘顶部显示一个语音按钮，点按开始语音输入",
+             L"touch_voice_shortcut", false);
+
+    // 共享页把键盘的明暗覆盖放在「主题」页的「高级」组，这个窗口的同一组叫「界面主题」，所以说明换成这个组名，按钮直接落到「屏幕键盘主题」那一行。
+    auto look = add_group(page, L"外观");
+    add_row(look, 0xE790, L"屏幕键盘外观", L"主题与明暗外观在「主题」页的「界面主题」中设置",
+            button_control(L"前往", [this] {
+              focus_row_ = L"屏幕键盘主题";
+              navigate("themes", true);
+            }));
+  }
+
+  static std::wstring tenths_text(double tenths) {
+    const auto value = static_cast<long long>(std::llround(tenths));
+    return std::to_wstring(value / 10) + L"." + std::to_wstring(value % 10) + L" dp";
+  }
+
+  // The preview and the surface that takes the drag: as on the shared page, dragging sideways sets the key gap and dragging up or down the row gap, 1.8 pixels to a tenth, from the value it had when the press began; the first 4 pixels only decide which.
+  FrameworkElement make_osk_preview_card() {
+    using Microsoft::UI::Xaml::Input::PointerRoutedEventArgs;
+    StackPanel block;
+    block.Spacing(8);
+    block.Padding(Thickness{25, 14, 25, 18});
+    block.Children().Append(make_text(L"预览", 12, palette_.sub));
+    Border surface;
+    surface.Background(brush(transparent_color()));
+    // A touch drag moves the gaps, not the page: the scroll viewer would otherwise take it as a pan.
+    surface.ManipulationMode(Microsoft::UI::Xaml::Input::ManipulationModes::TranslateX |
+                             Microsoft::UI::Xaml::Input::ManipulationModes::TranslateY);
+    A11y::SetName(surface, L"拖动预览调整键盘间距");
+    surface.PointerPressed([this](Inspectable const &sender, PointerRoutedEventArgs const &args) {
+      begin_osk_drag(sender.as<UIElement>(), args);
+    });
+    surface.PointerMoved([this](Inspectable const &, PointerRoutedEventArgs const &args) {
+      move_osk_drag(args);
+    });
+    auto release = [this](Inspectable const &sender, PointerRoutedEventArgs const &args) {
+      if (!osk_drag_ || osk_drag_->pointer != args.Pointer().PointerId())
+        return;
+      osk_drag_.reset();
+      sender.as<UIElement>().ReleasePointerCapture(args.Pointer());
+    };
+    surface.PointerReleased(release);
+    surface.PointerCanceled(release);
+    surface.PointerCaptureLost([this](Inspectable const &, PointerRoutedEventArgs const &args) {
+      if (osk_drag_ && osk_drag_->pointer == args.Pointer().PointerId())
+        osk_drag_.reset();
+    });
+    osk_preview_ = surface;
+    draw_osk_preview();
+    block.Children().Append(surface);
+    auto card = make_card();
+    card.Child(block);
+    A11y::SetName(card, L"屏幕键盘预览");
+    return card;
+  }
+
+  void begin_osk_drag(UIElement const &surface,
+                      Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const &args) {
+    if (!loaded_)
+      return;
+    const auto point = args.GetCurrentPoint(nullptr);
+    if (args.Pointer().PointerDeviceType() == Microsoft::UI::Input::PointerDeviceType::Mouse &&
+        !point.Properties().IsLeftButtonPressed())
+      return;
+    osk_drag_ = GeometryDrag{args.Pointer().PointerId(),
+                             point.Position().X,
+                             point.Position().Y,
+                             document_.Number(L"touch_key_spacing_tenths", 60),
+                             document_.Number(L"touch_row_spacing_tenths", 70),
+                             GeometryDrag::Axis::none};
+    surface.CapturePointer(args.Pointer());
+    args.Handled(true);
+  }
+
+  void move_osk_drag(Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const &args) {
+    if (!osk_drag_ || osk_drag_->pointer != args.Pointer().PointerId() || !loaded_)
+      return;
+    const auto position = args.GetCurrentPoint(nullptr).Position();
+    const double dx = position.X - osk_drag_->x;
+    const double dy = position.Y - osk_drag_->y;
+    if (osk_drag_->axis == GeometryDrag::Axis::none) {
+      if (std::abs(dx) + std::abs(dy) < 4)
+        return;
+      osk_drag_->axis =
+          std::abs(dy) >= std::abs(dx) ? GeometryDrag::Axis::row : GeometryDrag::Axis::key;
+    }
+    args.Handled(true);
+    const bool row = osk_drag_->axis == GeometryDrag::Axis::row;
+    // Math.round: halves go up.
+    const double value =
+        std::floor((row ? osk_drag_->row : osk_drag_->key) + (row ? dy : dx) * 10 / 18 + 0.5);
+    if (row)
+      set_touch_geometry(L"touch_row_spacing_tenths", 70, std::clamp(value, 40.0, 100.0),
+                         osk_row_slider_);
+    else
+      set_touch_geometry(L"touch_key_spacing_tenths", 60, std::clamp(value, 30.0, 60.0),
+                         osk_key_slider_);
+  }
+
+  // Writes one of the keyboard's sizes the way the other sliders do, into the document at once and to disk when it rests, and redraws the preview. A drag moves the slider along; the slider's own change then finds the value already written.
+  void set_touch_geometry(std::wstring const &key, double fallback, double value,
+                          Slider const &slider = nullptr) {
+    if (document_.Number(key, fallback) == value)
+      return;
+    document_.SetNumber(key, value);
+    schedule_save();
+    draw_osk_preview();
+    if (slider && slider.Value() != value)
+      slider.Value(value);
+  }
+
+  // 共享页的 `resetTouchKeyboardSettings`（use-touch-keyboard-settings-reset.ts）：确认后把五项从文档里删掉而不是写入当前默认值，宿主以后改默认值时也跟着变。Windows 的键盘有顶部语音入口，确认文案因此提到它。
+  fire_and_forget reset_screen_keyboard() {
+    auto strong = get_strong();
+    if (!loaded_)
+      co_return;
+    if (!co_await confirm(L"恢复屏幕键盘默认值", L"高度、间距、顶部语音入口和工具栏按钮都会回到默认。",
+                          L"恢复"))
+      co_return;
+    flush_pending();
+    for (const auto *key : {L"touch_key_spacing_tenths", L"touch_row_spacing_tenths",
+                            L"touch_keyboard_height_adjustment", L"touch_voice_shortcut",
+                            L"touch_toolbar"})
+      document_.Remove(key);
+    if (commit())
+      show_notice(L"屏幕键盘设置已恢复默认。", InfoBarSeverity::Success);
+  }
+
+  // The preview's light or dark look (`useCandidatePreviewTheme` with 屏幕键盘主题): the keyboard's own override, else 颜色模式.
+  bool keyboard_preview_dark() const {
+    const auto surface = document_.String(L"screen_keyboard_theme", L"follow");
+    if (surface == L"dark" || surface == L"light")
+      return surface == L"dark";
+    const auto theme = document_.String(L"theme", L"system");
+    return theme == L"system" ? system_dark_ : theme != L"light";
+  }
+
+  // The theme the preview paints (`keyboardThemeId` over `offeredGlobalTheme`): a global theme this build does not offer reads as 跟随系统, and the custom theme draws its base's keyboard until it carries a keyboard design of its own, which then paints every key.
+  KeyboardArt keyboard_art() {
+    const bool dark = keyboard_preview_dark();
+    auto offered = [this](std::wstring const &id) {
+      return std::any_of(themes_.begin(), themes_.end(),
+                         [&id](ThemeEntry const &entry) { return entry.id == id; });
+    };
+    std::wstring skin = document_.String(L"global_theme", L"system");
+    if (!offered(skin))
+      skin = L"system";
+    std::optional<JsonObject> design;
+    if (skin == L"custom") {
+      if (const auto keyboard = document_.Value(L"custom_theme.keyboard");
+          keyboard && keyboard.ValueType() == JsonValueType::Object)
+        design = keyboard.GetObject();
+      else
+        skin = document_.String(L"custom_theme.base", L"system");
+    }
+
+    KeyboardArt art;
+    art.colors = system_keyboard(dark);
+    if (skin == L"native") {
+      art.colors = native_keyboard(dark);
+      art.corner_radius = 6;
+    }
+    for (const auto &entry : themes_)
+      if (entry.id == skin && entry.keyboard)
+        art.colors = *entry.keyboard;
+    if (!design)
+      return art;
+
+    // The design's required fields fall back to the editor's default design should one be missing; its optional ones, stored as null when unset, keep the look above.
+    const auto &source = *design;
+    auto number = [&source](const wchar_t *key) -> std::optional<double> {
+      const auto value = source.GetNamedValue(key, JsonValue::CreateNullValue());
+      if (value.ValueType() != JsonValueType::Number)
+        return std::nullopt;
+      return value.GetNumber();
+    };
+    auto flag = [&source](const wchar_t *key) {
+      const auto value = source.GetNamedValue(key, JsonValue::CreateNullValue());
+      return value.ValueType() == JsonValueType::Boolean && value.GetBoolean();
+    };
+    auto word = [&source](const wchar_t *key) -> std::optional<std::wstring> {
+      const auto value = source.GetNamedValue(key, JsonValue::CreateNullValue());
+      if (value.ValueType() != JsonValueType::String)
+        return std::nullopt;
+      return std::wstring(value.GetString().c_str());
+    };
+    const double action = number(L"actionBackground").value_or(0x185C47);
+    art.colors = KeyboardColors{skin_color(number(L"background").value_or(0xE8F0EB)),
+                                skin_color(number(L"keyBackground").value_or(0xFFFFFF)),
+                                skin_color(number(L"keyForeground").value_or(0x17251D)),
+                                skin_color(number(L"accent").value_or(0x185C47)),
+                                skin_color(action),
+                                readable_skin_text(action)};
+    art.corner_radius = number(L"cornerRadius").value_or(8);
+    art.border_width = number(L"borderWidth").value_or(0);
+    if (const auto border = number(L"customBorderColor"))
+      art.border_color = skin_color(*border);
+    art.border_opacity = 1;
+    art.monospaced = flag(L"monospaced");
+    art.pattern = static_cast<int>(std::clamp(number(L"pattern").value_or(0), 0.0, 3.0));
+    art.pattern_opacity = number(L"patternOpacity").value_or(0.15);
+    art.key_shape = word(L"keyShape").value_or(L"rounded");
+    art.key_material = word(L"keyMaterial").value_or(L"flat");
+    art.key_opacity = number(L"keyOpacity").value_or(1);
+    if (const auto end = number(L"gradientEnd"))
+      art.gradient_end = skin_color(*end);
+    art.gradient_horizontal = flag(L"gradientHorizontal");
+    art.photo = word(L"photo").value_or(L"");
+    art.photo_shade = number(L"photoShade").value_or(0.25);
+    art.photo_position = number(L"photoPosition").value_or(0.5);
+    return art;
+  }
+
+  void draw_osk_preview() {
+    if (osk_preview_)
+      osk_preview_.Child(make_keyboard_art());
+  }
+
+  // The shared preview's desktop keyboard on its 1100-unit canvas, whose height follows 键盘高度 and whose gaps follow the two spacings (4 units at the defaults), scaled down to at most 760 pixels wide as the shared page shows it.
+  FrameworkElement make_keyboard_art() {
+    const auto art = keyboard_art();
+    const auto &rows = desktop_keyboard_rows();
+    const double key_spacing =
+        std::clamp(document_.Number(L"touch_key_spacing_tenths", 60) / 10, 3.0, 6.0);
+    const double row_spacing =
+        std::clamp(document_.Number(L"touch_row_spacing_tenths", 70) / 10, 4.0, 10.0);
+    const double width = 1100;
+    const double height =
+        400 + std::clamp(document_.Number(L"touch_keyboard_height_adjustment", 0), -12.0, 48.0);
+    const double inset = 7;
+    const double rows_top = 28;
+    const double key_gap = 4 + key_spacing - 6;
+    const double row_gap = 4 + row_spacing - 7;
+    const double count = static_cast<double>(rows.size());
+    const double key_height = (height - 28 - 7 - row_gap * (count - 1)) / count;
+
+    Canvas canvas;
+    canvas.Width(width);
+    canvas.Height(height);
+    RectangleGeometry clip;
+    clip.Rect({0, 0, static_cast<float>(width), static_cast<float>(height)});
+    canvas.Clip(clip);
+    auto place = [&canvas](UIElement const &element, double left, double top) {
+      Canvas::SetLeft(element, left);
+      Canvas::SetTop(element, top);
+      canvas.Children().Append(element);
+    };
+
+    Shapes::Rectangle backdrop;
+    backdrop.Width(width);
+    backdrop.Height(height);
+    backdrop.RadiusX(8);
+    backdrop.RadiusY(8);
+    if (art.gradient_end) {
+      LinearGradientBrush fill;
+      fill.StartPoint(point_at(0, 0));
+      fill.EndPoint(art.gradient_horizontal ? point_at(1, 0) : point_at(0, 1));
+      GradientStop from;
+      from.Color(art.colors.background);
+      from.Offset(0);
+      GradientStop to;
+      to.Color(*art.gradient_end);
+      to.Offset(1);
+      fill.GradientStops().Append(from);
+      fill.GradientStops().Append(to);
+      backdrop.Fill(fill);
+    } else {
+      backdrop.Fill(brush(art.colors.background));
+    }
+    place(backdrop, 0, 0);
+
+    if (!art.photo.empty()) {
+      if (art.photo != keyboard_photo_source_ || !keyboard_photo_) {
+        keyboard_photo_source_ = art.photo;
+        keyboard_photo_ = Imaging::BitmapImage();
+        show_keyboard_photo(keyboard_photo_, art.photo);
+      }
+      ImageBrush picture;
+      picture.ImageSource(keyboard_photo_);
+      picture.Stretch(Stretch::UniformToFill);
+      const auto anchor = art.photo_position < 0.34   ? 0
+                          : art.photo_position > 0.66 ? 2
+                                                      : 1;
+      picture.AlignmentX(anchor == 0   ? AlignmentX::Left
+                         : anchor == 2 ? AlignmentX::Right
+                                       : AlignmentX::Center);
+      picture.AlignmentY(anchor == 0   ? AlignmentY::Top
+                         : anchor == 2 ? AlignmentY::Bottom
+                                       : AlignmentY::Center);
+      Shapes::Rectangle photo;
+      photo.Width(width);
+      photo.Height(height);
+      photo.Fill(picture);
+      place(photo, 0, 0);
+      Shapes::Rectangle shade;
+      shade.Width(width);
+      shade.Height(height);
+      shade.Fill(brush(faded(opaque(0, 0, 0), art.photo_shade)));
+      place(shade, 0, 0);
+    }
+
+    if (art.pattern != 0)
+      place(keyboard_pattern(art.pattern, faded(art.colors.accent, art.pattern_opacity), width,
+                             height),
+            0, 0);
+
+    // A monospaced design sets the font of every label, the caption included.
+    const auto font = Media::FontFamily(art.monospaced ? L"Consolas" : L"Segoe UI");
+    Grid header;
+    header.Height(28);
+    auto title = make_text(L"Touch keyboard", 12, art.colors.accent);
+    title.FontFamily(font);
+    title.VerticalAlignment(VerticalAlignment::Center);
+    header.Children().Append(title);
+    place(header, 10, 0);
+
+    // The desktop panel floats in a window the user can close, so the preview draws its close glyph.
+    PathGeometry cross;
+    for (const auto &[from_x, to_x] : {std::pair{1075.0, 1085.0}, std::pair{1085.0, 1075.0}}) {
+      PathFigure stroke;
+      stroke.IsFilled(false);
+      stroke.StartPoint(point_at(from_x, 9));
+      LineSegment segment;
+      segment.Point(point_at(to_x, 19));
+      stroke.Segments().Append(segment);
+      cross.Figures().Append(stroke);
+    }
+    Shapes::Path close;
+    close.Data(cross);
+    close.Stroke(brush(art.colors.foreground));
+    close.StrokeThickness(2);
+    place(close, 0, 0);
+
+    const bool raised = art.key_material == L"raised";
+    const bool glass = art.key_material == L"glass";
+    const bool paper = art.key_material == L"paper";
+    auto material = [&art, glass](Color middle) {
+      LinearGradientBrush fill;
+      fill.StartPoint(point_at(0, 0));
+      fill.EndPoint(point_at(0, 1));
+      const std::array<std::pair<double, Color>, 3> stops{{
+          {0, faded(opaque(255, 255, 255), glass ? 0.24 : 0.13)},
+          {0.48, middle},
+          {1, faded(opaque(0, 0, 0), glass ? 0.03 : 0.1)},
+      }};
+      for (const auto &[offset, color] : stops) {
+        GradientStop stop;
+        stop.Offset(offset);
+        stop.Color(color);
+        fill.GradientStops().Append(stop);
+      }
+      return Brush(fill);
+    };
+    // A key's fill opacity applies over its material, so a translucent design is fainter still on the glass and raised gradients, as in the shared preview.
+    Brush key_fill = raised || glass ? material(faded(art.colors.key, art.key_opacity))
+                                     : Brush(brush(art.colors.key));
+    key_fill.Opacity(art.key_opacity);
+    Brush action_fill =
+        raised || glass ? material(art.colors.action) : Brush(brush(art.colors.action));
+    Brush border = art.border_width > 0
+                       ? Brush(brush(faded(art.border_color.value_or(art.colors.accent),
+                                           art.border_opacity)))
+                       : Brush(nullptr);
+
+    for (size_t index = 0; index < rows.size(); ++index) {
+      const auto &row = rows[index];
+      double total = 0;
+      for (const auto &item : row)
+        total += item.weight;
+      const double available = width - inset * 2 - key_gap * static_cast<double>(row.size() - 1);
+      const double top = rows_top + static_cast<double>(index) * (key_height + row_gap);
+      double x = inset;
+      for (const auto &item : row) {
+        const double key_width = available * item.weight / total;
+        const double left = x;
+        x += key_width + key_gap;
+        const bool action = action_key(item.label);
+        if (raised) {
+          PathGeometry depth;
+          depth.Figures().Append(
+              key_outline(left, top + 3, key_width, key_height - 3, art.key_shape,
+                          art.corner_radius));
+          Shapes::Path under;
+          under.Data(depth);
+          under.Fill(brush(action ? art.colors.action : art.colors.key));
+          under.Opacity(0.72);
+          place(under, 0, 0);
+        }
+        PathGeometry outline;
+        outline.Figures().Append(key_outline(left, top, key_width,
+                                             key_height - (raised ? 3 : 0), art.key_shape,
+                                             art.corner_radius));
+        Shapes::Path face;
+        face.Data(outline);
+        face.Fill(action ? action_fill : key_fill);
+        if (border) {
+          face.Stroke(border);
+          face.StrokeThickness(art.border_width);
+        }
+        place(face, 0, 0);
+        if (paper) {
+          PathGeometry ruled;
+          ruled.Figures().Append(key_outline(left, top, key_width, key_height, art.key_shape,
+                                             art.corner_radius));
+          for (const double line_y : {10.0, 18.0, 26.0}) {
+            PathFigure rule;
+            rule.IsFilled(false);
+            rule.StartPoint(point_at(left + 3, top + line_y));
+            LineSegment segment;
+            segment.Point(point_at(left + key_width - 3, top + line_y));
+            rule.Segments().Append(segment);
+            ruled.Figures().Append(rule);
+          }
+          Shapes::Path lines;
+          lines.Data(ruled);
+          lines.Stroke(brush(faded(opaque(0, 0, 0), 0.08)));
+          lines.StrokeThickness(0.5);
+          place(lines, 0, 0);
+        }
+        Grid cell;
+        cell.Width(key_width);
+        cell.Height(key_height);
+        auto label = make_text(item.label, item.label.size() == 1 ? 15 : 12,
+                               action ? art.colors.action_foreground : art.colors.foreground);
+        label.FontFamily(font);
+        label.TextWrapping(TextWrapping::NoWrap);
+        label.HorizontalAlignment(HorizontalAlignment::Center);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        cell.Children().Append(label);
+        place(cell, left, top);
+      }
+    }
+
+    Viewbox box;
+    box.Stretch(Stretch::Uniform);
+    box.MaxWidth(760);
+    box.HorizontalAlignment(HorizontalAlignment::Center);
+    box.Child(canvas);
+    A11y::SetName(box, L"屏幕键盘完整布局预览");
+    return box;
+  }
+
+  // The design's background pattern (`Pattern` in screen-keyboard-preview.tsx), tiled from the top-left corner: 1 a dot every 16 units, 2 a hairline grid every 20, 3 two waves every 48. Each tile clips what it draws, so the waves are drawn tile by tile and the grid's half-width lines are thin bands.
+  UIElement keyboard_pattern(int pattern, Color color, double width, double height) {
+    if (pattern == 1) {
+      GeometryGroup dots;
+      for (double y = 0; y < height; y += 16)
+        for (double x = 0; x < width; x += 16) {
+          EllipseGeometry dot;
+          dot.Center(point_at(x + 8.75, y + 8.75));
+          dot.RadiusX(0.75);
+          dot.RadiusY(0.75);
+          dots.Children().Append(dot);
+        }
+      Shapes::Path path;
+      path.Data(dots);
+      path.Fill(brush(color));
+      return path;
+    }
+    if (pattern == 2) {
+      GeometryGroup grid;
+      grid.FillRule(FillRule::Nonzero);
+      for (double x = 0; x < width; x += 20) {
+        RectangleGeometry band;
+        band.Rect({static_cast<float>(x), 0, 0.25f, static_cast<float>(height)});
+        grid.Children().Append(band);
+      }
+      for (double y = 0; y < height; y += 20) {
+        RectangleGeometry band;
+        band.Rect({0, static_cast<float>(y), static_cast<float>(width), 0.25f});
+        grid.Children().Append(band);
+      }
+      Shapes::Path path;
+      path.Data(grid);
+      path.Fill(brush(color));
+      return path;
+    }
+    Canvas tiles;
+    for (double y = 0; y < height; y += 48)
+      for (double x = 0; x < width; x += 48) {
+        PathGeometry waves;
+        for (const double offset : {0.0, 24.0}) {
+          PathFigure wave;
+          wave.IsFilled(false);
+          wave.StartPoint(point_at(-12, 42 + offset));
+          BezierSegment curve;
+          curve.Point1(point_at(4, 0 + offset));
+          curve.Point2(point_at(27, 65 + offset));
+          curve.Point3(point_at(60, 1 + offset));
+          wave.Segments().Append(curve);
+          waves.Figures().Append(wave);
+        }
+        Shapes::Path path;
+        path.Data(waves);
+        path.Stroke(brush(color));
+        path.StrokeThickness(2);
+        Canvas tile;
+        tile.Width(48);
+        tile.Height(48);
+        RectangleGeometry bounds;
+        bounds.Rect({0, 0, 48, 48});
+        tile.Clip(bounds);
+        tile.Children().Append(path);
+        Canvas::SetLeft(tile, x);
+        Canvas::SetTop(tile, y);
+        tiles.Children().Append(tile);
+      }
+    return tiles;
   }
 
   void build_voice_page(StackPanel const &page) {
@@ -5348,6 +6124,21 @@ private:
   std::vector<Option> helpcode_packs_;
   bool helpcode_packs_stale_ = true;
   bool helpcode_packs_busy_ = false;
+
+  // 屏幕键盘页：预览的拖动面（页面没画出来时为空）、正在进行的拖动和拖动时跟着移动的两条间距滑块，都随页面重建；设计里的照片按内容解码一次，拖动重画时复用。
+  struct GeometryDrag {
+    enum class Axis { none, key, row };
+    uint32_t pointer;
+    double x, y;
+    double key, row;
+    Axis axis;
+  };
+  Border osk_preview_{nullptr};
+  std::optional<GeometryDrag> osk_drag_;
+  Slider osk_key_slider_{nullptr};
+  Slider osk_row_slider_{nullptr};
+  std::wstring keyboard_photo_source_;
+  Imaging::BitmapImage keyboard_photo_{nullptr};
 
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。
