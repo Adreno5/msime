@@ -28,11 +28,11 @@ Status: implemented
 
 **威胁模型与发布构建。** 授权文件和插件目录都在用户可写的宿主状态根下，同一用户下任何没有特权的进程都能放进一个 script 包、再手写一条带正确哈希的授权。`mac` 字段留给 macOS 的钥匙串 MAC（第 5 阶段），本阶段只读不验。在加固落地之前，发布构建里 `msime_client_scripts_enable` 恒返回 false（见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)），这个文件只在开发构建里起作用。输入法进程在聚焦时按带 inode 的戳重读它，后台编译线程用 `script_pack::load` 读包并核对哈希。
 
-**设置页在第 5 阶段之前看不到脚本插件。** `PluginCatalog::without_scripts()` 去掉脚本包和脚本文件夹的问题行，桌面外壳的 `plugin_catalog` 和 host-api 的 `msime_client_plugins` 目录命令都经过它；`host_surface.script_plugins` 不加。导入命令不拦脚本包，开发构建里自测时还要靠它（或手工拷进 `script/<id>/`）装包，再手写授权。`PUBLISHABLE_KINDS` 和 `KINDS_DECLARATION` 不变，`script` 不能发布到社区。
+**设置页在第 5 阶段之前看不到脚本插件。** `PluginCatalog::without_scripts()` 去掉脚本包和脚本文件夹的问题行，桌面外壳的 `plugin_catalog` 和 host-api 的 `msime_client_plugins` 目录命令都经过它；`host_surface.script_plugins` 不加。设置页的导入命令（桌面外壳的 `import_plugin_pack` 和 host-api 的 `msime_client_plugins` 导入动作）走 `plugins::import_from_settings`：开发构建照旧接受脚本包，自测时还要靠它（或手工拷进 `script/<id>/`）装包，再手写授权；发布构建在暂存检查之后、建类型目录、改授权和换包目录之前就拒绝，报的是移动端遇到 `script` 时同一条 `plugin_invalid: kind 不是已知的插件类型`。发布构建从不运行脚本，页面又不列出它们，放进去的包既用不上也删不掉，所以在入口挡住。`plugins::import` 本身不拦，测试和开发工具直接调用它。`PUBLISHABLE_KINDS` 和 `KINDS_DECLARATION` 不变，`script` 不能发布到社区。
 
 ## Testing
 
-- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过模块上限被拒，恰好上限可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
+- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过模块上限被拒，恰好上限可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；设置页的导入在发布构建里拒绝脚本包、不留包目录也不写授权，开发构建里接受；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
 - host-api 的 `plugins_boundary_lists_imports_removes_and_keeps_the_name_list` 断言目录命令不报脚本文件夹。
 - `cargo check -p msime-client-core -p msime-host-api --all-targets` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 上通过（编译期断言 `ALL.len() == 8` 随之成立），`cargo check -p msime-desktop --target aarch64-linux-android --lib` 通过；桌面上 `cargo clippy --all-targets -- -D warnings` 干净。
 - host-api 一侧的测试（授权的哈希绑定在输入法进程里同样生效：哈希对不上的条目从不运行；从磁盘上的包经后台编译线程走完整路径）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。
@@ -53,6 +53,6 @@ Status: implemented
 - 准入检查按编译膨胀的上界估算（每字节 128 倍加 256 KiB 固定开销，再加一份值栈），不是按普通代码的约 3.3 倍：产品里量不到真实值，没有"加载时按实际编译结果再查一次"的那一层。所以普通插件在总账里也记得偏多：几十 KiB 的插件每个约 5 MiB；256 KiB、64 页的模块约 36 MiB，同时只能启用一个。
 - `set` 每次启用都要读出其他已启用的包算总账，最多 8 个、每个至多 256 KiB，只在设置页操作时发生。
 - `scan` 现在会完整编译每个已安装的脚本包（dev 构建里 512 KiB 约 20 ms），设置页的目录命令在后台线程上跑，输入法进程的按键和 focus 路径不调用 `scan`。每次校验用一个随结果释放的 Engine，反复刷新目录不会越攒越多。
-- 导入命令不拦脚本包，设置页导入一个脚本包后的提示会写不出类型名（页面的类型表里没有 `script`），在第 5 阶段补上页面之前只影响开发构建里的自测。
+- 开发构建的设置页仍能导入脚本包，页面的类型表里没有 `script`，导入后的提示退回通用的「插件」两字（`packKindLabel` 的兜底），导入的包也不出现在列表里，要删只能手工删 `script/<id>/`。第 5 阶段补上页面之前只影响开发构建里的自测。
 
 相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 提供本篇用到的 `Capability`、`Hook`、模块校验和 `limits`；数据类插件的门控与诊断见 [插件门控如实显示](../../implemented/bug-fix/2026-10-09-plugin-gates-and-wubi-table-modes.md)；社区可发布类型见 [特效包可分享](../../implemented/feature/2026-10-10-community-effect-packs-shareable.md)。
