@@ -770,6 +770,25 @@ JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_applyOnlineCand
     env->ReleaseByteArrayElements(query, queryBytes, JNI_ABORT);
     return response(env, result);
 }
+// AI 回答为空、失败或被拒：AI 座位上的占位行换成「—」（#6888）。
+JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_resolveOnlineCandidatesRaw(JNIEnv *env, jclass, jlong handle, jbyteArray query, jint source) {
+    if (!query || source < 0 || source > 1) {
+        return response(env, msime_client_resolve_online_candidates(
+            static_cast<uint64_t>(handle), nullptr, 0, 0));
+    }
+    jsize queryLength = env->GetArrayLength(query);
+    if (queryLength > kOnlineQueryLimit) {
+        return response(env, msime_client_resolve_online_candidates(
+            static_cast<uint64_t>(handle), nullptr, 0, 0));
+    }
+    jbyte *queryBytes = env->GetByteArrayElements(query, nullptr);
+    if (!queryBytes) return nullptr;
+    char *result = msime_client_resolve_online_candidates(static_cast<uint64_t>(handle),
+        reinterpret_cast<const uint8_t *>(queryBytes), static_cast<size_t>(queryLength),
+        static_cast<uint8_t>(source));
+    env->ReleaseByteArrayElements(query, queryBytes, JNI_ABORT);
+    return response(env, result);
+}
 JNIEXPORT jbyteArray JNICALL Java_app_msime_android_NativeClient_clearOnlineCandidatesRaw(JNIEnv *env, jclass, jlong handle, jint source) {
     if (source < 0 || source > 1) {
         return response(env, msime_client_clear_online_candidates(
