@@ -51,7 +51,7 @@ Status: proposed
 - **轮次只给打字键开。** `msime_client_key` 只在原来会出按键音的那些按下时调用：会话在、中文输入开着、不在录音、不是松开、不是单独的修饰键、不是带 Ctrl/Alt/Super/Hyper/Meta 的快捷键。其余按下不开新的一轮，它们触发的派发算在上一轮里。顺序契约要求每个交给输入法的物理按下都开一轮，而 `msime_client_key` 没有"开一轮但不出声"的位（`MSIME_KEY_POINTER` 有这个效果，但拿它标键盘键是误报来源）；轮次要到第 3 阶段按轮计 fuel 才有人读，到时在核心里加一个位或宿主改用别的办法，那时再定。这个例外写进了 `msime_client.h` 顺序契约下面的"过渡期的例外"，不只留在这里：头文件是公开契约，按轮计数的使用方读的是它。IBus 屏幕键盘面板经 `panel_input_deliver` 直接调 `process_key`，原来不出声，现在也不开轮次；Fcitx5 的面板键走 `keyEvent`，原来出声，现在照样出声。
 - **录音时不出声由宿主挡着。** 核心认得 `TRAIT_VOICE_ACTIVE`，但只按 `SECURE` 和 `FULLSCREEN` 静音。所以录音期间宿主不调 `msime_client_key`，并对音乐说"未激活"，保持原来的"录音时没有按键音和音乐"；这一阶段不报 `VOICE_ACTIVE`。按 Esc 取消录音的那个键因此也不出声：`key_down` / `keyDown` 在引擎之前运行，读到的是录音还在的状态；原来按键音在引擎处理之后才问，那时录音已经取消，这个键会响。不为它开例外：它是录音期间的键，取消录音的键不出声和录音期间不出声是同一条规则。
 - **自动重复照旧出声**（设计待决问题 Q3），只是带上 `MSIME_KEY_REPEAT`，画出来不计连击。
-- **指针点选和翻页先开一轮。** IBus 的 `candidate_clicked`、`page_up`/`page_down` 和滚轮的 `cursor_up`/`cursor_down`，Fcitx5 候选的 `select()` 和候选列表的 `prev()`/`next()`，都先报告属性再 `msime_client_key(MSIME_KEY_POINTER)`，不出声不画。
+- **指针点选和翻页先开一轮。** IBus 的 `candidate_clicked`、`page_up`/`page_down`、滚轮的 `cursor_up`/`cursor_down` 和托盘菜单「候选翻页」里的上一页、下一页（`property_activate`），Fcitx5 候选的 `select()` 和候选列表的 `prev()`/`next()`，都先报告属性再 `msime_client_key(MSIME_KEY_POINTER)`，不出声不画。
 - **宿主写入译文后用命令 19。** 两个宿主各有两处先自己 `commit_text` 一条译文、再丢弃组字（`Ctrl+Enter` 只有一个义项时、从译文候选里选一个），这两处改发 `MSIME_CANCEL_AFTER_HOST_COMMIT`，核心把组字的结束记成 `HostCommit` 而不是取消。对会话的作用同 `MSIME_CANCEL`，用户听不出区别。
 
 可感知的变化有五项：上屏的那个键先出按键音再出上屏音；只带"不做拼写检查"的字段开始出按键音、上屏音并放背景音乐；IBus 两个输入上下文交接焦点时音乐不再被先失焦的那个关掉；失焦时写出的上屏不再出上屏音（Fcitx5 在不支持预编辑的客户端里为韩文、注音、越南文、藏文写出的组字，IBus 经 `msime_client_focus(false)` 送出的暂存分段选词，原来都经宿主的 `apply` 响一声，现在核心按 `FocusLoss` 处理，同头文件"失焦上屏不出声也不画"）；录音中按 Esc 取消录音的那个键不再出按键音。隐私字段仍然完全静音。

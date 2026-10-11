@@ -217,6 +217,7 @@ void patch_preference_object(Json &preferences, const char *name,
 }
 void register_properties(IBusEngine *engine);
 void page(IBusEngine *engine, uint32_t command);
+void pointer_turn(IBusEngine *engine);
 Json response(char *raw) {
   auto owned = msime::host_api::own_string(raw);
   if (!raw)
@@ -4813,6 +4814,8 @@ void property_activate(IBusEngine *engine, const gchar *name, guint value) {
       candidate_name == "CandidateNextPage") {
     if (value != PROP_STATE_UNCHECKED && value != PROP_STATE_CHECKED)
       return;
+    // 托盘菜单「候选翻页」里的上一页、下一页也是指针翻页，同面板的翻页按钮一样先开启新的一轮。
+    pointer_turn(engine);
     page(engine, candidate_name == "CandidatePreviousPage"
                    ? MSIME_PREVIOUS_PAGE
                    : MSIME_NEXT_PAGE);

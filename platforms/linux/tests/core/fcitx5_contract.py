@@ -269,6 +269,9 @@ assert "state->pointerTurn();" in body(source, "void move(uint32_t command)")
 assert "msime_client_key(s.session, MSIME_KEY_POINTER);" in ibus_source
 assert "pointer_turn(engine);" in body(ibus_source, "void candidate_clicked(IBusEngine *engine, guint index, guint button,")
 assert ibus_source.count("pointer_turn(e);") == 4
+# 托盘菜单「候选翻页」的上一页、下一页走 property_activate 再调 page()，同样是指针翻页。
+menu_paging = ibus_source.index('if (candidate_name == "CandidatePreviousPage" ||')
+assert menu_paging < ibus_source.index("pointer_turn(engine);", menu_paging) < ibus_source.index("page(engine, candidate_name == \"CandidatePreviousPage\"", menu_paging)
 # 宿主自己写入译文后丢弃组字用命令 19，生命周期核心把组字的结束记成 HostCommit 而不是取消。
 assert source.count("command(MSIME_CANCEL_AFTER_HOST_COMMIT);") == 2
 assert ibus_source.count("msime_client_command(s.session, MSIME_CANCEL_AFTER_HOST_COMMIT)") == 2
