@@ -147,6 +147,7 @@ export function LoginSheet({
     selectChannel,
     updateTarget,
     sendCode,
+    signIn: runVerificationSignIn,
   } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
   const {
     waiting: googleWaiting,
@@ -168,13 +169,8 @@ export function LoginSheet({
 
   const signIn = () =>
     void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!challenge || !/^\d{6}$/.test(code) || expiresAt <= Date.now())
-        throw { code: "account_invalid" };
-      const result = await client.login(challenge.challengeId, code);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      if (!result.user) throw { code: "account_unavailable" };
-      onSignedIn(result.user);
+      const result = await runVerificationSignIn();
+      if (result) onSignedIn(result.user);
     });
 
   const signInWithGoogle = () =>

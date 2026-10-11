@@ -16,6 +16,7 @@ afterEach(() => {
 test("verification requests trim their target and share resend and expiry timing", async () => {
   const client = {
     requestCode: vi.fn().mockResolvedValue({ challengeId: "synthetic-challenge", expiresIn: 300 }),
+    login: vi.fn(),
   };
   const setNotice = vi.fn();
   const { result, unmount } = renderHook(() =>
@@ -52,6 +53,7 @@ test("a request from an old client generation cannot publish a challenge", async
     requestCode: vi.fn(
       () => new Promise<{ challengeId: string; expiresIn: number }>((done) => (resolve = done)),
     ),
+    login: vi.fn(),
   };
   const value = { challengeId: "stale-challenge", expiresIn: 300 };
   const clientGeneration = { current: 1 };
@@ -72,4 +74,39 @@ test("a request from an old client generation cannot publish a challenge", async
   });
   expect(result.current.challenge).toBeNull();
   expect(setNotice).not.toHaveBeenCalled();
+});
+
+test("a completed sign-in from an old client generation cannot publish its user", async () => {
+  const user = {
+    id: "synthetic-user",
+    displayName: "Synthetic User",
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  let resolveLogin!: (value: { user: typeof user }) => void;
+  const client = {
+    requestCode: vi.fn().mockResolvedValue({ challengeId: "synthetic-challenge", expiresIn: 300 }),
+    login: vi.fn(() => new Promise<{ user: typeof user }>((done) => (resolveLogin = done))),
+  };
+  const clientGeneration = { current: 1 };
+  const { result } = renderHook(() =>
+    useAccountVerification({
+      client,
+      mounted: { current: true },
+      clientGeneration,
+      setNotice: vi.fn(),
+    }),
+  );
+  act(() => result.current.selectChannel("email"));
+  act(() => result.current.updateTarget("synthetic@example.test"));
+  await act(async () => result.current.sendCode());
+  act(() => result.current.setCode("123456"));
+
+  let pending!: Promise<unknown>;
+  act(() => {
+    pending = result.current.signIn();
+  });
+  expect(client.login).toHaveBeenCalledWith("synthetic-challenge", "123456");
+  clientGeneration.current = 2;
+  await act(async () => resolveLogin({ user }));
+  await expect(pending).resolves.toBeUndefined();
 });
