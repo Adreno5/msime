@@ -98,6 +98,9 @@ jobs:
       # stage-resources.sh stages target/offline-glosses when it is there and package-release.sh embeds it.
       - name: Fetch the locked offline candidate glosses
         run: python3 scripts/fetch_offline_glosses.py
+      # The same goes for target/character-glosses, target/word-glosses and target/pronunciations: without them single characters and long-tail words have no English gloss, English glosses no IPA, and sentence candidates no word-by-word breakdown.
+      - name: Fetch the locked English gloss tables
+        run: python3 scripts/fetch_gloss_tables.py
       # Fetches the pinned dictionaries, builds the Release host library, the input method bundle and the Tauri settings app that embeds both, signs them (Developer ID when the secrets are present, ad-hoc otherwise), checks the embedded resources and signatures inside the mounted DMG, notarizes when the Apple ID secrets are present, and writes SHA256SUMS.
       # 包里只带核心词库；日文词典、粤拼/注音词库和手写模型由 App 首次用到时下载。package-release.sh 在编译之前先用 App 的同一个安装器把三个资源包装一遍，地址失效或哈希不符就在这里失败，不会发出一个补不齐数据的包。
       # package-release.sh 按这两个 target 各编一次 Rust 产物再合并；rust-toolchain.toml 只固定编译器版本，不带这两个标准库。
