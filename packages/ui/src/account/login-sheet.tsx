@@ -3,6 +3,7 @@ import { privacyUrl } from "../settings/app-resources";
 import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
 import { useAccountAction } from "./account-operation";
+import { useAccountRecoveryActions } from "./use-account-recovery-actions";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import * as account from "./account-style";
@@ -135,6 +136,14 @@ export function LoginSheet({
     setError,
     setNotice,
   );
+  const { refreshProviders, clearExpired } = useAccountRecoveryActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onProvidersChange,
+    onClearedExpired,
+  });
   const verification = useAccountVerification({ client, mounted, clientGeneration, setNotice });
   const { channel, selectChannel, sendCode, signIn: runVerificationSignIn } = verification;
   const {
@@ -165,22 +174,6 @@ export function LoginSheet({
     void perform(async () => {
       const result = await runGoogleLogin();
       if (result) onSignedIn(result.user);
-    });
-
-  const refreshProviders = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      const value = await client.providers();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onProvidersChange(value);
-    });
-
-  const clearExpired = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.clearExpired();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onClearedExpired();
     });
 
   // 后端可能为没有对应客户端的宿主也开着 Google，所以还要看宿主有没有 googleLogin。

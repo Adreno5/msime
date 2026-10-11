@@ -37,6 +37,7 @@ import { pushMobileSettingsState } from "../settings/mobile-navigation";
 import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
+import { useAccountRecoveryActions } from "./use-account-recovery-actions";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
@@ -183,6 +184,13 @@ function MobileAccountProfilePage({
     setError,
     setNotice,
   );
+  const { clearExpired } = useAccountRecoveryActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onClearedExpired: onSignedOut,
+  });
   const normalizedName = normalizeAccountName(name);
   const validName = isValidAccountName(name);
 
@@ -200,13 +208,6 @@ function MobileAccountProfilePage({
     void perform(async () => {
       const generation = clientGeneration.current;
       await client.logout(all);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      onSignedOut();
-    });
-  const clearExpired = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.clearExpired();
       if (!mounted.current || generation !== clientGeneration.current) return;
       onSignedOut();
     });
@@ -1035,6 +1036,19 @@ function AccountDetailsPage({
     setError,
     setNotice,
   );
+  const { refreshProviders, clearExpired } = useAccountRecoveryActions({
+    client,
+    mounted,
+    clientGeneration,
+    perform,
+    onProvidersChange: setProviders,
+    onClearedExpired: () => {
+      setUser(null);
+      setProfile(null);
+      setName("");
+      setNotice("已清除失效登录状态。");
+    },
+  });
   const verification = useAccountVerification({ client, mounted, clientGeneration, setNotice });
   const {
     channel,
@@ -1163,17 +1177,6 @@ function AccountDetailsPage({
       setName("");
       setConfirmation(null);
       setNotice("账号已注销。");
-    });
-
-  const clearExpired = () =>
-    void perform(async () => {
-      const generation = clientGeneration.current;
-      await client.clearExpired();
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      setUser(null);
-      setProfile(null);
-      setName("");
-      setNotice("已清除失效登录状态。");
     });
 
   const rename = () =>
@@ -1678,14 +1681,7 @@ function AccountDetailsPage({
               </div>
               <div className={account.signInFooter}>
                 <ActionButton
-                  action={() =>
-                    void perform(async () => {
-                      const generation = clientGeneration.current;
-                      const value = await client.providers();
-                      if (!mounted.current || generation !== clientGeneration.current) return;
-                      setProviders(value);
-                    })
-                  }
+                  action={refreshProviders}
                   className={account.link}
                   disabled={busy}
                   label="刷新登录方式"
