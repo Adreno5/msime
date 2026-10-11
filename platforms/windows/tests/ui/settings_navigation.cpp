@@ -86,8 +86,11 @@ int main() {
     for (auto id : {"themes", "candidate", "typing", "expression", "shortcuts", "lexicon",
                     "clip", "stats", "plugins", "ai", "account", "dev", "feedback", "about"})
       require(find_page(id)->host == PageHost::Native);
-    for (const auto &target : shell_links::all)
+    // 本窗口不再打开共享应用的任何设置页：留下的都是输入工具的面板。
+    for (const auto &target : shell_links::all) {
       require(launchable(target));
+      require(target.page.empty() && !target.panel.empty());
+    }
     // 剪贴板页在本窗口里原生绘制，只有云剪贴板面板仍由共享应用打开。
     require(msime::windows::shell_route_argument(
                 request_for(shell_links::cloud_clipboard)) == L"cloud-clipboard");
@@ -97,9 +100,8 @@ int main() {
                 shell_links::handwriting_panel)) == L"handwriting");
     // 语音页的识别服务与润色在本窗口里原生绘制，只有语音面板仍由共享应用打开，路由与托盘的「语音输入」相同。
     require(msime::windows::shell_route_argument(request_for(shell_links::voice_panel)) == L"voice");
-    // 账号页「我的内容」的几行打开共享应用的社区页（Windows 上只有词包与回复模板）。
-    require(msime::windows::shell_route_argument(request_for(shell_links::community)) ==
-            L"settings:community");
+    require(msime::windows::shell_route_argument(
+                request_for(shell_links::cloud_dictionary)) == L"cloud-dictionary");
 
     // Every settings category the shared routes know still opens a page here, and the ids the tray sends land where the features moved.
     const std::set<std::string_view> categories{

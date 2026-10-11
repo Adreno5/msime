@@ -2124,6 +2124,45 @@ void parse_community_item(JsonObject const &object, CommunityPluginItem &plugin)
   plugin.moderation = named_string(object, L"moderation");
 }
 
+// 社区里的一个词库或回复模板（client-core 的 CommunityResource，共享页的 CommunityResource）。词库带词条，回复模板带提示词。
+struct CommunityResourceItem {
+  std::wstring id, kind, name, description, author, prompt;
+  std::vector<cm::SharedWord> entries;
+  int64_t revision = 0;
+  double saves = 0, rating_count = 0, rating_average = 0;
+  bool saved = false, owned = false;
+  int64_t my_rating = 0;
+  std::wstring moderation;
+};
+
+void parse_community_item(JsonObject const &object, CommunityResourceItem &resource) {
+  resource.id = named_string(object, L"id");
+  resource.kind = named_string(object, L"kind");
+  resource.name = named_string(object, L"name");
+  resource.description = named_string(object, L"description");
+  resource.author = named_string(object, L"author");
+  const auto content = object.GetNamedValue(L"content", JsonValue::CreateNullValue());
+  if (content.ValueType() == JsonValueType::Object) {
+    const auto fields = content.GetObject();
+    resource.prompt = named_string(fields, L"prompt");
+    for (auto const &entry : named_objects(fields, L"entries"))
+      resource.entries.push_back({named_string(entry, L"kind"), named_string(entry, L"code"),
+                                  named_string(entry, L"word"), named_count(entry, L"weight")});
+  }
+  resource.revision = named_count(object, L"revision");
+  resource.saves = named_number(object, L"saves").value_or(0);
+  resource.rating_count = named_number(object, L"rating_count").value_or(0);
+  resource.rating_average = named_number(object, L"rating_average").value_or(0);
+  const auto flag = [&object](wchar_t const *key) {
+    const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+    return value.ValueType() == JsonValueType::Boolean && value.GetBoolean();
+  };
+  resource.saved = flag(L"saved");
+  resource.owned = flag(L"owned");
+  resource.my_rating = named_count(object, L"my_rating");
+  resource.moderation = named_string(object, L"moderation");
+}
+
 // 一个作品的回答（detail、publish、set_visibility、set_category），读不出来时为空。
 template <typename Item> std::optional<Item> community_item(Response const &response) {
   const auto value = community_value(response);
@@ -2190,6 +2229,38 @@ CommunityListPage<Item> read_community_page(size_t offset, std::wstring const &s
       return page;
     page.offset += page.skipped;
   }
+}
+
+// 读词库或回复模板图库的一页（CommunityResourcesPage 的 load）：kind 是 dictionary 或 reply，scope 是空（全部）、saved 或 mine。宿主不略过条目。
+CommunityListPage<CommunityResourceItem> read_resource_page(size_t offset, std::wstring const &search,
+                                                            std::wstring const &kind,
+                                                            std::wstring const &scope) {
+  CommunityListPage<CommunityResourceItem> page;
+  page.offset = offset;
+  auto action = community_action(L"resource_list");
+  action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(kind)));
+  action.SetNamedValue(L"scope", JsonValue::CreateStringValue(hstring(scope)));
+  action.SetNamedValue(L"search", JsonValue::CreateStringValue(hstring(search)));
+  action.SetNamedValue(L"offset", JsonValue::CreateNumberValue(static_cast<double>(offset)));
+  const auto response = community_call(action);
+  const auto value = community_value(response);
+  if (!response.ok || value.ValueType() != JsonValueType::Object) {
+    page.failure = community_failure(response);
+    if (page.failure.code.empty())
+      page.failure.code = L"community_unavailable";
+    return page;
+  }
+  const auto object = value.GetObject();
+  for (auto const &entry : named_objects(object, L"items")) {
+    CommunityResourceItem item;
+    parse_community_item(entry, item);
+    if (!item.id.empty())
+      page.items.push_back(std::move(item));
+  }
+  const auto more = object.GetNamedValue(L"has_more", JsonValue::CreateNullValue());
+  page.has_more = more.ValueType() == JsonValueType::Boolean && more.GetBoolean();
+  page.ok = true;
+  return page;
 }
 
 // 「发布皮肤」和装皮肤前要知道的本机皮肤：只要 id，与 msime_client_skin_catalog 的扫描相同，但不读图片、不解析配色。读不到时为空。读目录，只在 UI 线程之外调用。
@@ -4605,6 +4676,8 @@ private:
   }
 
   void leave_account_page() {
+    if (resource_view_)
+      leave_resource_community();
     cancel_account_google();
     ++account_generation_;
     account_busy_ = false;
@@ -5323,6 +5396,11 @@ private:
       record(L"注销账号", L"");
       return;
     }
+    // 「我的内容」打开的社区词库与回复模板换下整页。
+    if (resource_view_) {
+      build_resource_community(page);
+      return;
+    }
     if (account_stale_)
       load_account();
     account_resend_button_ = nullptr;
@@ -5741,7 +5819,7 @@ private:
       rename_account();
   }
 
-  // 「云端」：云词库和云剪贴板是输入工具的面板，仍由共享应用打开。
+  // 「云端」：云词库和云剪贴板是输入工具的面板，仍由共享应用打开（本窗口只剩这几处会拉起共享应用，另外是屏幕键盘、语音输入和手写的面板）。
   void build_account_cloud(StackPanel const &page) {
     auto group = add_group(page, L"云端");
     add_row(group, 0xE753, L"云词库", L"",
@@ -5754,14 +5832,609 @@ private:
                            !account_busy_));
   }
 
-  // 「我的内容」：Windows 的社区页只有词包与回复模板（没有皮肤画廊，「我发布的皮肤」不在这里），由共享应用显示。共享应用的路由带不了要打开的列表，几行都打开社区首页，在那里选「我发布的」或「收藏」。
+  // 「我的内容」（共享页桌面版的 MeRow）：Windows 的社区只有词库与回复模板（没有皮肤画廊，「我发布的皮肤」不在这里）。每一行在本页打开社区词库与回复模板的图库，停在那一行的分类和范围上（communityDestinationView）。
   void build_account_content(StackPanel const &page) {
     auto group = add_group(page, L"我的内容");
-    for (auto const *title : {L"我发布的词库", L"我发布的回复模板", L"收藏的词库", L"收藏的回复模板"})
-      add_row(group, 0xE8F1, title, L"",
-              button_control(L"在社区中打开",
-                             [this] { open_shell(nav::shell_links::community); },
-                             !account_busy_));
+    constexpr std::array<wchar_t, 4> glyphs{0xE82D, 0xE8BD, 0xE734, 0xEB51};
+    for (size_t i = 0; i < cm::resource_destinations.size(); ++i) {
+      auto const &destination = cm::resource_destinations[i];
+      auto row = plugin_nav_row(group, glyphs[i], std::wstring(destination.title), L"", L"",
+                                [this, kind = std::wstring(destination.kind),
+                                 scope = std::wstring(destination.scope)] {
+                                  open_resource_community(kind, scope);
+                                });
+      row.IsEnabled(!account_busy_);
+    }
+  }
+
+  // ---- 社区词库与回复模板 ----
+
+  // 共享应用在 Windows 上的社区页（community-page.tsx 只有 resources 时的 CommunityHomePage）：「词库」「回复模板」两个分类，各是一个图库（community-resources.tsx 的 CommunityResourcesPage）——搜索、全部 / 收藏 / 我的作品、卡片、加载更多；详情里看词条或提示词，导入本机词库或账号云词库，收藏、评分、举报，作者发布新版本和下架；「发布作品」是对话框（ResourceEditor）。本窗口没有单独的社区页，「我的内容」的几行在「账号与同步」页里换上这个图库，顶上的「账号与同步」回到本页；离开本页时卸下，下次从头读起。社区操作经 msime_client_community，导入本机词库经 msime_client_settings_dictionary（与「词库」页相同），都在工作线程上。
+
+  void open_resource_community(std::wstring const &kind, std::wstring const &scope) {
+    if (account_busy_)
+      return;
+    resource_view_ = true;
+    resource_kind_ = kind;
+    resource_scope_ = scope;
+    reset_gallery<CommunityResourceItem>();
+    gallery_list<CommunityResourceItem>(L"", false, false);
+    render_page(false);
+  }
+
+  void leave_resource_community() {
+    ++resource_gallery_.owner;
+    resource_gallery_.action_busy = false;
+    resource_view_ = false;
+    ++resource_editor_.generation;
+    resource_editor_.busy = false;
+    if (auto shown = resource_editor_.dialog.get())
+      shown.Hide();
+  }
+
+  void close_resource_community() {
+    if (resource_gallery_.action_busy)
+      return;
+    leave_resource_community();
+    render_page(false);
+  }
+
+  // 换分类时范围和搜索词照旧，从第一页读（共享页的图库换了 kind 不重新挂上）。
+  void set_resource_kind(std::wstring const &kind) {
+    if (kind == resource_kind_)
+      return;
+    resource_kind_ = kind;
+    gallery_list<CommunityResourceItem>(resource_gallery_.active_search, false, false);
+  }
+
+  void build_resource_community(StackPanel const &page) {
+    auto &gallery = resource_gallery_;
+    // 回到「账号与同步」，样子同插件页视图的返回。
+    StackPanel label;
+    label.Orientation(Orientation::Horizontal);
+    label.Spacing(6);
+    auto chevron = make_icon(0xE76B, 12, palette_.text);
+    chevron.VerticalAlignment(VerticalAlignment::Center);
+    label.Children().Append(chevron);
+    label.Children().Append(make_text(page_label("account").title, 14, palette_.text));
+    Button back;
+    back.Content(label);
+    back.Height(32);
+    back.Padding(Thickness{12, 0, 12, 0});
+    back.IsEnabled(!gallery.action_busy);
+    A11y::SetName(back, hstring(std::wstring(L"返回") + page_label("account").title));
+    back.Click([this](Inspectable const &, RoutedEventArgs const &) { close_resource_community(); });
+    back.Margin(Thickness{0, 0, 0, 12});
+    page.Children().Append(back);
+    std::vector<Option> kinds;
+    for (auto const &kind : cm::resource_kinds)
+      kinds.push_back({std::wstring(kind.value), std::wstring(kind.label)});
+    auto tabs = segmented_control(L"社区分类", std::move(kinds), resource_kind_,
+                                  [this](std::wstring const &value) { set_resource_kind(value); },
+                                  true, false);
+    tabs.HorizontalAlignment(HorizontalAlignment::Left);
+    tabs.Margin(Thickness{0, 0, 0, 12});
+    page.Children().Append(tabs);
+    if (gallery.selected) {
+      build_resource_detail(page);
+      return;
+    }
+    const auto title = cm::resource_kind_title(resource_kind_);
+    community_search<CommunityResourceItem>(page, L"搜索" + title);
+    community_heading<CommunityResourceItem>(
+        page, cm::resource_heading(resource_kind_, resource_scope_),
+        cm::resource_heading_note(resource_kind_), title + L"范围", L"全部", L"发布作品",
+        [this] { open_resource_editor(false); });
+    if (!gallery.error.empty())
+      community_error(page, gallery.error, false, nullptr);
+    else if (!gallery.list_busy && gallery.items.empty())
+      community_empty(page, L"这里还没有" + title + L"作品。");
+    constexpr double width = 232, height = 156;
+    auto grid = community_grid(width, height);
+    for (auto const &item : gallery.items) {
+      StackPanel body;
+      body.Spacing(4);
+      Border tile;
+      tile.Width(32);
+      tile.Height(32);
+      tile.CornerRadius(CornerRadius{6, 6, 6, 6});
+      tile.Background(brush(palette_.accent));
+      auto glyph = make_text(cm::resource_card_glyph(item.kind), 15, palette_.on_accent);
+      glyph.HorizontalAlignment(HorizontalAlignment::Center);
+      glyph.VerticalAlignment(VerticalAlignment::Center);
+      tile.Child(glyph);
+      tile.HorizontalAlignment(HorizontalAlignment::Left);
+      body.Children().Append(tile);
+      auto name = card_line(item.name, 14, palette_.text);
+      name.FontWeight(Windows::UI::Text::FontWeight{600});
+      body.Children().Append(name);
+      body.Children().Append(card_line(
+          cm::card_author(L"", item.author, item.owned, false, item.moderation == L"removed"), 12,
+          palette_.sub));
+      body.Children().Append(
+          card_line(cm::resource_card_description(item.kind, item.description), 12, palette_.sub, 2));
+      body.Children().Append(card_line(
+          cm::resource_card_metrics(item.saves, item.rating_count, item.rating_average), 12,
+          palette_.sub));
+      grid.Children().Append(community_card(L"查看" + cm::resource_kind_title(item.kind) + L" " +
+                                                item.name,
+                                            body, width, height,
+                                            [this, item] { gallery_open(item); }));
+    }
+    page.Children().Append(grid);
+    community_load_more<CommunityResourceItem>(page, L"正在读取社区…");
+  }
+
+  // ResourceDetail：作者和版本，收藏与评分；词库是词条预览和两种导入，回复模板是提示词预览；之后是收藏、作者的「编辑并发布新版本」、评分或下架，别人的作品可以举报。
+  void build_resource_detail(StackPanel const &page) {
+    auto &gallery = resource_gallery_;
+    auto const item = *gallery.selected;
+    const bool busy = gallery.action_busy;
+    auto body = community_detail_frame<CommunityResourceItem>(page);
+    community_detail_header(body, item.name, item.author + L" · v" + std::to_wstring(item.revision),
+                            item.owned, item.moderation, L"我的作品", item.description);
+    body.Children().Append(make_text(
+        cm::rating_metrics(item.saves, L"收藏", item.rating_count, item.rating_average), 13,
+        palette_.sub));
+    auto subheading = [this, &body](std::wstring const &value) {
+      auto heading = make_text(value, 15, palette_.text);
+      heading.FontWeight(Windows::UI::Text::FontWeight{600});
+      heading.Margin(Thickness{0, 6, 0, 0});
+      body.Children().Append(heading);
+    };
+    auto preview_box = [this](UIElement const &content) {
+      ScrollViewer scroller;
+      scroller.MaxHeight(260);
+      scroller.Content(content);
+      Border frame;
+      frame.BorderBrush(brush(palette_.stroke));
+      frame.BorderThickness(Thickness{1, 1, 1, 1});
+      frame.CornerRadius(CornerRadius{4, 4, 4, 4});
+      frame.Padding(Thickness{12, 8, 12, 8});
+      frame.Child(scroller);
+      return frame;
+    };
+    auto left = [](FrameworkElement const &element) {
+      element.HorizontalAlignment(HorizontalAlignment::Left);
+      return element;
+    };
+    if (item.kind == L"dictionary") {
+      subheading(L"词条预览 · " + std::to_wstring(item.entries.size()) + L" 条");
+      StackPanel words;
+      words.Spacing(4);
+      for (auto const &entry : item.entries) {
+        Grid line;
+        line.ColumnSpacing(16);
+        for (auto width : {GridLength{1, GridUnitType::Star}, GridLength{1, GridUnitType::Auto}}) {
+          ColumnDefinition column;
+          column.Width(width);
+          line.ColumnDefinitions().Append(column);
+        }
+        line.Children().Append(make_text(entry.word, 13, palette_.text));
+        auto code = make_text(entry.code, 13, palette_.sub);
+        code.FontFamily(Media::FontFamily(L"Consolas"));
+        Grid::SetColumn(code, 1);
+        line.Children().Append(code);
+        words.Children().Append(line);
+      }
+      A11y::SetName(words, L"词条预览");
+      body.Children().Append(preview_box(words));
+      body.Children().Append(
+          left(primary_button(L"导入这版词库到本机", [this] { import_resource_locally(); }, !busy)));
+      body.Children().Append(
+          left(button_control(L"导入这版词库到云端", [this] { apply_resource(); }, !busy)));
+      body.Children().Append(make_text(
+          L"本机导入只更新当前设备；云端导入会合并到账号云词库。版本发生变化时云端导入会停止并要求重新查看。",
+          12, palette_.sub));
+    } else {
+      subheading(L"提示词预览");
+      auto prompt = make_text(item.prompt, 13, palette_.text);
+      prompt.IsTextSelectionEnabled(true);
+      prompt.FontFamily(Media::FontFamily(L"Consolas"));
+      A11y::SetName(prompt, L"提示词预览");
+      body.Children().Append(preview_box(prompt));
+    }
+    if (!gallery.notice.empty())
+      community_notice(body, gallery.notice);
+    body.Children().Append(left(button_control(item.saved ? L"取消收藏" : L"收藏，关注后续更新",
+                                               [this] { save_resource(); }, !busy)));
+    if (item.owned)
+      body.Children().Append(left(
+          button_control(L"编辑并发布新版本", [this] { open_resource_editor(true); }, !busy)));
+    community_moderation<CommunityResourceItem>(
+        body, true, L"下架作品", L"确认下架作品",
+        L"下架后其他用户无法获取此作品，已有本地回复模板和云词库副本不会被删除。确定下架“" +
+            item.name + L"”吗？",
+        L"");
+    if (!item.owned)
+      community_report<CommunityResourceItem>(body);
+  }
+
+  // save：收藏或取消收藏，再重读详情。
+  void save_resource() {
+    if (!gallery_begin<CommunityResourceItem>(true))
+      return;
+    auto const &item = *resource_gallery_.selected;
+    const auto id = item.id;
+    const bool saved = !item.saved;
+    gallery_call<CommunityResourceItem>(
+        [id, saved] {
+          auto save = community_action(L"resource_save");
+          save.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          save.SetNamedValue(L"saved", JsonValue::CreateBooleanValue(saved));
+          auto done = community_call(save);
+          if (!done.ok)
+            return done;
+          auto detail = community_action(L"resource_detail");
+          detail.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          return community_call(detail);
+        },
+        [this](Response const &response) {
+          auto item = community_item<CommunityResourceItem>(response);
+          if (!item) {
+            gallery_end<CommunityResourceItem>(community_failure(response));
+            return;
+          }
+          resource_gallery_.selected = std::move(*item);
+          gallery_end<CommunityResourceItem>();
+        });
+  }
+
+  // apply：把这一版词库导入账号的云端词库，说明新增或更新了几条。
+  void apply_resource() {
+    if (!gallery_begin<CommunityResourceItem>(true))
+      return;
+    auto const &item = *resource_gallery_.selected;
+    auto action = community_action(L"resource_apply");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(item.id)));
+    action.SetNamedValue(L"resource_revision",
+                         JsonValue::CreateNumberValue(static_cast<double>(item.revision)));
+    gallery_call<CommunityResourceItem>(
+        [action] { return community_call(action); },
+        [this](Response const &response) {
+          const auto value = community_value(response);
+          if (!response.ok || value.ValueType() != JsonValueType::Object) {
+            gallery_end<CommunityResourceItem>(community_failure(response));
+            return;
+          }
+          resource_gallery_.notice = L"已导入云端词库，新增或更新 " +
+                                     std::to_wstring(named_count(value.GetObject(), L"imported")) +
+                                     L" 个词条。";
+          gallery_end<CommunityResourceItem>();
+        });
+  }
+
+  // applyLocal（宿主没有命名词库，Windows 就是这样）：词条按类型分组，每组一次标准格式的导入，与共享应用的 dictionary_request 相同；说明本机词库应用了几条。读不到宿主选项时没有词库可写，按存储失败说明。
+  void import_resource_locally() {
+    if (!gallery_begin<CommunityResourceItem>(true))
+      return;
+    const auto options = runtime_options_document();
+    if (!options) {
+      gallery_end<CommunityResourceItem>(CommunityFailure{L"storage", L""});
+      return;
+    }
+    struct Outcome {
+      bool ok = true;
+      int64_t applied = 0;
+      CommunityFailure failure;
+    };
+    const auto groups = cm::local_import_groups(resource_gallery_.selected->entries);
+    const auto stamp = request_id(L"community-local-");
+    const auto owner = resource_gallery_.owner;
+    run_worker<Outcome>(
+        [options = *options, groups, stamp] {
+          Outcome outcome;
+          for (auto const &group : groups) {
+            // 请求 id 是 community-local-<毫秒>-<词条原来的类型>，与共享页相同。
+            JsonObject action;
+            action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"import"));
+            action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(group.kind)));
+            action.SetNamedValue(L"format", JsonValue::CreateStringValue(L"standard"));
+            action.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(group.text)));
+            action.SetNamedValue(L"request_id",
+                                 JsonValue::CreateStringValue(hstring(stamp + L"-" + group.source)));
+            const auto response = settings_dictionary_call(options, utf8(action.Stringify()));
+            const auto value = community_value(response);
+            if (!response.ok || value.ValueType() != JsonValueType::Object) {
+              outcome.ok = false;
+              outcome.failure = CommunityFailure{response_error(response), L""};
+              return outcome;
+            }
+            outcome.applied += named_count(value.GetObject(), L"applied");
+          }
+          return outcome;
+        },
+        [this, owner](Outcome &outcome) {
+          if (owner != resource_gallery_.owner)
+            return;
+          if (!outcome.ok) {
+            gallery_end<CommunityResourceItem>(outcome.failure);
+            return;
+          }
+          resource_gallery_.notice =
+              L"已导入本机词库，应用 " + std::to_wstring(outcome.applied) + L" 个词条。";
+          gallery_end<CommunityResourceItem>();
+        });
+  }
+
+  // ---- 发布词库与回复模板 ----
+
+  // ResourceEditor 的状态。id 在打开时定下（新作品随机生成，新版本沿用原来的），改名称或说明不换；generation 在打开和关上时递增，作废在途的回答。
+  struct ResourceEditor {
+    uint64_t generation = 0;
+    std::wstring kind;
+    bool existing = false;
+    int64_t revision = 0;
+    std::wstring id;
+    std::wstring name, description, prompt;
+    std::vector<cm::SharedWord> entries;
+    std::wstring entry_kind = L"pinyin";
+    std::wstring code, word, weight = std::wstring(cm::default_shared_word_weight);
+    bool agreed = false;
+    // publication_fields 改名称时会换的发布 id；这里的 id 不随它变，换的是这一份。
+    std::wstring field_id;
+    std::wstring error;
+    bool busy = false;
+    std::function<void()> refresh;
+    weak_ref<ContentDialog> dialog;
+  };
+
+  // 打开「发布词库」「发布回复模板」，或作者在详情里的「编辑并发布新版本」（existing）：后者带上这一版的内容。
+  fire_and_forget open_resource_editor(bool existing) {
+    if (dialog_open_ || resource_editor_.refresh)
+      co_return;
+    if (existing && !resource_gallery_.selected)
+      co_return;
+    auto strong = get_strong();
+    const auto generation = resource_editor_.generation + 1;
+    resource_editor_ = ResourceEditor{};
+    auto &state = resource_editor_;
+    state.generation = generation;
+    state.existing = existing;
+    if (existing) {
+      auto const &item = *resource_gallery_.selected;
+      state.kind = item.kind;
+      state.id = item.id;
+      state.revision = item.revision;
+      state.name = item.name;
+      state.description = item.description;
+      state.prompt = item.prompt;
+      state.entries = item.entries;
+    } else {
+      state.kind = resource_kind_;
+      state.id = random_uuid();
+    }
+    const auto title = existing ? std::wstring(L"更新作品") : L"发布" + cm::resource_kind_title(state.kind);
+
+    ScrollViewer scroller;
+    scroller.MaxHeight(560);
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(460);
+    form.Padding(Thickness{0, 0, 12, 0});
+    scroller.Content(form);
+    auto dialog = publish_dialog(title, [this] { return resource_editor_.busy; },
+                                 [this] { submit_resource_editor(); });
+    dialog.Content(scroller);
+    A11y::SetName(dialog, hstring(existing ? std::wstring(L"更新社区作品") : title));
+    const auto weak_dialog = make_weak(dialog);
+    const auto weak_form = make_weak(form);
+    state.dialog = weak_dialog;
+    state.refresh = [this, weak_dialog, weak_form] {
+      DispatcherQueue().TryEnqueue([this, weak_dialog, weak_form] {
+        auto shown = weak_dialog.get();
+        auto content = weak_form.get();
+        if (shown && content && resource_editor_.refresh)
+          build_resource_editor(content, shown);
+      });
+    };
+    build_resource_editor(form, dialog);
+    co_await show_dialog(dialog);
+    ++resource_editor_.generation;
+    resource_editor_.refresh = nullptr;
+    resource_editor_.busy = false;
+  }
+
+  void build_resource_editor(StackPanel const &form, ContentDialog const &dialog) {
+    auto &state = resource_editor_;
+    form.Children().Clear();
+    dialog_error(form, state.error, false, make_weak(dialog));
+    publication_fields(form, state.name, state.description, state.agreed, state.field_id, state.busy,
+                       L"作品名称", L"社区作品名称", L"作品说明", L"社区作品说明",
+                       L"我拥有发布所用内容的权利，并同意其他用户查看和使用", L"确认拥有发布内容权利",
+                       [] {}, [this] { submit_resource_editor(); }, !state.existing);
+    if (state.kind == L"reply") {
+      TextBox prompt;
+      prompt.Header(box_value(L"回复提示词"));
+      prompt.AcceptsReturn(true);
+      prompt.TextWrapping(TextWrapping::Wrap);
+      prompt.MinHeight(168);
+      prompt.MaxLength(static_cast<int32_t>(cm::reply_prompt_limit));
+      prompt.Text(hstring(state.prompt));
+      prompt.IsEnabled(!state.busy);
+      A11y::SetName(prompt, L"社区回复提示词");
+      prompt.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+        resource_editor_.prompt = cm::line_feeds(sender.as<TextBox>().Text().c_str());
+      });
+      form.Children().Append(prompt);
+    } else {
+      build_resource_entry_form(form);
+    }
+    form.Children().Append(make_text(cm::resource_publish_warning, 12, palette_.sub));
+    dialog.PrimaryButtonText(state.busy ? L"正在发布…" : state.existing ? L"发布新版本" : L"公开发布");
+    dialog.IsPrimaryButtonEnabled(!state.busy);
+  }
+
+  // 词库的词条表单：类型、编码、词语、权重和「添加词条」，下面是待发布的词条，每条可以移除。
+  void build_resource_entry_form(StackPanel const &form) {
+    auto &state = resource_editor_;
+    VariableSizedWrapGrid fields;
+    fields.Orientation(Orientation::Horizontal);
+    fields.ItemWidth(150);
+    std::vector<Option> kinds;
+    for (auto const &kind : cm::shared_word_kinds)
+      kinds.push_back({std::wstring(kind.value), std::wstring(kind.label)});
+    auto kind = select_control(L"社区词条类型", std::move(kinds), state.entry_kind,
+                               [this](std::wstring const &value) { resource_editor_.entry_kind = value; },
+                               !state.busy, false)
+                    .as<ComboBox>();
+    kind.Header(box_value(L"类型"));
+    kind.HorizontalAlignment(HorizontalAlignment::Stretch);
+    kind.Margin(Thickness{0, 0, 8, 8});
+    fields.Children().Append(kind);
+    auto field = [this, &fields, &state](std::wstring const &label, std::wstring const &name,
+                                         std::wstring ResourceEditor::*value) {
+      TextBox box;
+      box.Header(box_value(hstring(label)));
+      box.Text(hstring(state.*value));
+      box.IsEnabled(!state.busy);
+      box.Margin(Thickness{0, 0, 8, 8});
+      A11y::SetName(box, hstring(name));
+      box.TextChanged([this, value](Inspectable const &sender, TextChangedEventArgs const &) {
+        resource_editor_.*value = std::wstring(sender.as<TextBox>().Text().c_str());
+      });
+      fields.Children().Append(box);
+    };
+    field(L"编码", L"社区词条编码", &ResourceEditor::code);
+    field(L"词语", L"社区词条文字", &ResourceEditor::word);
+    field(L"权重", L"社区词条权重", &ResourceEditor::weight);
+    form.Children().Append(fields);
+    auto add = button_control(L"添加词条", [this] { add_resource_entry(); }, !state.busy);
+    add.HorizontalAlignment(HorizontalAlignment::Left);
+    form.Children().Append(add);
+    StackPanel list;
+    list.Spacing(4);
+    for (size_t i = 0; i < state.entries.size(); ++i) {
+      auto const &entry = state.entries[i];
+      Grid line;
+      line.ColumnSpacing(12);
+      for (auto width : {GridLength{1, GridUnitType::Star}, GridLength{1, GridUnitType::Auto}}) {
+        ColumnDefinition column;
+        column.Width(width);
+        line.ColumnDefinitions().Append(column);
+      }
+      auto words = make_text(entry.word + L" · " + entry.code + L" · " + std::to_wstring(entry.weight),
+                             13, palette_.text);
+      words.VerticalAlignment(VerticalAlignment::Center);
+      line.Children().Append(words);
+      auto remove = button_control(L"移除", [this, i] {
+        auto &current = resource_editor_;
+        if (current.busy || i >= current.entries.size())
+          return;
+        current.entries.erase(current.entries.begin() + static_cast<std::ptrdiff_t>(i));
+        if (current.refresh)
+          current.refresh();
+      }, !state.busy);
+      Grid::SetColumn(remove, 1);
+      line.Children().Append(remove);
+      list.Children().Append(line);
+    }
+    A11y::SetName(list, hstring(L"待发布词条 " + std::to_wstring(state.entries.size()) + L"/" +
+                                std::to_wstring(cm::shared_word_limit)));
+    form.Children().Append(list);
+  }
+
+  // addEntry：不合规则时说明一句；加上后清空编码和词语，类型和权重留着。
+  void add_resource_entry() {
+    auto &state = resource_editor_;
+    if (state.busy)
+      return;
+    if (auto entry = cm::shared_word(state.entries, state.entry_kind, state.code, state.word,
+                                     state.weight)) {
+      state.entries.push_back(std::move(*entry));
+      state.code.clear();
+      state.word.clear();
+      state.error.clear();
+    } else {
+      state.error = std::wstring(cm::shared_word_invalid);
+    }
+    if (state.refresh)
+      state.refresh();
+  }
+
+  // submit：先照共享页校验，再发布；成功后关上对话框，新版本重读详情，新作品从第一页重读图库。
+  void submit_resource_editor() {
+    auto &state = resource_editor_;
+    if (state.busy)
+      return;
+    if (auto error = cm::resource_publish_error(state.kind, state.name, state.description,
+                                                state.prompt, state.entries.size(), state.existing,
+                                                state.agreed);
+        !error.empty()) {
+      state.error = std::move(error);
+      if (state.refresh)
+        state.refresh();
+      return;
+    }
+    const auto fields = cm::publish_fields(state.name, state.description);
+    JsonObject content;
+    if (state.kind == L"reply") {
+      content.SetNamedValue(L"prompt", JsonValue::CreateStringValue(hstring(state.prompt)));
+    } else {
+      JsonArray entries;
+      for (auto const &entry : state.entries) {
+        JsonObject word;
+        word.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(entry.kind)));
+        word.SetNamedValue(L"code", JsonValue::CreateStringValue(hstring(entry.code)));
+        word.SetNamedValue(L"word", JsonValue::CreateStringValue(hstring(entry.word)));
+        word.SetNamedValue(L"weight", JsonValue::CreateNumberValue(static_cast<double>(entry.weight)));
+        entries.Append(word);
+      }
+      content.SetNamedValue(L"entries", entries);
+    }
+    auto action = community_action(L"resource_publish");
+    action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(state.id)));
+    action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(state.kind)));
+    action.SetNamedValue(L"name", JsonValue::CreateStringValue(hstring(fields.name)));
+    action.SetNamedValue(L"description", JsonValue::CreateStringValue(hstring(fields.description)));
+    action.SetNamedValue(L"content", content);
+    action.SetNamedValue(L"revision",
+                         JsonValue::CreateNumberValue(static_cast<double>(state.existing ? state.revision : 0)));
+    state.busy = true;
+    state.error.clear();
+    const auto generation = state.generation;
+    const bool existing = state.existing;
+    const auto id = state.id;
+    run_host([action] { return community_call(action); },
+             [this, generation, existing, id](Response const &response) {
+               auto &current = resource_editor_;
+               if (generation != current.generation)
+                 return;
+               current.busy = false;
+               if (!response.ok) {
+                 current.error = cm::resource_message(community_failure(response).code);
+                 if (current.refresh)
+                   current.refresh();
+                 return;
+               }
+               const auto dialog = current.dialog;
+               ++current.generation;
+               current.refresh = nullptr;
+               if (auto shown = dialog.get())
+                 shown.Hide();
+               if (!resource_view_)
+                 return;
+               if (!existing) {
+                 gallery_list<CommunityResourceItem>(resource_gallery_.active_search, false, false);
+                 return;
+               }
+               auto detail = community_action(L"resource_detail");
+               detail.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+               gallery_call<CommunityResourceItem>(
+                   [detail] { return community_call(detail); },
+                   [this, id](Response const &answer) {
+                     auto &gallery = resource_gallery_;
+                     if (!gallery.selected || gallery.selected->id != id)
+                       return;
+                     if (auto item = community_item<CommunityResourceItem>(answer))
+                       gallery.selected = std::move(*item);
+                     else
+                       gallery_fail<CommunityResourceItem>(community_failure(answer));
+                     redraw_account();
+                   });
+             });
+    if (state.refresh)
+      state.refresh();
   }
 
   // 「账号」：这台设备退出、所有设备退出（先确认）和注销账号（先确认）。
@@ -6561,19 +7234,42 @@ private:
   };
 
   template <typename Item> static constexpr bool skin_item = std::is_same_v<Item, CommunitySkinItem>;
+  template <typename Item>
+  static constexpr bool resource_item = std::is_same_v<Item, CommunityResourceItem>;
 
   template <typename Item> Gallery<Item> &gallery_for() {
     if constexpr (skin_item<Item>)
       return skin_gallery_;
+    else if constexpr (resource_item<Item>)
+      return resource_gallery_;
     else
       return plugin_gallery_;
   }
 
-  // 图库的出错说明：皮肤用 candidateSkinMessage，插件用 communityPluginMessage。
+  // 三个图库里同一件事的操作名：detail、rate，以及作者的下架（插件叫 delete）。
+  template <typename Item> static wchar_t const *community_operation(std::wstring_view verb) {
+    const bool detail = verb == L"detail";
+    const bool rate = verb == L"rate";
+    if constexpr (skin_item<Item>)
+      return detail ? L"candidate_skin_detail" : rate ? L"candidate_skin_rate" : L"candidate_skin_unpublish";
+    else if constexpr (resource_item<Item>)
+      return detail ? L"resource_detail" : rate ? L"resource_rate" : L"resource_unpublish";
+    else
+      return detail ? L"plugin_detail" : rate ? L"plugin_rate" : L"plugin_delete";
+  }
+
+  // 出错时给不给「去登录」：词库与回复模板的图库不给（共享页的资源图库没有 onLogin），其余未登录时给。
+  template <typename Item> static bool gallery_sign_in(std::wstring const &code) {
+    return !resource_item<Item> && cm::needs_sign_in(code);
+  }
+
+  // 图库的出错说明：皮肤用 candidateSkinMessage，词库与回复模板用 resourceMessage，插件用 communityPluginMessage。
   template <typename Item>
   static std::wstring gallery_message(CommunityFailure const &failure, bool publishing = false) {
     if constexpr (skin_item<Item>)
       return cm::candidate_skin_message(failure.code, publishing);
+    else if constexpr (resource_item<Item>)
+      return cm::resource_message(failure.code);
     else
       return cm::plugin_message(failure.code, failure.detail, publishing);
   }
@@ -6581,6 +7277,8 @@ private:
   template <typename Item> void redraw_gallery() {
     if constexpr (skin_item<Item>)
       redraw_themes();
+    else if constexpr (resource_item<Item>)
+      redraw_account();
     else
       redraw_plugins();
   }
@@ -6589,7 +7287,7 @@ private:
   template <typename Item> void gallery_fail(CommunityFailure const &failure) {
     auto &gallery = gallery_for<Item>();
     gallery.error = gallery_message<Item>(failure);
-    gallery.sign_in = cm::needs_sign_in(failure.code);
+    gallery.sign_in = gallery_sign_in<Item>(failure.code);
   }
 
   // 共享页的 openAccountLogin：去「账号与同步」页登录。
@@ -6695,14 +7393,22 @@ private:
     gallery.error.clear();
     gallery.sign_in = false;
     redraw_gallery<Item>();
+    // 词库与回复模板按分类（kind）和范围（scope）读，没有「我的作品」开关和筛选。
     std::optional<std::wstring> filter;
+    std::wstring scope;
     if constexpr (skin_item<Item>)
       filter = skin_category_request_;
-    else
+    else if constexpr (resource_item<Item>) {
+      filter = resource_kind_;
+      scope = resource_scope_;
+    } else
       filter = plugin_kind_request_;
     run_worker<CommunityListPage<Item>>(
-        [offset, query, mine, filter] {
-          return read_community_page<Item>(offset, query, mine, filter);
+        [offset, query, mine, filter, scope] {
+          if constexpr (resource_item<Item>)
+            return read_resource_page(offset, query, filter.value_or(L"dictionary"), scope);
+          else
+            return read_community_page<Item>(offset, query, mine, filter);
         },
         [this, owner, request, append, query, mine,
          then = std::move(then)](CommunityListPage<Item> &page) {
@@ -6719,6 +7425,10 @@ private:
             gallery_fail<Item>(page.failure);
             if (!append)
               current.mine = current.active_mine;
+            // 资源图库读第一页失败时，列着的是上一次查询的条目，不能接着它们的 offset 读下一页。
+            if constexpr (resource_item<Item>)
+              if (!append)
+                current.has_more = false;
             redraw_gallery<Item>();
             if (then)
               then(false);
@@ -6758,7 +7468,7 @@ private:
     gallery.report_reason.clear();
     gallery.report_detail.clear();
     redraw_gallery<Item>();
-    auto action = community_action(skin_item<Item> ? L"candidate_skin_detail" : L"plugin_detail");
+    auto action = community_action(community_operation<Item>(L"detail"));
     action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(item.id)));
     run_host([action] { return community_call(action); },
              [this, owner, request](Response const &response) {
@@ -6812,7 +7522,7 @@ private:
     gallery.action_busy = false;
     if (failure) {
       gallery.error = gallery_message<Item>(*failure);
-      gallery.sign_in = cm::needs_sign_in(failure->code);
+      gallery.sign_in = gallery_sign_in<Item>(failure->code);
     }
     redraw_gallery<Item>();
   }
@@ -6834,14 +7544,13 @@ private:
     const auto id = gallery_for<Item>().selected->id;
     gallery_call<Item>(
         [id, stars] {
-          auto rate = community_action(skin_item<Item> ? L"candidate_skin_rate" : L"plugin_rate");
+          auto rate = community_action(community_operation<Item>(L"rate"));
           rate.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
           rate.SetNamedValue(L"stars", JsonValue::CreateNumberValue(stars));
           auto rated = community_call(rate);
           if (!rated.ok)
             return rated;
-          auto detail =
-              community_action(skin_item<Item> ? L"candidate_skin_detail" : L"plugin_detail");
+          auto detail = community_action(community_operation<Item>(L"detail"));
           detail.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
           return community_call(detail);
         },
@@ -6865,8 +7574,7 @@ private:
     const auto id = gallery_for<Item>().selected->id;
     gallery_call<Item>(
         [id] {
-          auto action =
-              community_action(skin_item<Item> ? L"candidate_skin_unpublish" : L"plugin_delete");
+          auto action = community_action(community_operation<Item>(L"unpublish"));
           action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
           return community_call(action);
         },
@@ -6879,6 +7587,11 @@ private:
           ++gallery.detail_request;
           gallery.selected.reset();
           gallery.confirm_unpublish = false;
+          // ResourceDetail 的 unpublish 只关上详情：列表不重读，也不说明。
+          if constexpr (resource_item<Item>) {
+            gallery_end<Item>();
+            return;
+          }
           gallery.installed = false;
           gallery.confirm_replace = false;
           gallery.notice = message;
@@ -6893,8 +7606,10 @@ private:
     if (gallery.report_reason.empty() || !gallery_begin<Item>(true))
       return;
     JsonObject action = community_action(L"report");
-    action.SetNamedValue(L"kind",
-                         JsonValue::CreateStringValue(skin_item<Item> ? L"candidate-skins" : L"plugins"));
+    std::wstring kind = skin_item<Item> ? L"candidate-skins" : L"plugins";
+    if constexpr (resource_item<Item>)
+      kind = gallery.selected->kind == L"dictionary" ? L"dictionaries" : L"replies";
+    action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(kind)));
     action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(gallery.selected->id)));
     action.SetNamedValue(L"reason", JsonValue::CreateStringValue(hstring(gallery.report_reason)));
     action.SetNamedValue(L"detail",
@@ -7364,15 +8079,30 @@ private:
     actions.Orientation(Orientation::Horizontal);
     actions.Spacing(8);
     actions.VerticalAlignment(VerticalAlignment::Center);
-    const bool mine = gallery_for<Item>().mine;
-    actions.Children().Append(segmented_control(
-        scope_name, {{L"all", all_label}, {L"mine", L"我的作品"}}, mine ? L"mine" : L"all",
-        [this](std::wstring const &value) {
-          auto &gallery = gallery_for<Item>();
-          gallery.mine = value == L"mine";
-          gallery_list<Item>(gallery.active_search, false, gallery.mine);
-        },
-        true, false));
+    if constexpr (resource_item<Item>) {
+      // CommunityResourceScopeButtons：全部、收藏、我的作品，换了就从第一页读。
+      std::vector<Option> scopes;
+      for (auto const &scope : cm::resource_scopes)
+        scopes.push_back({scope.value.empty() ? std::wstring(L"all") : std::wstring(scope.value),
+                          std::wstring(scope.label)});
+      actions.Children().Append(segmented_control(
+          scope_name, std::move(scopes), resource_scope_.empty() ? L"all" : resource_scope_,
+          [this](std::wstring const &value) {
+            resource_scope_ = value == L"all" ? L"" : value;
+            gallery_list<Item>(resource_gallery_.active_search, false, false);
+          },
+          true, false));
+    } else {
+      const bool mine = gallery_for<Item>().mine;
+      actions.Children().Append(segmented_control(
+          scope_name, {{L"all", all_label}, {L"mine", L"我的作品"}}, mine ? L"mine" : L"all",
+          [this](std::wstring const &value) {
+            auto &gallery = gallery_for<Item>();
+            gallery.mine = value == L"mine";
+            gallery_list<Item>(gallery.active_search, false, gallery.mine);
+          },
+          true, false));
+    }
     actions.Children().Append(primary_button(publish_label, std::move(publish)));
     Grid::SetColumn(actions, 1);
     heading.Children().Append(actions);
@@ -7563,7 +8293,10 @@ private:
     if (!item.owned) {
       StackPanel rating;
       rating.Spacing(6);
-      rating.Children().Append(make_text(L"我的评分（安装后可评，可重新选择）", 12, palette_.sub));
+      // 词库与回复模板不用先安装（ResourceDetail 的 ratingDescription）。
+      rating.Children().Append(make_text(resource_item<Item> ? L"我的评分（可重新选择）"
+                                                             : L"我的评分（安装后可评，可重新选择）",
+                                         12, palette_.sub));
       StackPanel stars;
       stars.Orientation(Orientation::Horizontal);
       stars.Spacing(6);
@@ -7890,13 +8623,14 @@ private:
 
   // ---- 发布 ----
 
-  // 发布对话框里名称、说明和权利确认（CommunityPublicationMetadataFields）。名称最多 32 个字，说明最多 280 个字；改了名称或说明就是另一次发布，换一个发布 id。输入时不重画对话框，只更新主按钮能不能按。
+  // 发布对话框里名称、说明和权利确认（CommunityPublicationMetadataFields）。名称最多 32 个字，说明最多 280 个字；改了名称或说明就是另一次发布，换一个发布 id。输入时不重画对话框，只更新主按钮能不能按。`agreement_shown` 为假时没有权利确认（showAgreement，发布已有作品的新版本时）。
   void publication_fields(StackPanel const &form, std::wstring &name, std::wstring &description,
                           bool &agreed, std::wstring &publication_id, bool busy,
                           std::wstring const &name_label, std::wstring const &name_a11y,
                           std::wstring const &description_label, std::wstring const &description_a11y,
                           std::wstring const &agreement, std::wstring const &agreement_a11y,
-                          std::function<void()> changed, std::function<void()> submit) {
+                          std::function<void()> changed, std::function<void()> submit,
+                          bool agreement_shown = true) {
     TextBox name_box;
     name_box.Header(box_value(hstring(name_label)));
     name_box.MaxLength(static_cast<int32_t>(cm::name_limit));
@@ -7943,6 +8677,8 @@ private:
       changed();
     });
     form.Children().Append(description_box);
+    if (!agreement_shown)
+      return;
     CheckBox agree;
     auto words = make_text(agreement, 13, palette_.text);
     agree.Content(words);
@@ -17463,6 +18199,12 @@ private:
   bool plugin_community_view_ = false;
   Gallery<CommunitySkinItem> skin_gallery_;
   Gallery<CommunityPluginItem> plugin_gallery_;
+  // 「我的内容」打开的社区词库与回复模板：图库、正在看的分类（dictionary 或 reply）和范围（空、saved 或 mine），以及发布对话框。
+  Gallery<CommunityResourceItem> resource_gallery_;
+  bool resource_view_ = false;
+  std::wstring resource_kind_ = L"dictionary";
+  std::wstring resource_scope_;
+  ResourceEditor resource_editor_;
   std::optional<std::wstring> skin_category_request_;
   std::optional<std::wstring> skin_category_active_;
   std::optional<std::wstring> skin_category_shown_;

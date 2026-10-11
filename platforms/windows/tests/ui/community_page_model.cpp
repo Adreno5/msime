@@ -1,6 +1,7 @@
 #include "../../settings/CommunityPageModel.h"
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace msime::settings::community;
 namespace {
@@ -107,6 +108,78 @@ int main() {
   check(plugin_empty_notice(false, true, false, true) == L"没有匹配的插件。", "filtered empty");
   check(plugin_empty_notice(false, false, false, true).starts_with(L"社区里还没有插件，"),
         "publishable empty");
+
+  // 社区词库与回复模板（community-resources.tsx）。
+  check(resource_message(L"community_forbidden") == L"没有权限执行此操作。", "resource forbidden");
+  check(resource_message(L"community_storage") == L"无法安全保存本地模板，请稍后重试。",
+        "resource storage");
+  check(resource_message(L"community_blocked_content") == L"内容包含不允许发布的词语，请修改后再提交",
+        "resource moderation");
+  check(resource_message(L"dictionary_busy") == L"社区暂时不可用，请稍后重试。", "resource fallback");
+  check(resource_heading(L"dictionary", L"") == L"好词，随手可得", "dictionary heading");
+  check(resource_heading(L"reply", L"mine") == L"我的回复模板作品", "mine heading");
+  check(resource_heading(L"dictionary", L"saved") == L"收藏的词库", "saved heading");
+  check(resource_card_description(L"reply", L"") == L"回复模板", "reply fallback");
+  check(resource_card_metrics(1234, 0, 0) == L"☆ 暂无评分 · 1,234 人收藏", "card metrics");
+  check(resource_destinations[1].kind == L"reply" && resource_destinations[1].scope == L"mine",
+        "published replies destination");
+
+  // Number(weight) 与 Number.isSafeInteger。
+  check(js_safe_integer(L"100000") == 100000, "plain weight");
+  check(js_safe_integer(L"  42 ") == 42, "trimmed weight");
+  check(js_safe_integer(L"") == 0, "empty is zero");
+  check(js_safe_integer(L"1e3") == 1000, "exponent");
+  check(js_safe_integer(L"2.0") == 2, "integral decimal");
+  check(!js_safe_integer(L"2.5"), "fraction");
+  check(js_safe_integer(L"0x10") == 16, "hex");
+  check(!js_safe_integer(L"12abc"), "garbage");
+  check(!js_safe_integer(L"9007199254740992"), "unsafe integer");
+  check(!js_safe_integer(L"Infinity"), "infinity");
+  check(js_safe_integer(L"-3") == -3, "negative parses");
+
+  // addEntry 的规则。
+  {
+    std::vector<SharedWord> entries;
+    auto first = shared_word(entries, L"pinyin", L" shui'shan ", L"水杉", L"100000");
+    check(first && first->code == L"shui'shan" && first->weight == 100000, "entry accepted");
+    entries.push_back(*first);
+    check(!shared_word(entries, L"pinyin", L"shui'shan", L"水杉", L"1"), "duplicate entry");
+    check(shared_word(entries, L"wubi", L"shui'shan", L"水杉", L"1").has_value(),
+          "same word of another kind");
+    check(!shared_word(entries, L"pinyin", L"  ", L"水杉", L"1"), "blank code");
+    check(!shared_word(entries, L"pinyin", L"a", L"", L"1"), "empty word");
+    check(!shared_word(entries, L"pinyin", L"a", L"啊", L"-1"), "negative weight");
+    std::vector<SharedWord> full(shared_word_limit, SharedWord{L"pinyin", L"a", L"啊", 1});
+    check(!shared_word(full, L"pinyin", L"b", L"吧", L"1"), "at most 128 entries");
+  }
+
+  // submit 的规则。
+  check(resource_publish_error(L"reply", L"模板", L"", L"  ", 0, false, true) ==
+            L"请填写有效内容并确认拥有公开发布所需的权利。",
+        "blank prompt");
+  check(resource_publish_error(L"reply", L"模板", L"", L"写得体贴些", 0, false, true).empty(),
+        "reply publishable");
+  check(!resource_publish_error(L"dictionary", L"词库", L"", L"", 1, false, false).empty(),
+        "first publish needs agreement");
+  check(resource_publish_error(L"dictionary", L"词库", L"", L"", 1, true, false).empty(),
+        "new version needs no agreement");
+  check(resource_publish_error(L"dictionary", L"词库", L"", L"", 0, true, false) ==
+            L"请填写有效的作品信息。",
+        "new version without entries");
+  check(!resource_publish_error(L"reply", L"模板", L"", std::wstring(2001, L'a'), 0, true, true)
+             .empty(),
+        "prompt too long");
+
+  // importCommunityDictionary 的分组。
+  {
+    const auto groups = local_import_groups({{L"quick", L"dz", L"地址", 1},
+                                             {L"pinyin", L"shui'shan", L"水杉", 100},
+                                             {L"quick", L"yx", L"邮箱", 2}});
+    check(groups.size() == 2 && groups[0].kind == L"quick_phrase" && groups[0].source == L"quick" &&
+              groups[1].kind == L"pinyin",
+          "groups in first-seen order");
+    check(groups[0].text == L"地址\tdz\t1\n邮箱\tyx\t2", "standard lines");
+  }
 
   if (failures)
     return 1;

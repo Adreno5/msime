@@ -4,14 +4,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cwchar>
+#include <cwctype>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "AccountPageModel.h"
 #include "PluginPageModel.h"
 
-// 「主题」页的「社区皮肤」和「插件」页的「社区插件」两个标签的规则和文案，照共享设置在 Windows 上的样子移植：`community-helpers.ts`（错误码的句子、授权行、评分、大小）、`community-skin-category.ts`（皮肤分类）、`community-report.tsx`（举报原因）、`community-publish-validation.ts` 和 `use-community-publication-draft.ts`（发布名称与说明的校验）、`community-card-author.tsx`、`community-rating-metrics.tsx`、`candidate-skin-publish-dialog.tsx` 与 `community-plugins.tsx` 的固定文案。社区操作本身在 Rust（msime_client_community），不在这里。不依赖 Windows 和 WinRT 头文件，方便单独测试。
+// 「主题」页的「社区皮肤」、「插件」页的「社区插件」两个标签和「账号与同步」页「我的内容」打开的社区词库与回复模板的规则和文案，照共享设置在 Windows 上的样子移植：`community-helpers.ts`（错误码的句子、授权行、评分、大小）、`community-skin-category.ts`（皮肤分类）、`community-report.tsx`（举报原因）、`community-publish-validation.ts` 和 `use-community-publication-draft.ts`（发布名称与说明的校验）、`community-card-author.tsx`、`community-rating-metrics.tsx`、`candidate-skin-publish-dialog.tsx` 与 `community-plugins.tsx` 的固定文案，以及 `community-resources.tsx`（词库与回复模板的图库、详情和发布对话框）。社区操作本身在 Rust（msime_client_community），不在这里。不依赖 Windows 和 WinRT 头文件，方便单独测试。
 namespace msime::settings::community {
 
 // ---- 文字 ----
@@ -384,6 +387,228 @@ inline std::wstring plugin_empty_notice(bool has_more, bool filtered, bool mine,
     return L"没有匹配的插件。";
   return publishable ? L"社区里还没有插件，安装或制作插件后可以点「发布我的插件」分享出来。"
                      : L"社区里还没有插件。";
+}
+
+// ---- 词库与回复模板 ----
+
+// resourceMessage：社区词库与回复模板的句子。没有「去登录」：共享页的资源图库不给它。
+inline std::wstring resource_message(std::wstring_view code) {
+  if (auto moderation = moderation_message(code); !moderation.empty())
+    return moderation;
+  if (code == L"community_invalid")
+    return L"内容无效，请修改后重试。";
+  if (code == L"community_unauthorized")
+    return L"请先登录后执行此操作。";
+  if (code == L"community_forbidden")
+    return L"没有权限执行此操作。";
+  if (code == L"community_conflict")
+    return L"作品状态已变化或已达到发布上限，请刷新后重试。";
+  if (code == L"community_not_found")
+    return L"作品不存在或已下架。";
+  if (code == L"community_rate_limited")
+    return L"请求过于频繁，请稍后再试。";
+  if (code == L"community_cancelled")
+    return L"账号状态已变化，请重新加载。";
+  if (code == L"community_storage")
+    return L"无法安全保存本地模板，请稍后重试。";
+  if (code == L"community_resource_library_format")
+    return L"本地模板库无法读取，请检查后重试。";
+  return L"社区暂时不可用，请稍后重试。";
+}
+
+// resourceKindTitle：dictionary 是「词库」，reply 是「回复模板」。
+inline std::wstring resource_kind_title(std::wstring_view kind) {
+  return kind == L"dictionary" ? L"词库" : L"回复模板";
+}
+
+// 社区分类（CommunityHomePage 在没有皮肤画廊的宿主上的两个标签），值是 resource_list 的 kind。
+inline constexpr std::array<Choice, 2> resource_kinds{{
+    {L"dictionary", L"词库"},
+    {L"reply", L"回复模板"},
+}};
+
+// 范围按钮（CommunityResourceScopeButtons），顺序即按钮的顺序；值是 resource_list 的 scope。
+inline constexpr std::array<Choice, 3> resource_scopes{{
+    {L"", L"全部"},
+    {L"saved", L"收藏"},
+    {L"mine", L"我的作品"},
+}};
+
+// 「我的内容」的一行打开的分类和范围（communityDestinationView）：我发布的是 mine，收藏的是 saved。
+struct ResourceDestination {
+  std::wstring_view title, kind, scope;
+};
+inline constexpr std::array<ResourceDestination, 4> resource_destinations{{
+    {L"我发布的词库", L"dictionary", L"mine"},
+    {L"我发布的回复模板", L"reply", L"mine"},
+    {L"收藏的词库", L"dictionary", L"saved"},
+    {L"收藏的回复模板", L"reply", L"saved"},
+}};
+
+// 图库标题（CommunityResourcesPage 的 CommunityGalleryHeading）。
+inline std::wstring resource_heading(std::wstring_view kind, std::wstring_view scope) {
+  if (scope == L"mine")
+    return L"我的" + resource_kind_title(kind) + L"作品";
+  if (scope == L"saved")
+    return L"收藏的" + resource_kind_title(kind);
+  return kind == L"dictionary" ? L"好词，随手可得" : L"找到舒服的表达";
+}
+
+inline std::wstring resource_heading_note(std::wstring_view kind) {
+  return kind == L"dictionary" ? L"把常用词带进云词库，让输入更顺手"
+                               : L"收藏喜欢的语气，给每次回应一点灵感";
+}
+
+// ResourceCard 的图标字、没有说明时的那一句和收藏一行。
+inline std::wstring resource_card_glyph(std::wstring_view kind) {
+  return kind == L"dictionary" ? L"字" : L"话";
+}
+
+inline std::wstring resource_card_description(std::wstring_view kind, std::wstring_view description) {
+  if (!description.empty())
+    return std::wstring(description);
+  return kind == L"dictionary" ? L"共享词条" : L"回复模板";
+}
+
+inline std::wstring resource_card_metrics(double saves, double rating_count, double average) {
+  return L"☆ " + rating(rating_count, average) + L" · " + zh_number(saves) + L" 人收藏";
+}
+
+// 发布对话框里词条的类型（ResourceEditor 的「类型」下拉框），值与 client-core 的 DictionaryKind 一致。
+inline constexpr std::array<Choice, 4> shared_word_kinds{{
+    {L"pinyin", L"拼音"},
+    {L"wubi", L"五笔"},
+    {L"quick", L"快捷短语"},
+    {L"english", L"英文"},
+}};
+
+inline constexpr size_t shared_word_limit = 128;
+inline constexpr size_t reply_prompt_limit = 2000;
+inline constexpr std::wstring_view default_shared_word_weight = L"100000";
+inline constexpr std::wstring_view resource_publish_warning =
+    L"发布内容会公开展示。请勿包含 API Key、私人聊天内容或其他个人资料；发布后可在“我的作品”中下架。";
+
+struct SharedWord {
+  std::wstring kind, code, word;
+  int64_t weight = 0;
+};
+
+// Number(text) 是安全整数时的值（Number.isSafeInteger），否则为空。与 JS 一样先去掉首尾空白，空串是 0，认十进制（可带符号、小数点和指数，值仍须是整数）和不带符号的 0x、0o、0b。
+inline std::optional<int64_t> js_safe_integer(std::wstring_view text) {
+  const auto trimmed = trim(text);
+  if (trimmed.empty())
+    return 0;
+  constexpr double maximum = 9007199254740991.0;
+  if (trimmed.size() > 2 && trimmed[0] == L'0') {
+    const auto marker = static_cast<wchar_t>(std::towlower(trimmed[1]));
+    const int base = marker == L'x' ? 16 : marker == L'o' ? 8 : marker == L'b' ? 2 : 0;
+    if (base != 0) {
+      double value = 0;
+      for (size_t i = 2; i < trimmed.size(); ++i) {
+        const auto c = static_cast<wchar_t>(std::towlower(trimmed[i]));
+        const int digit = c >= L'0' && c <= L'9'   ? c - L'0'
+                          : c >= L'a' && c <= L'f' ? c - L'a' + 10
+                                                   : 99;
+        if (digit >= base)
+          return std::nullopt;
+        value = value * base + digit;
+      }
+      if (value > maximum)
+        return std::nullopt;
+      return static_cast<int64_t>(value);
+    }
+  }
+  // StrDecimalLiteral：符号、数字、可选的小数点和小数、可选的指数。Infinity 不是安全整数。
+  size_t i = 0;
+  if (trimmed[i] == L'+' || trimmed[i] == L'-')
+    ++i;
+  size_t digits = 0;
+  while (i < trimmed.size() && trimmed[i] >= L'0' && trimmed[i] <= L'9') {
+    ++i;
+    ++digits;
+  }
+  if (i < trimmed.size() && trimmed[i] == L'.') {
+    ++i;
+    while (i < trimmed.size() && trimmed[i] >= L'0' && trimmed[i] <= L'9') {
+      ++i;
+      ++digits;
+    }
+  }
+  if (digits == 0)
+    return std::nullopt;
+  if (i < trimmed.size() && (trimmed[i] == L'e' || trimmed[i] == L'E')) {
+    ++i;
+    if (i < trimmed.size() && (trimmed[i] == L'+' || trimmed[i] == L'-'))
+      ++i;
+    size_t exponent = 0;
+    while (i < trimmed.size() && trimmed[i] >= L'0' && trimmed[i] <= L'9') {
+      ++i;
+      ++exponent;
+    }
+    if (exponent == 0)
+      return std::nullopt;
+  }
+  if (i != trimmed.size())
+    return std::nullopt;
+  const double value = std::wcstod(trimmed.c_str(), nullptr);
+  if (!std::isfinite(value) || std::floor(value) != value || std::fabs(value) > maximum)
+    return std::nullopt;
+  return static_cast<int64_t>(value);
+}
+
+inline constexpr std::wstring_view shared_word_invalid =
+    L"词条不能为空、不能重复，权重必须为非负整数，且最多 128 条。";
+
+// ResourceEditor 的 addEntry：编码去掉首尾空白，词语原样；编码和词语不能为空，权重是非负的安全整数，同类型同编码同词语的不能重复，最多 128 条。能加时返回这一条。
+inline std::optional<SharedWord> shared_word(std::vector<SharedWord> const &entries,
+                                             std::wstring_view kind, std::wstring_view code,
+                                             std::wstring_view word, std::wstring_view weight) {
+  SharedWord value{std::wstring(kind), trim(code), std::wstring(word), 0};
+  const auto number = js_safe_integer(weight);
+  if (value.code.empty() || value.word.empty() || !number || *number < 0 ||
+      entries.size() >= shared_word_limit)
+    return std::nullopt;
+  for (auto const &item : entries)
+    if (item.kind == value.kind && item.code == value.code && item.word == value.word)
+      return std::nullopt;
+  value.weight = *number;
+  return value;
+}
+
+// ResourceEditor 的 submit：名称和说明照发布的规则；回复模板的提示词去掉空白后不能为空、最多 2000 个字，词库至少一条；第一次发布要确认权利。能发布时为空，否则是要显示的那一句。
+inline std::wstring resource_publish_error(std::wstring_view kind, std::wstring_view name,
+                                           std::wstring_view description, std::wstring_view prompt,
+                                           size_t entries, bool existing, bool agreed) {
+  const auto fields = publish_fields(name, description);
+  const bool content = kind == L"reply"
+                           ? !trim(prompt).empty() && code_points(prompt) <= reply_prompt_limit
+                           : entries > 0;
+  if (fields.name_valid && fields.description_valid && content && (existing || agreed))
+    return {};
+  return existing ? L"请填写有效的作品信息。" : L"请填写有效内容并确认拥有公开发布所需的权利。";
+}
+
+// 导入本机词库的一次请求：source 是词条原来的类型（请求 id 里用它），kind 是本机词库，text 是这一组的标准格式文本。
+struct LocalImport {
+  std::wstring source, kind, text;
+};
+
+// importCommunityDictionary：按词条类型分组，每组一次标准格式的导入（「词语\t编码\t权重」一行一条），组的顺序是类型第一次出现的顺序；快捷短语的本机词库叫 quick_phrase。
+inline std::vector<LocalImport> local_import_groups(std::vector<SharedWord> const &entries) {
+  std::vector<LocalImport> groups;
+  for (auto const &entry : entries) {
+    auto found = groups.begin();
+    while (found != groups.end() && found->source != entry.kind)
+      ++found;
+    if (found == groups.end()) {
+      groups.push_back({entry.kind, entry.kind == L"quick" ? L"quick_phrase" : entry.kind, L""});
+      found = groups.end() - 1;
+    } else {
+      found->text += L'\n';
+    }
+    found->text += entry.word + L'\t' + entry.code + L'\t' + std::to_wstring(entry.weight);
+  }
+  return groups;
 }
 
 } // namespace msime::settings::community
