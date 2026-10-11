@@ -8,7 +8,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / "platforms/android/java/app/msime/android/home"
-UI = HOME / "Ui.java"
+# 居中标签工厂已从 Ui 挪到 ViewPolicy（签名由 scripts/test-android-view-policy.py 检查），这里核对实现和各页面的调用。
+UI = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 
 
 def main() -> int:
@@ -16,11 +17,9 @@ def main() -> int:
     ui = UI.read_text(encoding="utf-8")
     required = (
         "public static TextView centeredLabel(Context context, CharSequence text, float sizeSp,",
-        "TextView centered = ViewPolicy.label(context, text, sizeSp, color);",
-        "public static TextView centeredLabel(Context context, CharSequence text, int sizeSp, int weight,",
-        "TextView centered = styledLabel(context, text, sizeSp, weight, color);",
-        "TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);",
-        "TextView button = centeredLabel(context, label, sizeSp, weight, ink);",
+        "public static TextView centeredLabel(Context context, CharSequence text, int sizeSp,",
+        "TextView view = label(context, text, sizeSp, color);\n        setCentered(view);",
+        "TextView view = centeredLabel(context, text, sizeSp, weight, color);\n        setSingleLine(view);",
     )
     for snippet in required:
         if snippet not in ui:
@@ -39,14 +38,14 @@ def main() -> int:
         "SkinsPage.java": 4,
     }
     duplicated = re.compile(
-        r"Ui\.(?:styledLabel|label)\([^;]{0,300};\s*ViewPolicy\.setCentered\(", re.DOTALL
+        r"(?:Ui|ViewPolicy)\.(?:styledLabel|label)\([^;]{0,300};\s*ViewPolicy\.setCentered\(", re.DOTALL
     )
     for name, minimum in consumers.items():
         path = HOME / name
         source = path.read_text(encoding="utf-8")
-        centered = source.count("Ui.centeredLabel(") + source.count("Ui.centeredSingleLineLabel(")
+        centered = source.count("ViewPolicy.centeredLabel(") + source.count("ViewPolicy.centeredSingleLineLabel(")
         if centered < minimum:
-            errors.append(f"{path}: 至少 {minimum} 处文本未复用 Ui 居中标签工厂")
+            errors.append(f"{path}: 至少 {minimum} 处文本未复用 ViewPolicy 居中标签工厂")
         if duplicated.search(source):
             errors.append(f"{path}: 仍在标签构造后重复设置居中")
 

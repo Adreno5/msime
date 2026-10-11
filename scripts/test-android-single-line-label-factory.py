@@ -8,17 +8,17 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / "platforms/android/java/app/msime/android/home"
-UI = HOME / "Ui.java"
+# 单行标签工厂已从 Ui 挪到 ViewPolicy（签名由 scripts/test-android-view-policy.py 检查），这里核对实现和各页面的调用。
+UI = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 
 
 def main() -> int:
     errors = []
     ui = UI.read_text(encoding="utf-8")
-    # 普通单行标签工厂已挪到 ViewPolicy.singleLineLabel，由 scripts/test-android-view-policy.py 检查；Ui 只剩居中单行这一层。
     required = (
+        "public static TextView singleLineLabel(Context context, CharSequence text, int sizeSp,",
         "public static TextView centeredSingleLineLabel(Context context, CharSequence text, int sizeSp,",
-        "TextView singleLine = centeredLabel(context, text, sizeSp, weight, color);",
-        "TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);",
+        "TextView view = centeredLabel(context, text, sizeSp, weight, color);\n        setSingleLine(view);",
     )
     for snippet in required:
         if snippet not in ui:
@@ -26,11 +26,11 @@ def main() -> int:
 
     consumers = {
         "AiSkinPage.java": ("ViewPolicy.singleLineLabel(", 2),
-        "LexiconPage.java": ("Ui.centeredSingleLineLabel(", 1),
-        "SegmentedControl.java": ("Ui.centeredSingleLineLabel(", 1),
+        "LexiconPage.java": ("ViewPolicy.centeredSingleLineLabel(", 1),
+        "SegmentedControl.java": ("ViewPolicy.centeredSingleLineLabel(", 1),
     }
     duplicated = re.compile(
-        r"Ui\.(?:styledLabel|centeredLabel)\([^;]{0,300};\s*ViewPolicy\.setSingleLine\(",
+        r"(?:Ui|ViewPolicy)\.(?:styledLabel|centeredLabel)\([^;]{0,300};\s*ViewPolicy\.setSingleLine\(",
         re.DOTALL,
     )
     for name, (factory, minimum) in consumers.items():

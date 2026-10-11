@@ -7,19 +7,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "platforms/android/java/app/msime/android/home/Ui.java"
+# 文字按钮和标签工厂已陆续挪到 ViewPolicy；Ui 里只剩胶囊按钮这一层，两边一起检查。
+VIEW_POLICY = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 
 
 def main() -> int:
     errors = []
     source = UI.read_text(encoding="utf-8")
+    view_policy = VIEW_POLICY.read_text(encoding="utf-8")
     required = (
-        "return headingLabel(context, text, TEXT_GROUP_TITLE, 500, ThemeColorPolicy.accent(context));",
-        "TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);",
-        "TextView button = centeredLabel(context, label, sizeSp, weight, ink);",
+        (UI, source, "TextView button = ViewPolicy.centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);"),
+        (VIEW_POLICY, view_policy, "TextView button = centeredLabel(context, label, sizeSp, weight, ink);"),
     )
-    for snippet in required:
-        if snippet not in source:
-            errors.append(f"{UI}: 文本控件工厂未复用 styledLabel：{snippet}")
+    for path, text, snippet in required:
+        if snippet not in text:
+            errors.append(f"{path}: 文本控件工厂未复用 styledLabel：{snippet}")
 
     duplicated = (
         "TextView heading = new TextView(context);\n        heading.setText(text);",
