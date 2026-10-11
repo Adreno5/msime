@@ -71,7 +71,7 @@ export function useHarmonySystemBars(
 /**
  * 欢迎流程显示期间鸿蒙手机的系统栏；设置页的 `useHarmonySystemBars` 管不到这里，因为那时页面还没挂载。
  *
- * 开屏动画播放时两条栏都取它的底色（系统启动窗的 #0A0B0A，与 `hSplashShell` 画的一致）并用浅色内容，让开屏从边到边铺满屏幕。之后的步骤两条栏都取页面颜色，因为流程没有标签栏：应用主题下是季节的背景，否则是平台的背景。
+ * 开屏动画播放时两条栏都取它的底色（系统启动窗的颜色：深色 #0A0B0A、浅色 #F1F3F5，与 `hSplashShell` 画的一致），内容颜色随深浅色，让开屏从边到边铺满屏幕。之后的步骤两条栏都取页面颜色，因为流程没有标签栏：应用主题下是季节的背景，否则是平台的背景。
  */
 export function useHarmonyWelcomeSystemBars(
   chrome: HostChromeClient | undefined,
@@ -79,8 +79,11 @@ export function useHarmonyWelcomeSystemBars(
   dark: boolean,
   splashing: boolean,
 ): void {
-  const background = splashing ? "#0A0B0A" : (theme?.background ?? (dark ? "#000000" : "#F1F3F5"));
-  const barsDark = splashing || dark;
+  const splashBackground = dark ? "#0A0B0A" : "#F1F3F5";
+  const background = splashing
+    ? splashBackground
+    : (theme?.background ?? (dark ? "#000000" : "#F1F3F5"));
+  const barsDark = dark;
   useEffect(() => {
     chrome?.setSystemBars({ background, navigationBar: background, dark: barsDark });
   }, [chrome, background, barsDark]);

@@ -106,7 +106,7 @@ function Splash({ onDone }: { onDone: () => void }) {
   );
 }
 
-/** HarmonyOS 启动页（dc.html L2692-2698）：白色圆盘落到强调色底上并泛起波纹，标志旋转入场并描出自身线条，底部一条进度条在启动页停留期间填满。点一下仍可跳过；设计里没有提示这一点。 */
+/** HarmonyOS 首次启动的开屏（dc.html L2692-2698）：第一帧和系统启动窗相同（启动窗底色上的圆盘和水杉标志，跟随系统深浅色），随后淡入当季颜色、泛起波纹、出字，底部一条进度条在开屏停留期间填满。只在首次启动的欢迎流程里播，平时冷启动不播。点一下仍可跳过；设计里没有提示这一点。 */
 function HarmonySplash({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const timer = window.setTimeout(onDone, SPLASH_MS);
@@ -122,50 +122,17 @@ function HarmonySplash({ onDone }: { onDone: () => void }) {
         <svg className={onboarding.hSplashLogo} viewBox="0 0 116 132">
           <path className={onboarding.hSplashFrame} d={msimeFramePath} />
           <path className={onboarding.hSplashFrameVeil} d={msimeFramePath} />
-          <path className={onboarding.hSplashStroke} d={msimeStrokePath} pathLength={1} />
+          <path className={onboarding.hSplashStroke} d={msimeStrokePath} />
         </svg>
       </span>
       <span className={onboarding.hSplashCaption} aria-hidden="true">
         <span className={onboarding.splashName}>水杉输入法</span>
-        <span className={onboarding.splashTagline}>METASEQUOIA IME</span>
+        <span className={onboarding.hSplashTagline}>METASEQUOIA IME</span>
       </span>
       <span className={onboarding.hSplashTrack} aria-hidden="true">
         <span className={onboarding.hSplashFill} />
       </span>
     </button>
-  );
-}
-
-/**
- * 鸿蒙手机每次冷启动的开屏：和首次启动欢迎流程里的同一段动画（`HarmonySplash`），铺满屏幕，播完或点一下就结束。
- *
- * 宿主在页面一加载就画它，不等桥接：动画本身盖住冷启动的等待，取代原来「正在打开设置」的转圈页。桥接就绪后宿主再画一次并传入 `chrome`，系统栏换成开屏的底色；`onDone` 必须是同一个函数，否则重画时计时会从头开始。
- *
- * `appTheme` 是设置页将要使用的应用主题：开屏用它的季节强调色，从开屏进设置不会从一套配色硬切到另一套。桥接就绪前宿主还解析不了主题，传的是上次启动缓存下来的那份。
- */
-export function HarmonyLaunchSplash({
-  appTheme,
-  chrome,
-  onDone,
-}: {
-  appTheme?: ResolvedAppTheme | null;
-  chrome?: HostChromeClient;
-  onDone: () => void;
-}) {
-  const dark = documentDark();
-  useHarmonyWelcomeSystemBars(chrome, appTheme ?? null, dark, true);
-  return (
-    <main
-      className={onboarding.hSplashShell}
-      aria-label="开屏"
-      data-onboarding-shell=""
-      data-mobile=""
-      data-platform="harmony"
-      data-season={seasonAttr(appTheme)}
-      style={appThemeStyle(appTheme ?? null, dark, "harmony")}
-    >
-      <HarmonySplash onDone={onDone} />
-    </main>
   );
 }
 
