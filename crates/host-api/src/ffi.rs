@@ -211,6 +211,7 @@ pub(crate) fn keyboard_reranker(
 
 pub mod android_data;
 pub mod candidates;
+pub mod credentials;
 pub mod google;
 pub mod host;
 pub mod input;
@@ -229,6 +230,7 @@ pub mod voice;
 // below is for readers, not for callers, so each module is flattened back out.
 pub use android_data::*;
 pub use candidates::*;
+pub use credentials::*;
 pub use host::*;
 pub use input::*;
 pub use lifecycle::*;

@@ -453,6 +453,21 @@ char *msime_client_tencent_translation_http_request(const uint8_t *request, size
 /* Pure NiuTrans v2 descriptor <=64 KiB. Input: {config:{enabled,app_id,apikey},
  * text,source_language,target_language,timestamp}. */
 char *msime_client_niutrans_translation_http_request(const uint8_t *request, size_t length);
+/* A settings page's 「测试配置」 check, the one the Tauri settings shell runs on Windows and
+ * macOS. Request <=64 KiB: {service,config}, service one of translation.tencent ({secret_id,
+ * secret_key,region}), translation.niutrans ({app_id,apikey}), translation.custom ({endpoint,
+ * api_key}), voice.asr, voice.polish or ai.assistant, config the object the shared page sends.
+ * Value {ok,message}: message is the Chinese result line to show; it never carries the
+ * provider's reply or the credential. An incomplete config is answered without the network;
+ * otherwise this sends one request and blocks up to about 15 s: call off the UI thread.
+ * The request carries credentials: never log it. */
+char *msime_client_test_api_credential(const uint8_t *request, size_t length);
+/* Pure check of a custom translation endpoint (UTF-8, <=64 KiB), for the settings page. Value
+ * {issue,accepted}: issue is the Chinese hint the shared page shows under the endpoint field
+ * (translationEndpointIssue: empty endpoint, too long, control characters, not a URL,
+ * credentials or fragment, remote http), "" when there is none; accepted is whether the
+ * preferences store saves it (empty, https, or http to localhost/127.0.0.1/[::1]). No I/O. */
+char *msime_client_translation_endpoint_issue(const uint8_t *endpoint, size_t length);
 // Pure AI descriptor from {config:AI preferences,input:{segmented_pinyin,context,candidate_limit}}.
 // Input <=64KiB. Result contains credentials; never log it. Host must forbid redirects.
 char *msime_client_ai_http_request(const uint8_t *request, size_t length);

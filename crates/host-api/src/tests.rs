@@ -12824,3 +12824,89 @@ fn account_settings_export_and_apply_round_trip_without_credentials() {
     );
     assert!(saved.preferences.voice_input.asr_token.is_empty());
 }
+
+// Only configurations the check answers before sending anything, so the test never reaches the network.
+#[test]
+fn credential_test_export_answers_incomplete_configurations_offline() {
+    let call = |request: Value| {
+        let bytes = request.to_string();
+        read(unsafe { msime_client_test_api_credential(bytes.as_ptr(), bytes.len()) })
+    };
+    for service in [
+        "translation.tencent",
+        "translation.niutrans",
+        "translation.custom",
+    ] {
+        let reply = call(json!({"service": service, "config": {}}));
+        assert_eq!(reply["ok"], true, "{service}");
+        assert_eq!(reply["value"]["ok"], false, "{service}");
+        assert_eq!(
+            reply["value"]["message"],
+            "请填写有效的翻译服务凭据和接口地址。"
+        );
+    }
+    let remote_http = call(json!({
+        "service": "translation.custom",
+        "config": {"endpoint": "http://translate.example/api", "api_key": "synthetic"},
+    }));
+    assert_eq!(remote_http["value"]["ok"], false);
+    let unknown = call(json!({"service": "unknown", "config": {}}));
+    assert_eq!(unknown["value"]["message"], "此配置测试类型尚未接入。");
+    for invalid in [
+        json!({"config": {}}),
+        json!({"service": "translation.custom"}),
+        json!({"service": "translation.custom", "config": "endpoint"}),
+    ] {
+        assert_eq!(call(invalid)["ok"], false);
+    }
+    assert_eq!(
+        read(unsafe { msime_client_test_api_credential(std::ptr::null(), 0) })["ok"],
+        false
+    );
+    let oversized = "x".repeat(64 * 1024 + 1);
+    assert_eq!(
+        read(unsafe { msime_client_test_api_credential(oversized.as_ptr(), oversized.len()) })
+            ["ok"],
+        false
+    );
+}
+
+#[test]
+fn translation_endpoint_issue_export_reports_the_hint_and_what_the_store_saves() {
+    let check = |endpoint: &str| {
+        read(unsafe { msime_client_translation_endpoint_issue(endpoint.as_ptr(), endpoint.len()) })
+            ["value"]
+            .clone()
+    };
+    assert_eq!(
+        check(""),
+        json!({"issue": "请填写完整的接口地址。", "accepted": true})
+    );
+    assert_eq!(
+        check("https://translate.example/api"),
+        json!({"issue": "", "accepted": true})
+    );
+    assert_eq!(
+        check("http://translate.example/api"),
+        json!({
+            "issue": "远程翻译服务必须使用 HTTPS；HTTP 仅支持本机回环地址。",
+            "accepted": false,
+        })
+    );
+    // The page's parser takes `https:///api` as host `api`; the store still refuses it.
+    assert_eq!(
+        check("https:///api"),
+        json!({"issue": "", "accepted": false})
+    );
+    let invalid_utf8 = [0xff_u8];
+    assert_eq!(
+        read(unsafe {
+            msime_client_translation_endpoint_issue(invalid_utf8.as_ptr(), invalid_utf8.len())
+        })["ok"],
+        false
+    );
+    assert_eq!(
+        read(unsafe { msime_client_translation_endpoint_issue(std::ptr::null(), 0) })["ok"],
+        false
+    );
+}

@@ -51,7 +51,7 @@ inline constexpr std::array<Page, 18> pages{{
 
 inline constexpr std::string_view default_page = "typing";
 
-// 原生页面自己不绘制、需要跳转到共享应用的界面：皮肤编辑器、取色器、主题包和社区皮肤库；云词库面板；「标点与翻译」页的在线翻译服务；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
+// 原生页面自己不绘制、需要跳转到共享应用的界面：皮肤编辑器、取色器、主题包和社区皮肤库；云词库面板；「语音输入」页的识别服务与润色；以及屏幕键盘和手写面板本身。
 namespace shell_links {
 inline constexpr ShellTarget skin{"", "skin"};
 // The cloud dictionary is a panel of the shared app on every desktop, opened from the lexicon page.
@@ -59,10 +59,8 @@ inline constexpr ShellTarget cloud_dictionary{"cloud-dictionary", ""};
 inline constexpr ShellTarget voice{"", "voice"};
 inline constexpr ShellTarget keyboard_panel{"keyboard", ""};
 inline constexpr ShellTarget handwriting_panel{"handwriting", ""};
-// 共享应用的「标点与翻译」页：在线翻译服务的选择和凭据只在那里编辑，本窗口的候选词翻译分组只放一个入口。
-inline constexpr ShellTarget expression{"", "expression"};
-inline constexpr std::array<ShellTarget, 6> all{
-    {skin, voice, keyboard_panel, handwriting_panel, cloud_dictionary, expression}};
+inline constexpr std::array<ShellTarget, 5> all{
+    {skin, voice, keyboard_panel, handwriting_panel, cloud_dictionary}};
 } // namespace shell_links
 
 struct RouteAlias {

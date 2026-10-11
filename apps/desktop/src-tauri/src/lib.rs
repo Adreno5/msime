@@ -1694,36 +1694,9 @@ async fn test_api_credential(
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = runtime;
+        // The same checks the native Windows settings window runs through `msime_client_test_api_credential`.
         let result = tauri::async_runtime::spawn_blocking(move || {
-            if service == "voice.asr" {
-                if config.get("provider").and_then(Value::as_str) == Some("doubao") {
-                    return msime_client_core::credential::doubao::test(
-                        &config,
-                        &msime_client_core::credential::doubao::WebSocketTransport,
-                    );
-                }
-                return msime_client_core::credential::asr::test(
-                    &config,
-                    &msime_client_core::credential::asr::HttpTransport,
-                );
-            }
-            if service.starts_with("translation.") {
-                let milliseconds = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
-                    .unwrap_or(0);
-                return msime_client_core::credential::translation::test(
-                    &service,
-                    &config,
-                    milliseconds,
-                    &msime_client_core::credential::translation::HttpTransport,
-                );
-            }
-            msime_client_core::credential::probe::test_chat(
-                &service,
-                &config,
-                &msime_client_core::credential::probe::ChatProbeTransport,
-            )
+            msime_client_core::credential::test_service(&service, &config)
         })
         .await
         .map_err(|_| CommandError {

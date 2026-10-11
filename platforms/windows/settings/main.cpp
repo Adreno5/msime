@@ -20,6 +20,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -38,6 +39,7 @@
 #include "SettingsNavigation.h"
 #include "SettingsStateDirectory.h"
 #include "ShellLauncher.h"
+#include "TranslationServiceSettings.h"
 #include "msime_client.h"
 #include "../../common/HostApiString.h"
 #include "../../../shared/contracts/msime_edition.h"
@@ -4523,9 +4525,419 @@ private:
                              },
                              glosses));
     }
-    shell_row(candidates, 0xE774, L"翻译服务",
-              L"在水杉输入法应用的「标点与翻译」中选择水杉账号、腾讯云、小牛翻译或自定义接口，后三种需要填写凭据",
-              L"打开", nav::shell_links::expression);
+    // 翻译服务：共享页「候选词翻译」组的最后一行（`translation-service-selector-section.tsx`），候选词翻译关着时不可选。Windows 的 Server 会问水杉账号，所以和共享页一样列出它。选了腾讯云、小牛翻译或自定义服务时，下面多一组只属于它的设置；规则在 TranslationServiceSettings.h。
+    const std::wstring provider(nav::translation_provider(translation_choice()));
+    add_row(candidates, 0xE774, L"翻译服务", L"",
+            select_control(L"候选词翻译服务",
+                           {{L"none", L"关闭"},
+                            {L"tencent", L"腾讯云机器翻译"},
+                            {L"niutrans", L"小牛翻译（NiuTrans）"},
+                            {L"custom", L"自定义 DeepLX 兼容服务"},
+                            {L"account", L"水杉账号（候选词发送到 api.msime.app）"}},
+                           provider,
+                           [this](std::wstring const &value) { select_translation_provider(value); },
+                           translations));
+    if (!indexing_)
+      credential_test_views_.clear();
+    if (provider == L"tencent" || indexing_)
+      build_tencent_translation_group(page, translations);
+    if (provider == L"niutrans" || indexing_)
+      build_niutrans_group(page, translations);
+    if (provider == L"custom" || indexing_)
+      build_custom_translation_group(page, translations);
+  }
+
+  nav::TranslationServiceChoice translation_choice() const {
+    nav::TranslationServiceChoice choice;
+    choice.account = document_.Boolean(L"translation_account", false);
+    choice.niutrans = document_.Boolean(L"niutrans.enabled", false);
+    choice.custom = document_.Boolean(L"custom_translation.enabled", false);
+    choice.tencent = document_.Boolean(L"tencent_tmt.enabled", true);
+    choice.tencent_secret_id = document_.String(L"tencent_tmt.secret_id", L"");
+    choice.tencent_secret_key = document_.String(L"tencent_tmt.secret_key", L"");
+    return choice;
+  }
+
+  // 共享页的 setTranslationProvider：只打开所选的一种服务，其余两种关掉；选水杉账号时写 translation_account，否则去掉这一项（读作关）。凭据都留着，换回来时还在。
+  void select_translation_provider(std::wstring const &provider) {
+    change([&](PreferencesDocument &doc) {
+      doc.SetBoolean(L"custom_translation.enabled", provider == L"custom");
+      doc.SetBoolean(L"tencent_tmt.enabled", provider == L"tencent");
+      doc.SetBoolean(L"niutrans.enabled", provider == L"niutrans");
+      if (provider == L"account")
+        doc.SetBoolean(L"translation_account", true);
+      else
+        doc.Remove(L"translation_account");
+    }, true);
+  }
+
+  // 校验提示的颜色，与字体输入框的错误提示相同。
+  Color danger_color() const {
+    return palette_.dark ? rgba(0xFF, 0x99, 0xA4, 1) : rgba(0xC4, 0x2B, 0x1C, 1);
+  }
+
+  // 分组里的一条警告（共享页的 `SettingsWarning`），文字为空时收起；读屏在文字变化时播报。
+  TextBlock group_warning() {
+    auto warning = make_text(L"", 13, danger_color());
+    warning.Margin(Thickness{4, 2, 4, 4});
+    warning.Visibility(Visibility::Collapsed);
+    A11y::SetLiveSetting(warning, Automation::Peers::AutomationLiveSetting::Polite);
+    return warning;
+  }
+
+  static void show_warning(TextBlock const &warning, std::wstring const &message) {
+    if (std::wstring_view(warning.Text()) == message)
+      return;
+    warning.Text(hstring(message));
+    warning.Visibility(message.empty() ? Visibility::Collapsed : Visibility::Visible);
+    if (!message.empty())
+      if (auto peer = Automation::Peers::FrameworkElementAutomationPeer::FromElement(warning))
+        peer.RaiseAutomationEvent(Automation::Peers::AutomationEvents::LiveRegionChanged);
+  }
+
+  // 翻译服务的一个凭据输入框：普通的（共享页的 TextInputRow、EndpointSettingRow），或带「显示」「隐藏」按钮的密钥框（SecretInput）。每输入一个字就交给 edit，它更新本组的提示和测试按钮，并在偏好库接受这个值时写进设置、停下后保存，返回是否写入；不接受的值不写入，输入框标红，与候选字体输入框的做法相同。整页不重画，输入框不会丢掉焦点。
+  FrameworkElement credential_input(std::wstring const &label, std::wstring const &value,
+                                    bool secret, std::wstring const &placeholder,
+                                    bool enabled, std::function<bool(std::wstring const &)> edit) {
+    // 控件刚建好时也会报一次内容变化，内容没变就不算编辑。
+    auto last = std::make_shared<std::wstring>(value);
+    auto changed = [edit = std::move(edit), last, danger = danger_color()](
+                       Control const &field, std::wstring const &text) {
+      if (text == *last)
+        return;
+      *last = text;
+      if (edit(text))
+        field.ClearValue(Control::BorderBrushProperty());
+      else
+        field.BorderBrush(brush(danger));
+    };
+    if (!secret) {
+      TextBox input;
+      input.Width(240);
+      input.Text(hstring(value));
+      input.PlaceholderText(hstring(placeholder));
+      input.IsSpellCheckEnabled(false);
+      input.IsEnabled(enabled && loaded_);
+      A11y::SetName(input, hstring(label));
+      input.TextChanged([changed](Inspectable const &sender, TextChangedEventArgs const &) {
+        auto field = sender.as<TextBox>();
+        changed(field, std::wstring(field.Text().c_str()));
+      });
+      return input;
+    }
+    StackPanel box;
+    box.Orientation(Orientation::Horizontal);
+    box.Spacing(8);
+    PasswordBox input;
+    input.Width(180);
+    input.Password(hstring(value));
+    input.PlaceholderText(hstring(placeholder));
+    input.PasswordRevealMode(PasswordRevealMode::Hidden);
+    input.IsEnabled(enabled && loaded_);
+    A11y::SetName(input, hstring(label));
+    input.PasswordChanged([changed](Inspectable const &sender, RoutedEventArgs const &) {
+      auto field = sender.as<PasswordBox>();
+      changed(field, std::wstring(field.Password().c_str()));
+    });
+    box.Children().Append(input);
+    Button reveal;
+    reveal.Content(box_value(L"显示"));
+    reveal.Height(32);
+    reveal.IsEnabled(enabled && loaded_);
+    A11y::SetName(reveal, hstring(L"显示" + label));
+    ToolTipService::SetToolTip(reveal, box_value(L"显示"));
+    reveal.Click([weak_input = make_weak(input), label,
+                  revealed = std::make_shared<bool>(false)](Inspectable const &sender,
+                                                            RoutedEventArgs const &) {
+      auto field = weak_input.get();
+      if (!field)
+        return;
+      *revealed = !*revealed;
+      field.PasswordRevealMode(*revealed ? PasswordRevealMode::Visible
+                                         : PasswordRevealMode::Hidden);
+      const auto action = *revealed ? std::wstring(L"隐藏") : std::wstring(L"显示");
+      auto button = sender.as<Button>();
+      button.Content(box_value(hstring(action)));
+      A11y::SetName(button, hstring(action + label));
+      ToolTipService::SetToolTip(button, box_value(hstring(action)));
+    });
+    box.Children().Append(reveal);
+    return box;
+  }
+
+  // 写一个已经校验过的凭据：内容变了才写，停下后保存。
+  void write_credential(std::wstring_view key, std::wstring const &value) {
+    if (document_.String(key, L"") == value)
+      return;
+    document_.SetString(key, value);
+    schedule_save();
+  }
+
+  // 「测试配置」按钮和结果（共享页的 `CredentialTestSection`），放在一张卡片里。config 给出输入框里的当前配置，disabled 说明按钮此刻能不能按。结果只在配置与测试时相同时显示，改了任何一项就收起；测试进行中按钮显示「测试中…」。
+  void add_credential_test(StackPanel const &group, std::wstring const &service,
+                           std::wstring const &label, std::function<JsonObject()> config,
+                           std::function<bool()> disabled) {
+    Button button;
+    button.Content(box_value(L"测试配置"));
+    button.Height(32);
+    button.Padding(Thickness{16, 0, 16, 0});
+    A11y::SetName(button, hstring(label));
+    button.Click([this, service, config](Inspectable const &, RoutedEventArgs const &) {
+      run_credential_test(service, config());
+    });
+    auto message = make_text(L"", 13, palette_.sub);
+    message.VerticalAlignment(VerticalAlignment::Center);
+    A11y::SetLiveSetting(message, Automation::Peers::AutomationLiveSetting::Polite);
+    StackPanel content;
+    content.Orientation(Orientation::Horizontal);
+    content.Spacing(12);
+    content.Padding(Thickness{25, 12, 25, 12});
+    content.Children().Append(button);
+    content.Children().Append(message);
+    auto card = make_card();
+    card.Child(content);
+    group.Children().Append(card);
+    if (indexing_)
+      return;
+    const auto danger = danger_color();
+    const auto quiet = palette_.sub;
+    auto refresh = [this, service, config, disabled, danger, quiet,
+                    weak_button = make_weak(button), weak_message = make_weak(message)] {
+      auto shown_button = weak_button.get();
+      auto shown_message = weak_message.get();
+      if (!shown_button || !shown_message)
+        return;
+      const auto found = credential_tests_.find(service);
+      const bool visible = found != credential_tests_.end() &&
+                           found->second.signature == std::wstring_view(config().Stringify());
+      const bool busy = visible && found->second.busy;
+      shown_button.Content(box_value(busy ? L"测试中…" : L"测试配置"));
+      shown_button.IsEnabled(loaded_ && !disabled() && !busy);
+      const std::wstring text = visible ? found->second.message : std::wstring();
+      shown_message.Foreground(brush(visible && !found->second.ok ? danger : quiet));
+      shown_message.Text(hstring(text));
+      shown_message.Visibility(text.empty() ? Visibility::Collapsed : Visibility::Visible);
+    };
+    refresh();
+    credential_test_views_[service] = std::move(refresh);
+  }
+
+  void refresh_credential_test(std::wstring const &service) {
+    if (const auto found = credential_test_views_.find(service);
+        found != credential_test_views_.end())
+      found->second();
+  }
+
+  // 共享页的 runCredentialTest：同一种服务一次只测一个；在 UI 线程之外调用 msime_client_test_api_credential（会联网，最长约 15 秒），结果记在这次测试的配置名下。调用本身失败时显示共享页的同一句。
+  void run_credential_test(std::wstring const &service, JsonObject const &config) {
+    auto &state = credential_tests_[service];
+    if (state.busy)
+      return;
+    const std::wstring signature(config.Stringify().c_str());
+    state = {signature, true, false, L""};
+    refresh_credential_test(service);
+    JsonObject request;
+    request.SetNamedValue(L"service", JsonValue::CreateStringValue(hstring(service)));
+    request.SetNamedValue(L"config", JsonObject::Parse(config.Stringify()));
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_test_api_credential(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this, service, signature](Response const &response) {
+          CredentialTest result{signature, false, false,
+                                L"无法连接 provider，请确认服务已启动。"};
+          if (response.ok) {
+            try {
+              const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+              result.ok = value.GetNamedBoolean(L"ok", false);
+              result.message = value.GetNamedString(L"message", L"").c_str();
+            } catch (...) {
+            }
+          }
+          credential_tests_[service] = std::move(result);
+          refresh_credential_test(service);
+        });
+  }
+
+  // 自定义接口地址的提示和偏好库是否接受，见 msime_client_translation_endpoint_issue。超过 2048 字节的地址不必交给它：提示就是「接口地址过长。」，偏好库也不收。
+  static std::pair<std::wstring, bool> translation_endpoint_check(std::wstring const &endpoint) {
+    const auto bytes = utf8(hstring(endpoint));
+    if (bytes.size() > 2048)
+      return {L"接口地址过长。", false};
+    const auto response = take_response(msime_client_translation_endpoint_issue(
+        reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size()));
+    try {
+      const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+      return {std::wstring(value.GetNamedString(L"issue", L"").c_str()),
+              value.GetNamedBoolean(L"accepted", false)};
+    } catch (...) {
+      return {L"", false};
+    }
+  }
+
+  // 腾讯云机器翻译（`tencent-translation-section.tsx`，Windows 一支）：SecretId、SecretKey、地域，「测试配置」，然后是凭据的提示或「未填写腾讯云凭据」的警告，都只在候选词翻译打开时显示。
+  void build_tencent_translation_group(StackPanel const &page, bool available) {
+    auto group = add_group(page, L"腾讯云机器翻译");
+    group.Children().Append(group_note(L"需要填入你自己的腾讯云 API 凭据。"));
+    struct Fields {
+      std::wstring id, key, region;
+    };
+    auto fields = std::make_shared<Fields>(Fields{
+        document_.String(L"tencent_tmt.secret_id", L""),
+        document_.String(L"tencent_tmt.secret_key", L""),
+        document_.String(L"tencent_tmt.region", L"ap-guangzhou")});
+    auto warning = group_warning();
+    auto refresh = [this, fields, available, weak_warning = make_weak(warning)] {
+      if (auto shown = weak_warning.get()) {
+        const auto issue = nav::tencent_credential_issue(fields->id, fields->key, fields->region);
+        std::wstring message;
+        if (available && !issue.empty())
+          message = issue;
+        else if (available && nav::tencent_missing_credentials_warning(
+                                  document_.Boolean(L"custom_translation.enabled", false),
+                                  fields->id, fields->key))
+          message = L"未填写腾讯云凭据，候选词翻译不会有任何结果。请填入 SecretId 与 "
+                    L"SecretKey，或在上面的翻译服务中改选其他服务。";
+        show_warning(shown, message);
+      }
+      refresh_credential_test(L"translation.tencent");
+    };
+    add_row(group, 0xE8D7, L"SecretId", L"",
+            credential_input(L"腾讯云 SecretId", fields->id, false, L"AKIDxxxxxxxxxxxxxxxx",
+                             available, [this, fields, refresh](std::wstring const &value) {
+                               fields->id = value;
+                               const bool saved = nav::tencent_secret_id_saveable(value);
+                               if (saved)
+                                 write_credential(L"tencent_tmt.secret_id", value);
+                               refresh();
+                               return saved;
+                             }));
+    add_row(group, 0xE72E, L"SecretKey", L"",
+            credential_input(L"腾讯云 SecretKey", fields->key, true, L"", available,
+                             [this, fields, refresh](std::wstring const &value) {
+                               fields->key = value;
+                               const bool saved = nav::tencent_secret_key_saveable(value);
+                               if (saved)
+                                 write_credential(L"tencent_tmt.secret_key", value);
+                               refresh();
+                               return saved;
+                             }));
+    add_row(group, 0xE774, L"地域", L"",
+            credential_input(L"腾讯云地域", fields->region, false, L"ap-guangzhou", available,
+                             [this, fields, refresh](std::wstring const &value) {
+                               fields->region = value;
+                               const bool saved = nav::tencent_region_saveable(value);
+                               if (saved)
+                                 write_credential(L"tencent_tmt.region", value);
+                               refresh();
+                               return saved;
+                             }));
+    add_credential_test(
+        group, L"translation.tencent", L"测试腾讯云翻译配置",
+        [fields] {
+          JsonObject config;
+          config.SetNamedValue(L"secret_id", JsonValue::CreateStringValue(hstring(fields->id)));
+          config.SetNamedValue(L"secret_key", JsonValue::CreateStringValue(hstring(fields->key)));
+          config.SetNamedValue(L"region", JsonValue::CreateStringValue(hstring(fields->region)));
+          return config;
+        },
+        [fields, available] {
+          return nav::issue_credential_test_disabled(
+              available, nav::tencent_credential_issue(fields->id, fields->key, fields->region));
+        });
+    group.Children().Append(warning);
+    if (!indexing_)
+      refresh();
+  }
+
+  // 小牛翻译（`niutrans-section.tsx`）：App ID、API Key 和「测试配置」，两项都填了才能测试。
+  void build_niutrans_group(StackPanel const &page, bool available) {
+    auto group = add_group(page, L"小牛翻译");
+    group.Children().Append(group_note(L"使用 App ID 和 API Key 为候选词提供逐条翻译。"));
+    struct Fields {
+      std::wstring app_id, apikey;
+    };
+    auto fields = std::make_shared<Fields>(
+        Fields{document_.String(L"niutrans.app_id", L""), document_.String(L"niutrans.apikey", L"")});
+    auto credential = [this, fields](std::wstring Fields::*field, std::wstring key) {
+      return [this, fields, field, key](std::wstring const &value) {
+        (*fields).*field = value;
+        const bool saved = nav::niutrans_credential_saveable(value);
+        if (saved)
+          write_credential(key, value);
+        refresh_credential_test(L"translation.niutrans");
+        return saved;
+      };
+    };
+    add_row(group, 0xE8D7, L"App ID", L"",
+            credential_input(L"NiuTrans App ID", fields->app_id, false, L"", available,
+                             credential(&Fields::app_id, L"niutrans.app_id")));
+    add_row(group, 0xE72E, L"API Key", L"",
+            credential_input(L"NiuTrans API Key", fields->apikey, true, L"", available,
+                             credential(&Fields::apikey, L"niutrans.apikey")));
+    add_credential_test(
+        group, L"translation.niutrans", L"测试 NiuTrans 配置",
+        [fields] {
+          JsonObject config;
+          config.SetNamedValue(L"app_id", JsonValue::CreateStringValue(hstring(fields->app_id)));
+          config.SetNamedValue(L"apikey", JsonValue::CreateStringValue(hstring(fields->apikey)));
+          return config;
+        },
+        [fields, available] {
+          return nav::niutrans_credential_test_disabled(available, fields->app_id, fields->apikey);
+        });
+  }
+
+  // 自定义服务（`custom-translation-section.tsx`）：翻译 Endpoint 和它下面的提示、API Key、「测试配置」。地址有问题时不能测试。
+  void build_custom_translation_group(StackPanel const &page, bool available) {
+    auto group = add_group(page, L"自定义服务");
+    group.Children().Append(group_note(L"使用自建的兼容 DeepLX 的 HTTPS 服务。"));
+    struct Fields {
+      std::wstring endpoint, api_key, issue;
+    };
+    auto fields = std::make_shared<Fields>(Fields{
+        document_.String(L"custom_translation.endpoint", L""),
+        document_.String(L"custom_translation.api_key", L""), L""});
+    fields->issue = translation_endpoint_check(fields->endpoint).first;
+    auto warning = group_warning();
+    add_row(group, 0xE71B, L"翻译 Endpoint", L"",
+            credential_input(L"自定义翻译 Endpoint", fields->endpoint, false,
+                             L"https://example.com/translate", available,
+                             [this, fields, available,
+                              weak_warning = make_weak(warning)](std::wstring const &value) {
+                               fields->endpoint = value;
+                               const auto [issue, saved] = translation_endpoint_check(value);
+                               fields->issue = issue;
+                               if (saved)
+                                 write_credential(L"custom_translation.endpoint", value);
+                               if (auto shown = weak_warning.get())
+                                 show_warning(shown, available ? issue : std::wstring());
+                               refresh_credential_test(L"translation.custom");
+                               return saved;
+                             }));
+    group.Children().Append(warning);
+    if (!indexing_)
+      show_warning(warning, available ? fields->issue : std::wstring());
+    add_row(group, 0xE72E, L"API Key", L"",
+            credential_input(L"自定义翻译 API Key", fields->api_key, true, L"", available,
+                             [this, fields](std::wstring const &value) {
+                               fields->api_key = value;
+                               const bool saved = nav::custom_translation_api_key_saveable(value);
+                               if (saved)
+                                 write_credential(L"custom_translation.api_key", value);
+                               refresh_credential_test(L"translation.custom");
+                               return saved;
+                             }));
+    add_credential_test(
+        group, L"translation.custom", L"测试自定义翻译配置",
+        [fields] {
+          JsonObject config;
+          config.SetNamedValue(L"endpoint", JsonValue::CreateStringValue(hstring(fields->endpoint)));
+          config.SetNamedValue(L"api_key", JsonValue::CreateStringValue(hstring(fields->api_key)));
+          return config;
+        },
+        [fields, available] { return nav::issue_credential_test_disabled(available, fields->issue); });
   }
 
   void fuzzy_row(StackPanel const &group) {
@@ -6406,6 +6818,16 @@ private:
 
   std::wstring mcp_result_;
   bool mcp_busy_ = false;
+
+  // 「标点与翻译」页三个「测试配置」的结果，按服务记，跨页面重建保留（共享页 useProviderCredentials 的 credentialTests）；signature 是测试时的配置。刷新函数属于当前页面上的那一组按钮，测试结束时用它就地更新，不重画整页，免得输入框丢掉焦点和没能写入的内容。
+  struct CredentialTest {
+    std::wstring signature;
+    bool busy = false;
+    bool ok = false;
+    std::wstring message;
+  };
+  std::map<std::wstring, CredentialTest> credential_tests_;
+  std::map<std::wstring, std::function<void()>> credential_test_views_;
 
   // 词库: the dictionary and code prefix being looked at, the page of words last read and what the page says about it. Kept across redraws, which every request ends with.
   std::wstring lexicon_kind_ = L"quick_phrase";

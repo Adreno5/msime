@@ -252,6 +252,39 @@ pub fn is_supported_endpoint(endpoint: &str) -> bool {
     is_secure_endpoint(endpoint)
 }
 
+/// 设置页在自定义翻译 Endpoint 下面显示的问题，没有问题时为空。逐条照搬共享设置的 `translationEndpointIssue`（`packages/ui/src/settings/translation-validation.ts`），网址按同一套 WHATWG 规则解析，所以与那里的 `new URL` 判断一致；它只决定提示什么，能不能保存仍由 [`is_supported_endpoint`] 决定。原生 Windows 设置窗口通过 `msime_client_translation_endpoint_issue` 调用它。
+pub fn endpoint_issue(endpoint: &str) -> &'static str {
+    if endpoint.is_empty() {
+        return "请填写完整的接口地址。";
+    }
+    if endpoint.len() > 2048 {
+        return "接口地址过长。";
+    }
+    if endpoint
+        .chars()
+        .any(|character| character <= '\u{1f}' || character == '\u{7f}')
+    {
+        return "接口地址不能包含控制字符。";
+    }
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return "请填写以 http:// 或 https:// 开头的完整接口地址。";
+    };
+    // `new URL` 的 username、password、hash 和 hostname 为空字符串时不算有。
+    if !url.username().is_empty()
+        || url.password().is_some_and(|password| !password.is_empty())
+        || url.fragment().is_some_and(|fragment| !fragment.is_empty())
+        || url.host_str().is_none_or(str::is_empty)
+    {
+        return "接口地址不能包含凭据或片段。";
+    }
+    match url.scheme() {
+        "https" => "",
+        "http" if matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) => "",
+        "http" => "远程翻译服务必须使用 HTTPS；HTTP 仅支持本机回环地址。",
+        _ => "请填写以 http:// 或 https:// 开头的完整接口地址。",
+    }
+}
+
 /// 区分 DeepLX 兼容回复中的失败与空回答。无 `code` 的回复必须带结果字段，显式 `error` 优先表示失败；有结果字段但译文为空仍算已回答，供宿主负缓存。
 pub fn translation_response_failed(response: &str) -> bool {
     let Ok(root) = serde_json::from_str::<Value>(response) else {
@@ -361,6 +394,56 @@ mod tests {
         assert!(!is_supported_endpoint("ftp://translate.example"));
         assert!(!is_supported_endpoint("https://bad\n.example"));
         assert!(!is_supported_endpoint("https:///api"));
+    }
+
+    #[test]
+    fn endpoint_issue_matches_the_settings_page() {
+        assert_eq!(endpoint_issue(""), "请填写完整的接口地址。");
+        assert_eq!(
+            endpoint_issue(&format!("https://a.example/{}", "x".repeat(2048))),
+            "接口地址过长。"
+        );
+        assert_eq!(
+            endpoint_issue("https://a.example/\u{7f}"),
+            "接口地址不能包含控制字符。"
+        );
+        for invalid in [
+            "translate.example",
+            "https://",
+            "ftp://translate.example/api",
+        ] {
+            assert_eq!(
+                endpoint_issue(invalid),
+                "请填写以 http:// 或 https:// 开头的完整接口地址。",
+                "{invalid}"
+            );
+        }
+        for leaky in [
+            "https://user@translate.example/api",
+            "https://user:secret@translate.example/api",
+            "https://translate.example/api#part",
+            "mailto:someone@example.com",
+        ] {
+            assert_eq!(
+                endpoint_issue(leaky),
+                "接口地址不能包含凭据或片段。",
+                "{leaky}"
+            );
+        }
+        for fine in [
+            "https://translate.example/api",
+            "https://translate.example/api#",
+            "http://localhost:1188/translate",
+            "http://127.0.0.1/translate",
+            "http://[::1]:1188/translate",
+            "HTTP://LOCALHOST/translate",
+        ] {
+            assert_eq!(endpoint_issue(fine), "", "{fine}");
+        }
+        assert_eq!(
+            endpoint_issue("http://translate.example/api"),
+            "远程翻译服务必须使用 HTTPS；HTTP 仅支持本机回环地址。"
+        );
     }
 
     #[test]
