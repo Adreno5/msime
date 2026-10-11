@@ -23,14 +23,18 @@ const initial: Snapshot = {
   },
 };
 
-function mount(initialPage?: string, platform = "harmony") {
+function mount(
+  initialPage?: string,
+  platform = "harmony",
+  home: Parameters<typeof SettingsPage>[0]["client"]["home"] = {},
+) {
   render(
     <SettingsPage
       initialPage={initialPage}
       client={{
         load: async () => initial,
         save: vi.fn(),
-        home: {},
+        home,
         // 标签页只在对应页面存在时出现，每个页面又取决于它背后的客户端能力。鸿蒙四个都有；社区客户端在，但已没有「社区」标签页，第二格是 AI 对话。
         account: {} as never,
         chat: {
@@ -259,6 +263,62 @@ test("the tab bar steps aside while typing in the 对话 tab", async () => {
   expect(screen.queryByRole("navigation", { name: "主要功能" })).toBeNull();
   fireEvent.blur(composer);
   expect(screen.getByRole("navigation", { name: "主要功能" })).toBeTruthy();
+});
+
+// 试用键盘和对话是同一页：首页卡片上的「试用键盘」切到「对话」标签并弹出键盘，没有第二个试用页。
+test("试用键盘 on the 设置 root opens the 对话 tab with the keyboard up", async () => {
+  mount();
+  await settingsFormReady();
+  fireEvent.click(
+    within(screen.getByRole("group", { name: "水杉输入法状态" })).getByRole("button", {
+      name: "试用键盘",
+    }),
+  );
+
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "试用键盘" })).toBeNull();
+  const composer = screen.getByRole("textbox", { name: "聊天消息" });
+  expect(document.activeElement).toBe(composer);
+  // 打字时标签栏让开；「收起键盘」把键盘收掉，标签栏回来。
+  expect(screen.queryByRole("navigation", { name: "主要功能" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "收起键盘" }));
+  expect(document.activeElement).not.toBe(composer);
+  expect(screen.queryByRole("button", { name: "收起键盘" })).toBeNull();
+  expect(screen.getByRole("navigation", { name: "主要功能" })).toBeTruthy();
+});
+
+// 设置没补完时打出来的不是水杉，对话顶栏带用户去补完；都好了就不占位置。
+test("the 对话 tab leads to the missing setup step until 水杉 is the keyboard", async () => {
+  const listeners = new Set<(state: { enabled: boolean; current: boolean }) => void>();
+  let state = { enabled: false, current: false };
+  const openSystemKeyboardSettings = vi.fn().mockResolvedValue(undefined);
+  const showInputMethodPicker = vi.fn().mockResolvedValue(undefined);
+  mount("chat", "harmony", {
+    openSystemKeyboardSettings,
+    showInputMethodPicker,
+    setup: {
+      read: () => state,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  });
+  const push = (next: typeof state) =>
+    act(() => {
+      state = next;
+      listeners.forEach((listener) => listener(next));
+    });
+
+  fireEvent.click(await screen.findByRole("button", { name: "水杉还没启用？点此开启" }));
+  expect(openSystemKeyboardSettings).toHaveBeenCalledOnce();
+
+  push({ enabled: true, current: false });
+  fireEvent.click(screen.getByRole("button", { name: "当前不是水杉输入法？点此切换" }));
+  expect(showInputMethodPicker).toHaveBeenCalledOnce();
+
+  push({ enabled: true, current: true });
+  expect(screen.queryByRole("button", { name: /点此/ })).toBeNull();
 });
 
 // 进入 AI 对话的入口由标签页承担，「AI 辅助」页不再列第二个「AI 对话」行。

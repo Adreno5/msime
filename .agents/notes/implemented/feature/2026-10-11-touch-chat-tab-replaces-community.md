@@ -14,7 +14,7 @@ Status: implemented
 - 点「对话」直接打开现有的 `chat` 页，不新写对话功能。鸿蒙、Android、iOS 三个触屏宿主都提供对话客户端（`apps/harmony/src/main.tsx` 的 `chatClient`，`apps/desktop/src/core/mobile-host-services.ts` 的 `accountChat`），`settingsPageProjections` 只在 `hasChat` 时提供这一页；宿主没有对话客户端时标签栏就没有这一格，`mobileTabBar` 按标签个数均分列宽，三格也不会挤在左边。
 - 标签名是「对话」（`mobileTabTitle`），页面标题仍是「AI 对话」，与页面自己的 `aria-label` 一致。鸿蒙手机画 Fluent 的 `chat` 气泡（`harmonyTabIcon`）；设计稿的图标表里没有对话图标，路径原样取自 `@fluentui/svg-icons@1.1.344` 的 `chat_20_regular.svg`，来源写在 `fluent-icons.tsx` 和 `packages/ui/UPSTREAM.md`。其他触屏宿主用蒙版图标，`mobileTabIcon` 给 `chat` 换成 `feedback.svg` 的对话气泡：注册表里 `chat` 页的图标是问号（`help.svg`），它原本只从一行进入、用不到图标，放上标签栏会被看成「帮助」。
 - 在触屏宿主上 `chat` 是标签页的根页面，不再是「AI 辅助」的子页面：外壳算 `navigationPage` 时，触屏宿主的标签页根页面不查 `subPageParents`，所以鸿蒙手机上它不滑入、不带返回按钮，Android、iOS 上也没有「‹ AI 辅助」返回链接。`subPageParents.chat = "ai"` 保留给桌面。
-- 进入对话的入口由标签页承担：触屏宿主的「AI 辅助」页不再列「AI 对话」那一组（`AiSettingsPage` 按 `mobilePlatform` 不渲染那个 `SubPageEntries`）。桌面的「AI 辅助」页照旧保留这一行。其他指向 `chat` 的地方在触屏上本来就不存在第二个入口：触屏首页的搜索只搜「设置」根页的各行（`chat` 不在导航分组里），桌面式首页的 `onOpenChat` 只在 `touchLayout` 为假时出现，原生宿主也没有路由到 `chat` 的深链接；`window.history` 里旧的 `page: "chat"` 记录照常恢复，落在「对话」标签页上。
+- 进入对话的入口由标签页承担：触屏宿主的「AI 辅助」页不再列「AI 对话」那一组（`AiSettingsPage` 按 `mobilePlatform` 不渲染那个 `SubPageEntries`）。桌面的「AI 辅助」页照旧保留这一行。其他指向 `chat` 的地方在触屏上本来就不存在第二个入口：触屏首页的搜索只搜「设置」根页的各行（`chat` 不在导航分组里），触屏首页的 `onOpenChat` 只供状态卡片上的「试用键盘」切到这个标签（见 [触屏首页的「试用键盘」切到「对话」标签](2026-10-11-touch-try-keyboard-is-the-chat-tab.md)），不另列一行，原生宿主也没有路由到 `chat` 的深链接；`window.history` 里旧的 `page: "chat"` 记录照常恢复，落在「对话」标签页上。
 
 ## Alternatives considered
 

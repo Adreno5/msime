@@ -70,7 +70,8 @@ export function settingsPageProjections({
         (item.id !== "plugins" || hasPlugins) &&
         (item.id !== "handwriting" || hasHandwriting) &&
         (item.id !== "more" || mobilePlatform) &&
-        (item.id !== "try-keyboard" || (mobilePlatform && hasHomePage)),
+        // 有对话的触屏宿主在「对话」标签里试键盘，独立的试用页只留给没有对话的宿主。
+        (item.id !== "try-keyboard" || (mobilePlatform && hasHomePage && !hasChat)),
     )
     .map((item) => ({
       ...item,

@@ -213,3 +213,12 @@ test("a host without the home page starts its sidebar at 输入", () => {
   expect(sidebar[0].pages[0].id).toBe("input");
   expect(sidebar.flatMap((group) => group.pages.map((page) => page.id))).not.toContain("home");
 });
+
+// 有对话的触屏宿主在「对话」标签里试键盘，独立的试用页不再注册，历史记录里留下的这一页也会落回首页。
+test("a touch host offers the 试用键盘 sub-page only when it has no chat", () => {
+  const ids = (hasChat: boolean) =>
+    project({ mobilePlatform: true, hasChat }).availablePages.map((page) => page.id);
+  expect(ids(true)).not.toContain("try-keyboard");
+  expect(ids(false)).toContain("try-keyboard");
+  expect(project().availablePages.map((page) => page.id)).not.toContain("try-keyboard");
+});
