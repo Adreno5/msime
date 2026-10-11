@@ -29,8 +29,8 @@ Host API 在 AI 请求真的发得出去时打开：AI 开着、接口地址有�
 | Windows | 序号色，无右键动作 | `AiCandidateWorker` 对发问了的查询把空回答和异常交给 `SessionController` |
 | Linux IBus | 序号色，无主题色时灰色 | 网络请求（不是只查缓存的探测）落空；没有在线服务或私密输入框 |
 | Linux Fcitx5 | 斜体、DontCommit（文本格式没有颜色） | 同上 |
-| Android | 按钮 0.45 透明度 | 向 AI 发问了却没有采用回答 |
-| iOS | 次要色，读屏念「AI 候选等待中 / 没有结果」 | 同上；宿主不让发问（没有完全访问权限）时 |
+| Android | 候选条和展开的候选面板都是按钮 0.45 透明度 | 向 AI 发问了却没有采用回答 |
+| iOS | 候选条和展开的候选网格都是次要色，读屏念「AI 候选等待中 / 没有结果」 | 同上；宿主不让发问（没有完全访问权限）时 |
 | HarmonyOS | 次要色 | 向 AI 发问了却没有采用回答 |
 
 同一批修了 macOS 的 `MSIMEViewContainsAICandidate`：它按 `source == 1` 判断，而视图里的 source 是 Engine 的 CandidateSource，1 是用户词库，AI 是 3，候选里有用户词时 AI 缓存一直被跳过。
@@ -52,7 +52,7 @@ Host API 在 AI 请求真的发得出去时打开：AI 开着、接口地址有�
 - 同一批多出来的 AI 候选排到列表末尾，通常不在第一页；`candidate_limit` 默认 3 的用户第一页只看到一条 AI 候选。
 - 回答失败后同一组字不再重试（macOS 原来会在下次渲染时重发），组字一变就重新问。
 - 引擎回答在线批次的顺序变了：`online_batch.rs`、`positions.rs` 和 input-runtime 的座位测试改了期望，golden 基准里没有多条 AI 的批次，不受影响。
-- 没处理：desktop 的落定重排（`rerank_settled`，默认关）在回答到达后会被普通刷新覆盖一次，再在下一次停顿后重排，开着它的用户仍可能看到一次次序变化；Android、iOS 的展开候选面板没有把占位行画暗。
+- 没处理：desktop 的落定重排（`rerank_settled`，默认关）在回答到达后会被普通刷新覆盖一次，再在下一次停顿后重排，开着它的用户仍可能看到一次次序变化。
 - 与 [英文、emoji 跟着它描绘的词](../feature/2026-10-08-expressive-rows-follow-their-word.md) 部分重叠：英文优先位「有 AI 候选时再往后一位」现在也包括占位行。
 
 ## Verification
@@ -60,4 +60,4 @@ Host API 在 AI 请求真的发得出去时打开：AI 开着、接口地址有�
 - `cargo test -p msime-engine`（含 golden）：`online_batch` 的占位行替换、空回答、云候选后到；`positions` 的座位归位；`queries` 的英文优先位；`session` 的占位行出现条件、不上屏、resolve 与代次、回答全是已有词。
 - `cargo test -p msime-input-runtime`：`several_candidates_from_one_provider_take_their_seat_as_a_group` 的座位与末尾、真 Engine 上回答前后同页候选不动、数字键不上屏、resolve 后组字变化回到「…」，以及重排模型不比较来源 3 和 12。
 - `cargo test -p msime-host-api`：没有密钥不留座位，会话密钥一到就留，resolve 只认来源 1，关掉 AI 立刻去掉占位行。
-- macOS `ctest`（149 项）里 `shortcut` 新增回答为空时 resolve 且不重发、视图有用户词时仍用 AI 缓存。Windows 只做了相关文件的 MinGW 语法检查，Wine 套件和真机渲染没跑；Linux、Android 原生、iOS、HarmonyOS 的整包构建和设备验收没跑。
+- macOS `ctest`（149 项）里 `shortcut` 新增回答为空时 resolve 且不重发、视图有用户词时仍用 AI 缓存。Windows 只做了相关文件的 MinGW 语法检查，Wine 套件和真机渲染没跑；Linux、Android 原生、iOS、HarmonyOS 的整包构建和设备验收没跑。Android、iOS 展开面板画暗占位行的改动（iOS 新增 `testTheExpandedPanelDrawsTheAIPlaceholderAsSecondary`）只做了 Swift 语法解析，Android 构建、iOS 测试和模拟器验收没跑。
