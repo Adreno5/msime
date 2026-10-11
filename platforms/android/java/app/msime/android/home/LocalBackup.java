@@ -107,8 +107,8 @@ final class LocalBackup {
             String skins = CustomSkinLibrary.exportDesigns(Paths.get(directory));
             List<String> phrases = ownPhrases(context);
             JSONObject snapshot = CloudSync.exportDictionarySnapshot(context, dictionary, true);
-            Integer words = DictionaryCollectionsStore.nonNegativeInteger(snapshot.opt("entries"));
-            Integer learning = DictionaryCollectionsStore.nonNegativeInteger(snapshot.opt("learning"));
+            Integer words = JsonPolicy.nonNegativeInteger(snapshot.opt("entries"));
+            Integer learning = JsonPolicy.nonNegativeInteger(snapshot.opt("learning"));
             // 输入记录读不出来时原生侧照样导出词，只是不带输入记录（`learning_error`）。
             boolean learningMissing = snapshot.optString("learning_error", "").length() > 0;
             if (learningMissing) Log.w(TAG, "backup exported without input records: " + snapshot.optString("learning_error"));
@@ -184,7 +184,7 @@ final class LocalBackup {
                 .put("options", new JSONObject(CloudSync.hostOptions(context)))
                 .put("action", new JSONObject().put("operation", "export_habits")
                     .put("destination", file.toAbsolutePath().toString())).toString()));
-            Integer habits = DictionaryCollectionsStore.nonNegativeInteger(value.opt("habits"));
+            Integer habits = JsonPolicy.nonNegativeInteger(value.opt("habits"));
             if (habits == null) throw new IOException("habits count missing");
             return habits;
         } catch (IOException | JSONException | RuntimeException error) {
@@ -686,8 +686,8 @@ final class LocalBackup {
             JSONObject value = CloudSync.nativeValue(NativeClient.dictionary(new JSONObject()
                 .put("options", new JSONObject(CloudSync.hostOptions(context)))
                 .put("action", new JSONObject().put("operation", "learning_count")).toString()));
-            Integer learning = DictionaryCollectionsStore.nonNegativeInteger(value.opt("count"));
-            Integer habits = DictionaryCollectionsStore.nonNegativeInteger(value.opt("habits"));
+            Integer learning = JsonPolicy.nonNegativeInteger(value.opt("count"));
+            Integer habits = JsonPolicy.nonNegativeInteger(value.opt("habits"));
             return learning == null || habits == null ? null : learning + habits;
         } catch (IOException | JSONException | RuntimeException error) {
             Log.w(TAG, "local input record count unavailable, merging instead", error);
@@ -703,7 +703,7 @@ final class LocalBackup {
                 .put("action", new JSONObject().put("operation", "queue_learning_merge")
                     .put("source", file.toAbsolutePath().toString())).toString()));
             if (!JsonPolicy.strictTrue(value.opt("queued"))) return 0;
-            Integer learning = DictionaryCollectionsStore.nonNegativeInteger(value.opt("learning"));
+            Integer learning = JsonPolicy.nonNegativeInteger(value.opt("learning"));
             return learning == null ? 0 : learning;
         } catch (IOException | JSONException | RuntimeException error) {
             Log.w(TAG, "input record restore failed", error);
@@ -727,7 +727,7 @@ final class LocalBackup {
                 .put("action", new JSONObject().put("operation", "queue_habits_merge")
                     .put("source", file.toAbsolutePath().toString())).toString()));
             if (!JsonPolicy.strictTrue(value.opt("queued"))) return 0;
-            Integer habits = DictionaryCollectionsStore.nonNegativeInteger(value.opt("habits"));
+            Integer habits = JsonPolicy.nonNegativeInteger(value.opt("habits"));
             return habits == null ? 0 : habits;
         } catch (IOException | JSONException | RuntimeException error) {
             Log.w(TAG, "input habit restore failed", error);
