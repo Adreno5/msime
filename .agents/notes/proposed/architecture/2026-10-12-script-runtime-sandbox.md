@@ -54,13 +54,13 @@ Status: proposed
 
 - `cargo test -p msime-script-runtime` 和 `cargo clippy -p msime-script-runtime --all-targets -- -D warnings` 通过。覆盖：死循环按钩子上限耗尽 fuel、`unreachable`、越界访问、内存越过预留、深递归撞上栈限制、被拒的提案（multi-memory、tail-call、extended-const、SIMD、memory64、threads）和 start 函数、允许的提案能编译、双向的静态最小权限、import 白名单和签名、能力的依赖与互斥、每轮配额跨多次投递并在新一轮补满、一个插件烧满配额不影响另一个、import 计 fuel、`before_commit` 读不到观察类钩子和上一次 `before_commit` 留下的内存与 global、快照上的 trap 不影响持久实例、授权与本地模式门控、文本复制的 `LIMIT` 和越界 trap、修改类 import 在本阶段返回 `DENIED`、初始化看不到任何事件、`log` 没有调试输出时是空操作。
 - 移动端不编译解释器：`cargo tree -p msime-script-runtime -e normal` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 和 `wasm32-wasip2` 上只有本 crate 自己，在 `x86_64-unknown-linux-gnu` 上是 wasmi 及其 6 个依赖；前三个目标上 `cargo check -p msime-script-runtime` 通过（已跑过）。
-- 本阶段后续部分把它接进 client-core（`script_pack`、`script_grants`、`PluginKind::Script`）、host-api（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）和 pack-tool，release 构建下 `scripts_enable` 恒返回 false。那时本篇和取代 `plugins.rs:3` 原则的笔记一起转到 `implemented/`。
+- client-core 一侧（`script_pack`、`script_grants`、`PluginKind::Script`）已经接上，见 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)，那篇就是取代 `plugins.rs:3` 原则的笔记。本阶段后续部分再接 host-api（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）和 pack-tool，release 构建下 `scripts_enable` 恒返回 false。那时两篇一起转到 `implemented/`。
 
 ## Risks
 
 - wasmi 2.0 的执行器没有经过审计，发布至今约 40 天。`extra-checks` 已开，`Cargo.lock` 锁定版本；与 1.1.0 的差分 fuzz 还没做。
 - 64 页、内存全脏时，dev 构建里一次复位最慢量到 0.68 ms，贴着 `before_commit` p99 ≤ 1 ms 的目标。实际插件的快照只到最后一个非零字节，通常远小于预留值；如果真机上仍然超预算，按设计 §4.3 的退路把输出限制成对 body 的编辑。
-- 字节码驻留约 3.3 倍：8 个 1 MiB 的模块各带 64 页内存，合计约 60 MiB，贴着 64 MiB 的进程总账。准入检查要把字节码按这个倍数计进去，模块大小上限可能要下调。
+- 字节码驻留约 3.3 倍：8 个 1 MiB 的模块各带 64 页内存，合计约 60 MiB，贴着 64 MiB 的进程总账。准入检查 `limits::fits_memory_budget` 把字节码按 4 倍模块大小估算（`TRANSLATED_BYTES_PER_MODULE_BYTE`），再加一份值栈，所以 8 个这样的模块里第 8 个启用不了；模块大小上限可能要下调。
 - memory64 和 SIMD 由 wasmi 的 cargo 特性控制。依赖图里哪天有别的 crate 打开了这两个特性，`Config` 会随之放开；被拒模块的测试只在本 crate 的测试构建里守着。
 - `Cargo.lock` 里多出的不只设计列的 7 个 crate：可选依赖 `hashbrown 0.15.5`、`foldhash 0.1.5`、`string-interner` 和测试用的 `wat`、`wast`、`wasm-encoder`、`wasmparser 0.261.0`、`leb128fmt`、`unicode-width` 也进了锁文件，但按现在的特性它们都不进产品构建。第三方声明脚本只需覆盖实际编译进产物的那 7 个。
 - 体积增量（x64 `msime_host_api.dll` 和 macOS 输入法可执行文件）要等 host-api 依赖本 crate 之后才能量。

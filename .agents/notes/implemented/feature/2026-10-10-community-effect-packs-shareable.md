@@ -14,7 +14,7 @@ Status: implemented
 
 特效包与其他七种类型一样可以发布、浏览、筛选和安装：
 
-- `crates/client-core/src/plugins/community.rs` 的 `PUBLISHABLE_KINDS` 加入 `PluginKind::Effect`，顺序与 `PluginKind::ALL` 一致，现在等于全部八种类型。`effect` 属于服务端冻结的旧类型集合，不用写进 `KINDS_DECLARATION`；`kinds_declaration_lists_the_new_publishable_kinds` 显式排除旧类型后比较，仍然成立。
+- `crates/client-core/src/plugins/community.rs` 的 `PUBLISHABLE_KINDS` 加入 `PluginKind::Effect`，顺序与 `PluginKind::ALL` 一致，现在等于全部八种数据类插件；桌面上的 `script` 不进这个列表，见 [脚本插件进入插件包体系](../../proposed/architecture/2026-10-12-script-plugin-kind-and-grants.md)。`effect` 属于服务端冻结的旧类型集合，不用写进 `KINDS_DECLARATION`；`kinds_declaration_lists_the_new_publishable_kinds` 显式排除旧类型后比较，仍然成立。
 - `pack` 把特效包的清单和说明文件打成归档，`install` 按同样的校验装回去；`validate_page` 不再去掉特效包条目。`validate_page` 里按 `PUBLISHABLE_KINDS` 过滤的那一步保留，现在什么也不去掉，留给将来旧类型集合与可发布类型不一致的情况。
 - `packages/ui/src/community/community-plugins.tsx` 的 `CommunityPluginKind` 等于 `PluginKind`，`communityPluginKinds` 加入 `effect`，社区页多一个「特效包」筛选，发布对话框列出所有非内置的已装包；`community-helpers.ts` 里不会再出现的「特效包暂不支持分享。」删掉。
 
