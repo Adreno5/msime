@@ -754,6 +754,8 @@ struct Settings {
         // 页面按 `prefers-color-scheme` 自己绘制深色主题。`WebDarkMode.Auto` 把系统的模式传给这个媒体查询；强制深色保持关闭，因为反转一个本就有深色配色的页面会把它反转回浅色。
         .darkMode(WebDarkMode.Auto)
         .forceDarkAccess(false)
+        // Web 组件自己的底色和背后的页面一样：页面画出第一帧之前不再先闪一下 WebView 默认的白色（冷启动时它夹在深色启动窗和开屏之间）。
+        .backgroundColor(this.pageBackground.length > 0 ? this.pageBackground : $r('app.color.settings_page_background'))
         .onPageEnd((event: OnPageEndEvent): void => {
           this.bridge.pageLoaded();
         })
@@ -3041,9 +3043,15 @@ class SettingsBridge {
       navigationBarColor: bars.navigationBar,
       navigationBarContentColor: content
     };
-    window.getLastWindow(this.context).then((main: window.Window): Promise<void> =>
-      main.setWindowSystemBarProperties(properties)
-    ).catch((error: Object): void => {
+    window.getLastWindow(this.context).then((main: window.Window): Promise<void> => {
+      // 页面避开了底部手势条那一块，露出来的是窗口自己的底色（默认白色），导航栏颜色画不到那里：开屏时底部一条白，设置页标签栏下面也一条白。窗口底色取导航栏的颜色，那一块就和标签栏或开屏连成一片。
+      try {
+        main.setWindowBackgroundColor(bars.navigationBar);
+      } catch (error) {
+        KeyboardLog.error(`window background not applied: ${describeError(error)}`);
+      }
+      return main.setWindowSystemBarProperties(properties);
+    }).catch((error: Object): void => {
       KeyboardLog.error(`system bar colours not applied: ${describeError(error)}`);
     });
   }
