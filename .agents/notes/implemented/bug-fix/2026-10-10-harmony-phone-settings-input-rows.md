@@ -15,7 +15,7 @@ HarmonyOS 手机的「语音输入」页（共享设置页 `packages/ui`，宿�
 - `Row` 新增 `wideControl`：HarmonyOS 手机上整行 `flex-wrap`，控件区占满一行，放到标题和说明下方；其余平台与原来相同。`TextInputRow`、`EndpointSettingRow`、`SecretSettingRow` 打开它。
 - `platform-controls-style.ts` 新增 `textInput`、`secretInput`、`secretToggle`，只带 `harmony:` 变体：文本框是 40px 高、无边框、比分组底色深一层的胶囊（与词库页搜索框同款），「显示」是行尾强调色文字。`TextInputRow` 在调用方没有传 `className` 时用它，`EndpointInput` 和 `SecretInput` 直接用它。
 - 带说明的 `PickerRow`（只在 HarmonyOS 上出现）改成网格：标题和当前值在第一行，当前值占标题右边剩下的宽度、靠末端对齐、放不下时截断，说明在第二行占满整行。没有说明的选择行不变。
-- 「流式接口」`DoubaoStreamEndpointSection`、「识别服务」`VoiceProviderRow`、「预置模型」`ModelSettingField`（HarmonyOS 分支）改用 `SelectRow`。选项要作为直接子元素传入（`SelectRow` 只认直接的 `<option>` 和 Fragment），所以选项列表改成直接调用的普通函数。`ProviderPresetSection` 在 HarmonyOS 上把预置模型这一行放在 `managerBlock` 容器外，避免行内边距叠两层。
+- 「流式接口」`DoubaoStreamEndpointSection`、「识别服务」`VoiceProviderRow`、「预置模型」`ModelSettingField`（HarmonyOS 分支）、皮肤页「高级」里各界面的明暗覆盖 `SurfaceThemeRow` 改用 `SelectRow`。选项要作为直接子元素传入（`SelectRow` 只认直接的 `<option>` 和 Fragment），所以选项列表改成直接调用的普通函数。`ProviderPresetSection` 在 HarmonyOS 上把预置模型这一行放在 `managerBlock` 容器外，避免行内边距叠两层。
 - 分组里的凭据行改用已有的 `SecretSettingRow`：语音识别的 `VoiceCredentialFieldsSection` 和文本润色的 `PolishCredentialFieldsSection`（接口地址同时改用 `EndpointSettingRow`）。只在 Linux 上出现、不在分组行里的 `AiCredentialSection` 和语音服务凭据表单仍用 `SettingField`。
 - `VoiceDevicePicker` 改成分组里的两行：`ActionRow`「读取录音设备」（说明是读取状态，按钮「刷新设备」），`SelectRow`「可用录音设备」。占位项「选择设备」加 `hidden`，不出现在选择面板里。
 
