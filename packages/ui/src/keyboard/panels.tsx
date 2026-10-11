@@ -1,4 +1,5 @@
 import { downloadBlob } from "../core/download-blob";
+import { trackAsyncSubscription } from "../core/async-subscription";
 import { useConfirm } from "../core/confirm";
 import { clamp } from "../core/number";
 import { utf8ByteLength } from "../core/text";
@@ -1574,9 +1575,8 @@ export function VoicePanel({
   useEffect(() => {
     if (!client.onVoiceUpdate) return;
     const generation = voiceGeneration.current;
-    let unlisten: (() => void) | undefined;
-    void client
-      .onVoiceUpdate((update) => {
+    return trackAsyncSubscription(
+      client.onVoiceUpdate((update) => {
         if (generation !== voiceGeneration.current || !busyRef.current) return;
         if (update.level !== undefined) {
           if (
@@ -1612,15 +1612,9 @@ export function VoicePanel({
               ? "正在识别…"
               : "正在录音并识别…",
         );
-      })
-      .then((stop) => {
-        if (generation === voiceGeneration.current) unlisten = stop;
-        else stop();
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+      }),
+      () => generation === voiceGeneration.current,
+    );
   }, [client, voiceGeneration]);
 
   async function recognize() {
