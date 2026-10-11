@@ -14,6 +14,7 @@ import {
   visibleLocalModels,
 } from "./local-model-helpers";
 import { StatusMessage } from "../core/status-message";
+import { trackAsyncSubscription } from "../core/async-subscription";
 import { useAsyncGeneration } from "../settings/use-async-generation";
 import { useMountedRef } from "../settings/use-mounted-ref";
 export {
@@ -142,24 +143,17 @@ export function LocalModelManager({
     setRemoving({});
     setImporting({});
     void refresh();
-    let unlisten: (() => void) | undefined;
-    void client
-      .onProgress((event) => {
+    return trackAsyncSubscription(
+      client.onProgress((event) => {
         if (
           mounted.current &&
           activeClient.current === client &&
           generation === clientGeneration.current
         )
           setProgress((current) => ({ ...current, [event.id]: event }));
-      })
-      .then((stop) => {
-        if (generation !== clientGeneration.current) stop();
-        else unlisten = stop;
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+      }),
+      () => generation === clientGeneration.current,
+    );
   }, [client, clientGeneration]);
 
   const install = async (model: LocalVoiceModel) => {

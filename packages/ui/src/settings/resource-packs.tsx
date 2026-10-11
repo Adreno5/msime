@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorCode } from "../core/error-code";
+import { trackAsyncSubscription } from "../core/async-subscription";
 import { useAsyncGeneration } from "./use-async-generation";
 import { useMountedRef } from "./use-mounted-ref";
 import { ActionRow } from "./action-row";
@@ -161,9 +162,8 @@ export function useResourcePacks(
     setErrors({});
     if (!client) return;
     void refresh(client, generation);
-    let unlisten: (() => void) | undefined;
-    void client
-      .onProgress((event) => {
+    return trackAsyncSubscription(
+      client.onProgress((event) => {
         if (!current(client, generation)) return;
         const id = event.id as ResourcePackId;
         // 启动时自动补齐的下载也会发进度；它结束时页面靠 done 事件重新读列表。
@@ -173,15 +173,9 @@ export function useResourcePacks(
           return;
         }
         setProgress((existing) => ({ ...existing, [id]: event }));
-      })
-      .then((stop) => {
-        if (generation !== clientGeneration.current) stop();
-        else unlisten = stop;
-      })
-      .catch(() => undefined);
-    return () => {
-      unlisten?.();
-    };
+      }),
+      () => generation === clientGeneration.current,
+    );
   }, [client, clientGeneration, refresh]);
 
   const install = (id: ResourcePackId) => {
