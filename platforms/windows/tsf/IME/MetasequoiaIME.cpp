@@ -203,6 +203,8 @@ void SendCurrentImeStatusSnapshot(CMetasequoiaIME *pIME, bool assertsFocusOwners
         }
     }
 
+    // 焦点换到另一个字段（包括密码框）时这里会被调到：属性随快照一起报，Server 在进入密码框时就停掉背景音乐，不必等一个永远不会到来的按键。
+    pIME->_NoteFieldTraitsForServer();
     CCompositionProcessorEngine *engine = pIME->GetCompositionProcessorEngine();
     SendIMEStatusSnapshotToUIProcessViaNamedPipe(
         engine->GetIMEMode(pIME->_GetThreadMgr(), pIME->_GetClientId()),
