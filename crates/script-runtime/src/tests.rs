@@ -539,7 +539,8 @@ fn the_turn_quota_spans_deliveries_and_refills_on_the_next_turn() {
         assert!(deliveries < 1_000, "the turn quota never ran out");
     }
     assert!(deliveries > 1);
-    assert_eq!(spent, limits::TURN_FUEL);
+    assert!(spent <= limits::TURN_FUEL);
+    assert_eq!(script.turn_fuel_left(), 0);
     // 撞上本轮配额的那一次运行到一半被截断，实例要换新的；新实例在新一轮里重新拿到完整配额。
     let mut fresh = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
     assert!(matches!(
@@ -569,14 +570,16 @@ fn an_exhausted_turn_is_skipped_rather_than_failed() {
         script.deliver(4, &input_event()),
         Outcome::Delivered { .. }
     ));
-    // 本轮只剩一点：运行到一半被截断，不算失败，但实例不再可用。
+    // 本轮只剩一点：运行到一半被截断，不算失败，但实例不再可用；不够下一段指令的零头也记为用完。
     let mut cut = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
     cut.resume_turn(5, 100);
-    assert_eq!(
-        cut.deliver(5, &input_event()),
-        Outcome::TurnExhausted { fuel: 100 }
+    let outcome = cut.deliver(5, &input_event());
+    assert!(
+        matches!(outcome, Outcome::TurnExhausted { fuel } if fuel > 0 && fuel <= 100),
+        "{outcome:?}"
     );
     assert!(!cut.is_usable());
+    assert_eq!(cut.turn_fuel_left(), 0);
 }
 
 #[test]

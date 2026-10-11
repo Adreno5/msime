@@ -695,8 +695,11 @@ impl ScriptInstance {
         self.turn_fuel_left -= fuel;
         match result {
             Ok(status) => Outcome::Delivered { status, fuel },
-            // 截断它的是本轮剩下的配额，不是本钩子的上限：插件没有超出任何一项自己的限制。
-            Err(Failure::OutOfFuel) if allowed < hook_limit => Outcome::TurnExhausted { fuel },
+            // 截断它的是本轮剩下的配额，不是本钩子的上限：插件没有超出任何一项自己的限制。wasmi 在剩下的 fuel 不够下一段指令时就停，留下的零头本轮也用不上，记为用完，宿主据此在本轮里不再为它重建实例。
+            Err(Failure::OutOfFuel) if allowed < hook_limit => {
+                self.turn_fuel_left = 0;
+                Outcome::TurnExhausted { fuel }
+            }
             Err(failure) => Outcome::Failed { failure, fuel },
         }
     }
