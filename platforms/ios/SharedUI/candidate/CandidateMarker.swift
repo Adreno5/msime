@@ -13,6 +13,11 @@ struct CandidateMarker: Equatable {
   /// AI 座位上的占位行（「…」等待中，「—」没有结果）：不是候选，画成次要色，不加标记（#6888）。
   static let aiPendingSource = 12
 
+  /// 读屏念的占位行：「…」是还在等 AI 回答，「—」是 AI 没有给出结果。候选条和展开的候选网格共用（#6888）。
+  static func aiPendingSpoken(_ text: String) -> String {
+    text == "…" ? "AI 候选等待中" : "AI 候选没有结果"
+  }
+
   static func markers(source: Int, fixedPosition: Int) -> [CandidateMarker] {
     var markers: [CandidateMarker] = []
     if source == cloudSource { markers.append(CandidateMarker(symbol: "cloud", spoken: "云候选")) }

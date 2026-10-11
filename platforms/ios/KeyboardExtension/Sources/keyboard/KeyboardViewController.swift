@@ -4119,6 +4119,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidates: snapshot.entries.map(\.text), preedit: snapshot.preedit,
         annotations: candidatePanelAnnotations(snapshot),
         markers: candidatePanelMarkers(snapshot),
+        aiPlaceholders: candidatePanelAIPlaceholders(snapshot),
         candidateScale: candidateFontScale, preeditScale: preeditFontScale, candidateFamilies: candidateFontFamilies,
         showsHeader: false,
         display: { [weak self] in self?.chineseOutput($0) ?? $0 },
@@ -4173,6 +4174,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   private func candidatePanelMarkers(_ snapshot: CandidatePanelSnapshot) -> [[CandidateMarker]] {
     snapshot.entries.map { CandidateMarker.markers(source: $0.source, fixedPosition: $0.fixedPosition) }
+  }
+
+  /// 网格里哪些格子是 AI 座位上的占位行，和候选条一样画成次要色（#6888）。
+  private func candidatePanelAIPlaceholders(_ snapshot: CandidatePanelSnapshot) -> Set<Int> {
+    Set(snapshot.entries.indices.filter { snapshot.entries[$0].source == CandidateMarker.aiPendingSource })
   }
 
   private func makeNineKeyPanelColumns() -> KeyboardNineKeyPanelColumns {
@@ -5551,7 +5557,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       }
       candidatePanelSnapshot = snapshot
       panel.reload(candidates: snapshot.entries.map(\.text), annotations: candidatePanelAnnotations(snapshot),
-                   markers: candidatePanelMarkers(snapshot))
+                   markers: candidatePanelMarkers(snapshot), aiPlaceholders: candidatePanelAIPlaceholders(snapshot))
       updateNineKeyPanelColumns()
       return
     }
@@ -5895,7 +5901,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     // A Hanja's long press offers nothing (candidateMenuElements(at:)), so its glosses are read but not offered for insertion.
     button.accessibilityHint = spoken.isEmpty || reading != nil ? nil : "轻点输入，长按可输入释义"
     if aiPlaceholder {
-      button.accessibilityLabel = candidate == "…" ? "AI 候选等待中" : "AI 候选没有结果"
+      button.accessibilityLabel = CandidateMarker.aiPendingSpoken(candidate)
       button.accessibilityHint = nil
     }
   }
