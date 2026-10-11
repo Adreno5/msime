@@ -129,6 +129,14 @@ export function useCommunityGallery<T extends { id: string }>({
     [client, clientGeneration, fail, isCurrent],
   );
 
+  const changeMineOnly = useCallback(
+    (nextMineOnly: boolean) => {
+      setMineOnly(nextMineOnly);
+      void requestList(activeSearch.current, false, nextMineOnly);
+    },
+    [requestList],
+  );
+
   useEffect(() => {
     void requestList("", false, activeMine.current);
   }, [client, requestList]);
@@ -268,7 +276,7 @@ export function useCommunityGallery<T extends { id: string }>({
     replaceSelected,
     setError,
     setActionNotice,
-    setMineOnly,
+    changeMineOnly,
     setConfirmUnpublish,
     requestList,
     open,

@@ -3,6 +3,7 @@ import {
   doubaoStreamEndpointId,
   findDoubaoStreamEndpoint,
 } from "../voice/voice-providers";
+import { ControlledSelect } from "../core/controlled-select";
 import { SelectRow } from "./select-row";
 
 export interface DoubaoStreamEndpointSectionProps {
@@ -41,13 +42,13 @@ export function DoubaoStreamEndpointSelect({
 }: DoubaoStreamEndpointSelectProps) {
   const selected = doubaoStreamEndpointId(endpoint);
   return (
-    <select
+    <ControlledSelect
       aria-label="流式接口"
       value={selected}
-      onChange={(event) => updateDoubaoStreamEndpoint(event.target.value, onChange)}
+      onChange={(value) => updateDoubaoStreamEndpoint(value, onChange)}
     >
       {doubaoStreamEndpointOptions()}
-    </select>
+    </ControlledSelect>
   );
 }
 

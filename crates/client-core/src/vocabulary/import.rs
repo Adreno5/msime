@@ -119,7 +119,11 @@ pub fn parse(text: &str, max_bytes: usize) -> Result<WordbookImportReport, Wordb
         return Err(WordbookImportError::ControlCharacters);
     }
 
-    let delimiter = if text.contains('\t') {
+    let first_data_line = text.lines().find(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#')
+    });
+    let delimiter = if first_data_line.is_some_and(|line| line.contains('\t')) {
         Delimiter::Tab
     } else {
         Delimiter::Comma
@@ -328,6 +332,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.entries.len(), 2);
+        assert_eq!(report.failed, 0);
+    }
+
+    #[test]
+    fn tabs_in_comments_do_not_turn_a_comma_file_into_a_tab_file() {
+        let report = parse("# 来源\t合成样例\nubiquitous,adj. 无处不在的\n", LIMIT).unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].word, "ubiquitous");
         assert_eq!(report.failed, 0);
     }
 

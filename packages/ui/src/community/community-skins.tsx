@@ -33,7 +33,7 @@ import { CommunityCardAuthor } from "./community-card-author";
 import { CommunityCard } from "./community-card";
 import { CommunityGalleryLoadMore } from "./community-gallery-load-more";
 import { CommunityGalleryFeedback } from "./community-gallery-feedback";
-import { CommunityGalleryHeading } from "./community-gallery-heading";
+import { CommunityGalleryHeader } from "./community-gallery-header";
 import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { CommunityLoadMoreButton } from "./community-gallery-controls";
@@ -524,7 +524,7 @@ export function CommunitySkinsPage({
     setSelected,
     replaceSelected,
     setActionNotice,
-    setMineOnly,
+    changeMineOnly,
     setConfirmUnpublish,
     requestList,
     open: openGallery,
@@ -883,9 +883,7 @@ export function CommunitySkinsPage({
             className={style.harmonyChipAction}
             aria-pressed={mineOnly}
             onClick={() => {
-              const nextMineOnly = !mineOnly;
-              setMineOnly(nextMineOnly);
-              void requestList(activeSearch, false, nextMineOnly);
+              changeMineOnly(!mineOnly);
             }}
           >
             我的作品
@@ -946,13 +944,11 @@ export function CommunitySkinsPage({
 
   return (
     <CommunityPageShell>
-      <CommunitySearchForm
-        label="搜索皮肤设计"
-        value={search}
-        onChange={setSearch}
-        onSubmit={() => void requestList(search, false)}
-      />
-      <CommunityGalleryHeading
+      <CommunityGalleryHeader
+        searchLabel="搜索皮肤设计"
+        search={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={() => void requestList(search, false)}
         title={mineOnly ? "你的公开设计" : "换个心情，从键盘开始"}
         note={mineOnly ? "管理你发布到社区的皮肤" : "发现创作者的配色与巧思，找到你的那一款"}
       >
@@ -961,10 +957,7 @@ export function CommunitySkinsPage({
           mineOnly={mineOnly}
           allLabel="全部皮肤"
           mineLabel="我的作品"
-          onMineOnlyChange={(nextMineOnly) => {
-            setMineOnly(nextMineOnly);
-            void requestList(activeSearch, false, nextMineOnly);
-          }}
+          onMineOnlyChange={changeMineOnly}
         />
         {localSkinLibrary && (
           <ActionButton
@@ -973,7 +966,7 @@ export function CommunitySkinsPage({
             label="发布我的设计"
           />
         )}
-      </CommunityGalleryHeading>
+      </CommunityGalleryHeader>
       <CommunitySkinCategoryFilter
         ariaLabel="键盘皮肤分类"
         value={categoryFilter.category}

@@ -1138,3 +1138,129 @@ fn wubi_codes_refuse_oversized_text_and_skip_what_is_not_han() {
         "invalid wubi lookup"
     );
 }
+
+#[test]
+fn journal_export_pages_only_the_requested_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for name in ["user", "resources", "dictionaries", "cache"] {
+        std::fs::create_dir(root.join(name)).unwrap();
+    }
+    let mut connection = rusqlite::Connection::open(root.join("user/msime_user.db")).unwrap();
+    connection.execute_batch(
+        "CREATE TABLE user_dictionary_operations(dictionary TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,operation TEXT NOT NULL,weight INTEGER NOT NULL,user_inserted INTEGER NOT NULL,PRIMARY KEY(dictionary,key,value));
+         INSERT INTO user_dictionary_operations VALUES
+         ('english','alpha','first','upsert',11,1),
+         ('english','alpha','second','upsert',12,1),
+         ('english','beta','third','upsert',13,1);",
+    ).unwrap();
+    let transaction = connection.transaction().unwrap();
+    for index in 0..1100 {
+        transaction
+            .execute(
+                "INSERT INTO user_dictionary_operations VALUES('quick',?1,?2,'upsert',1,1)",
+                rusqlite::params![format!("q{index:04}"), format!("合成短语{index:04}")],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    drop(connection);
+    let options = json!({
+        "api_version": 1,
+        "resources": root.join("resources"),
+        "user_data": root.join("user"),
+        "cache": root.join("cache"),
+        "dictionaries": root.join("dictionaries"),
+        "preferences": msime_client_core::preferences::Preferences::default(),
+    });
+    let export = |kind: &str, format: &str, offset: usize, limit: usize| {
+        dictionary_request_json(&serde_json::to_vec(&json!({
+            "options": options,
+            "action": {"operation": "export", "kind": kind, "format": format, "offset": offset, "limit": limit},
+        })).unwrap())
+    };
+    assert_eq!(
+        export("english", "standard", 0, 1).unwrap(),
+        json!({"text": "first\talpha\t11\n", "has_more": true})
+    );
+    assert_eq!(
+        export("english", "windows", 1, 1).unwrap(),
+        json!({"text": "alpha\tsecond\t12\n", "has_more": true})
+    );
+    assert_eq!(
+        export("english", "standard", 2, 1).unwrap(),
+        json!({"text": "third\tbeta\t13\n", "has_more": false})
+    );
+    assert_eq!(
+        export("english", "standard", 3, 1).unwrap(),
+        json!({"text": "", "has_more": false})
+    );
+    assert_eq!(
+        export("quick_phrase", "windows", 1099, 1).unwrap(),
+        json!({"text": "q1099\t合成短语1099\t1\n", "has_more": false})
+    );
+    assert_eq!(
+        export("wubi98", "standard", 0, 1000).unwrap(),
+        json!({"text": "", "has_more": false})
+    );
+    for (format, offset, limit) in [
+        ("bad", 0, 1),
+        ("standard", 1_000_001, 1),
+        ("standard", 0, 0),
+        ("standard", 0, 1001),
+    ] {
+        assert_eq!(
+            export("english", format, offset, limit).unwrap_err(),
+            "invalid dictionary export"
+        );
+    }
+}
+
+#[test]
+fn journal_list_kind_does_not_truncate_after_other_dictionaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for name in ["user", "resources", "dictionaries", "cache"] {
+        std::fs::create_dir(root.join(name)).unwrap();
+    }
+    let connection = rusqlite::Connection::open(root.join("user/msime_user.db")).unwrap();
+    connection.execute_batch(
+        "CREATE TABLE user_dictionary_operations(dictionary TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,operation TEXT NOT NULL,weight INTEGER NOT NULL,user_inserted INTEGER NOT NULL,PRIMARY KEY(dictionary,key,value));",
+    ).unwrap();
+    let transaction = connection.unchecked_transaction().unwrap();
+    for index in 0..20_001 {
+        transaction
+            .execute(
+                "INSERT INTO user_dictionary_operations VALUES('english',?1,?2,'upsert',1,1)",
+                rusqlite::params![format!("english{index:05}"), format!("合成英文{index:05}")],
+            )
+            .unwrap();
+    }
+    transaction
+        .execute(
+            "INSERT INTO user_dictionary_operations VALUES('wubi','aaaa','合成五笔','upsert',7,1)",
+            [],
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(connection);
+    let options = json!({
+        "api_version": 1,
+        "resources": root.join("resources"),
+        "user_data": root.join("user"),
+        "cache": root.join("cache"),
+        "dictionaries": root.join("dictionaries"),
+        "preferences": msime_client_core::preferences::Preferences::default(),
+    });
+    let response = dictionary_request_json(&serde_json::to_vec(&json!({
+        "options": options,
+        "action": {"operation": "list", "offset": 0, "limit": 1000, "kind": "wubi", "user_only": false},
+    })).unwrap()).unwrap();
+    assert_eq!(
+        response,
+        json!({
+            "entries": [{"kind": "wubi", "key": "aaaa", "value": "合成五笔", "weight": 7, "source": "user"}],
+            "has_more": false,
+        })
+    );
+}

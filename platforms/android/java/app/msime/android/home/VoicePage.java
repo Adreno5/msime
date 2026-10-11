@@ -140,7 +140,9 @@ public final class VoicePage extends DetailPage {
             modelsError = error.code();
         }
         return new State(preferences, AndroidLocalSettings.load(context),
-            DoubaoAsrPolicy.PROVIDER.equals(configuration.provider()), runtimeReady, runtime, configuration.provider(),
+            // 按用户选的服务判断，而不是按解析结果：选了豆包还没填密钥时开关照样能设，填好后生效，不该说「当前识别服务不支持」。
+            DoubaoAsrPolicy.PROVIDER.equals(InputViewValuePolicy.textOr(preferences.optJSONObject("voice_input"),
+                "asr_provider", "")), runtimeReady, runtime, configuration.provider(),
             models, modelsError);
     }
 
