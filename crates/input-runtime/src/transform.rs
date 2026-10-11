@@ -256,7 +256,13 @@ mod desktop {
 
         /// 按记下的操作排好当前列表：可见行里，锁定的座位不动，其余座位先放插件点名的行（按优先次序），再放没点名的行（保持原来的相对顺序）；被隐藏的行按引擎原来的次序排在最后。
         fn arrange_candidates(&mut self, ready: bool) {
-            if !ready || (self.plugins.order.is_empty() && self.plugins.hidden.is_empty()) {
+            if !ready {
+                // 跳过的列表不应沿用之前组字中的插件操作；旁路刷新也必须从干净状态开始。
+                self.plugins.clear_recorded();
+                self.plugins.hidden_rows = 0;
+                return;
+            }
+            if self.plugins.order.is_empty() && self.plugins.hidden.is_empty() {
                 self.plugins.hidden_rows = 0;
                 return;
             }

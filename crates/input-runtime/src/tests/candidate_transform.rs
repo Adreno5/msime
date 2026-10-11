@@ -486,6 +486,23 @@ fn skipped_lists_run_no_transform_and_hide_nothing() {
 }
 
 #[test]
+fn skipped_refresh_discards_previous_transform_operations() {
+    let mut harness = reranked_and_filtered();
+    assert_eq!(harness.shown(), ["丁", "乙", "甲", "戊"]);
+
+    // 进入整句改字后，旁路刷新不能把上一轮的排序和隐藏带进来。
+    harness.runtime.engine.conversion = "甲乙".into();
+    harness.runtime.refresh().unwrap();
+    assert_eq!(harness.shown(), FIVE);
+    assert!(!harness.runtime.has_candidate_ops());
+
+    // 跳过状态结束后也从原始列表开始，直到下一次派发才重新运行插件。
+    harness.runtime.engine.conversion.clear();
+    harness.runtime.refresh().unwrap();
+    assert_eq!(harness.shown(), FIVE);
+}
+
+#[test]
 fn side_channel_calls_replay_by_identity_without_running_the_transform() {
     let mut engine = TransformEngine::new(&["甲", "乙", "丙"]);
     engine.sources = vec![LATTICE_SOURCE, LATTICE_SOURCE, 0];
