@@ -1,4 +1,5 @@
 import type { InputHTMLAttributes, ReactNode } from "react";
+import { ControlledInput } from "./controlled-input";
 
 export interface LabeledInputFieldProps extends Omit<
   InputHTMLAttributes<HTMLInputElement>,
@@ -25,12 +26,12 @@ export function LabeledInputField({
   return (
     <label className={labelClassName}>
       {label}
-      <input
+      <ControlledInput
         {...inputProps}
         className={className}
         aria-label={ariaLabel}
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={onChange}
       />
     </label>
   );
