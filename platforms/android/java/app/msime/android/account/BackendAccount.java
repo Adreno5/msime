@@ -33,7 +33,7 @@ public final class BackendAccount {
     /** Fixed hexadecimal length of account challenge and clipboard identifiers. */
     public static final int HEX_ID_LENGTH = 64;
     private static final String SESSION_STORE = "msime_account_session_v2";
-    /** Matches client-core's account JSON response ceiling; a full cloud clipboard page can exceed 64 KiB. */
+    /** Matches client-core's account JSON response ceiling. 云剪贴板的整页密文走 {@link #httpExchange}，上限是 {@link CloudClipboardE2e#MAX_RESPONSE_BYTES}。 */
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     /** 一条 AI 回复的 UTF-8 字节上限，流式与非流式相同。 */
     public static final int MAX_CHAT_REPLY_BYTES = 16 * 1024;
@@ -58,7 +58,13 @@ public final class BackendAccount {
     }
     public record ChatMessage(String role, String content) {}
     public record ClipboardItem(String id, String text, String updatedAt) {}
-    public record ClipboardPage(boolean enabled, List<ClipboardItem> items) {}
+    /**
+     * 键盘读到的云剪贴板：已解密的条目，以及本机的加密状态 `status`（`ready`、`pending` 或 `disabled`，见 {@link CloudClipboardApi}）和本机核对码 `code`。待批准时 `items` 为空。
+     */
+    public record ClipboardPage(boolean enabled, List<ClipboardItem> items, String status, String code) {
+        /** 本机还在等已有设备批准：读不到，也不能上传。 */
+        public boolean pending() { return CloudClipboardApi.STATUS_PENDING.equals(status); }
+    }
 
     interface SessionStore {
         String load() throws Exception;
@@ -73,6 +79,11 @@ public final class BackendAccount {
         default JSONObject request(String method, String path, JSONObject body, String token, String userAgent)
                 throws Exception {
             return request(method, path, body, token);
+        }
+
+        /** 发一个请求，不论状态码都把状态和正文交回，连不上时抛出；只给云剪贴板的端到端驱动用（{@link CloudClipboardE2e}）。 */
+        default CloudClipboardE2e.Reply exchange(String method, String path, String body, String token) throws Exception {
+            throw new UnsupportedOperationException("raw exchange");
         }
     }
 
@@ -90,6 +101,11 @@ public final class BackendAccount {
         @Override public JSONObject request(String method, String path, JSONObject body, String token,
                 String userAgent) throws Exception {
             return httpRequest(method, path, body, token, userAgent);
+        }
+
+        @Override public CloudClipboardE2e.Reply exchange(String method, String path, String body, String token)
+                throws Exception {
+            return httpExchange(method, path, body, token);
         }
     }
 
@@ -112,10 +128,17 @@ public final class BackendAccount {
     static final class RequestException extends IllegalStateException {
         private static final long serialVersionUID = 1L;
         final int status;
+        /** 错误码；只有云剪贴板驱动报的错带它（例如 `clipboard_device_pending`，这时 `status` 为 0），其余为空字符串。 */
+        final String code;
 
         RequestException(int status) {
-            super("HTTP " + status);
+            this(status, "");
+        }
+
+        RequestException(int status, String code) {
+            super(code == null || code.isEmpty() ? "HTTP " + status : code);
             this.status = status;
+            this.code = code == null ? "" : code;
         }
     }
 
@@ -123,6 +146,8 @@ public final class BackendAccount {
     private final Requester requester;
     private final TokenSource ownerProcess;
     private final StreamRequester streamer;
+    /** 云剪贴板的本机密钥串，退出登录时与会话一起删除；测试构造的账号没有。 */
+    private final CloudClipboardE2e.Keystore clipboardKeystore;
 
     /**
      * The account as this process may use it.
@@ -132,13 +157,13 @@ public final class BackendAccount {
     public BackendAccount(Context context) {
         this(new AndroidAccountSessionStorage(context, SESSION_STORE), new HttpRequester(),
             AccountSessionRoutingPolicy.ownsSession(Application.getProcessName(), context.getPackageName())
-                ? null : sessionOwner(context));
+                ? null : sessionOwner(context), BackendAccount::streamChat, CloudClipboardKeystore.deferred(context));
     }
 
     /** The account read and refreshed in this process, whatever process it is; only {@link AccountSessionProvider} uses this, in the main process. */
     static BackendAccount owningSession(Context context) {
         return new BackendAccount(new AndroidAccountSessionStorage(context, SESSION_STORE),
-            new HttpRequester(), null);
+            new HttpRequester(), null, BackendAccount::streamChat, CloudClipboardKeystore.deferred(context));
     }
 
     BackendAccount(SessionStore sessions, Requester requester) {
@@ -150,10 +175,16 @@ public final class BackendAccount {
     }
 
     BackendAccount(SessionStore sessions, Requester requester, TokenSource owner, StreamRequester streamer) {
+        this(sessions, requester, owner, streamer, null);
+    }
+
+    BackendAccount(SessionStore sessions, Requester requester, TokenSource owner, StreamRequester streamer,
+            CloudClipboardE2e.Keystore clipboardKeystore) {
         this.sessions = sessions;
         this.requester = requester;
         this.ownerProcess = owner;
         this.streamer = streamer;
+        this.clipboardKeystore = clipboardKeystore;
     }
 
     private static TokenSource sessionOwner(Context context) {
@@ -817,20 +848,27 @@ public final class BackendAccount {
         }
     }
 
-    public ClipboardPage clipboard(String search) throws Exception {
-        return clipboard(search, null);
-    }
-
-    /** Read only from the session that opened the keyboard panel. */
-    public ClipboardPage clipboard(String search, String expectedSessionId) throws Exception {
+    /**
+     * Read only from the session that opened the keyboard panel.
+     *
+     * <p>经共享驱动读出并在本机解密（{@link CloudClipboardE2e}）；`search` 也在本机过滤。本机还在等批准时返回 `pending`、条目为空，不算失败。驱动报的错以 {@link RequestException} 抛出，`code` 保持驱动给的错误码。
+     */
+    public ClipboardPage clipboard(String search, String expectedSessionId, CloudClipboardE2e.Local local)
+            throws Exception {
         SessionCredential session = currentSession();
         requireSession(session, expectedSessionId);
         if (session.token().isEmpty() || !validClipboardSearch(search))
             throw new IllegalStateException("invalid clipboard request");
-        String encoded = java.net.URLEncoder.encode(search, StandardCharsets.UTF_8.name()).replace("+", "%20");
-        JSONObject response = authorizedRequest("GET", "/v1/users/me/clipboard?q=" + encoded, null, session);
+        JSONObject response = new JSONObject(runClipboard(local, CloudClipboardE2e.Operation.list(search), session));
         org.json.JSONArray values = response.optJSONArray("items");
-        if (values == null || values.length() > 50) throw new IllegalStateException("invalid clipboard response");
+        JSONObject e2e = response.optJSONObject("e2e");
+        if (values == null || values.length() > 50 || e2e == null)
+            throw new IllegalStateException("invalid clipboard response");
+        String status = optionalStringField(e2e.opt("status"), "");
+        String code = optionalStringField(e2e.opt("code"), "");
+        if (!(CloudClipboardApi.STATUS_READY.equals(status) || CloudClipboardApi.STATUS_PENDING.equals(status)
+                || CloudClipboardApi.STATUS_DISABLED.equals(status)) || !CloudClipboardApi.validCode(code))
+            throw new IllegalStateException("invalid clipboard response");
         List<ClipboardItem> items = new ArrayList<>(values.length());
         for (int index = 0; index < values.length(); index++) {
             JSONObject item = values.optJSONObject(index);
@@ -842,7 +880,8 @@ public final class BackendAccount {
                 throw new IllegalStateException("invalid clipboard response");
             items.add(new ClipboardItem(id, text, updated));
         }
-        return new ClipboardPage(requiredBooleanField(response.opt("enabled")), ListPolicy.copyOrEmpty(items));
+        return new ClipboardPage(requiredBooleanField(response.opt("enabled")), ListPolicy.copyOrEmpty(items),
+            status, code);
     }
 
     /** Whether a clipboard search fits client-core's 1024-byte text contract. */
@@ -871,24 +910,49 @@ public final class BackendAccount {
         authorizedRequest("PUT", "/v1/users/me/clipboard/settings", new JSONObject().put("enabled", enabled), session);
     }
 
-    public ClipboardItem addClipboard(String text) throws Exception {
-        return addClipboard(text, null);
-    }
-
-    /** Prevent a queued keyboard upload from switching to a newly signed-in account. */
-    ClipboardItem addClipboard(String text, String expectedSessionId) throws Exception {
+    /** Prevent a queued keyboard upload from switching to a newly signed-in account. 在本机加密后上传；本机还在等批准时驱动报 `clipboard_device_pending`，不上传。 */
+    ClipboardItem addClipboard(String text, String expectedSessionId, CloudClipboardE2e.Local local) throws Exception {
         SessionCredential session = currentSession();
         requireSession(session, expectedSessionId);
         if (session.token().isEmpty() || !CloudClipboardTextPolicy.valid(text))
             throw new IllegalStateException("invalid clipboard request");
-        JSONObject item = authorizedRequest("POST", "/v1/users/me/clipboard", new JSONObject().put("text", text), session);
+        JSONObject item = new JSONObject(runClipboard(local, CloudClipboardE2e.Operation.add(text), session));
         String id = optionalStringField(item.opt("id"), "");
-        String returnedText = optionalStringField(item.opt("text"), text);
+        String returnedText = optionalStringField(item.opt("text"), "");
         String updated = optionalStringField(item.opt("updated_at"), "");
         ClipboardItem result = new ClipboardItem(id, returnedText, updated);
         if (!validClipboardItem(result))
             throw new IllegalStateException("invalid clipboard response");
         return result;
+    }
+
+    /**
+     * 经驱动跑一个云剪贴板操作：请求一律用开始时的这个会话发出（401 时与 {@link #authorizedRequest} 一样换一枚令牌重试一次），密钥串只在这个会话仍是当前会话时写入。
+     */
+    private String runClipboard(CloudClipboardE2e.Local local, CloudClipboardE2e.Operation operation,
+            SessionCredential session) throws Exception {
+        try {
+            return CloudClipboardE2e.run(local, operation,
+                (method, path, body) -> clipboardExchange(method, path, body, session),
+                () -> ensureCurrentSession(session));
+        } catch (CloudClipboardE2e.Failure failure) {
+            throw new RequestException(failure.status, failure.code);
+        }
+    }
+
+    private CloudClipboardE2e.Reply clipboardExchange(String method, String path, String body, SessionCredential session)
+            throws Exception {
+        ensureCurrentSession(session);
+        CloudClipboardE2e.Reply reply = requester.exchange(method, path, body, session.token());
+        ensureCurrentSession(session);
+        if (reply.status() != 401) return reply;
+        SessionCredential fresh = currentSession(session.token());
+        if (!session.sessionId().equals(fresh.sessionId()))
+            throw new CancellationException("account session changed");
+        if (fresh.token().isEmpty() || fresh.token().equals(session.token())) return reply;
+        reply = requester.exchange(method, path, body, fresh.token());
+        ensureCurrentSession(session);
+        return reply;
     }
 
     private static void requireSession(SessionCredential session, String expectedSessionId) {
@@ -911,7 +975,11 @@ public final class BackendAccount {
             null, session);
     }
 
-    /** Forget the session on this device. The account itself is untouched. */
+    /**
+     * Forget the session on this device. The account itself is untouched.
+     *
+     * <p>云剪贴板的本机密钥串随会话一起删除，下一个登录的账号不会拿到上一个账号的剪贴板密钥。先清会话、出了会话锁再删密钥串：正在写密钥串的一方是在密钥串的锁里核对会话的（{@link #runClipboard}），会话一清它就不会再写，而这里删除时不拿会话锁，两把锁不会互相等。
+     */
     public void signOut() {
         if (ownerProcess != null) return;
         try {
@@ -919,6 +987,7 @@ public final class BackendAccount {
                 sessionGeneration++;
                 sessions.clear();
             }
+            if (clipboardKeystore != null) clipboardKeystore.delete();
         } catch (Exception | LinkageError error) {
             // 清除失败时会话仍可能有效，必须把失败交给界面，不能按退出成功处理。
             throw new IllegalStateException("account sign-out unavailable");
@@ -981,14 +1050,18 @@ public final class BackendAccount {
                 new JSONObject().put("refresh_token", refreshToken), null);
         } catch (RequestException error) {
             if (error.status == 401 || error.status == 403) {
+                boolean revoked = false;
                 synchronized (SESSION_LOCK) {
                     String current = sessions.load();
                     if (sessionGeneration == generation && current != null
                             && sessionId.equals(new JSONObject(current).optString("session_id", ""))) {
                         sessionGeneration++;
                         sessions.clear();
+                        revoked = true;
                     }
                 }
+                // 服务端吊销了会话，等同于退出登录：云剪贴板的密钥串一起删掉，理由与锁的顺序同 signOut。
+                if (revoked && clipboardKeystore != null) clipboardKeystore.delete();
                 return "";
             }
             throw error;
@@ -1031,6 +1104,29 @@ public final class BackendAccount {
                 if (response.length == 0) return new JSONObject();
                 return new JSONObject(TextPolicy.utf8(response));
             }
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    /** 云剪贴板驱动的一次往返：非 2xx 也读出错误正文交回，正文上限是驱动能接收的 {@link CloudClipboardE2e#MAX_RESPONSE_BYTES}。 */
+    private static CloudClipboardE2e.Reply httpExchange(String method, String path, String body, String token)
+            throws Exception {
+        byte[] payload = body == null ? null : TextPolicy.utf8Bytes(body);
+        HttpsURLConnection connection = null;
+        try {
+            connection = (HttpsURLConnection) new URL(CloudApi.ORIGIN + path).openConnection();
+            AccountHttpRequest.writeJson(connection, method, token, CloudApi.USER_AGENT, payload);
+            int status = connection.getResponseCode();
+            InputStream stream = status / 100 == 2 ? connection.getInputStream() : connection.getErrorStream();
+            byte[] response = new byte[0];
+            if (stream != null) {
+                try (InputStream input = stream) {
+                    response = HttpBodyPolicy.readBounded(input, CloudClipboardE2e.MAX_RESPONSE_BYTES);
+                }
+                if (response == null) throw new IllegalStateException("response too large");
+            }
+            return new CloudClipboardE2e.Reply(status, TextPolicy.utf8(response));
         } finally {
             if (connection != null) connection.disconnect();
         }

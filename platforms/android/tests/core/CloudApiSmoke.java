@@ -142,8 +142,8 @@ public final class CloudApiSmoke {
         }, clipboardTokens, rejected -> "");
         CloudApi boundClipboard = clipboardTransport.forAccountSession(
             clipboardTransport.currentAccountSessionId());
-        CloudClipboardApi clipboardPage = new CloudClipboardApi(boundClipboard);
-        boundClipboard.send("GET", CloudClipboardApi.PATH + "?q=", null, CloudApi.Auth.ACCOUNT);
+        CloudClipboardApi clipboardPage = new CloudClipboardApi(boundClipboard, null);
+        boundClipboard.send("GET", CloudClipboardApi.PATH, null, CloudApi.Auth.ACCOUNT);
         clipboardLogin.set("synthetic-login-b");
         try {
             clipboardPage.requireCurrentSession();
@@ -157,6 +157,34 @@ public final class CloudApiSmoke {
         } catch (CloudApi.Failure failure) {
             check("session_changed".equals(failure.code), "old clipboard page rejects a new login");
             check(clipboardDeletes.get() == 0, "the new account receives no old-page delete");
+        }
+
+        // 端到端驱动要自己读错误响应：exchange 不论状态码都交回，401 仍先换令牌重试一次，连不上仍抛出。
+        byte[] conflict = "{\"error\":{\"code\":\"clipboard_key_conflict\"}}".getBytes(StandardCharsets.UTF_8);
+        CloudApi.Exchange refused = new CloudApi((method, path, headers, body) ->
+            new CloudApi.Exchange(409, "application/json", null, conflict), rejected -> stale, rejected -> "")
+            .exchange("POST", CloudClipboardApi.PATH, null, CloudApi.Auth.ACCOUNT);
+        check(refused.status() == 409 && java.util.Arrays.equals(refused.body(), conflict),
+            "exchange hands a non-2xx status and its body back instead of throwing");
+        List<String> exchangeTokens = new ArrayList<>();
+        CloudApi.Exchange retried = new CloudApi((method, path, headers, body) -> {
+            exchangeTokens.add(headers.get("Authorization"));
+            boolean ok = ("Bearer " + fresh).equals(headers.get("Authorization"));
+            return new CloudApi.Exchange(ok ? 200 : 401, null, null, new byte[0]);
+        }, rejected -> rejected == null ? stale : fresh, rejected -> "")
+            .exchange("GET", CloudClipboardApi.PATH, null, CloudApi.Auth.ACCOUNT);
+        check(retried.status() == 200 && exchangeTokens.size() == 2, "exchange still retries a rejected token once");
+        CloudApi.Exchange stillDenied = new CloudApi((method, path, headers, body) ->
+            new CloudApi.Exchange(401, null, null, new byte[0]), rejected -> stale, rejected -> "")
+            .exchange("GET", CloudClipboardApi.PATH, null, CloudApi.Auth.ACCOUNT);
+        check(stillDenied.status() == 401, "a repeated 401 is handed back to the driver");
+        try {
+            new CloudApi((method, path, headers, body) -> {
+                throw new java.io.IOException("offline");
+            }, rejected -> stale, rejected -> "").exchange("GET", CloudClipboardApi.PATH, null, CloudApi.Auth.ACCOUNT);
+            throw new AssertionError("an offline exchange must fail");
+        } catch (CloudApi.Failure failure) {
+            check(failure.network(), "an offline exchange is a transport failure, not a status for the driver");
         }
 
         CloudApi denied = new CloudApi((method, path, headers, body) ->
