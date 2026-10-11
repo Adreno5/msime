@@ -2256,6 +2256,38 @@ fn wordbooks_are_bounded_and_load_as_books() {
 }
 
 #[test]
+fn wordbook_parser_preserves_column_boundaries() {
+    let entries = wordbook_pack::parse_words(
+        "two\t 释义 \nthree\t/θriː/\t三\nempty\t\t空音标\n".as_bytes(),
+        "words.tsv",
+    )
+    .unwrap();
+    assert_eq!(entries[0].word, "two");
+    assert_eq!(entries[0].phonetic, "");
+    assert_eq!(entries[0].meaning, " 释义 ");
+    assert_eq!(entries[1].phonetic, "/θriː/");
+    assert_eq!(entries[1].meaning, "三");
+    assert_eq!(entries[2].phonetic, "");
+    assert_eq!(entries[2].meaning, "空音标");
+
+    for line in [
+        "single",
+        "word\tphonetic\tmeaning\textra",
+        "word\t\tmeaning\t",
+    ] {
+        let error = wordbook_pack::parse_words(line.as_bytes(), "words.tsv").unwrap_err();
+        assert_eq!(
+            error,
+            "words.tsv 第 1 行必须是「单词\\t释义」或「单词\\t音标\\t释义」"
+        );
+    }
+    for line in ["word\t", "word\tphonetic\t", "\tmeaning"] {
+        let error = wordbook_pack::parse_words(line.as_bytes(), "words.tsv").unwrap_err();
+        assert!(error.contains("单词或释义为空"));
+    }
+}
+
+#[test]
 fn wordbook_parser_reserves_its_bounded_entry_capacity() {
     let entries = wordbook_pack::parse_words(b"synthetic\tmeaning\n", "words.tsv").unwrap();
     assert_eq!(entries.len(), 1);

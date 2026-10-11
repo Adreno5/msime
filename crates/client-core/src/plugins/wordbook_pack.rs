@@ -107,10 +107,15 @@ fn parse_word_entries(bytes: &[u8], name: &str) -> Result<Vec<WordbookEntry>, St
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let columns: Vec<&str> = line.split('\t').collect();
-        let (word, phonetic, meaning) = match columns.as_slice() {
-            [word, meaning] => (*word, "", *meaning),
-            [word, phonetic, meaning] => (*word, *phonetic, *meaning),
+        let mut columns = line.split('\t');
+        let (word, phonetic, meaning) = match (
+            columns.next(),
+            columns.next(),
+            columns.next(),
+            columns.next(),
+        ) {
+            (Some(word), Some(meaning), None, None) => (word, "", meaning),
+            (Some(word), Some(phonetic), Some(meaning), None) => (word, phonetic, meaning),
             _ => {
                 return Err(format!(
                     "{name} 第 {number} 行必须是「单词\\t释义」或「单词\\t音标\\t释义」"
