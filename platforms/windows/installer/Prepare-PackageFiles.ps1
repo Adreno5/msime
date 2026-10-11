@@ -151,7 +151,9 @@ $helpcodeSource = Join-Path $RepoRoot $HelpCodeDirectory
 # 运行时走 MAKEINTRESOURCE。这里曾经有它们的一份逐字节副本，随包装到用户磁盘、且因为
 # uninsneveruninstall 连卸载都不清除，而没有任何代码从磁盘读图标。
 $appIcon = Join-Path $iconSource 'msime.ico'
-$thirdPartyNotices = Join-Path $RepoRoot (Join-Path $NoticesDirectory 'THIRD_PARTY_NOTICES.txt')
+# Invoke-LocalInstall.ps1 传来的是已经解析好的绝对路径；不判断就接在 RepoRoot 后面，会拼出 E:\repo\D:\... 这样不存在的路径。
+$noticeRoot = if ([IO.Path]::IsPathRooted($NoticesDirectory)) { $NoticesDirectory } else { Join-Path $RepoRoot $NoticesDirectory }
+$thirdPartyNotices = Join-Path $noticeRoot 'THIRD_PARTY_NOTICES.txt'
 $collectedNotices = Join-Path $RepoRoot 'target/windows-notices/THIRD_PARTY_NOTICES.txt'
 if (-not $PSBoundParameters.ContainsKey('NoticesDirectory') -and
     (Test-Path -LiteralPath $collectedNotices -PathType Leaf)) {

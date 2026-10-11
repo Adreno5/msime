@@ -278,7 +278,8 @@ try {
     if (-not $rejected) { throw 'Missing WinUI settings shell was accepted' }
     if ([IO.File]::ReadAllText($database) -ne 'preserved user data') { throw 'Missing shell damaged previous staging' }
     [IO.File]::WriteAllText($nativeDesktop, 'fixture')
-    & (Join-Path $installer 'Prepare-PackageFiles.ps1') -RepoRoot $fixture -TsfDirectory windows -ServerDirectory server -NoticesDirectory . -Light
+    # 声明目录给绝对路径时照用，不再接到 RepoRoot 后面（Invoke-LocalInstall.ps1 传的就是绝对路径）。
+    & (Join-Path $installer 'Prepare-PackageFiles.ps1') -RepoRoot $fixture -TsfDirectory windows -ServerDirectory server -NoticesDirectory ([IO.Path]::GetFullPath($fixture)) -Light
     if ([IO.File]::ReadAllText($database) -ne 'preserved user data') { throw 'Light package replaced dictionary data' }
     if (-not (Test-Path (Join-Path $installer 'server_exe/msime-client-settings.exe'))) { throw 'Light package lost WinUI settings shell' }
     foreach ($arch in @('32', '64')) {

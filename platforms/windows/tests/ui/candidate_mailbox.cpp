@@ -372,8 +372,27 @@ void candidate_mailbox_tests() {
     require(cleared->candidates[0].pronunciation.empty() &&
             cleared->candidates[1].breakdown.empty() && cleared->render_serial > serial);
   }
+  // 组字锚点只认 Show/Move 报来的坐标：按键包的 x/y 是线上结构的默认值 (100,100)，不能拿来摆输入模式提示。锚点在同一租约里跨按键沿用，新租约从没有开始。
+  require(!mailbox.snapshot(gate)->caret_anchor_known);
+  require(publish(relaunched, 214));
+  require(!mailbox.snapshot(gate)->caret_anchor_known);
+  require(visual_event(relaunched, FanyImePipeEventType::MoveCandidateWnd));
+  {
+    const auto moved = mailbox.snapshot(gate);
+    require(moved->caret_anchor_known && moved->caret_anchor_x == -200 &&
+            moved->caret_anchor_y == 300);
+  }
+  require(publish(relaunched, 215));
+  {
+    const auto typed = mailbox.snapshot(gate);
+    require(typed->x == 100 && typed->y == 100 && typed->caret_anchor_known &&
+            typed->caret_anchor_x == -200 && typed->caret_anchor_y == 300);
+  }
+  const auto anchored_again = activate(replacement, 6);
+  require(publish(anchored_again, 216));
+  require(!mailbox.snapshot(gate)->caret_anchor_known);
   mailbox.stop();
-  require(publish(relaunched, 211));
+  require(publish(anchored_again, 217));
   require(
       !mailbox.snapshot(gate)); // A late delivery cannot reopen a stopped UI.
 }

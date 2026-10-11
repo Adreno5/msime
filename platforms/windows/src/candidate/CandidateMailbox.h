@@ -40,10 +40,17 @@ public:
       attach_candidate_readings(value.candidates, readings_);
       value.render_serial = ++render_serial_;
       // 同一租约里游戏会话标记只置位不清除：某个按键包漏了 GameHost 位时，不能把已经认出的游戏会话打回普通宿主。
-      if (latest_ && latest_->game_host && latest_->lease.epoch == lease.epoch &&
-          latest_->lease.token == lease.token &&
-          same_ticket(latest_->lease.transport, lease.transport))
+      const bool same_lease = latest_ && latest_->lease.epoch == lease.epoch &&
+                              latest_->lease.token == lease.token &&
+                              same_ticket(latest_->lease.transport, lease.transport);
+      if (same_lease && latest_->game_host)
         value.game_host = true;
+      // 按键包不带坐标，沿用同一租约里 Show/Move 报过的锚点。
+      if (same_lease && latest_->caret_anchor_known) {
+        value.caret_anchor_known = true;
+        value.caret_anchor_x = latest_->caret_anchor_x;
+        value.caret_anchor_y = latest_->caret_anchor_y;
+      }
       latest_ = std::move(value);
       suppressed_ = false;
       pending_hide_.reset();
@@ -210,6 +217,11 @@ public:
         latest_->game_host = true;
       latest_->x = packet.point[0];
       latest_->y = packet.point[1];
+      if (packet.point[1] != invalid_candidate_anchor_y) {
+        latest_->caret_anchor_known = true;
+        latest_->caret_anchor_x = packet.point[0];
+        latest_->caret_anchor_y = packet.point[1];
+      }
       break;
     }
   }
