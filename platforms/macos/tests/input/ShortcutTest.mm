@@ -301,11 +301,13 @@ static void CheckMenu(NSMenu *menu, id controller) {
     self.lastCommand = command;
     [self recordCall:[NSString stringWithFormat:@"command:%u", command]];
     if (command == MSIME_COMMIT_RAW) ++self.rawCommitCalls;
-    if (self.failFinish && command == MSIME_FINISH_COMPOSITION) return nil;
+    // 命令 20 对会话同 MSIME_FINISH_COMPOSITION，只在生命周期里按失焦上屏处理。
+    const BOOL finish = command == MSIME_FINISH_COMPOSITION || command == MSIME_FINISH_ON_FOCUS_LOSS;
+    if (self.failFinish && finish) return nil;
     // 命令 19 对会话同 MSIME_CANCEL，只在生命周期里把结束原因记成 HostCommit。
     const BOOL cancel = command == MSIME_CANCEL || command == MSIME_CANCEL_AFTER_HOST_COMMIT;
     if (self.failCancel && cancel) return nil;
-    if (self.finishTransition && command == MSIME_FINISH_COMPOSITION) return self.finishTransition;
+    if (self.finishTransition && finish) return self.finishTransition;
     if (self.cancelTransition && cancel) return self.cancelTransition;
     if (self.rawTransition && command == MSIME_COMMIT_RAW) return self.rawTransition;
     if (self.nextTransition) return self.nextTransition;
@@ -3550,6 +3552,19 @@ static void TestSoundsFollowKeysCommitsAndActivation() {
     assert(nextSession.activeStates.count == 1);
     [next deactivateServer:client];
     assert(([nextSession.activeStates isEqual:@[@YES, @NO]]));
+    // 没有会话的控制器（英文模式下激活）认领音乐：核心里的所有者仍是上一个控制器的会话，宿主替它报告停用；它迟到的停用因所有权已转走不再报告，音乐也不会一直放着。
+    [next setValue:client forKey:@"activeClient"];
+    [next claimBackgroundMusic];
+    ModeController *sessionless = [ModeController alloc];
+    [sessionless setValue:appearance forKey:@"appearance"];
+    [sessionless claimBackgroundMusic];
+    assert(([nextSession.activeStates isEqual:@[@YES, @NO, @YES, @NO]]));
+    [next deactivateServer:client];
+    assert(nextSession.activeStates.count == 4);
+    // 再认领一次（偏好更新）不会去碰别的会话。
+    [sessionless claimBackgroundMusic];
+    assert(nextSession.activeStates.count == 4);
+    [sessionless releaseBackgroundMusic];
     method_setImplementation(base, original);
 
     // 旧的声音调用一次都没有。
@@ -3558,6 +3573,77 @@ static void TestSoundsFollowKeysCommitsAndActivation() {
 
     MSIMERemoveTestPreferenceSuite(defaults, suite);
     [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+}
+
+// IMK 在焦点移走或用户点进文档时调 commitComposition:，这是 macOS 失焦上屏最常走的一条路：用 MSIME_FINISH_ON_FOCUS_LOSS 结束组字，核心按失焦上屏处理，不出提交音也不画；回复里 feedback 为 0，控制器也就不画上屏特效。不是当前客户端的调用什么都不做。
+static void TestCommitCompositionFinishesAsAFocusLoss() {
+    NSString *suite = [@"msime.commit-composition." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *appearance = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    appearance.fullWidthInput = NO;
+    EffectRecordingController *controller = [EffectRecordingController alloc];
+    ShortcutSession *session = [ShortcutSession new];
+    ShortcutClient *client = [ShortcutClient new];
+    client.insertions = [NSMutableArray array];
+    [controller setValue:appearance forKey:@"appearance"];
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:client forKey:@"activeClient"];
+    NSDictionary *idle = @{ @"focused": @YES, @"editing_text": @"", @"candidates": @[], @"scheme": @0 };
+    [controller setValue:@{ @"focused": @YES, @"editing_text": @"nihao", @"candidates": @[], @"scheme": @0 } forKey:@"view"];
+    session.finishTransition = @{ @"handled": @YES, @"commit": @"你好", @"view": idle, @"feedback": @{ @"typing_effect": @0 } };
+    [controller commitComposition:[ShortcutClient new]];
+    assert(session.commandCalls == 0);
+    [controller commitComposition:client];
+    assert(session.commandCalls == 1 && session.lastCommand == MSIME_FINISH_ON_FOCUS_LOSS);
+    assert([client.committed isEqual:@"你好"]);
+    // 核心对失焦上屏答 0，控制器原样交去画，不会画出上屏特效。
+    for (NSArray *effect in controller.effects) assert([effect[0] isEqual:@0]);
+    // 它不是一次按下，不开新的一轮。
+    assert(!session.keys.count);
+    MSIMERemoveTestPreferenceSuite(defaults, suite);
+}
+
+// 会话在 handleKeyEvent: 里才建好的控制器：词库维护结束后的第一个键就是这样，按下经过 handleEvent: 时还没有会话。这里用假会话代替真的新建，并照 prepareSession 的样子把上次报告的字段属性清零。
+@interface SessionOpeningController : EffectRecordingController
+@property(nonatomic, strong) ShortcutSession *opening;
+@end
+@implementation SessionOpeningController
+- (void)prepareSession {
+    if (![self valueForKey:@"session"] && self.opening) {
+        [self setValue:self.opening forKey:@"session"];
+        [self setValue:@0 forKey:@"fieldTraits"];
+        self.opening = nil;
+        return;
+    }
+    [super prepareSession];
+}
+@end
+
+// 打开会话的那个键也要先于为它做的派发报告给生命周期核心：handleEvent: 那时没有会话可报告，会话建好之后补报一次。之后的键照常只报告一次。
+static void TestTheKeyThatOpensTheSessionIsReportedBeforeItsDispatch() {
+    NSString *suite = [@"msime.session-opening-key." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *appearance = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    appearance.fullWidthInput = NO;
+    SessionOpeningController *controller = [SessionOpeningController alloc];
+    ShortcutSession *session = [ShortcutSession new];
+    ShortcutClient *client = [ShortcutClient new];
+    [controller setValue:appearance forKey:@"appearance"];
+    [controller setValue:client forKey:@"activeClient"];
+    NSDictionary *idle = @{ @"focused": @YES, @"editing_text": @"", @"candidates": @[], @"scheme": @0 };
+    [controller setValue:idle forKey:@"view"];
+    session.nextTransition = @{ @"handled": @YES, @"commit": NSNull.null, @"view": idle };
+    controller.opening = session;
+    NSEvent *(^letter)(unsigned short, NSString *) = ^NSEvent *(unsigned short code, NSString *characters) {
+        return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0
+                                 context:nil characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:code];
+    };
+    [controller handleEvent:letter(0, @"a") client:client];
+    assert([controller valueForKey:@"session"] == session);
+    assert(([session.calls isEqual:@[[NSString stringWithFormat:@"traits:%x", MSIME_TRAIT_KNOWN], @"key:0", @"ascii"]]));
+    [controller handleEvent:letter(11, @"b") client:client];
+    assert(([session.keys isEqual:@[@0, @0]]) && session.asciiCalls == 2);
+    MSIMERemoveTestPreferenceSuite(defaults, suite);
 }
 
 // Opens a real session from its own options and records, for every music claim, whether a session was there to hear it.
@@ -3608,11 +3694,10 @@ static void TestMusicIsClaimedOnceTheSessionOpens() {
     [owner prepareSession];
     assert([owner valueForKey:@"session"]);
     assert(([owner.claims isEqual:@[@NO, @YES]]));
-    // 新会话一建好就选择加入生命周期核心，由它出声、出特效、仲裁音乐；字段属性也已报告（这个控制器处于英文模式）。
+    // 新会话一建好就选择加入生命周期核心，由它出声、出特效、仲裁音乐；字段属性也已报告（这个控制器处于英文模式）。选择加入后旧的声音调用变成空操作，由 session-smoke 在声音开着的会话上确认，这里的偏好全关，那样的断言分不出来。
     MSIMEClientSession *opened = [owner valueForKey:@"session"];
     assert(opened.lifecycleFlags == MSIME_LIFECYCLE_FEEDBACK);
     assert([[owner valueForKey:@"fieldTraits"] unsignedIntValue] == (MSIME_TRAIT_KNOWN | MSIME_TRAIT_HOST_ENGLISH));
-    assert(![opened keySound:0] && ![opened commitSound] && ![opened setMusicActive:YES]);
     // Preparing a session that is already open claims nothing more.
     [owner prepareSession];
     assert(owner.claims.count == 2);
@@ -4389,10 +4474,15 @@ static void TestModifierTaps() {
     session.cancelTransition = session.finishTransition;
     [controller setValue:@{@"editing_text":@"msime", @"caret_position":@5, @"candidates":@[]} forKey:@"view"];
     NSUInteger rawBefore = session.rawCommitCalls;
+    const NSUInteger tapKeys = session.keys.count;
     assert(![controller handleEvent:TapEvent(NSEventTypeFlagsChanged, 56, NSEventModifierFlagShift, 3.0) client:client]);
     assert([controller handleEvent:TapEvent(NSEventTypeFlagsChanged, 56, 0, 3.1) client:client]);
     assert(session.rawCommitCalls == rawBefore + 1);
     assert([client.committed isEqual:@"msime"] && prefs.englishMode);
+    // 单按修饰键是一次物理按下：原样上屏之前先按指针报告（不出按键音），这次派发才属于它自己的一轮。
+    assert(session.keys.count == tapKeys + 1 && [session.keys.lastObject isEqual:@(MSIME_KEY_POINTER)]);
+    const NSUInteger tapKey = [session.calls indexOfObject:[NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER]];
+    assert((tapKey != NSNotFound && [session.calls[tapKey + 1] isEqual:[NSString stringWithFormat:@"command:%u", MSIME_COMMIT_RAW]]));
 
     // Nothing composing, nothing to send out: the tap is only the mode switch.
     prefs.englishMode = NO;
@@ -4401,6 +4491,8 @@ static void TestModifierTaps() {
     assert(![controller handleEvent:TapEvent(NSEventTypeFlagsChanged, 56, NSEventModifierFlagShift, 4.0) client:client]);
     assert([controller handleEvent:TapEvent(NSEventTypeFlagsChanged, 56, 0, 4.1) client:client]);
     assert(session.rawCommitCalls == rawBefore && prefs.englishMode);
+    // 没有派发就不开一轮。
+    assert(session.keys.count == tapKeys + 1);
     session.rawTransition = nil;
     session.finishTransition = previousFinish;
     session.cancelTransition = previousCancel;
@@ -9293,6 +9385,8 @@ int main(int argc, char **argv) {
         // button must still be rejected, just like detached candidate buttons.
         MSIMECandidateButton *oldPageButton = next;
         [controller renderCandidates];
+        // 被拒绝的翻页点击不派发，也不报告 MSIME_KEY_POINTER：报告和派发的条件必须一致。
+        NSUInteger pageKeys = session.keys.count;
         session.lastCommand = UINT32_MAX;
         [controller changeCandidatePage:oldPageButton];
         assert(session.lastCommand == UINT32_MAX && oldPageButton.superview != layoutPanel.contentView);
@@ -9318,20 +9412,24 @@ int main(int argc, char **argv) {
             [controller changeCandidatePage:next];
             assert(session.lastCommand == UINT32_MAX);
         }
+        assert(session.keys.count == pageKeys);
         next.candidateID = pageIdentity;
         [controller setValue:[pageView copy] forKey:@"view"];
         pageView[@"page"] = @1;
         session.nextTransition = @{@"handled": @YES, @"commit": NSNull.null, @"view": [pageView copy]};
         client.committed = nil;
+        [controller setValue:@0 forKey:@"fieldTraits"];
         [next performClick:nil];
         assert(session.lastCommand == MSIME_NEXT_PAGE && client.committed == nil);
-        // 指针翻页同样先报告 MSIME_KEY_POINTER。
-        assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 2, 2)] isEqual:@[[NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], [NSString stringWithFormat:@"command:%u", MSIME_NEXT_PAGE]]]));
+        // 指针翻页同样先报告变了的字段属性和 MSIME_KEY_POINTER。
+        NSString *pageTraits = [NSString stringWithFormat:@"traits:%x", [[controller valueForKey:@"fieldTraits"] unsignedIntValue]];
+        assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 3, 3)] isEqual:@[pageTraits, [NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], [NSString stringWithFormat:@"command:%u", MSIME_NEXT_PAGE]]]));
         assert([client.marked isEqual:@"ceshi"]);
+        pageKeys = session.keys.count;
         // A previous page's retained button must not advance the current page.
         session.lastCommand = UINT32_MAX;
         [controller changeCandidatePage:next];
-        assert(session.lastCommand == UINT32_MAX);
+        assert(session.lastCommand == UINT32_MAX && session.keys.count == pageKeys);
         previous = (id)PageButton(layoutPanel.contentView, -1);
         next = (id)PageButton(layoutPanel.contentView, -2);
         assert(previous.enabled && next.enabled);
@@ -9339,6 +9437,29 @@ int main(int argc, char **argv) {
         session.nextTransition = @{@"handled": @YES, @"commit": NSNull.null, @"view": [pageView copy]};
         [previous performClick:nil];
         assert(session.lastCommand == MSIME_PREVIOUS_PAGE);
+        // 面板的 pageHandler（滚轮和触控板翻页）同样先报告 MSIME_KEY_POINTER 再派发。它只挂在控制器自己建的面板上，所以让控制器建一次面板把它取出来，再换回测试面板。
+        [controller setValue:[pageView copy] forKey:@"view"];
+        [controller setValue:nil forKey:@"panel"];
+        [controller renderCandidates];
+        MSIMECandidatePanel *ownPanel = [controller valueForKey:@"panel"];
+        void (^pageHandler)(BOOL) = ownPanel.pageHandler;
+        [ownPanel orderOut:nil];
+        [controller setValue:layoutPanel forKey:@"panel"];
+        assert(pageHandler && ownPanel != layoutPanel);
+        NSMutableDictionary *secondPage = [pageView mutableCopy];
+        secondPage[@"page"] = @1;
+        session.nextTransition = @{@"handled": @YES, @"commit": NSNull.null, @"view": [secondPage copy]};
+        session.lastCommand = UINT32_MAX;
+        pageHandler(NO);
+        assert(session.lastCommand == MSIME_NEXT_PAGE);
+        assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 2, 2)] isEqual:@[[NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], [NSString stringWithFormat:@"command:%u", MSIME_NEXT_PAGE]]]));
+        // 面板不可见时它什么都不做，也不报告。
+        pageKeys = session.keys.count;
+        layoutPanel.requestedVisible = NO;
+        session.lastCommand = UINT32_MAX;
+        pageHandler(NO);
+        assert(session.lastCommand == UINT32_MAX && session.keys.count == pageKeys);
+        layoutPanel.requestedVisible = YES;
         for (NSString *changed in @[@"session", @"generation", @"focused"]) {
             [controller setValue:[pageView copy] forKey:@"view"];
             [controller renderCandidates];
@@ -9362,6 +9483,7 @@ int main(int argc, char **argv) {
         [layoutPanel orderOut:nil];
         [controller changeCandidatePage:previous];
         assert(session.lastCommand == UINT32_MAX);
+        assert(session.keys.count == pageKeys);
         pageView[@"page"] = @0;
         pageView[@"page_count"] = @1;
         // The candidate preedit uses Engine display text, independent of candidate font.
@@ -9675,10 +9797,13 @@ int main(int argc, char **argv) {
         }
         NSDictionary *validClickID = clickCandidate.candidateID;
         NSUInteger selectedCalls = session.selectCalls;
+        // 让上次报告的字段属性作废：指针点选和按键一样，先比较属性、变了先报告。
+        [controller setValue:@0 forKey:@"fieldTraits"];
         [controller selectCandidate:clickCandidate];
         assert(session.selectCalls == selectedCalls + 1 && session.selectedGeneration == 2 && session.selectedIndex == 1);
-        // 指针点选先报告一次 MSIME_KEY_POINTER 开新的一轮，再派发；被拒绝的点选什么都不报告。
-        assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 2, 2)] isEqual:@[[NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], @"select"]]));
+        // 指针点选先报告属性和一次 MSIME_KEY_POINTER 开新的一轮，再派发；被拒绝的点选什么都不报告。
+        NSString *clickTraits = [NSString stringWithFormat:@"traits:%x", [[controller valueForKey:@"fieldTraits"] unsignedIntValue]];
+        assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 3, 3)] isEqual:@[clickTraits, [NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], @"select"]]));
         const NSUInteger pointerKeys = session.keys.count;
         for (NSString *field in @[@"session", @"generation", @"index"]) {
             for (id invalid in @[@(-1), @YES, @1.5, @"1", NSNull.null, @"missing"]) {
@@ -10458,6 +10583,8 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestStaleClientDeactivation(); }
         @autoreleasepool { TestStaleDeactivationLeavesTheCurrentPairOpen(); }
         @autoreleasepool { TestSoundsFollowKeysCommitsAndActivation(); }
+        @autoreleasepool { TestTheKeyThatOpensTheSessionIsReportedBeforeItsDispatch(); }
+        @autoreleasepool { TestCommitCompositionFinishesAsAFocusLoss(); }
         @autoreleasepool { TestMusicIsClaimedOnceTheSessionOpens(); }
         @autoreleasepool { TestPreferenceClientGeneration(); }
         @autoreleasepool { TestPreferenceReadDoesNotDeallocControllerOffMain(); }

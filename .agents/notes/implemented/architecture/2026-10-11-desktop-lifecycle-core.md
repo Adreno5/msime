@@ -36,16 +36,16 @@ Status: implemented
 
 - **选择加入**：`prepareSession` 新建会话后立刻 `setLifecycle:FEEDBACK`，再报告字段属性，然后才 `setFocused:YES`，核心从第一次聚焦起就有事件。会话在英文模式下激活时不建，没有会话就没有事件，与以前一样。
 - **字段属性**：`syncFieldTraits` 把 `IsSecureEventInputEnabled()` 映射成 `SECURE`、英文模式映射成 `HOST_ENGLISH`，两项都读得到，所以带 `KNOWN`。每个物理按下之前比较一次，变了才调 `msime_client_set_field_traits`；激活时也报告一次。安全输入的开和关不再由宿主去开关音乐，核心看到 `SECURE` 就关掉声音、特效和音乐。
-- **按键**：`handleEvent:client:` 对每个物理按下（`!event.isARepeat`、不是本进程自己发的事件）先报属性，再调 `msime_client_key`，然后才进入派发。Command/Control 快捷键和英文模式不调 `msime_client_key`（照旧不出声），也就不开新的一轮；安全输入时照样调用，核心什么都不出。返回值就是这个键的打字特效，宿主原样排队去画，不再调 `msime_client_key_sound` 和 `msime_client_typing_effect`（0-3）。
-- **上屏**：上屏音由核心在派发里出；上屏特效取自派发回复的 `"feedback":{"typing_effect":N}`，`apply:` 只在回复带着它、并且确实上屏时画。失焦（`setFocused:NO`）、语音转写的回复不带 `feedback`，所以失焦上屏和听写既不出声也不画。宿主不再调 `msime_client_commit_sound` 和 `msime_client_typing_effect(4)`。事件 5 macOS 本来就不调用，照旧留给宿主。
-- **音乐**：`claimBackgroundMusic` / `releaseBackgroundMusic` 改调 `msime_client_set_active(true/false)`，由核心记所有者会话。宿主保留 `MSIMEMusicOwner` 这个弱引用，只用来决定哪个控制器在偏好更新、会话新建和词库快照替换会话之后重新报告激活：核心没有查询所有者的接口，而按 IMK 的顺序，上一个客户端的停用可能晚于下一个的激活，重新报告必须只由最后激活的那个发出。
+- **按键**：`handleEvent:client:` 对每个物理按下（`!event.isARepeat`、不是本进程自己发的事件）先报属性，再调 `msime_client_key`，然后才进入派发。Command/Control 快捷键和英文模式不调 `msime_client_key`（照旧不出声），也就不开新的一轮，这是有意偏离契约的两处：它们以前就不出声，Linux 和 Windows 也一样；安全输入时照样调用，核心什么都不出。返回值就是这个键的打字特效，宿主原样排队去画，不再调 `msime_client_key_sound` 和 `msime_client_typing_effect`（0-3）。按下到达时还没有会话（词库维护刚结束，或快照恢复没留下会话）的那个键，在 `handleKeyEvent:` 里 `prepareSession` 建好会话后补报，仍先于为它做的派发。
+- **上屏**：上屏音由核心在派发里出；上屏特效取自派发回复的 `"feedback":{"typing_effect":N}`，`apply:` 只在回复带着它、并且确实上屏时画。失焦（`setFocused:NO`）、语音转写的回复不带 `feedback`，所以失焦上屏和听写既不出声也不画。IMK 的 `commitComposition:`、词库维护关会话前（`releaseDictionarySessionIfQuiesced`）和「准备词库」关会话前（`prepareDictionary:`）这三处由宿主替失焦结束组字，改发命令 20：核心按失焦上屏处理，不出声，`feedback` 为 0。其余宿主发起的 `MSIME_FINISH_COMPOSITION`（切方案、开字符面板、开始语音、悬浮工具栏切标点）是用户点了菜单或按钮，照旧按普通上屏出声，和接入前一样。宿主不再调 `msime_client_commit_sound` 和 `msime_client_typing_effect(4)`。事件 5 macOS 本来就不调用，照旧留给宿主。
+- **音乐**：`claimBackgroundMusic` / `releaseBackgroundMusic` 改调 `msime_client_set_active(true/false)`，由核心记所有者会话。宿主保留 `MSIMEMusicOwner` 这个弱引用，只用来决定哪个控制器在偏好更新、会话新建和词库快照替换会话之后重新报告激活：核心没有查询所有者的接口，而按 IMK 的顺序，上一个客户端的停用可能晚于下一个的激活，重新报告必须只由最后激活的那个发出。英文模式下激活的控制器还没有会话，它认领时核心里的所有者仍是上一个控制器的会话，而宿主这边所有权已经转走，上一个控制器迟到的停用不会再报告；所以没有会话的控制器认领时替上一个控制器的会话报告一次停用，否则音乐会在离开输入法之后一直放着（接入前同样如此，宿主那时直接调 `msime_client_music_set_active`）。
 - **会话重建**：词库快照替换会话时，包装层在 `restoreLiveModes:` 里把选择加入的位和最后报告的字段属性恢复到新句柄上；激活不由包装层恢复，旧会话销毁时核心已关掉音乐，宿主在 `snapshotSessionReplaced:` 里由音乐跟随的控制器重新报告。
-- **指针**：点选候选（`selectCandidate:`）、候选窗的翻页按钮（`changeCandidatePage:`）和面板的 `pageHandler` 先调 `msime_client_key(MSIME_KEY_POINTER)`，不出声不画。
+- **指针**：点选候选（`selectCandidate:`）、候选窗的翻页按钮（`changeCandidatePage:`）和面板的 `pageHandler` 经 `reportPointerToLifecycle` 先比较字段属性、变了先报告，再调 `msime_client_key(MSIME_KEY_POINTER)`，不出声不画。单按 Shift、Control 或 Caps Lock 切换中英文时若有组字，先原样上屏（`MSIME_COMMIT_RAW`）：这是一次物理按下，却走 `flagsChanged`，不经过 `handleEvent:` 的按下报告，所以派发前同样按指针开一轮。`MSIME_KEY_POINTER` 是契约里唯一不出声的键类，修饰键单按以前就没有按键音；原样上屏的提交音照常由核心出。
 - **宿主写入的上屏**：Ctrl+Enter/Option+数字写释义列、释义页选义项，这两处是宿主自己把文字插进文档后丢弃组字，从 `MSIME_CANCEL` 改成 `MSIME_CANCEL_AFTER_HOST_COMMIT`：对会话的作用一样（只取消一次，macOS 本来也只发一次），生命周期里结束原因记 `HostCommit`。
 
 macOS 接入带来的可感知变化：
 
-- 失焦上屏不再出提交音、不再画上屏特效（设计里的第 4 项）。
+- 失焦上屏不再出提交音、不再画上屏特效（设计里的第 4 项），包括 IMK 经 `commitComposition:` 结束的组字。
 - 全屏前台时，连击升档音照样排队。以前宿主给 `msime_client_typing_effect` 带 0x200 位压住它；`msime_client_key` 没有这个位，而 macOS 不报 `FULLSCREEN`（报了的话核心会把按键音、上屏音和音乐也一起静音，是更大的行为变化）。特效在全屏时照旧不画。
 - 词库维护期间宿主关掉会话，核心随所有者会话销毁关掉音乐，等维护结束、下一次建好会话时才由所有者重新报告激活；以前音乐会在没有会话时继续放。
 
@@ -71,6 +71,8 @@ macOS 接入带来的可感知变化：
 - **macOS 不报 `KNOWN`，或者只在确认过字段类型时才报。** 理由是 `IsSecureEventInputEnabled()` 是窗口服务器的全局状态，别的进程开着它也会让这里"看起来"在密码框里，算不上精确的字段属性。不采用：这个误差只会往"更安全"的方向偏（多静音一次），而 `KNOWN` 缺席会让第 3 阶段的脚本在 macOS 上永远不运行；IMK 没有别的途径知道字段类型。
 - **macOS 也报 `FULLSCREEN`，让核心压住全屏时的连击升档音。** 和以前只压升档音的行为最接近。不采用：核心对 `FULLSCREEN` 的约定是声音全部静音、音乐关闭（对齐 Windows 的 `sound_allowed`），在 macOS 上就是全屏看视频时按键音和音乐都没了，比少压一个升档音的变化大得多；何况全屏状态要遍历窗口列表，只能异步读，赶不上"每个键之前"报告。
 - **宿主去掉 `MSIMEMusicOwner`，激活一律交给核心。** 核心已经仲裁所有者，宿主少一份状态。不采用：偏好更新和会话重建之后要有人重新报告激活，而 `msime_client_set_active(true)` 会把所有权抢过来；没有宿主侧的记录，迟到的那个控制器就会把音乐从真正处于激活的客户端那里抢走。
+- **宿主替失焦结束组字时用一个临时的生命周期位，而不是命令 20。** 像 Windows 的 `COMMIT_OBSERVE_ONLY` 那样派发前设上、派发后清掉，不占命令号，也不动 `InputClass`。不采用：位是会话状态，宿主漏清一次，之后所有上屏都静音；包装层还得决定快照替换时恢复不恢复它。命令只作用于这一次派发，和命令 19 是同一个形状。
+- **只改笔记和 README，承认 `commitComposition:` 的上屏照旧出声。** 不动第 1 阶段的核心。不采用：macOS 上失焦上屏绝大多数走这条路，设计第 4 项和验收里的「失焦上屏无声」就等于没做到。
 - **`msime_client_set_lifecycle` 失败时宿主退回旧的 `key_sound`/`commit_sound` 调用。** 多一层保险。不采用：它只在未知会话、错线程、重入或 panic 时失败，这些情况下其余调用一样不工作；两条路径并存还要多测一套组合。
 
 ## Consequences

@@ -3240,6 +3240,8 @@ static __weak MSIMEInputController *MSIMEFocusedController;
 // Commit first, then switch: switching rebuilds the input session, and the other order loses the letters still being composed. setEnglishInputMode: finishes any composition of its own, which is a no-op once this has run.
 - (void)toggleInputModeFromModifierTap {
     if ([_view[@"editing_text"] length] && _session && _activeClient) {
+        // 单按修饰键是一次物理按下，却不经过 handleEvent: 的按下报告（它只看 keyDown）。派发前按指针开一轮：不出按键音，与以前一样；原样上屏的提交音照常由核心出。
+        [self reportPointerToLifecycle];
         NSDictionary *raw = [_session command:MSIME_COMMIT_RAW error:nil];
         if (raw) [self apply:raw];
     }
@@ -4421,7 +4423,8 @@ static __weak MSIMEInputController *MSIMEFocusedController;
 - (void)prepareDictionary:(id)sender {
     (void)sender;
     if (_session && _activeClient) {
-        NSDictionary *finished = [_session command:MSIME_FINISH_COMPOSITION error:nil];
+        // 会话随后就关掉，和词库维护一样按失焦上屏处理，不出声不画。
+        NSDictionary *finished = [_session command:MSIME_FINISH_ON_FOCUS_LOSS error:nil];
         if (!finished) return;
         [self apply:finished];
         [_session setFocused:NO error:nil];
@@ -4487,7 +4490,8 @@ static __weak MSIMEInputController *MSIMEFocusedController;
     [self abandonCapsLockTap];
     _preferenceLoadState.reset();
     if (_activeClient) {
-        NSDictionary *finished = [_session command:MSIME_FINISH_COMPOSITION error:nil];
+        // 会话即将为词库维护关闭，不是用户结束组字：按失焦上屏处理，不出声不画。
+        NSDictionary *finished = [_session command:MSIME_FINISH_ON_FOCUS_LOSS error:nil];
         if (finished) [self apply:finished];
         else MSIMEApplyTransition(@{@"view": @{@"editing_text": @"", @"preedit": @"", @"caret_position": @0}}, (id<MSIMETextClient>)_activeClient);
     }
@@ -5291,7 +5295,13 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
 
 // 成为音乐跟随的控制器：经 msime_client_set_active 告诉生命周期核心这个会话处于激活，核心记它为音乐所有者，并按字段属性决定放不放（安全输入时不放）。偏好更新后也调用一次：没有别的声音时打开的音乐，要等播放器听到「输入法处于激活」才响。
 - (void)claimBackgroundMusic {
+    MSIMEInputController *previous = MSIMEMusicOwner;
     MSIMEMusicOwner = self;
+    if (!_session) {
+        // 英文模式下激活的控制器还没有会话，核心里的所有者仍是上一个控制器的会话。所有权在宿主这边已经转走，上一个控制器迟到的 deactivateServer: 不会再报告停用，所以这里替它报告，免得音乐在离开输入法后一直放着。会话建好后 prepareSession 会再认领一次。
+        if (previous && previous != self) [previous->_session setLifecycleActive:NO];
+        return;
+    }
     // 先报字段属性，核心据此判断安全输入，免得在密码框里先响一下。
     [self syncFieldTraits];
     [_session setLifecycleActive:YES];
@@ -5321,6 +5331,13 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     if (!_session || shortcut || _appearance.englishMode) return;
     const uint32_t packed = [_session lifecycleKey:msime::mac::PhysicalKeySoundClass(event.keyCode)];
     if (!_secureEventInput) [self drawTypingEffect:packed commit:NO];
+}
+
+// 指针点选、翻页和修饰键单按都要先开一轮：和物理按键一样先比较字段属性，再调 msime_client_key(MSIME_KEY_POINTER)。MSIME_KEY_POINTER 不出声也不画，这些操作以前就不出按键音；上屏音和上屏特效照常来自随后的派发。
+- (void)reportPointerToLifecycle {
+    if (!_session) return;
+    [self syncFieldTraits];
+    [_session lifecycleKey:MSIME_KEY_POINTER];
 }
 
 // The foreground application's full-screen state, read on the main queue's next turn rather than on a key: it walks the on-screen window list. The previous answer stands until then.
@@ -5706,7 +5723,11 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     }
     // Korean letters take their case from Shift alone (KoreanKeyLetter) and Vietnamese composes an uppercase letter as written, so Caps Lock does not hand them to the application either.
     if (!MSIMESchemeTrait(_view, msime::mac::scheme::CapsLockBypassExempt) && MSIMECapsLockFreshUppercaseBypass(event, _view)) return NO;
-    if (!_session) [self prepareSession];
+    if (!_session) {
+        [self prepareSession];
+        // 这个键经过 handleEvent: 时还没有会话（词库维护刚结束，或快照恢复没留下会话），那时没有可报告的对象。会话刚建好，按 msime_client.h 的顺序契约先补报这次按下，再为它派发。
+        if (_session && event.type == NSEventTypeKeyDown && !event.isARepeat) [self reportKeyToLifecycle:event];
+    }
     if (!_session) return NO;
     if (_focusPending) [self prepareSession];
     [self syncPageSize];
@@ -6107,8 +6128,9 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     [self resetSmartPunctuationState];
     [self clearSmartPunctuationSpaceConversion];
     [self clearSmartPunctuationSpaceRevert];
-    [self apply:[_session command:MSIME_FINISH_COMPOSITION error:nil]];
-    // IMK asks for this when the user clicks into the document or focus moves, so the caret is about to leave the text just committed.
+    // IMK 在用户点进文档或焦点移走时要求结束组字，这是 macOS 失焦上屏最常走的一条路。用 MSIME_FINISH_ON_FOCUS_LOSS：对会话同 MSIME_FINISH_COMPOSITION，生命周期按失焦上屏处理，不出提交音、不画上屏特效。
+    [self apply:[_session command:MSIME_FINISH_ON_FOCUS_LOSS error:nil]];
+    // 光标即将离开刚上屏的文字。
     [self invalidateSmartPunctuationShadow];
 }
 
@@ -6723,8 +6745,8 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         panel.pageHandler = ^(BOOL previous) {
             MSIMEInputController *controller = weakSelf;
             if (!controller || !controller->_activeClient || !controller->_session || !controller->_panel.isVisible) return;
-            // 指针翻页先开一轮（MSIME_KEY_POINTER 不出声不画），见 msime_client.h 的顺序契约。
-            [controller->_session lifecycleKey:MSIME_KEY_POINTER];
+            // 指针翻页先开一轮，见 msime_client.h 的顺序契约。
+            [controller reportPointerToLifecycle];
             [controller apply:[controller->_session command:previous ? MSIME_PREVIOUS_PAGE : MSIME_NEXT_PAGE error:nil]];
         };
         _panel = panel;
@@ -7013,8 +7035,8 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     if (!MSIMECurrentCandidateIdentity(identifier, _view)) return;
     uint64_t generation = 0; NSUInteger index = 0;
     if (!MSIMEStrictUnsignedInteger(identifier[@"generation"], &generation) || !MSIMEStrictUnsignedIntegerValue(identifier[@"index"], &index)) return;
-    // 指针点选先开一轮，不出声不画；上屏音和上屏特效照常来自这次派发。
-    [_session lifecycleKey:MSIME_KEY_POINTER];
+    // 指针点选先开一轮；上屏音和上屏特效照常来自这次派发。
+    [self reportPointerToLifecycle];
     [self apply:[_session selectGeneration:generation index:index error:nil]];
 }
 
@@ -7104,9 +7126,13 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     NSUInteger page = 0; NSUInteger count = 0;
     if (!MSIMEStrictUnsignedIntegerValue(_view[@"page"], &page) || !MSIMEStrictUnsignedIntegerValue(_view[@"page_count"], &count)) return;
     if (count == 0 || page >= count) return;
-    // 指针翻页先开一轮，不出声不画。
-    if ((button.tag == -1 && page > 0) || (button.tag == -2 && page < count - 1)) [_session lifecycleKey:MSIME_KEY_POINTER];
-    if (button.tag == -1 && page > 0) [self apply:[_session command:MSIME_PREVIOUS_PAGE error:nil]];
-    if (button.tag == -2 && count > 0 && page < count - 1) [self apply:[_session command:MSIME_NEXT_PAGE error:nil]];
+    // 先定下要派发的命令，报告和派发共用同一个条件，免得两边各写一份、日后改出分歧。
+    uint32_t command = UINT32_MAX;
+    if (button.tag == -1 && page > 0) command = MSIME_PREVIOUS_PAGE;
+    else if (button.tag == -2 && page < count - 1) command = MSIME_NEXT_PAGE;
+    if (command == UINT32_MAX) return;
+    // 指针翻页先开一轮。
+    [self reportPointerToLifecycle];
+    [self apply:[_session command:command error:nil]];
 }
 @end
