@@ -167,6 +167,16 @@ pub struct InitFailure {
 /// 调试输出：`log(level, src, len)` 的级别和文本（非法 UTF-8 按替换字符解码）。产品里不设，`log` 就是空操作。
 pub type LogSink = Box<dyn FnMut(i32, &str) + Send>;
 
+/// 调试输出：修改类 import（`rewrite_commit`、`candidates_*`）的一次调用和宿主交还给插件的返回码。产品里不设；`msime-pack run` 用它把每次改写、重排、隐藏和注释的结果列进输出。只是旁观：返回码由 import 本身决定，设不设它都一样。
+pub type ActionSink = Box<dyn FnMut(&'static str, i32) + Send>;
+
+/// 实例化之前就接上的调试输出，`msime_init` 里的 `log` 也能看到。只有作者工具设它。
+#[derive(Default)]
+pub struct DebugSinks {
+    pub log: Option<LogSink>,
+    pub actions: Option<ActionSink>,
+}
+
 #[derive(Default)]
 struct OwnedText {
     value: String,
@@ -420,6 +430,7 @@ pub(crate) struct HostState {
     memory: Option<Memory>,
     context: CallContext,
     log_sink: Option<LogSink>,
+    action_sink: Option<ActionSink>,
 }
 
 fn new_store(module: &ScriptModule, grants: CapabilitySet) -> Store<HostState> {
@@ -439,6 +450,7 @@ fn new_store(module: &ScriptModule, grants: CapabilitySet) -> Store<HostState> {
             memory: None,
             context: CallContext::default(),
             log_sink: None,
+            action_sink: None,
         },
     );
     store.limiter(|state| &mut state.limits);
@@ -563,9 +575,21 @@ impl ScriptInstance {
         grants: CapabilitySet,
         init_fuel: u64,
     ) -> Result<Self, InitFailure> {
+        Self::with_debug(module, grants, init_fuel, DebugSinks::default())
+    }
+
+    /// 同 [`ScriptInstance::new`]，调试输出在实例化之前接上。只有作者工具用它；执行路径和产品里的完全一样，调试输出只旁观。
+    pub fn with_debug(
+        module: &ScriptModule,
+        grants: CapabilitySet,
+        init_fuel: u64,
+        debug: DebugSinks,
+    ) -> Result<Self, InitFailure> {
         let grants = grants.intersection(module.declaration.capabilities);
         let budget = init_fuel.min(limits::INIT_FUEL);
         let mut store = new_store(module, grants);
+        store.data_mut().log_sink = debug.log;
+        store.data_mut().action_sink = debug.actions;
         let fail = |store: &Store<HostState>, failure| InitFailure {
             failure,
             fuel: budget - store.get_fuel().unwrap_or(0),
@@ -721,8 +745,10 @@ impl ScriptInstance {
             Err(failure) => return (Err(failure), 0),
         };
         store.data_mut().log_sink = self.store.data_mut().log_sink.take();
+        store.data_mut().action_sink = self.store.data_mut().action_sink.take();
         let outcome = run(&mut store, on_event, allowed, event);
         self.store.data_mut().log_sink = store.data_mut().log_sink.take();
+        self.store.data_mut().action_sink = store.data_mut().action_sink.take();
         outcome
     }
 }
@@ -949,22 +975,26 @@ fn candidate_meta(caller: Caller<'_, HostState>, index: i32, field: i32) -> Resu
     })
 }
 
-/// 修改类 import 在第 3 阶段只占位：签名和能力已经是 ABI 的一部分，调用一律 `DENIED`，第 4 阶段接通。
-fn modification(mut caller: Caller<'_, HostState>) -> Result<i32, Error> {
+/// 修改类 import 在第 3 阶段只占位：签名和能力已经是 ABI 的一部分，调用一律 `DENIED`，第 4 阶段接通。设了调试输出时把这次调用和返回码交给它。
+fn modification(mut caller: Caller<'_, HostState>, import: &'static str) -> Result<i32, Error> {
     charge(&mut caller, 0)?;
-    Ok(status::DENIED)
+    let status = status::DENIED;
+    if let Some(sink) = caller.data_mut().action_sink.as_mut() {
+        sink(import, status);
+    }
+    Ok(status)
 }
 
 fn rewrite_commit(caller: Caller<'_, HostState>, _src: i32, _len: i32) -> Result<i32, Error> {
-    modification(caller)
+    modification(caller, "rewrite_commit")
 }
 
 fn candidates_order(caller: Caller<'_, HostState>, _src: i32, _count: i32) -> Result<i32, Error> {
-    modification(caller)
+    modification(caller, "candidates_order")
 }
 
 fn candidates_hide(caller: Caller<'_, HostState>, _src: i32, _count: i32) -> Result<i32, Error> {
-    modification(caller)
+    modification(caller, "candidates_hide")
 }
 
 fn candidates_annotate(
@@ -973,5 +1003,5 @@ fn candidates_annotate(
     _src: i32,
     _len: i32,
 ) -> Result<i32, Error> {
-    modification(caller)
+    modification(caller, "candidates_annotate")
 }

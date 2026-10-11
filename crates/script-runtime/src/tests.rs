@@ -954,6 +954,89 @@ fn modification_imports_are_denied_in_this_phase() {
     assert_eq!(status_of(script.deliver(1, &event)), -status::DENIED);
 }
 
+/// 调试输出只旁观：修改类 import 照样返回 `DENIED`，`before_commit` 的快照实例上的调用也交给同一个输出，`msime_init` 里的 `log` 在实例化前接上的输出里。
+#[test]
+fn debug_sinks_observe_denied_modifications_and_init_logs() {
+    let wat = module_wat(
+        r#"(import "msime" "commit_text" (func (param i32 i32 i32) (result i32)))
+           (import "msime" "rewrite_commit" (func $rewrite (param i32 i32) (result i32)))
+           (import "msime" "log" (func $log (param i32 i32 i32)))"#,
+        r#"(data (i32.const 0) "up")
+           (func (export "msime_init") (result i32)
+               (call $log (i32.const 2) (i32.const 0) (i32.const 2))
+               i32.const 0)"#,
+        "(i32.sub (i32.const 0) (call $rewrite (i32.const 0) (i32.const 3)))",
+    );
+    let declared = declaration(
+        &[Capability::ReadCommit, Capability::RewriteCommit],
+        &[Hook::BeforeCommit, Hook::Commit],
+    );
+    let module = compile_wat(&wat, declared).unwrap();
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let (log_sink, action_sink) = (Arc::clone(&logs), Arc::clone(&actions));
+    let mut script = ScriptInstance::with_debug(
+        &module,
+        declared.capabilities,
+        limits::INIT_FUEL,
+        DebugSinks {
+            log: Some(Box::new(move |level, text| {
+                log_sink.lock().unwrap().push((level, text.to_owned()));
+            })),
+            actions: Some(Box::new(move |import, status| {
+                action_sink.lock().unwrap().push((import, status));
+            })),
+        },
+    )
+    .unwrap();
+    assert_eq!(*logs.lock().unwrap(), vec![(2, "up".to_owned())]);
+
+    let mut event = commit_event("abc");
+    event.hook = Hook::BeforeCommit;
+    assert_eq!(status_of(script.deliver(1, &event)), -status::DENIED);
+    assert_eq!(
+        status_of(script.deliver(2, &commit_event("abc"))),
+        -status::DENIED
+    );
+    assert_eq!(
+        *actions.lock().unwrap(),
+        vec![
+            ("rewrite_commit", status::DENIED),
+            ("rewrite_commit", status::DENIED)
+        ]
+    );
+    // 输出交还给了持久实例：之后的调用照样看得到。
+    assert_eq!(status_of(script.deliver(3, &event)), -status::DENIED);
+    assert_eq!(actions.lock().unwrap().len(), 3);
+}
+
+/// `event_scalar` 的取值表：名字和数值一一对应，本地模式表里 0 到 5 正好是 U6 白名单。
+#[test]
+fn the_scalar_value_tables_are_one_to_one() {
+    use crate::abi::scalar_values::{self as values, name, value};
+    for table in [
+        values::ORIGIN,
+        values::HOW,
+        values::OUTCOME,
+        values::REASON,
+        values::LOCAL_MODE,
+        values::INPUT_CLASS,
+        values::RETRACTION,
+    ] {
+        for (entry, number) in table {
+            assert_eq!(value(table, entry), Some(*number));
+            assert_eq!(name(table, *number), Some(*entry));
+        }
+    }
+    for (entry, number) in values::LOCAL_MODE {
+        assert_eq!(
+            abi::local_mode_allows_text(*number),
+            *number <= 5,
+            "{entry}"
+        );
+    }
+}
+
 #[test]
 fn init_sees_no_event_and_texts_do_not_outlive_the_call() {
     // init 把 commit_text 的返回值存到 [0]；事件里返回它。

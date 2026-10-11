@@ -1016,3 +1016,173 @@ fn measure_delivery_cost() {
     );
     assert!(take_log().is_empty());
 }
+
+/// `event_scalar` 里的枚举值就是这些枚举的判别值，SDK 头文件和 `msime-pack run` 的夹具都按 `abi::scalar_values` 的名字和数值写。每个函数都是穷举的 match：枚举加了变体，这里编译不过，提醒同时在 ABI 里追加。
+#[test]
+fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
+    use crate::lifecycle::{CommitOrigin, EndReason, InputClass, LocalModeClass};
+    use msime_input_runtime::{SelectionHow, SelectionOutcome, SelectionRetraction};
+    use msime_script_runtime::abi::scalar_values as values;
+
+    fn check(table: &[(&'static str, u8)], pairs: &[(&'static str, u8)]) {
+        assert_eq!(table, pairs);
+    }
+    let origin = |value: CommitOrigin| match value {
+        CommitOrigin::Selection => "selection",
+        CommitOrigin::Raw => "raw",
+        CommitOrigin::HeldFlush => "held_flush",
+        CommitOrigin::SchemeText => "scheme_text",
+        CommitOrigin::FocusLoss => "focus_loss",
+    };
+    check(
+        values::ORIGIN,
+        &[
+            CommitOrigin::Selection,
+            CommitOrigin::Raw,
+            CommitOrigin::HeldFlush,
+            CommitOrigin::SchemeText,
+            CommitOrigin::FocusLoss,
+        ]
+        .map(|value| (origin(value), value as u8)),
+    );
+    let how = |value: SelectionHow| match value {
+        SelectionHow::Finish => "finish",
+        SelectionHow::PunctuationFinish => "punctuation_finish",
+        SelectionHow::WubiTop => "wubi_top",
+        SelectionHow::SpaceOverList => "space_over_list",
+        SelectionHow::Digit => "digit",
+        SelectionHow::GridRaw => "grid_raw",
+        SelectionHow::Select => "select",
+        SelectionHow::AnyCandidate => "any_candidate",
+        SelectionHow::Edge => "edge",
+        SelectionHow::Highlighted => "highlighted",
+        SelectionHow::WubiAuto => "wubi_auto",
+    };
+    check(
+        values::HOW,
+        &[
+            SelectionHow::Finish,
+            SelectionHow::PunctuationFinish,
+            SelectionHow::WubiTop,
+            SelectionHow::SpaceOverList,
+            SelectionHow::Digit,
+            SelectionHow::GridRaw,
+            SelectionHow::Select,
+            SelectionHow::AnyCandidate,
+            SelectionHow::Edge,
+            SelectionHow::Highlighted,
+            SelectionHow::WubiAuto,
+        ]
+        .map(|value| (how(value), value as u8)),
+    );
+    let outcome = |value: SelectionOutcome| match value {
+        SelectionOutcome::Committed => "committed",
+        SelectionOutcome::Held => "held",
+        SelectionOutcome::Pinned => "pinned",
+        SelectionOutcome::Partial => "partial",
+    };
+    check(
+        values::OUTCOME,
+        &[
+            SelectionOutcome::Committed,
+            SelectionOutcome::Held,
+            SelectionOutcome::Pinned,
+            SelectionOutcome::Partial,
+        ]
+        .map(|value| (outcome(value), value as u8)),
+    );
+    let reason = |value: EndReason| match value {
+        EndReason::Commit => "commit",
+        EndReason::Cancel => "cancel",
+        EndReason::Deleted => "deleted",
+        EndReason::Focus => "focus",
+        EndReason::Destroyed => "destroyed",
+        EndReason::HostCommit => "host_commit",
+        EndReason::Other => "other",
+    };
+    check(
+        values::REASON,
+        &[
+            EndReason::Commit,
+            EndReason::Cancel,
+            EndReason::Deleted,
+            EndReason::Focus,
+            EndReason::Destroyed,
+            EndReason::HostCommit,
+            EndReason::Other,
+        ]
+        .map(|value| (reason(value), value as u8)),
+    );
+    // 本地模式的名字就是 runtime 的模式名：`LocalModeClass::of` 按名字归类，归回同一个数值。
+    let modes = [
+        LocalModeClass::None,
+        LocalModeClass::TemporaryEnglish,
+        LocalModeClass::TemporaryJapanese,
+        LocalModeClass::SuperJianpin,
+        LocalModeClass::Emoji,
+        LocalModeClass::Kaomoji,
+        LocalModeClass::Mention,
+        LocalModeClass::Url,
+        LocalModeClass::Command,
+        LocalModeClass::Expression,
+        LocalModeClass::Unicode,
+        LocalModeClass::DateTime,
+        LocalModeClass::QuickPhrase,
+        LocalModeClass::Unknown,
+    ];
+    assert_eq!(values::LOCAL_MODE.len(), modes.len());
+    for ((name, value), mode) in values::LOCAL_MODE.iter().zip(modes) {
+        assert_eq!(*value, mode as u8, "{name}");
+        if mode != LocalModeClass::Unknown {
+            assert_eq!(LocalModeClass::of(name), mode, "{name}");
+        }
+        assert_eq!(
+            msime_script_runtime::abi::local_mode_allows_text(*value),
+            matches!(
+                mode,
+                LocalModeClass::None
+                    | LocalModeClass::TemporaryEnglish
+                    | LocalModeClass::TemporaryJapanese
+                    | LocalModeClass::SuperJianpin
+                    | LocalModeClass::Emoji
+                    | LocalModeClass::Kaomoji
+            ),
+            "{name}"
+        );
+    }
+    let class = |value: InputClass| match value {
+        InputClass::Character => "character",
+        InputClass::Punctuation => "punctuation",
+        InputClass::Selection => "selection",
+        InputClass::Navigation => "navigation",
+        InputClass::Edit => "edit",
+        InputClass::Commit => "commit",
+        InputClass::Cancel => "cancel",
+        InputClass::HostCommit => "host_commit",
+        InputClass::Other => "other",
+    };
+    check(
+        values::INPUT_CLASS,
+        &[
+            InputClass::Character,
+            InputClass::Punctuation,
+            InputClass::Selection,
+            InputClass::Navigation,
+            InputClass::Edit,
+            InputClass::Commit,
+            InputClass::Cancel,
+            InputClass::HostCommit,
+            InputClass::Other,
+        ]
+        .map(|value| (class(value), value as u8)),
+    );
+    let retraction = |value: SelectionRetraction| match value {
+        SelectionRetraction::Restore => "restore",
+        SelectionRetraction::Drop => "drop",
+    };
+    check(
+        values::RETRACTION,
+        &[SelectionRetraction::Restore, SelectionRetraction::Drop]
+            .map(|value| (retraction(value), value as u8)),
+    );
+}
