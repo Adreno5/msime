@@ -125,6 +125,40 @@ pub fn validate(source: &Path) -> Result<PluginSummary, PluginError> {
     Ok(summary)
 }
 
+/// 按 [`validate`] 的规则暂存并检查 `source`（文件夹或 `.zip`），再从同一份暂存里读出脚本包的模块，交给调用方编译。只给 `msime-pack run` 用：它要运行的必须是 `validate` 接受的那个包，压缩包也一样。不是脚本包时返回 `plugin_invalid`。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub fn load_script_source(source: &Path) -> Result<super::script_pack::LoadedScript, PluginError> {
+    let archive = is_archive(source)?;
+    let staging = tempfile::Builder::new().prefix("msime-pack-").tempdir()?;
+    stage(source, archive, staging.path(), None)?;
+    let summary = check_staged(staging.path())?;
+    if !summary.kind().is_script() {
+        return Err(PluginError::Invalid(format!(
+            "这是 {} 插件，只有脚本插件（kind = \"script\"）能运行",
+            summary.kind().as_str()
+        )));
+    }
+    let summary = super::load_directory_with(staging.path(), super::DataFiles::Module)
+        .map_err(PluginError::Invalid)?;
+    let super::PluginContent::Script(mut pack) = summary.content else {
+        return Err(PluginError::Invalid("不是脚本插件".into()));
+    };
+    let wasm = pack
+        .module_bytes
+        .take()
+        .ok_or_else(|| PluginError::Invalid(format!("{} 无法读取或太大", pack.module)))?
+        .0;
+    Ok(super::script_pack::LoadedScript {
+        id: summary.id,
+        pack,
+        wasm,
+    })
+}
+
 /// Whether `source` is a `.zip` file (true) or a folder (false); anything else is not a pack source.
 fn is_archive(source: &Path) -> Result<bool, PluginError> {
     let metadata = fs::symlink_metadata(source).map_err(|_| PluginError::UnsupportedSource)?;

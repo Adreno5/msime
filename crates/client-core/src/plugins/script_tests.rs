@@ -478,6 +478,40 @@ fn the_content_hash_covers_the_manifest_and_the_module_but_not_notices() {
     );
 }
 
+/// `msime-pack run` 读包的入口：规则同 `validate`，交出的字节就是哈希的那一份；不是脚本包、或者包本身不合规时报和 `validate` 同样的错误。
+#[test]
+fn load_script_source_hands_over_what_validate_accepted() {
+    let files = tempdir().unwrap();
+    let (script, wasm) = reader("pangu");
+    let directory = write_pack(files.path(), "pangu", &script, &wasm);
+    let loaded = load_script_source(&directory).unwrap();
+    assert_eq!(loaded.id, "pangu");
+    assert_eq!(loaded.wasm, wasm);
+    assert_eq!(
+        loaded.pack.content_hash,
+        script_pack::content_hash(script.as_bytes(), &wasm)
+    );
+    assert_eq!(loaded.pack.module_bytes, None);
+
+    let phrases = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/plugin-packs/valid/phrase_table-basic");
+    assert!(validate(&phrases).is_ok());
+    assert!(matches!(
+        load_script_source(&phrases),
+        Err(PluginError::Invalid(reason)) if reason.contains("只有脚本插件")
+    ));
+
+    fs::write(directory.join("main.wasm"), b"not wasm").unwrap();
+    assert_eq!(
+        load_script_source(&directory).unwrap_err().to_string(),
+        validate(&directory).unwrap_err().to_string()
+    );
+    assert!(matches!(
+        load_script_source(&files.path().join("missing")),
+        Err(PluginError::UnsupportedSource)
+    ));
+}
+
 #[test]
 fn load_hands_over_the_module_it_hashed_and_scan_lists_scripts_that_pages_leave_out() {
     let files = tempdir().unwrap();
