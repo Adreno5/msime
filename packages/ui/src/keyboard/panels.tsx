@@ -1,3 +1,4 @@
+import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
 import { useConfirm } from "../core/confirm";
@@ -2193,8 +2194,7 @@ export function CloudClipboardPanel({ client }: { client: CloudClipboardPanelCli
         </p>
         <label className={cloud.clipboardToggle}>
           <span>启用云剪贴板</span>
-          <input
-            type="checkbox"
+          <ControlledCheckbox
             checked={enabled}
             onChange={() => void toggle()}
             disabled={busy || !loaded}
@@ -3803,12 +3803,7 @@ export function CloudCandidatesPanel({ client }: { client: CloudDictionaryPanelC
         {kind === "pinyin" && (
           <div className={cloud.dictionaryActions}>
             <label>
-              <input
-                type="checkbox"
-                checked={jianpin}
-                onChange={(event) => setJianpin(event.target.checked)}
-                disabled={busy}
-              />
+              <ControlledCheckbox checked={jianpin} onChange={setJianpin} disabled={busy} />
               简拼候选
             </label>
             <CloudDictionarySelectField
@@ -3875,12 +3870,7 @@ export function CloudCandidatesPanel({ client }: { client: CloudDictionaryPanelC
               />
             </label>
             <label>
-              <input
-                type="checkbox"
-                checked={forceTop}
-                onChange={(event) => setForceTop(event.target.checked)}
-                disabled={busy}
-              />
+              <ControlledCheckbox checked={forceTop} onChange={setForceTop} disabled={busy} />
               强制置顶
             </label>
             <label>
