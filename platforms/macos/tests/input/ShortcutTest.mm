@@ -136,7 +136,7 @@ static void CheckMenu(NSMenu *menu, id controller) {
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *keySounds;
 @property(nonatomic) NSUInteger commitSounds;
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *musicStates;
-// 生命周期调用和派发按发生顺序记在一起："traits:<十六进制>"、"key:<值>"、"active:<0|1>"、"ascii"、"command:<值>"、"select"，用来断言契约的调用顺序。
+// 生命周期调用和派发按发生顺序记在一起："traits:<十六进制>"、"key:<值>"、"active:<0|1>"、"ascii"、"command:<值>"、"select"、"maintenance"，用来断言契约的调用顺序。
 @property(nonatomic, strong) NSMutableArray<NSString *> *calls;
 // lifecycleKey: 报告的物理按下（按键类别或 MSIME_KEY_POINTER），以及它要返回的打字特效答复。
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *keys;
@@ -211,16 +211,16 @@ static void CheckMenu(NSMenu *menu, id controller) {
     return @{@"focused":@YES, @"editing_text":@"", @"preedit":@"", @"candidates":@[], @"dedicated_english":@(enabled)};
 }
 - (NSDictionary *)pinGeneration:(uint64_t)generation index:(NSUInteger)index error:(NSError **)error {
-    (void)error; ++self.maintenanceCalls; self.maintenanceAction = 0; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
+    (void)error; [self recordCall:@"maintenance"]; ++self.maintenanceCalls; self.maintenanceAction = 0; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
 }
 - (NSDictionary *)removeGeneration:(uint64_t)generation index:(NSUInteger)index error:(NSError **)error {
-    (void)error; ++self.maintenanceCalls; self.maintenanceAction = 1; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
+    (void)error; [self recordCall:@"maintenance"]; ++self.maintenanceCalls; self.maintenanceAction = 1; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
 }
 - (NSDictionary *)clearPositionGeneration:(uint64_t)generation index:(NSUInteger)index error:(NSError **)error {
-    (void)error; ++self.maintenanceCalls; self.maintenanceAction = 2; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
+    (void)error; [self recordCall:@"maintenance"]; ++self.maintenanceCalls; self.maintenanceAction = 2; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
 }
 - (NSDictionary *)fixGeneration:(uint64_t)generation index:(NSUInteger)index position:(uint8_t)position error:(NSError **)error {
-    (void)error; ++self.maintenanceCalls; self.maintenanceAction = 10 + position; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
+    (void)error; [self recordCall:@"maintenance"]; ++self.maintenanceCalls; self.maintenanceAction = 10 + position; self.selectedGeneration = generation; self.selectedIndex = index; return nil;
 }
 - (NSDictionary *)selectGeneration:(uint64_t)generation index:(NSUInteger)index error:(NSError **)error {
     (void)error; ++self.selectCalls; self.selectedGeneration = generation; self.selectedIndex = index;
@@ -9756,6 +9756,8 @@ int main(int argc, char **argv) {
             [NSApp sendAction:operation.action to:operation.target from:operation];
             assert(session.maintenanceCalls == calls + 1 && session.maintenanceAction == operation.tag);
             assert(session.selectedGeneration == 2 && session.selectedIndex == 1);
+            // 右键菜单的每一项和点选一样先报告 MSIME_KEY_POINTER 开新的一轮，再派发。
+            assert(([[session.calls subarrayWithRange:NSMakeRange(session.calls.count - 2, 2)] isEqual:@[[NSString stringWithFormat:@"key:%u", MSIME_KEY_POINTER], @"maintenance"]]));
         }
         // 置顶 is one of the operations above, so the loop leaves 布局 pinned. That reorders every later
         // render in this function - including the external-skin block, which reads the first button as the
@@ -9770,6 +9772,14 @@ int main(int argc, char **argv) {
         NSMenuItem *retainedOperation = [candidateMenu itemAtIndex:0];
         NSDictionary *validContext = retainedOperation.representedObject;
         NSUInteger maintenanceCalls = session.maintenanceCalls;
+        // 被拒绝的菜单操作不派发，也不报告。
+        const NSUInteger menuKeys = session.keys.count;
+        const NSInteger validTag = retainedOperation.tag;
+        for (NSInteger unknownTag : {-1, 3, 10, 16}) {
+            retainedOperation.tag = unknownTag;
+            [controller candidateMenuAction:retainedOperation];
+        }
+        retainedOperation.tag = validTag;
         retainedOperation.enabled = NO;
         [controller candidateMenuAction:retainedOperation];
         retainedOperation.enabled = YES;
@@ -9790,7 +9800,7 @@ int main(int argc, char **argv) {
             [controller candidateMenuAction:retainedOperation];
         }
         retainedOperation.representedObject = validContext;
-        assert(session.maintenanceCalls == maintenanceCalls);
+        assert(session.maintenanceCalls == maintenanceCalls && session.keys.count == menuKeys);
         for (NSString *text in @[@"中", @"𠀀", @"测试"]) {
             NSMenu *menu = [controller menuForCandidate:@{@"id":clickCandidate.candidateID, @"text":text}];
             assert(menu.numberOfItems == ([text isEqual:@"测试"] ? 3 : 2));

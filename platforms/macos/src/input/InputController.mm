@@ -7091,6 +7091,10 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     if (!MSIMECurrentCandidateIdentity(identifier, _view)) return;
     uint64_t generation = 0; NSUInteger index = 0;
     if (!MSIMEStrictUnsignedInteger(identifier[@"generation"], &generation) || !MSIMEStrictUnsignedIntegerValue(identifier[@"index"], &index)) return;
+    // 菜单项只有置顶、删除、清除位置（0-2）和固定位置（11-15），别的标签不派发，也就不报告。
+    if ((item.tag < 0 || item.tag > 2) && (item.tag < 11 || item.tag > 15)) return;
+    // 候选右键菜单的这几项都是指针操作引起的派发，和点选候选一样先开一轮，见 msime_client.h 的顺序契约。
+    [self reportPointerToLifecycle];
     NSError *error = nil;
     NSDictionary *result = nil;
     switch (item.tag) {
@@ -7105,7 +7109,6 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         case 1: result = [_session removeGeneration:generation index:index error:&error]; break;
         case 2: result = [_session clearPositionGeneration:generation index:index error:&error]; break;
         default:
-            if (item.tag < 11 || item.tag > 15) return;
             result = [_session fixGeneration:generation index:index position:(uint8_t)(item.tag - 10) error:&error];
     }
     if (result) [self apply:result];
