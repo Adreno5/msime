@@ -6,9 +6,7 @@ package app.msime.android;
  *
  * <p>共享层从设置文档解析出 provider、接口地址、模型和密钥，并在交给本宿主之前校验过，所以这里不再推导任何默认值。剩下的是属于传输层的部分：本宿主实际能发哪些请求格式，以及每种请求体怎么拼。共享层随配置给出请求格式（`requestFormat`），这里只按格式挑请求构造，不按 provider 名字判断。
  *
- * <p>`doubao` is the streaming WebSocket protocol and is not implemented here yet. It is reported
- * as unsupported rather than failed, because the caller's answer to "unsupported" is to use the
- * platform recognizer — a user who configured Doubao still gets voice input, just not that one.
+ * <p>`doubao` 是流式 WebSocket 协议，不归这里：它由 {@link DoubaoAsrPolicy} 判断、`DoubaoRecognizer` 收发，所以对这里来说是「不支持」的格式。
  */
 public final class HttpAsrPolicy {
     /** OpenAI 兼容的 `/audio/transcriptions` multipart 上传。 */
