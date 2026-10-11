@@ -1111,18 +1111,20 @@ struct Option {
 // 资源目录 helpcodes/custom 下的自定义辅助码表，与 Tauri 的 list_helpcode_schemas 相同：资源目录是输入法宿主选项（runtime-options.json）的 resources。还没有宿主选项时是失败的响应，页面当作没有自定义码表。读目录，只在 UI 线程之外调用。
 Response helpcode_schemas_call() {
   const auto options = runtime_options_document();
-  std::string resources;
+  std::wstring resources;
   if (options) {
     try {
-      resources = utf8(JsonObject::Parse(text(*options)).GetNamedString(L"resources", L""));
+      resources = JsonObject::Parse(text(*options)).GetNamedString(L"resources", L"").c_str();
     } catch (...) {
       resources.clear();
     }
   }
-  if (resources.empty())
+  // 与 Tauri 一样只接受绝对路径。
+  if (resources.empty() || !std::filesystem::path(resources).is_absolute())
     return {"{\"ok\":false,\"error\":\"no host options\"}", false};
+  const auto path = utf8(hstring(resources));
   return take_response(msime_client_helpcode_schemas(
-      reinterpret_cast<const uint8_t *>(resources.data()), resources.size()));
+      reinterpret_cast<const uint8_t *>(path.data()), path.size()));
 }
 
 // 数据目录下 plugins 里已安装的插件，与 Tauri 的 plugin_catalog 是同一份 msime_client_plugins catalog。辅助码表插件都是装上的包，所以不传内置声音包的目录。读目录，只在 UI 线程之外调用。
@@ -3785,17 +3787,13 @@ private:
              L"quanpin.autocorrect_transposition", true);
     fuzzy_row(correction);
 
-    // 辅助码只用于全拼和双拼：只列出本版本提供的那几个，一个都没有的版本（五笔版）不显示这一组。
-    const bool quanpin_helpcode = edition_offers_scheme(L"quanpin");
-    const bool shuangpin_helpcode = edition_offers_scheme(L"shuangpin");
-    if (quanpin_helpcode || shuangpin_helpcode) {
+    // 辅助码只用于全拼和双拼：与共享页的 editionUsesHelpcode 相同，本版本提供其中之一就显示这一组，组里全拼和双拼两族都列出；两者都没有的版本（五笔版）不显示。
+    if (edition_offers_scheme(L"quanpin") || edition_offers_scheme(L"shuangpin")) {
       if (!indexing_)
         load_helpcode_sources();
       auto helpcode = add_group(page, L"辅助码");
-      if (quanpin_helpcode)
-        helpcode_rows(helpcode, L"全拼", L"quanpin", true, L"ziranma", false);
-      if (shuangpin_helpcode)
-        helpcode_rows(helpcode, L"双拼", L"shuangpin", true, L"lantian", true);
+      helpcode_rows(helpcode, L"全拼", L"quanpin", true, L"ziranma", false);
+      helpcode_rows(helpcode, L"双拼", L"shuangpin", true, L"lantian", true);
     }
 
     auto frequency = add_group(page, L"拼音方案调频");
@@ -3835,9 +3833,8 @@ private:
     const std::wstring schema_key = prefix + L".schema";
     const std::wstring pack_key = L"plugins.helpcode_pack_" + family;
     const bool enabled = document_.Boolean(prefix + L".enabled", enabled_fallback);
-    bool_row(group, 0xE8CB, label + L"辅助码",
-             L"再输入的字母作为辅助码交给输入引擎，用于缩小候选。五笔、粤拼、注音、笔画、日语、韩语、越南语和快捷模式不使用辅助码。",
-             prefix + L".enabled", enabled_fallback, true);
+    // 共享页的 Shift 说明只在 helpcode_shift_entry 的宿主（Android、HarmonyOS、iOS）上显示，Windows 上这一行没有说明。
+    bool_row(group, 0xE8CB, label + L"辅助码", L"", prefix + L".enabled", enabled_fallback, true);
 
     const auto schema = document_.String(schema_key, schema_fallback);
     const auto selected_pack = document_.String(pack_key, L"");
@@ -3879,8 +3876,9 @@ private:
                              }, true);
                            },
                            enabled));
+    // 共享页的这一行不随辅助码开关变灰。
     bool_row(group, 0xE8FD, L"在候选窗口中显示" + label + L"辅助码", L"",
-             prefix + L".show_in_candidate_window", show_fallback, false, enabled);
+             prefix + L".show_in_candidate_window", show_fallback);
   }
 
   // 方案下拉框的两份来源。自定义码表只读一次，与共享页一样；辅助码表插件每次进入「输入」页重读，在别处导入或删除的包下次进来就能看到。两者都在 UI 线程之外读，读完内容有变化才重画。
