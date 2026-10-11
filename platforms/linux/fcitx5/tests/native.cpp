@@ -3097,6 +3097,17 @@ int main(int argc, char **argv) {
     }
     state->resources_ = glossResources;
     std::filesystem::rename(glossPath.string() + ".seed-test-backup", glossPath);
+    const auto retainedQuery = response(msime_client_translation_query(state->session_));
+    state->startTranslation(retainedQuery, true);
+    std::promise<Json> emptyTranslation;
+    state->translation_job_ = emptyTranslation.get_future().share();
+    emptyTranslation.set_value(Json{{"query", retainedQuery.dump()},
+                                   {"translations", Json::array()},
+                                   {"continue_online", false},
+                                   {"_socket", state->translation_socket_}});
+    state->refreshTranslations();
+    require(ic.inputPanel().candidateList()->candidate(0).text().toString().find("synthetic-gloss") != std::string::npos,
+            "异步空译文回包不能触发主动清理");
     const auto translatedGeneration = state->view_.at("generation");
     for (int repeat = 0; repeat < 3; ++repeat) {
       state->online_due_ = state->ai_due_ = std::chrono::steady_clock::now();

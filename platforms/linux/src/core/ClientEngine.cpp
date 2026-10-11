@@ -2340,10 +2340,12 @@ void translation_complete(GObject *source, GAsyncResult *result, gpointer) {
         s.translation_dispatched_query == request->query)
       s.translation_dispatched_query.clear();
     const auto generation = query.at("generation").get<uint64_t>();
-    const auto encoded = translations.dump();
-    auto applied = response(msime_client_apply_translations(
-        s.session, generation, reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size()));
-    s.view = applied.at("view");
+    if (!translations.empty()) {
+      const auto encoded = translations.dump();
+      auto applied = response(msime_client_apply_translations(
+          s.session, generation, reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size()));
+      s.view = applied.at("view");
+    }
     render(engine, s.view);
     // Publish local hits before starting network work, and only send misses; a non-English dictionary's hits are asked about again, since the provider outranks it.
     if (request->offline && !request->socket.empty()) {

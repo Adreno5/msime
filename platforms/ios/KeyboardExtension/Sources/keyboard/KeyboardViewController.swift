@@ -5802,6 +5802,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       let targetResources = resources
       let queue = candidateGlossQueue
       let applyOnMain: (UInt64, Data) -> Void = { [weak self] responseGeneration, translations in
+        guard translations != Data("[]".utf8) else { return }
         DispatchQueue.main.async { [weak self] in
           guard let self, self.candidateGlossEpoch == targetEpoch,
                 CandidateGlossPreference.enabled,

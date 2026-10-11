@@ -2283,16 +2283,19 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 @property(nonatomic) NSUInteger applications;
 @end
 @implementation GlossArrivalSession
-- (NSDictionary *)translationQueryWithError:(NSError **)error { (void)error; return nil; }
+- (NSDictionary *)translationQueryWithError:(NSError **)error {
+    (void)error;
+    return @{@"generation":@3, @"target_language":@"en"};
+}
 - (NSDictionary *)viewWithError:(NSError **)error {
     (void)error;
     NSMutableDictionary *candidate = [@{@"text":@"你", @"source":@4, @"id":@{@"session":@1, @"generation":@3, @"index":@0}} mutableCopy];
     if (self.translated) candidate[@"translation"] = @"you";
-    return @{@"session":@1, @"generation":@3, @"editing_text":@"ni", @"preedit":@"ni", @"caret_position":@2, @"candidates":@[candidate]};
+    return @{@"session":@1, @"generation":@3, @"scheme":@0, @"editing_text":@"ni", @"preedit":@"ni", @"caret_position":@2, @"candidates":@[candidate]};
 }
 - (NSDictionary *)applyTranslations:(NSArray *)translations generation:(uint64_t)generation error:(NSError **)error {
-    (void)translations; (void)error;
-    assert(generation == 3);
+    (void)error;
+    assert(generation == 3 && translations.count == 1);
     ++self.applications;
     self.translated = YES;
     return @{@"applied":@YES, @"view":[self viewWithError:nil]};
@@ -2322,6 +2325,10 @@ static void TestFloatingToolbarMenuToggle(MSIMEAppearancePreferences *appearance
 
 // A gloss changes what the card shows, never the composition. Its arrival must not write the marked text again: IMK services the next key inside that synchronous call, which is how a keystroke, reranking and all, came to run nested in every gloss arrival.
 static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appearance) {
+    const BOOL wasEnglish = appearance.englishMode;
+    const BOOL wasGloss = appearance.candidateEnglishGloss;
+    appearance.englishMode = NO;
+    appearance.candidateEnglishGloss = YES;
     ServiceCountingController *controller = [ServiceCountingController alloc];
     GlossArrivalSession *session = [GlossArrivalSession new];
     NestingClient *client = [NestingClient new];
@@ -2331,17 +2338,24 @@ static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appea
     [controller setValue:client forKey:@"activeClient"];
     [controller setValue:panel forKey:@"panel"];
     [controller setValue:[session viewWithError:nil] forKey:@"view"];
+    NSDictionary *request = [controller currentGlossRequest];
+    assert(request);
+    [controller setValue:request forKey:@"glossRequest"];
+    NSArray *gloss = @[@{@"text":@"你", @"translation":@"you"}];
+    [controller setValue:gloss forKey:@"glossResults"];
     [controller applyCandidateTranslationResults];
     assert(session.applications == 1 && client.markedWrites == 0);
     NSDictionary *view = [controller valueForKey:@"view"];
     assert([view[@"candidates"][0][@"translation"] isEqual:@"you"]);
-    // The same gloss arriving again leaves the card as it is, but what depends on the answer still follows it: an offline lookup that found nothing for this page is what lets the online fallback start.
+    // 空结果不应用、不改组字或卡片，离线未命中仍继续服务调度。
     const NSUInteger syncs = controller.serviceSyncs;
+    [controller setValue:@[] forKey:@"glossResults"];
     [controller applyCandidateTranslationResults];
-    assert(session.applications == 2 && client.markedWrites == 0 && [controller valueForKey:@"view"] == view);
+    assert(session.applications == 1 && client.markedWrites == 0 && [controller valueForKey:@"view"] == view);
     assert(controller.serviceSyncs == syncs + 1);
 
     // A gloss merged while an apply: is writing the marked text belongs to the same page; the transition finishing afterwards carries the page from before it and must not take the gloss away.
+    [controller setValue:gloss forKey:@"glossResults"];
     session.translated = NO;
     NSDictionary *untranslated = [session viewWithError:nil];
     [controller setValue:untranslated forKey:@"view"];
@@ -2349,6 +2363,8 @@ static void TestGlossArrivalRedrawsOnlyTheCard(MSIMEAppearancePreferences *appea
     client.onMarkedText = ^{ [weakController applyCandidateTranslationResults]; };
     [controller apply:@{@"view":untranslated}];
     assert([[controller valueForKey:@"view"][@"candidates"][0][@"translation"] isEqual:@"you"]);
+    appearance.englishMode = wasEnglish;
+    appearance.candidateEnglishGloss = wasGloss;
 }
 
 // An apply: that writes marked text can have a newer key handled inside that call; the older transition finishing afterwards must not put its view back over the newer one.

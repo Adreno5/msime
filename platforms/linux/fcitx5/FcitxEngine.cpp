@@ -2108,14 +2108,6 @@ public:
     translation_manual_sentence_ = manual_sentence;
     translation_session_ = session_;
     translation_job_epoch_ = translation_epoch_;
-    // 当前页保留的释义作为种子，离线探测或部分回包不能清空它。
-    if (!manual_sentence && !commandTranslation(query)) {
-      auto shown = Json::array();
-      for (const auto &candidate : view_.at("candidates"))
-        if (candidate.contains("translation") && candidate.at("translation").is_string())
-          shown.push_back({{"text", candidate.at("text")}, {"translation", candidate.at("translation")}});
-      local = preferOnline(local, shown);
-    }
     auto candidates = Json::array();
     for (const auto &candidate : view_.at("candidates"))
       candidates.push_back({{"text", candidate.at("text")}, {"source", candidate.at("source")}});
@@ -2224,10 +2216,13 @@ public:
             result.is_object() &&
             (result.value("query", "") == encodedQuery || manual_query_matches) &&
             result.value("_socket", std::string{}) == translation_socket_) {
-          const auto encoded = result.value("translations", Json::array()).dump();
-          view_ = response(msime_client_apply_translations(
-              session_, msime::linux_host::strict_json_required_integer<uint64_t>(query.at("generation")), reinterpret_cast<const uint8_t *>(encoded.data()),
-              encoded.size())).at("view");
+          const auto translations = result.value("translations", Json::array());
+          if (!translations.empty()) {
+            const auto encoded = translations.dump();
+            view_ = response(msime_client_apply_translations(
+                session_, msime::linux_host::strict_json_required_integer<uint64_t>(query.at("generation")), reinterpret_cast<const uint8_t *>(encoded.data()),
+                encoded.size())).at("view");
+          }
           render();
           if (result.value("continue_online", false)) {
             startTranslation(query, false, result.at("translations"));

@@ -352,7 +352,8 @@ GVariant *call(GDBusConnection *connection, const char *destination,
 
 int main(int argc, char **argv) {
   if (argc != 2 && !(argc == 3 && (std::string(argv[2]) == "--page-number" ||
-                                  std::string(argv[2]) == "--ctrl-space")))
+                                  std::string(argv[2]) == "--ctrl-space" ||
+                                  std::string(argv[2]) == "--empty-translation")))
     return 2;
   try {
     // This fixture asserts RegisterProperties and must exercise the real menu path.
@@ -536,6 +537,41 @@ int main(int argc, char **argv) {
       g_test_dbus_down(bus);
       g_object_unref(bus);
     };
+    if (argc == 3 && std::string(argv[2]) == "--empty-translation") {
+      const auto socket = (root / "empty-translation.sock").string();
+      TranslationProviderFixture provider(socket);
+      auto translated = options;
+      translated.erase("preferences_directory");
+      translated["translation_provider_socket"] = socket;
+      translated["preferences"]["translation_target_language"] = "fr";
+      translated["preferences"]["candidate_translations"] = true;
+      translated["preferences"]["candidate_english_gloss"] = false;
+      ibus_object_destroy(IBUS_OBJECT(engine));
+      g_object_unref(engine);
+      msime_ibus_configure(translated.dump());
+      engine = create_engine();
+      seen = Observation{};
+      invoke("FocusIn");
+      phrase();
+      const auto has_gloss = [&] {
+        return !seen.candidates.empty() &&
+               seen.candidates.front().find("synthetic gloss") != std::string::npos;
+      };
+      require(wait_until(has_gloss), "空回包测试先显示合成译文");
+      provider.empty_translations = true;
+      invoke("PropertyActivate", g_variant_new("(su)", "TranslateSentence", PROP_STATE_CHECKED));
+      require(wait_until([&] { return provider.requests >= 2; }), "整句翻译请求应到达合成服务");
+      const auto settled = g_get_monotonic_time() + G_USEC_PER_SEC;
+      while (g_get_monotonic_time() < settled) {
+        while (g_main_context_iteration(nullptr, FALSE)) {}
+        g_usleep(1000);
+      }
+      require(has_gloss(), "IBus 异步空回包不能清掉当前候选释义");
+      invoke("PropertyActivate", g_variant_new("(su)", "CandidateTranslations", PROP_STATE_UNCHECKED));
+      require(!has_gloss(), "主动关闭翻译仍应清理当前候选释义");
+      finish();
+      return 0;
+    }
     if (argc == 3 && std::string(argv[2]) == "--ctrl-space") {
       msime_ibus_configure(options.dump());
       invoke("FocusIn");
