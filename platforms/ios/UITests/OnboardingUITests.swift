@@ -249,7 +249,8 @@ final class OnboardingUITests: XCTestCase {
     app.launch()
     XCTAssertFalse(app.buttons["keyboardGuideLink"].exists)
     XCTAssertFalse(app.buttons["aboutSettingsLink"].exists)
-    app.tabBars.buttons["社区"].tap()
+    app.buttons["skinSettingsLink"].tap()
+    tapRevealed("skinCommunityLink", in: app)
     let card = app.buttons["communitySkinCard-20000000-0000-4000-8000-000000000001"]
     XCTAssertTrue(card.waitForExistence(timeout: 5)); card.tap()
     app.buttons["downloadCommunitySkin"].tap()
@@ -466,25 +467,34 @@ final class OnboardingUITests: XCTestCase {
   }
 
   @MainActor
-  func testSkinDiscoveryUsesCommunityTabAndReturnsToOrigin() {
+  func testSkinPageAppliesCommunitySkinAndBrowsesMore() {
     let app = XCUIApplication()
-    app.launchArguments = ["-hasCompletedOnboarding", "YES", "-communityPreview"]
+    // 点社区皮肤会存一款进皮肤库；先清空，免得之前失败的用例占满十二个槽位。
+    app.launchArguments = ["-hasCompletedOnboarding", "YES", "-communityPreview", "--reset-custom-skins-for-ui-tests"]
     app.launch()
-    app.tabBars.buttons["社区"].tap()
-    app.buttons["communitySkinCard-20000000-0000-4000-8000-000000000001"].tap()
-    XCTAssertTrue(app.navigationBars["皮肤详情"].waitForExistence(timeout: 5))
-    app.tabBars.buttons["设置"].tap()
     app.buttons["skinSettingsLink"].tap()
+    XCTAssertTrue(app.navigationBars["皮肤"].waitForExistence(timeout: 5))
+    // 社区皮肤紧跟在主题网格后面，点一下就领取并换上。
+    let tile = app.buttons["communitySkinTile-20000000-0000-4000-8000-000000000001"]
+    reveal(tile, in: app)
+    XCTAssertEqual(tile.value as? String, "未选择")
+    tile.tap()
+    XCTAssertTrue(wait(tile, until: "value == '已选择'"), "the community skin was not applied: \(tile.debugDescription)")
+    let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "皮肤页的社区皮肤"; shot.lifetime = .deleteOnSuccess; add(shot)
+    // 「浏览更多皮肤」在本页的导航栈里推入完整的皮肤社区，不切换标签页。
     tapRevealed("skinCommunityLink", in: app)
-    XCTAssertTrue(app.tabBars.buttons["社区"].isSelected)
-    XCTAssertTrue(app.navigationBars["社区"].waitForExistence(timeout: 5))
-    XCTAssertFalse(app.navigationBars["皮肤详情"].exists)
-    app.buttons["communityCategory-2"].tap()
-    app.tabBars.buttons["设置"].tap()
-    XCTAssertTrue(app.navigationBars["皮肤"].exists)
-    tapRevealed("skinCommunityLink", in: app)
-    XCTAssertTrue(app.buttons["communitySkinCard-20000000-0000-4000-8000-000000000001"].exists)
-    app.tabBars.buttons["设置"].tap()
+    XCTAssertTrue(app.navigationBars["皮肤社区"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.tabBars.buttons["设置"].isSelected)
+    XCTAssertTrue(app.buttons["communitySkinCard-20000000-0000-4000-8000-000000000001"].waitForExistence(timeout: 5))
+    // 刚换上的那款显示「使用中」，不再是可以点的胶囊按钮；另一款还没领取。
+    XCTAssertFalse(app.buttons["communitySkinAction-20000000-0000-4000-8000-000000000001"].exists)
+    XCTAssertTrue(app.buttons["communitySkinAction-20000000-0000-4000-8000-000000000002"].exists)
+    app.navigationBars.buttons.firstMatch.tap()
+    XCTAssertTrue(app.navigationBars["皮肤"].waitForExistence(timeout: 5))
+    // 换回跟随系统，不把社区皮肤留给后面的用例。
+    reveal(app.buttons["skin_system"], in: app)
+    app.buttons["skin_system"].tap()
+    XCTAssertEqual(app.buttons["skin_system"].value as? String, "已选择")
     app.navigationBars.buttons.firstMatch.tap()
     XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["keyboardTryoutLink"].exists)
