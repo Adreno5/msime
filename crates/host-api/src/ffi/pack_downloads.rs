@@ -342,6 +342,15 @@ mod tests {
             "{missing}"
         );
         assert!(error.ends_with(".aar"), "{missing}");
+        // An empty list is still an import, never a download: the Android host sends it when none of the picked documents had a usable size, and the user must see which file is missing rather than a silent network install.
+        let empty = install(&json!({
+            "state_root": state.path(),
+            "pack": "voice-runtime",
+            "files": [],
+        }));
+        let error = empty["error"].as_str().unwrap();
+        assert!(error.starts_with("local_model_import_missing: "), "{empty}");
+        assert!(error.ends_with(".aar"), "{empty}");
     }
 
     #[test]

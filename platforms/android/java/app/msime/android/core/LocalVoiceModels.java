@@ -63,7 +63,7 @@ public final class LocalVoiceModels {
      * 下载、校验并发布一个模型，返回装好的目录。阻塞到结束（几十到几百 MB），只在主进程的工作线程上调用。
      *
      * @param mirror 用户在 {@code voice_input.asr_model_mirror} 里填的下载前缀，没有时为空
-     * @param files 不为空时不联网，用这些本地文件（绝对路径，至多 16 个）安装，{@code mirror} 不用，进度阶段报 "import"
+     * @param files 不为 null 时不联网（空列表报缺文件），用这些本地文件（绝对路径，至多 16 个）安装，{@code mirror} 不用，进度阶段报 "import"
      */
     public static String install(Context context, String id, String mirror, @Nullable List<String> files,
             @Nullable Progress progress) throws ResourcePacks.Failure {
@@ -73,7 +73,7 @@ public final class LocalVoiceModels {
                 .put("root", root(context.getFilesDir()).getAbsolutePath())
                 .put("id", id);
             if (TextPolicy.hasText(mirror)) request.put("mirror", TextPolicy.trimmed(mirror));
-            if (files != null && !files.isEmpty()) request.put("files", new JSONArray(files));
+            if (files != null) request.put("files", new JSONArray(files));
             NativeClient.LocalModelProgress listener = progress == null ? null : json -> {
                 try {
                     JSONObject event = new JSONObject(TextPolicy.utf8(json));

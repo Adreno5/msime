@@ -150,7 +150,7 @@ public final class ResourcePacks {
         return install(context, id, sources, null, progress);
     }
 
-    /** 同上；{@code files} 不为空时不联网，用这些本地文件（绝对路径，至多 16 个）安装，按长度和 SHA-256 认文件，{@code sources} 不用，进度阶段报 "import"。 */
+    /** 同上；{@code files} 不为 null 时不联网（空列表报缺文件），用这些本地文件（绝对路径，至多 16 个）安装，按长度和 SHA-256 认文件，{@code sources} 不用，进度阶段报 "import"。 */
     public static File install(Context context, String id, List<String> sources, List<String> files,
             NativeClient.ResourcePackProgress progress) throws Failure {
         requireInstallerThread(context);
@@ -165,7 +165,7 @@ public final class ResourcePacks {
                 }
             }
             if (mirrors.length() > 0) request.put("sources", mirrors);
-            if (files != null && !files.isEmpty()) request.put("files", new JSONArray(files));
+            if (files != null) request.put("files", new JSONArray(files));
             return new File(value(NativeClient.resourcePackInstall(request.toString(), progress))
                 .getJSONObject("value").getString("path"));
         } catch (JSONException error) {
