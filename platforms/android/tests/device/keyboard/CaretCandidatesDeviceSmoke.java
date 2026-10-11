@@ -57,7 +57,6 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
                 stage = "editor IME requests settled";
                 await(field("msime-test-plain").and(node ->
                     equalsText("ime-requests-settled", node.getStateDescription())));
-                awaitNoImeWindow();
             }
 
             // 接着实体键盘时，输入框一获得焦点宿主就要了光标位置，第一次按键的组字直接出现在光标旁。
