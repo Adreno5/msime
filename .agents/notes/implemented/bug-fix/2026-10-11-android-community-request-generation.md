@@ -12,7 +12,7 @@ Status: implemented
 
 ## Alternatives considered
 
-只禁止加载期间再次请求可以避免重叠，但会让用户的主动重试和新的搜索必须等待旧请求完成，也与当前切换分段时立即刷新列表的行为冲突。
+只禁止加载期间再次请求可以避免重叠，但会让用户的主动重试和新的搜索必须等待旧请求完成，也与切换分类时立即刷新列表的行为冲突（社区列表原先在 tab 里还能切换分段，[社区内容并进各功能页](../feature/2026-10-11-android-community-into-feature-pages.md) 以后每个列表只列一类作品）。
 
 ## Consequences
 

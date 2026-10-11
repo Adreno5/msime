@@ -1,23 +1,50 @@
 package app.msime.android.home;
 
+import android.content.Context;
 import android.text.InputType;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import androidx.annotation.Nullable;
 import app.msime.android.AiEndpointPolicy;
 import app.msime.android.AiPolishConfiguration;
+import app.msime.android.CommunityCatalog;
+import app.msime.android.CommunityRequest;
+import app.msime.android.TextPolicy;
 import app.msime.android.core.InputViewValuePolicy;
+import java.util.List;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
  * AI 润色与回复：启用开关、端点、模型、凭据和润色提示词，全部存在共享偏好的 `ai_assistant` 里，由你自己的服务端提供。
  *
+ * <p>最下面是「社区回复模板」：社区里别人分享的 AI 回复模板列前几个，点开看详情、可以举报，末尾「浏览更多回复模板」进完整列表（{@link CommunityFragment}）。回复模板手机上还不能添加进键盘的回复面板，这里和完整列表都只能浏览。
+ *
  * <p>与原来键盘页的底部面板写法相同：启用时端点必须是 https 地址，或指向本机、局域网的 http 地址（规则见 `AiEndpointPolicy`，键盘会拒绝别的地址，这里也不写进去）；凭据按端点的来源（origin）分别存放在 `ai_assistant.tokens` 里，换端点不会把凭据带到另一个主机，留空凭据只删掉这个来源的那一条；提示词写进 `prompt_id` 选中的那个槽位，也就是键盘读的那个。每一项点开是一个输入框，确认后立即保存。
  */
 public final class AiSettingsPage extends ReloadingDetailPage {
+    /** 「社区回复模板」一组最多列几个，多的在完整列表里。 */
+    private static final int REPLY_LIMIT = 5;
+
+    /** 社区回复模板的第一页；null 是还没读到或读失败，失败原因在 {@link #repliesFailure}。 */
+    @Nullable private List<CommunityCatalog.Item> replies;
+    @Nullable private String repliesFailure;
+    private boolean repliesRequested;
+
     @Override protected void reload() {
         HostTask.run(this, KeyboardSheets::preferences, this::render);
+        // 社区目录每次打开这一页只读一次，读到之后再按刚读的偏好整页重画。
+        if (!repliesRequested) {
+            repliesRequested = true;
+            HostTask.runNetwork(this,
+                context -> new CommunityCatalog(context).list(CommunityRequest.Kind.REPLY, "", 0, null),
+                page -> {
+                    CommunityCatalog.Discovery result = CommunityCatalog.discovery(page, REPLY_LIMIT);
+                    replies = result.items();
+                    repliesFailure = result.failure();
+                    reload();
+                });
+        }
     }
 
     private void render(@Nullable JSONObject preferences) {
@@ -66,6 +93,34 @@ public final class AiSettingsPage extends ReloadingDetailPage {
             "留空使用默认提示词", prompt, InputType.TYPE_CLASS_TEXT,
             value -> saveAi(next -> next.put(promptKey, value))));
         polish.footer("凭据只保存在本机，按端点的来源分别存放。留空凭据表示该来源不需要凭据，不会清掉其他来源已存的凭据。");
+
+        renderReplies(target);
+    }
+
+    /** 社区里的 AI 回复模板：前几个，点开看详情和举报，末尾进完整列表。 */
+    private void renderReplies(LinearLayout target) {
+        Context context = requireContext();
+        GroupCard group = GroupCard.add(target, "社区回复模板").withDividers(58);
+        List<CommunityCatalog.Item> items = replies;
+        if (items == null) {
+            group.note(repliesFailure == null ? "正在读取社区回复模板…" : repliesFailure);
+        } else if (items.isEmpty()) {
+            group.note("社区里还没有回复模板。");
+        } else {
+            for (CommunityCatalog.Item item : items) {
+                group.addView(KeyboardSheets.badgeNavRow(context, TextPolicy.initial(item.name(), "回"), item.name(),
+                    item.author().isEmpty() ? null : "@" + item.author(), null, () -> showReply(item)));
+            }
+        }
+        group.nav("浏览更多回复模板", "搜索社区里的全部回复模板", null,
+            () -> CommunityFragment.browse(context, CommunityRequest.Kind.REPLY));
+        group.footer("别人分享的 AI 回复提示词。手机上暂时只能浏览，还不能添加到键盘的回复面板。");
+    }
+
+    /** 回复模板的详情：和完整列表里点开的是同一个面板，没有「添加」，可以举报。 */
+    private void showReply(CommunityCatalog.Item item) {
+        CommunitySkinSheet.show(requireContext(), item, false, "", null,
+            () -> CommunityReportDialog.show(this, item), null);
     }
 
     private void editEndpoint(String current, boolean enabled) {
