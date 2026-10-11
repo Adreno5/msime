@@ -496,21 +496,9 @@ async fn list_voice_capture_devices() -> Result<Value, CommandError> {
             .map_err(|_| CommandError {
                 code: "audio_devices",
             })?;
-        serde_json::to_value(
-            devices
-                .into_iter()
-                .map(|(id, label)| {
-                    serde_json::json!({
-                        "backend": "windows",
-                        "id": id,
-                        "label": label
-                    })
-                })
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|_| CommandError {
-            code: "audio_devices",
-        })
+        Ok(Value::Array(msime_host_api::voice_capture_device_values(
+            "windows", devices,
+        )))
     }
     #[cfg(target_os = "macos")]
     {
@@ -519,21 +507,9 @@ async fn list_voice_capture_devices() -> Result<Value, CommandError> {
             .map_err(|_| CommandError {
                 code: "audio_devices",
             })?;
-        serde_json::to_value(
-            devices
-                .into_iter()
-                .map(|(id, label)| {
-                    serde_json::json!({
-                        "backend": "macos",
-                        "id": id,
-                        "label": label
-                    })
-                })
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|_| CommandError {
-            code: "audio_devices",
-        })
+        Ok(Value::Array(msime_host_api::voice_capture_device_values(
+            "macos", devices,
+        )))
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     Err(CommandError {

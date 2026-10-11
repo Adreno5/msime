@@ -410,6 +410,13 @@ char *msime_client_voice_cancel(uint64_t session);
 /* Capture bounded mono 16 kHz samples. The JSON result is transient audio and
  * must never be logged or persisted. */
 char *msime_client_voice_capture(uint32_t milliseconds);
+/* The microphones a settings page offers under 「可用录音设备」 (the Tauri settings shell's
+ * list_voice_capture_devices on Windows). Value [{backend:"windows",id,label}], at most 128,
+ * [] when there is none: id is "wasapi:" then the WASAPI endpoint id as four lowercase hex
+ * digits per UTF-16 unit, the value voice_input.capture_device holds with capture_backend
+ * "windows". Other targets fail with "voice capture devices unavailable". Enumerates through
+ * COM: call off the UI thread. Ids and labels may identify the user's hardware: never log them. */
+char *msime_client_voice_capture_devices(void);
 char *msime_client_voice_apply(uint64_t session, uint64_t generation,
                                const uint8_t *text, size_t length);
 /* On-device speech models and user-dictionary hotwords. JSON request buffers of length bytes; standard responses. Error text of the model calls is a stable code beginning with "local_model_".

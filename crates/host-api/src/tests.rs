@@ -12996,6 +12996,45 @@ fn credential_test_export_answers_incomplete_configurations_offline() {
     assert_eq!(remote_http["value"]["ok"], false);
     let unknown = call(json!({"service": "unknown", "config": {}}));
     assert_eq!(unknown["value"]["message"], "此配置测试类型尚未接入。");
+    // The voice page's checks: Doubao goes to its WebSocket check, other services to the upload one, polishing to the chat one.
+    let voice = |service: &str, config: Value| {
+        let reply = call(json!({"service": service, "config": config}));
+        assert_eq!(reply["ok"], true, "{service}");
+        assert_eq!(reply["value"]["ok"], false, "{service}");
+        reply["value"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(
+        voice(
+            "voice.asr",
+            json!({"provider": "doubao", "auth_mode": "api_key", "endpoint": "https://doubao.example/asr", "token": "synthetic", "resource_id": "volc.bigasr.sauc.duration"}),
+        ),
+        "请填写有效的 WSS 接口、资源 ID 及对应鉴权方式的凭据。"
+    );
+    assert_eq!(
+        voice("voice.asr", json!({"provider": "openai", "token": ""})),
+        "请先填写有效的 API Key。"
+    );
+    assert_eq!(
+        voice(
+            "voice.asr",
+            json!({"provider": "openai", "token": "synthetic", "endpoint": "http://asr.example/v1", "model": "whisper-1"}),
+        ),
+        "请填写有效的 HTTPS 转写接口地址和模型名。"
+    );
+    assert_eq!(
+        voice("voice.asr", json!({"provider": "local"})),
+        "此识别服务的凭据测试尚未接入。"
+    );
+    assert_eq!(
+        voice(
+            "voice.polish",
+            json!({"token": "synthetic", "endpoint": "http://polish.example/v1", "model": "m"}),
+        ),
+        "请填写有效的 HTTPS 接口地址和模型名。"
+    );
     for invalid in [
         json!({"config": {}}),
         json!({"service": "translation.custom"}),
@@ -13053,4 +13092,46 @@ fn translation_endpoint_issue_export_reports_the_hint_and_what_the_store_saves()
         read(unsafe { msime_client_translation_endpoint_issue(std::ptr::null(), 0) })["ok"],
         false
     );
+}
+
+#[test]
+fn voice_capture_device_values_keep_the_listing_order_and_backend() {
+    assert_eq!(
+        voice_capture_device_values(
+            "windows",
+            vec![
+                ("wasapi:0061".to_owned(), "麦克风".to_owned()),
+                ("wasapi:0062".to_owned(), "耳机".to_owned()),
+            ],
+        ),
+        vec![
+            json!({"backend": "windows", "id": "wasapi:0061", "label": "麦克风"}),
+            json!({"backend": "windows", "id": "wasapi:0062", "label": "耳机"}),
+        ]
+    );
+    assert!(voice_capture_device_values("windows", Vec::new()).is_empty());
+}
+
+// Lists whatever capture endpoints this machine has (none on a headless runner); it never opens one.
+#[test]
+fn voice_capture_device_export_lists_wasapi_endpoints_on_windows_only() {
+    let reply = read(msime_client_voice_capture_devices());
+    if cfg!(target_os = "windows") {
+        assert_eq!(reply["ok"], true);
+        let devices = reply["value"].as_array().expect("device array");
+        assert!(devices.len() <= 128);
+        for device in devices {
+            assert_eq!(device["backend"], "windows");
+            let id = device["id"].as_str().expect("id");
+            let digits = id.strip_prefix("wasapi:").expect("wasapi id");
+            assert!(!digits.is_empty() && digits.len() % 4 == 0);
+            assert!(digits
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+            assert!(!device["label"].as_str().unwrap_or_default().is_empty());
+        }
+    } else {
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["error"], "voice capture devices unavailable");
+    }
 }
