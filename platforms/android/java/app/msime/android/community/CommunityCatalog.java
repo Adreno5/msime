@@ -450,17 +450,15 @@ public final class CommunityCatalog {
     }
 
     static Long countNumber(Object raw) {
-        if (!(raw instanceof Number number)) return null;
-        if (!(raw instanceof Integer) && !(raw instanceof Long)) return null;
-        long integer = number.longValue();
+        Long integer = JsonPolicy.nonNegativeLong(raw);
+        if (integer == null) return null;
         return integer >= 0 && integer <= MAX_JAVASCRIPT_INTEGER ? integer : null;
     }
 
     private static Double decimal(JSONObject value, String key) {
         Object raw = value.opt(key);
         if (raw == null || raw == JSONObject.NULL) return 0.0;
-        if (!(raw instanceof Number number)) return null;
-        double result = number.doubleValue();
+        double result = NumberPolicy.strictDouble(raw, Double.NaN);
         return Double.isFinite(result) ? result : null;
     }
 
