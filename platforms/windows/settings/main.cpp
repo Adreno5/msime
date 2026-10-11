@@ -6317,6 +6317,8 @@ private:
     stats_last_request_ = {};
     stats_selected_.reset();
     stats_tab_ = L"keys";
+    stats_calendar_offset_ = 0;
+    stats_details_offset_ = 0;
   }
 
   static JsonObject statistics_action(wchar_t const *operation) {
@@ -6482,6 +6484,20 @@ private:
     else
       stats_selected_ = key;
     redraw_stats();
+  }
+
+  // 日历热力图和按日明细比卡片宽时横向滚动。页面每次重画都换上新的滚动区，这里把横向位置记在 `slot` 里、在新的滚动区上恢复，否则往右滚到最近几周再点一天，重画后又回到最左边，选中的那一格不在视野里；共享页由 React 保留同一个滚动区，没有这个问题。
+  void keep_horizontal_offset(ScrollViewer const &scroller, double &slot) {
+    scroller.ViewChanged([&slot](Inspectable const &sender, ScrollViewerViewChangedEventArgs const &) {
+      slot = sender.as<ScrollViewer>().HorizontalOffset();
+    });
+    if (slot <= 0)
+      return;
+    scroller.Loaded([offset = slot](Inspectable const &sender, RoutedEventArgs const &) {
+      const auto self = sender.as<ScrollViewer>();
+      self.UpdateLayout();
+      self.ChangeView(offset, nullptr, nullptr, true);
+    });
   }
 
   // 一节统计：标题（可以没有）和放图表的卡片。
@@ -7003,6 +7019,7 @@ private:
     scroller.Margin(Thickness{0, 8, 0, 0});
     scroller.Padding(Thickness{0, 0, 0, 4});
     scroller.Content(grid);
+    keep_horizontal_offset(scroller, stats_calendar_offset_);
     body.Children().Append(scroller);
     body.Children().Append(heat_legend());
   }
@@ -7501,6 +7518,7 @@ private:
       scroller.VerticalScrollMode(ScrollMode::Disabled);
       scroller.Margin(Thickness{0, 12, 0, 0});
       scroller.Content(table);
+      keep_horizontal_offset(scroller, stats_details_offset_);
       body.Children().Append(scroller);
     }
     body.Children().Append(stats_footer(
@@ -7525,7 +7543,8 @@ private:
         page.Children().Append(stats_error_bar());
       return;
     }
-    const auto status = *stats_;
+    // 引用而不是复制：整份统计连同回答原文可能有几兆，构建页面时不会改动它（请求的回答在之后的调度里才到）。
+    auto const &status = *stats_;
     auto const &statistics = status.statistics;
     const auto today_date = local_civil_day();
     const auto today = typing::day_key(today_date);
@@ -8892,6 +8911,9 @@ private:
   bool stats_busy_ = true;
   std::optional<std::string> stats_selected_;
   std::wstring stats_tab_ = L"keys";
+  // 日历热力图和按日明细的横向滚动位置，跨重画保留。
+  double stats_calendar_offset_ = 0;
+  double stats_details_offset_ = 0;
   uint64_t stats_generation_ = 0;
   uint64_t stats_request_ = 0;
   uint64_t stats_request_counter_ = 0;
