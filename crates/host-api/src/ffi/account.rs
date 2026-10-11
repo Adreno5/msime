@@ -1,4 +1,4 @@
-//! 原生设置窗口的账号操作：与 Tauri 桌面端的十四个账号命令（`desktop_account.rs`）一一对应，用同一个 [`BackendAccountSession`] 和同一份本用户会话文件（[`FileAccountSessionStorage`]，`account-session.json`），返回的也是同样的脱敏形状（[`msime_client_core::account::page`]）。令牌只在本进程里，不出现在响应中。
+//! 原生设置窗口的账号操作：与 Tauri 桌面端的十四个账号命令（`desktop_account.rs`）和 Windows 的四个设置同步命令（`windows_settings_sync.rs`）一一对应，用同一个 [`BackendAccountSession`] 和同一份本用户会话文件（[`FileAccountSessionStorage`]，`account-session.json`），返回的也是同样的脱敏形状（[`msime_client_core::account::page`]）。令牌只在本进程里，不出现在响应中。
 //!
 //! 每个会话目录在进程里只有一个会话对象，这样进行中的 Google 登录可以被另一次调用里的 `google_cancel` 结束；会话文件本身每次访问都重新读，共享应用、输入法和这里同时登录、刷新或退出时以文件为准，刷新时共用 `account-refresh.lock`。
 //!
@@ -7,15 +7,20 @@
 use super::with_bounded_bytes;
 use crate::*;
 use msime_client_core::account::page::{
-    providers_response, ChallengeResponse, ProfileResponse, StatusResponse,
+    providers_response, ChallengeResponse, PreferenceSchemaResponse, ProfileResponse,
+    StatusResponse,
+};
+use msime_client_core::account::settings_sync::{
+    prepare_desktop_settings_apply, upload_desktop_settings,
 };
 use msime_client_core::account::{
-    adopt_legacy_account_session, AccountError, AccountSessionFileLayout, BackendAccountClient,
-    BackendAccountSession, FileAccountSessionStorage,
+    adopt_legacy_account_session, AccountError, AccountPreferences, AccountSessionFileLayout,
+    BackendAccountClient, BackendAccountSession, FileAccountSessionStorage,
 };
+use msime_client_core::preferences::PreferencesError;
 
-/// 请求的上限：两个目录各最多 16 KiB，其余字段都很短。
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+/// 请求的上限：应用云端设置时请求里带着整份云端设置文档（其中可能有 Android 的自定义键盘皮肤库，最多 768 KiB），与 Android 的设置同步导出一样给 4 MiB；目录各最多 16 KiB。
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DIRECTORY_BYTES: usize = 16 * 1024;
 
 type Session = BackendAccountSession<BackendAccountClient, FileAccountSessionStorage>;
@@ -34,24 +39,46 @@ struct AccountRequest {
     action: AccountAction,
 }
 
-/// Tauri 的 `account_*` 命令，名字去掉前缀；`choose_avatar` 的文件对话框由宿主自己弹，这里只收选好的路径。
+/// Tauri 的 `account_*` 命令，名字去掉前缀；`choose_avatar` 的文件对话框由宿主自己弹，这里只收选好的路径。`preferences_*` 是 Windows 的设置同步，偏好目录由宿主传入（共享应用用的是它自己的偏好存储）。
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum AccountAction {
     Status,
     Providers,
-    RequestCode { provider: String, target: String },
-    Login { challenge_id: String, code: String },
+    RequestCode {
+        provider: String,
+        target: String,
+    },
+    Login {
+        challenge_id: String,
+        code: String,
+    },
     GoogleLogin,
     GoogleCancel,
     Profile,
-    Rename { display_name: String },
+    Rename {
+        display_name: String,
+    },
     Avatar,
-    UploadAvatar { path: String },
+    UploadAvatar {
+        path: String,
+    },
     RemoveAvatar,
-    Logout { all: bool },
+    Logout {
+        all: bool,
+    },
     Delete,
     Forget,
+    PreferencesSchema,
+    PreferencesLoad,
+    PreferencesUpload {
+        preferences_directory: String,
+    },
+    PreferencesApply {
+        preferences_directory: String,
+        user_id: String,
+        preferences: AccountPreferences,
+    },
 }
 
 /// 目录对应的会话对象，第一次用到时建立；建立前先接管旧目录里的会话，与共享应用启动时做的一样。
@@ -97,7 +124,62 @@ fn open_browser(_url: &str) -> Result<(), AccountError> {
     Err(AccountError::Unavailable)
 }
 
-fn run(session: &Session, action: AccountAction) -> Result<Value, AccountError> {
+/// 偏好存储的保存错误，与共享应用的 `CommandError::from(PreferencesError)` 对同一错误给的码相同：修订号不符是 `conflict`，其余是 `storage`（应用后的偏好已经校验过，校验类错误不会出现）。
+fn preferences_error(error: PreferencesError) -> String {
+    match error {
+        PreferencesError::Conflict => "conflict",
+        _ => "storage",
+    }
+    .to_owned()
+}
+
+/// 设置同步的应用：client-core 算出应用后的偏好和读到时的修订号，再按这个修订号写回，与共享应用的 `account_preferences_apply` 相同；关掉剪贴板历史时与 `msime_client_save_preferences` 一样清掉已存的历史。返回保存后的偏好快照，宿主用它重画页面。
+fn apply_preferences(
+    session: &Session,
+    directory: &str,
+    user_id: &str,
+    preferences: AccountPreferences,
+) -> Result<Value, String> {
+    let store = PreferencesStore::new(absolute_directory(directory)?);
+    let (revision, next) = prepare_desktop_settings_apply(
+        session,
+        &store,
+        Some(store.edition()),
+        user_id,
+        preferences,
+    )
+    .map_err(|error| error.code().to_owned())?;
+    let saved = store.save(revision, next).map_err(preferences_error)?;
+    if !saved.preferences.clipboard_history {
+        store
+            .clear_disabled_clipboard_history()
+            .map_err(preferences_error)?;
+    }
+    serde_json::to_value(saved).map_err(|_| "storage".to_owned())
+}
+
+/// 一次操作。设置同步的上传和应用要读写宿主给的偏好目录，在这里处理；其余都只经会话，见 [`run_account`]。
+fn run(session: &Session, action: AccountAction) -> Result<Value, String> {
+    let code = |error: AccountError| error.code().to_owned();
+    match action {
+        AccountAction::PreferencesApply {
+            preferences_directory,
+            user_id,
+            preferences,
+        } => apply_preferences(session, &preferences_directory, &user_id, preferences),
+        AccountAction::PreferencesUpload {
+            preferences_directory,
+        } => {
+            let store = PreferencesStore::new(absolute_directory(&preferences_directory)?);
+            value(upload_desktop_settings(session, &store, Some(store.edition())).map_err(code)?)
+                .map_err(code)
+        }
+        action => run_account(session, action).map_err(code),
+    }
+}
+
+/// 与 Tauri 命令一一对应、只经会话的操作，错误都是账号错误码。
+fn run_account(session: &Session, action: AccountAction) -> Result<Value, AccountError> {
     match action {
         AccountAction::Status => status(session.status()?),
         AccountAction::Providers => value(providers_response(session.providers()?)),
@@ -127,6 +209,14 @@ fn run(session: &Session, action: AccountAction) -> Result<Value, AccountError> 
         AccountAction::Logout { all } => session.logout(all).map(|()| Value::Null),
         AccountAction::Delete => session.delete_account().map(|()| Value::Null),
         AccountAction::Forget => session.forget().map(|()| Value::Null),
+        AccountAction::PreferencesSchema => {
+            value(PreferenceSchemaResponse::from(session.preference_schema()?))
+        }
+        AccountAction::PreferencesLoad => value(session.preferences()?),
+        // 要写本机偏好、错误码不全是账号错误码的两项由 run 处理，不会到这里。
+        AccountAction::PreferencesUpload { .. } | AccountAction::PreferencesApply { .. } => {
+            Err(AccountError::Invalid)
+        }
     }
 }
 
@@ -162,7 +252,7 @@ pub unsafe extern "C" fn msime_client_account(request: *const u8, length: usize)
             .map(absolute_directory)
             .transpose()?;
         let session = session_for(directory, legacy).map_err(|error| error.code().to_owned())?;
-        run(&session, request.action).map_err(|error| error.code().to_owned())
+        run(&session, request.action)
     })
 }
 
@@ -364,5 +454,65 @@ mod tests {
             action(&directory, json!({ "operation": "logout", "all": true })),
             json!({ "ok": false, "error": "account_unauthorized" })
         );
+    }
+
+    #[test]
+    fn settings_sync_checks_its_arguments_and_the_account_before_the_network() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("account");
+        let preferences = root.path().join("preferences");
+        let cloud = json!({ "revision": 3, "settings": { "input.scheme": "pinyin" } });
+        let apply = |user_id: &str| {
+            action(
+                &directory,
+                json!({
+                    "operation": "preferences_apply",
+                    "preferences_directory": preferences,
+                    "user_id": user_id,
+                    "preferences": cloud,
+                }),
+            )
+        };
+        let unauthorized = json!({ "ok": false, "error": "account_unauthorized" });
+        for operation in ["preferences_schema", "preferences_load"] {
+            assert_eq!(
+                action(&directory, json!({ "operation": operation })),
+                unauthorized,
+                "{operation}"
+            );
+        }
+        assert_eq!(
+            action(
+                &directory,
+                json!({ "operation": "preferences_upload", "preferences_directory": preferences })
+            ),
+            unauthorized
+        );
+        // 未登录时没有页面下载时的那个账号，应用被取消。
+        assert_eq!(
+            apply("synthetic-user"),
+            json!({ "ok": false, "error": "account_cancelled" })
+        );
+
+        let invalid = json!({ "ok": false, "error": "account_invalid" });
+        assert_eq!(
+            action(
+                &directory,
+                json!({ "operation": "preferences_upload", "preferences_directory": "relative" })
+            ),
+            invalid
+        );
+        assert_eq!(
+            action(&directory, json!({ "operation": "preferences_upload" })),
+            invalid
+        );
+
+        // 页面下载后换了账号：在取令牌、联网之前就以取消结束，本机偏好不动。
+        save_session(&directory);
+        assert_eq!(
+            apply("another-user"),
+            json!({ "ok": false, "error": "account_cancelled" })
+        );
+        assert!(!preferences.join("preferences.json").exists());
     }
 }

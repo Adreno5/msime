@@ -1,11 +1,13 @@
-//! 账号页读到的脱敏响应：iOS、三个桌面宿主的 Tauri 命令和原生设置窗口经 C ABI（`msime_client_account`）返回的都是这几种形状。
+//! 账号页读到的脱敏响应：iOS、三个桌面宿主的 Tauri 命令和原生设置窗口经 C ABI（`msime_client_account`）返回的都是这几种形状，设置同步卡片读到的字段表（[`PreferenceSchemaResponse`]）也在这里。
 //!
 //! 它们就是 `packages/ui/src/account/account-page.tsx` 声明的 `AccountUser`、`AccountProviders`、`AccountChallenge` 和 `AccountProfile`，外加 `{ user }` 状态包装。令牌、nonce 和授权链接都不会进到这里。Android 宿主用同一个 provider 形状但省掉可选的 `apple` 和 `google`：只有宿主也实现了那种登录时，页面才给出相应按钮。
 
 use super::{account_avatar_is_uploaded, account_avatar_url_allowed};
-use super::{AccountChallenge, AccountProfile, AccountUser};
+use super::{
+    AccountChallenge, AccountPreferenceField, AccountPreferenceSchema, AccountProfile, AccountUser,
+};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +121,27 @@ impl From<AccountProfile> for ProfileResponse {
         Self {
             user: profile.user.into(),
             providers,
+        }
+    }
+}
+
+/// 设置同步卡片读到的字段表：Windows 的共享应用和原生设置窗口、iOS、Android 都返回这个形状。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferenceSchemaResponse {
+    fields: BTreeMap<String, AccountPreferenceField>,
+    maximum_bytes: usize,
+    update_mode: String,
+    revision_required: bool,
+}
+
+impl From<AccountPreferenceSchema> for PreferenceSchemaResponse {
+    fn from(schema: AccountPreferenceSchema) -> Self {
+        Self {
+            fields: schema.fields,
+            maximum_bytes: schema.maximum_bytes,
+            update_mode: schema.update_mode,
+            revision_required: schema.revision_required,
         }
     }
 }
