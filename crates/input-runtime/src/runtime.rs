@@ -143,6 +143,8 @@ pub struct Runtime<E: InputEngine = Session> {
     pub(crate) settled_rerank_enabled: bool,
     /// 最近一次 `dispatch` 或 `focus` 的旁路事实，见 [`DispatchFacts`]。
     pub(crate) facts: DispatchFacts,
+    /// `facts.selection` 那个座位上候选的文本，用引擎调用之前的快照记下；没有选择时为空。`DispatchFacts` 要保持 `Copy`，文本单独放在这里，缓冲区在调用之间复用。
+    pub(crate) selected_text: String,
     /// 组字（预编辑、读音、光标、整句改字、暂存词段）每变一次加一。宿主在一次调用前后各读一次，不同就说明组字变了；只看 refresh 里的比较不够，暂存词段不经过引擎快照。
     pub(crate) composition_epoch: u64,
     /// 候选视图（列表、注释、来源、高亮、页、释义）每变一次加一。高亮移动和翻页在 refresh 之前就返回，所以单独计数。
@@ -636,6 +638,7 @@ impl<E: InputEngine> Runtime<E> {
             phrase_prefix: String::new(),
             phrase_selections: Vec::new(),
             facts: DispatchFacts::default(),
+            selected_text: String::new(),
             composition_epoch: 0,
             candidates_epoch: 0,
         })
@@ -1035,6 +1038,14 @@ impl<E: InputEngine> Runtime<E> {
         self.facts
     }
 
+    /// 最近一次调用选中的候选的文本，和 [`DispatchFacts::selection`] 同生同灭；没有选择时为 `None`。脚本插件经 `read_commit` 读它。
+    pub fn selected_text(&self) -> Option<&str> {
+        self.facts
+            .selection
+            .is_some()
+            .then_some(self.selected_text.as_str())
+    }
+
     /// 组字的单调计数器，见字段说明。只比较相等与否，不解释数值。
     pub fn composition_epoch(&self) -> u64 {
         self.composition_epoch
@@ -1268,6 +1279,17 @@ impl<E: InputEngine> Runtime<E> {
 
     fn bump_candidates_epoch(&mut self) {
         self.candidates_epoch = self.candidates_epoch.wrapping_add(1);
+    }
+
+    /// 记下 `seat` 上的选择（见 [`Self::selection_fact`]）和它的文本；对不上时两者都清空。
+    fn record_selection(&mut self, how: SelectionHow, seat: usize, result: &EngineResult) {
+        self.facts.selection = self.selection_fact(how, seat, result);
+        self.selected_text.clear();
+        if self.facts.selection.is_some() {
+            if let Some(text) = self.cached.candidates.get(seat) {
+                self.selected_text.push_str(text);
+            }
+        }
     }
 
     /// 一次把候选交给引擎的调用是否真的选中了 `seat` 上的候选，用的是引擎调用之前（refresh 之前）的快照。
@@ -1909,6 +1931,7 @@ impl<E: InputEngine> Runtime<E> {
 
     pub fn focus(&mut self, focused: bool) -> Result<Transition, RuntimeError> {
         self.facts = DispatchFacts::default();
+        self.selected_text.clear();
         self.advance()?;
         // Invalidate the client before cancellation, including on engine failure.
         self.focused = false;
@@ -1982,8 +2005,7 @@ impl<E: InputEngine> Runtime<E> {
         // Finish through Engine with the host highlight BEFORE asking it to translate.
         // Calling Engine punctuation on an active composition would choose candidate zero.
         let mut finished = self.engine.finish(self.engine_index(self.highlighted))?;
-        self.facts.selection =
-            self.selection_fact(SelectionHow::PunctuationFinish, self.highlighted, &finished);
+        self.record_selection(SelectionHow::PunctuationFinish, self.highlighted, &finished);
         let punctuation = match self.engine.punctuation(value) {
             Ok(result) => result,
             Err(error) if finished.has_commit => {
@@ -2057,8 +2079,7 @@ impl<E: InputEngine> Runtime<E> {
             raw
         } else {
             let finished = self.engine.finish(self.engine_index(self.highlighted))?;
-            self.facts.selection =
-                self.selection_fact(SelectionHow::PunctuationFinish, self.highlighted, &finished);
+            self.record_selection(SelectionHow::PunctuationFinish, self.highlighted, &finished);
             finished
         };
         if !finished.has_commit {
@@ -2078,6 +2099,7 @@ impl<E: InputEngine> Runtime<E> {
     pub fn dispatch(&mut self, action: Action) -> Result<Transition, RuntimeError> {
         // 每次调用都从空白开始，提前返回的路径（报错、失焦）也不会留下上一键的事实。
         self.facts = DispatchFacts::default();
+        self.selected_text.clear();
         if matches!(&action, Action::Punctuation(value) | Action::PunctuationAscii(value) if !value.is_ascii_punctuation())
         {
             return Err(RuntimeError::InvalidPunctuation);
@@ -2379,7 +2401,7 @@ impl<E: InputEngine> Runtime<E> {
         // 快照还是引擎调用之前的那份，座位和候选文本都按用户当时看到的核对。
         if let Ok(result) = &result {
             if let Some((how, seat)) = pick {
-                self.facts.selection = self.selection_fact(how, seat, result);
+                self.record_selection(how, seat, result);
             }
             if raw_route {
                 self.facts.raw = result.has_commit;
@@ -2409,7 +2431,7 @@ impl<E: InputEngine> Runtime<E> {
         if self.wubi_should_auto_commit(character_action) {
             result = self.engine.select(self.engine_index(0))?;
             // 这次的结果整个换成了自动上屏，之前记下的事实随之作废。
-            self.facts.selection = self.selection_fact(SelectionHow::WubiAuto, 0, &result);
+            self.record_selection(SelectionHow::WubiAuto, 0, &result);
             self.facts.tail_chars = 0;
             if let Err(error) = self.refresh() {
                 result.diagnostic = format!("Candidate refresh failed: {error}");

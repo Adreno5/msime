@@ -80,3 +80,5 @@ Status: proposed
 - Linux 宿主不为修饰键、快捷键、松开、录音时的键和 IBus 屏幕键盘的键开轮次（见第 2c 阶段一节）。脚本运行时不因此熔断，但这些按下引起的派发记在上一轮里、用上一轮的 fuel，补上"开一轮但不出声"的位之前一直如此。
 
 相关：[Windows 打字特效对齐 macOS](../../implemented/feature/2026-10-10-windows-typing-effects-caret-overlay.md) 是第 2 阶段 Windows 接入时要改的那套按键音、特效和 Aux 管道路径。
+
+第 3 阶段的执行器见 [桌面脚本插件的沙箱运行时](../../implemented/architecture/2026-10-12-script-runtime-sandbox.md)：脚本 ABI 的 `Hook` 编号沿用本篇 `LifecycleEvent` 的判别值。本篇推导出的事件如何按授权投递给脚本、哪些不投递，见 [脚本插件在输入法进程里](../../implemented/architecture/2026-10-12-script-plugins-in-the-input-method-process.md)。

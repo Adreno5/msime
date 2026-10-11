@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// The kinds the library accepts, which is every kind a pack can be today. An effect pack carries no files besides its manifest, but the style, colours and timing it picks are still someone's work worth handing on, and the server already accepts and validates `effect`; a kind added to [`PluginKind`] later is shared only once it is listed here and declared in [`KINDS_DECLARATION`].
+/// 社区库接受的类型：全部八种数据类插件。桌面上的脚本插件（`script`）不在其中，只能本地导入。特效包除了清单不带任何文件，但它挑的样式、颜色和节奏仍是值得分享的作品，服务端也早已接受并校验 `effect`。以后给 [`PluginKind`] 加的类型，只有列进这里、并在 [`KINDS_DECLARATION`] 里声明之后才会分享。
 pub const PUBLISHABLE_KINDS: [PluginKind; 8] = [
     PluginKind::Sound,
     PluginKind::Music,

@@ -182,6 +182,8 @@ pub extern "C" fn msime_client_focus(handle: u64, focused: bool) -> *mut c_char 
                 msime_engine::flush_personal_learning();
             } else {
                 session.refresh_plugin_tables();
+                // 脚本插件：在本次 focus 的任何事件之前丢弃上一个字段的实例，授权文件或包变了就重读。
+                session.lifecycle_focus_in();
                 // 设置应用可能刚下载好日文、粤拼、注音、笔画的资源包或落定重排模型；Engine 重建和模型加载在随后的 `complete_transition` 里空闲时进行。
                 session.refresh_resource_packs();
                 // The settings page may have imported the pack in use again, or removed it, since this session last looked.
