@@ -132,11 +132,11 @@ do
 done
 if [[ "$settings" == true ]]; then
   for suite in SettingsDeviceSmoke SettingsLifecycleSmoke AccountStorageDeviceSmoke CloudClipboardKeystoreDeviceSmoke CloudClipboardDriverDeviceSmoke; do
-    result=$(run_instrumentation "app.msime.android.test/app.msime.android.test.$suite")
+    result=$("$adb" -s "$serial" shell am instrument -w "app.msime.android.test/app.msime.android.test.$suite")
     printf '%s\n' "$result"
     [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Shared settings acceptance failed" >&2; exit 1; }
   done
-  result=$(run_instrumentation app.msime.android.test/app.msime.android.BackendAccountRefreshDeviceSmoke)
+  result=$("$adb" -s "$serial" shell am instrument -w app.msime.android.test/app.msime.android.BackendAccountRefreshDeviceSmoke)
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Account refresh acceptance failed" >&2; exit 1; }
 fi
@@ -197,7 +197,8 @@ if [[ "$handwriting" == true ]]; then
   }
   "$adb" -s "$serial" shell rm -f "$touch_request" "$touch_ack"
   handwriting_output=$(mktemp "$repo_root/target/android/device-test/handwriting.XXXXXX")
-  run_instrumentation app.msime.android.test/app.msime.android.test.HandwritingDeviceSmoke \
+  "$adb" -s "$serial" shell am instrument -w \
+    app.msime.android.test/app.msime.android.test.HandwritingDeviceSmoke \
     >"$handwriting_output" &
   instrumentation_pid=$!
   last_request=0
