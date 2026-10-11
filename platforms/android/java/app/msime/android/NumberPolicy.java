@@ -51,6 +51,12 @@ public final class NumberPolicy {
         return Double.isFinite(value) ? value : fallback;
     }
 
+    /** Read a finite JSON ratio in the closed 0–1 range. */
+    public static double strictRate(Object raw, double fallback) {
+        double value = strictDouble(raw, fallback);
+        return value >= 0d && value <= 1d ? value : fallback;
+    }
+
     /** Format a decimal with one locale-stable fractional digit. */
     public static String decimal1(double value) {
         return String.format(Locale.ROOT, "%.1f", value);
