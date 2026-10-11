@@ -14,6 +14,8 @@ import type {
   HandwritingStrokeColor,
   MobileKeyboardFeedback,
 } from "./mobile-keyboard-feedback-section";
+import { HandwritingPadPreview } from "./handwriting-pad-preview";
+import { keyboardThemeId } from "../theme/global-theme";
 
 /** 文件里没有值时 HarmonyOS 键盘绘制所用的默认值（`KeyboardFeedback.DEFAULTS`），用于已加载设置中缺少的字段。 */
 const DEFAULT_DELAY_MS = 600;
@@ -59,10 +61,13 @@ function HarmonyHandwritingPadGroups({
   value,
   busy,
   onChange,
+  preview,
 }: {
   value: MobileKeyboardFeedback;
   busy: boolean;
   onChange: (value: MobileKeyboardFeedback) => void;
+  /** 预览手写板用的皮肤；拿不到表单时不画预览。 */
+  preview?: Pick<Parameters<typeof HandwritingPadPreview>[0], "theme" | "skin" | "customDesign">;
 }) {
   const [delay, setDelay] = useSettledSlider(
     value.handwritingDelayMs ?? DEFAULT_DELAY_MS,
@@ -74,6 +79,19 @@ function HarmonyHandwritingPadGroups({
   );
   return (
     <>
+      {/* 预览跟着下面的设置走：拖动滑块时用正在拖的值，不等保存。 */}
+      {preview && (
+        <GroupList title="预览">
+          <div className={settings.phoneKeyboardPreview}>
+            <HandwritingPadPreview
+              {...preview}
+              delayMs={delay}
+              strokeColor={value.handwritingStrokeColor ?? DEFAULT_STROKE_COLOR}
+              strokeWidth={width}
+            />
+          </div>
+        </GroupList>
+      )}
       <GroupList title="书写">
         <SliderRow
           title="识别等待时间"
@@ -191,6 +209,11 @@ export function HandwritingSettingsSection({
         value={harmonyPad}
         busy={form.mobileKeyboardFeedbackBusy}
         onChange={(value) => void form.saveMobileKeyboardFeedback(value)}
+        preview={{
+          theme: form.keyboardPreviewTheme,
+          skin: keyboardThemeId(form.globalTheme, form.draft.custom_theme),
+          customDesign: form.customTouchKeyboardSkin,
+        }}
       />
     ) : (
       <GroupList title="HarmonyOS 键盘手写">

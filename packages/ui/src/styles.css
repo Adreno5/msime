@@ -118,6 +118,8 @@
   /* 不设 fill mode：圆环在动画前后都停在自身的 `opacity: 0`，只在扩散时可见。 */
   --animate-splash-ripple: splash-ripple 1.2s ease-out 1.45s 2;
   --animate-splash-load: splash-load 2.4s ease-out both;
+  /* 「手写输入」页预览里描一笔（`HandwritingPadPreview`）：时长与组件的 `STROKE_MS` 相同，各笔的先后由行内的 animation-delay 排。 */
+  --animate-hand-stroke: splash-draw 0.42s cubic-bezier(0.4, 0, 0.2, 1) both;
   /* 改版的动效（dc.html `msBadgeIn` … `msPushIn`）：成就徽章上浮入场，奖牌点按时弹出并晃动、一道高光扫过，进度环和进度条填充，底部面板上滑，toast 或遮罩淡入，压入的页面从尾侧滑入。需要错开时间的调用处自己加 `animation-delay`；每一个都像启动页一样配上 `motion-reduce:animate-none`。 */
   --animate-ms-badge-in: ms-badge-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   --animate-ms-medal-pop: ms-medal-pop 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
