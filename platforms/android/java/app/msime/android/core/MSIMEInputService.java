@@ -24,6 +24,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
@@ -47,6 +48,7 @@ import android.widget.PopupMenu;
 import android.widget.PopupWindow;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputContentInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -63,6 +65,8 @@ import app.msime.android.keyboard.EnglishSuggestionPolicy;
 import app.msime.android.policy.HostOptionsPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -312,6 +316,12 @@ public final class MSIMEInputService extends InputMethodService {
     LinearLayout recentClipRow;
     Button recentClipButton;
     private final Runnable recentClipExpiry = this::render;
+    /** 发送「最近复制」图片（#6781）时读剪贴板图片、写缓存副本和清理副本都在这条线程上。 */
+    private final ExecutorService clipboardImageWorker = Executors.newSingleThreadExecutor();
+    /** 换输入框或收起输入时加一：点了发送之后输入框变了，读完的图片就不再提交给新的输入框。 */
+    private long clipboardImageGeneration;
+    /** 发出 {@link ClipboardImagePolicy#RETENTION_MS} 之后删掉缓存里的副本。 */
+    private final Runnable clipboardImageCleanup = this::clearClipboardImages;
     boolean toolbarFloating;
     /** 本地设置 `platform.android.toolbar_text_edit`：工具栏上显示「文本编辑」按钮。 */
     boolean toolbarTextEdit;
@@ -1231,6 +1241,7 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         long startGeneration = ++engineStartGeneration;
         cloudClipboardGeneration++;
+        clipboardImageGeneration++;
         // 只有接下来要建引擎会话的输入框才停掉空闲同步：建会话前 scheduleEngineStartup 会先在同一个工作线程上同步一轮。焦点落到不打字的窗口（桌面、设置页）时系统同样会调这里，原先一律停掉，离开输入框 500 ms 后的空闲同步几乎总被取消，导入词库的词条就一直等不到写入。
         if (info != null && EditorPolicy.useEngine(info.inputType)) cancelPersonalDictionarySynchronization();
         boolean newDocument = !restarting || currentDocumentIdentifier == 0;
@@ -1361,6 +1372,8 @@ public final class MSIMEInputService extends InputMethodService {
         Telemetry.beginInputSession(this);
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
         if (clipboard != null) clipboard.addPrimaryClipChangedListener(clipboardWatcher);
+        // 键盘进程上次没走到 onDestroy 就被回收时，发出去的图片副本还留在缓存里。
+        clearClipboardImages();
     }
 
     @Override public void onStartInputView(EditorInfo info, boolean restarting) {
@@ -1402,6 +1415,7 @@ public final class MSIMEInputService extends InputMethodService {
         cancelInputViewRefresh();
         engineStartGeneration++;
         cloudClipboardGeneration++;
+        clipboardImageGeneration++;
         imeBottomRow.resetSpaceCursor();
         imeCalculator.clear();
         imeEmailSuffixes.clear();
@@ -1479,6 +1493,8 @@ public final class MSIMEInputService extends InputMethodService {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
         if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipboardWatcher);
         main.removeCallbacks(recentClipExpiry);
+        main.removeCallbacks(clipboardImageCleanup);
+        clipboardImageGeneration++;
         imeLetterRows.cancelBackspaceRepeat();
         cancelInputViewRefresh();
         engineStartGeneration++;
@@ -1491,6 +1507,9 @@ public final class MSIMEInputService extends InputMethodService {
         flushKeyPresses();
         typingStatisticsWorker.shutdown();
         emojiWorker.shutdown();
+        // 同样排在 shutdown 之前：正在复制的那张写完后，这一步把它和更早的副本一起删掉。
+        clearClipboardImages();
+        clipboardImageWorker.shutdown();
         imeVoiceEntry.shutdown();
         imeKeyFeedback.shutdown();
         imeLayoutRows.shutdown();
@@ -5723,6 +5742,34 @@ public final class MSIMEInputService extends InputMethodService {
         return new PrimaryClip(text, description.getTimestamp(), sensitive);
     }
 
+    /** 系统剪贴板里当前的那一张图片：content URI、具体图片类型、复制时刻（读不到时为 0）和是否被标为敏感（#6781）。 */
+    record PrimaryImage(Uri uri, String mimeType, long copiedAtMs, boolean sensitive) {
+        String identity() {
+            return ClipboardCapturePolicy.identity(copiedAtMs,
+                ClipboardImagePolicy.identityText(uri.toString(), mimeType));
+        }
+    }
+
+    /**
+     * 读系统剪贴板当前的那一张图片；没有剪贴板内容、第一项不是 content URI、描述里没有具体的图片类型时为 null。只读描述和 URI，不打开图片。
+     *
+     * <p>和 {@link #readPrimaryClip()} 一样，敏感标记照样返回，由调用方决定怎么对待。
+     */
+    PrimaryImage readPrimaryImage() {
+        ClipboardManager manager = getSystemService(ClipboardManager.class);
+        ClipData clip = manager == null || !manager.hasPrimaryClip() ? null : manager.getPrimaryClip();
+        ClipDescription description = clip == null ? null : clip.getDescription();
+        if (clip == null || clip.getItemCount() == 0 || description == null) return null;
+        String[] types = new String[description.getMimeTypeCount()];
+        for (int index = 0; index < types.length; index++) types[index] = description.getMimeType(index);
+        String mimeType = ClipboardImagePolicy.imageMimeType(types);
+        Uri uri = clip.getItemAt(0).getUri();
+        if (mimeType == null || uri == null || !"content".equals(uri.getScheme())) return null;
+        boolean sensitive = description.getExtras() != null
+            && description.getExtras().getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false);
+        return new PrimaryImage(uri, mimeType, description.getTimestamp(), sensitive);
+    }
+
     /**
      * 把当前剪贴板文本记进本机历史。
      *
@@ -5772,7 +5819,7 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     /**
-     * 把系统剪贴板里刚复制的那一条交给工具栏的「最近复制」（#5692）。
+     * 把系统剪贴板里刚复制的那一条交给工具栏的「最近复制」（#5692）；复制的是一张图片时交的是它的身份和类型（#6781），发不发得出去由 {@link #recentImageSendable} 按当前输入框决定。
      *
      * <p>`copiedNow` 为真时是复制监听：这一下就是用户刚复制的，系统给不出复制时刻也按现在算。为假时是弹出键盘时的补看：先只读剪贴板的描述（不读内容）看复制时刻，过了显示窗口就不读内容；读不到复制时刻时不提供，免得一条很久以前的内容被当成刚复制的。系统标为敏感的内容、剪贴板历史或本地开关关着、隐私模式和密码类输入框都不提供，前两种连剪贴板都不读。
      */
@@ -5788,8 +5835,15 @@ public final class MSIMEInputService extends InputMethodService {
             if (copiedAt <= 0 && copiedNow) copiedAt = now;
             if (!RecentClipboardSuggestion.fresh(copiedAt, now)) return;
             PrimaryClip clip = readPrimaryClip();
-            if (clip == null || clip.sensitive()) return;
-            recentClip.offer(clip.identity(), clip.text(), copiedAt);
+            // 不是文字时看是不是一张图片（#6781）：同样丢弃敏感内容，只记身份和类型。
+            PrimaryImage image = clip == null ? readPrimaryImage() : null;
+            if (image != null) {
+                if (image.sensitive()) return;
+                recentClip.offerImage(image.identity(), image.mimeType(), copiedAt);
+            } else {
+                if (clip == null || clip.sensitive()) return;
+                recentClip.offer(clip.identity(), clip.text(), copiedAt);
+            }
         } catch (SecurityException error) {
             return;
         }
@@ -5809,12 +5863,110 @@ public final class MSIMEInputService extends InputMethodService {
         if (!previousClipboard && clipboardHistoryEnabled) offerRecentClip(false);
     }
 
-    /** 点工具栏上的「最近复制」：粘贴它，这一条不再出现。 */
+    /** 点工具栏上的「最近复制」：粘贴它（是图片时发送它），这一条不再出现。 */
     void pasteRecentClip() {
-        String text = recentClip.text(System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        if (recentClip.imageMimeType(now) != null) {
+            sendRecentImage(now);
+            return;
+        }
+        String text = recentClip.text(now);
         recentClip.dismiss();
         if (text != null) insertClipboardText(text);
         render();
+    }
+
+    /**
+     * 「最近复制」的图片现在能不能发到当前输入框（#6781）：有一张还没过期的图片，并且输入框经 `EditorInfo.contentMimeTypes` 声明收这种图片。不收的输入框（很多聊天应用、所有不支持富内容的输入框）里不显示，图片仍在系统剪贴板上，长按输入框粘贴照样能用。
+     */
+    boolean recentImageSendable(long nowMs) {
+        String mimeType = recentClip.imageMimeType(nowMs);
+        EditorInfo info = getCurrentInputEditorInfo();
+        return mimeType != null && info != null
+            && ClipboardImagePolicy.accepts(info.contentMimeTypes, mimeType);
+    }
+
+    /**
+     * 把「最近复制」的图片发到当前输入框（#6781）。
+     *
+     * <p>先在主线程上核对：输入框还收这种图片、隐私规则允许、剪贴板里还是同一张（身份一致，没有被清空或换成别的）、没有被标为敏感。然后在 {@link #clipboardImageWorker} 上把图读进缓存副本（{@link ClipboardImageCache}），回到主线程用 `commitContent` 交给输入框。这一条点过就收起，不论成败。
+     */
+    private void sendRecentImage(long nowMs) {
+        String identity = recentClip.identity(nowMs);
+        String mimeType = recentClip.imageMimeType(nowMs);
+        boolean sendable = recentImageSendable(nowMs);
+        recentClip.dismiss();
+        render();
+        if (identity == null || mimeType == null || connection == null) return;
+        if (!sendable || !imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)) {
+            notice("这个输入框不支持直接发送图片，可以长按输入框粘贴");
+            return;
+        }
+        PrimaryImage image;
+        try {
+            image = readPrimaryImage();
+        } catch (SecurityException error) {
+            image = null;
+        }
+        if (image == null || image.sensitive() || !identity.equals(image.identity())) {
+            notice("复制的图片已不在剪贴板里");
+            return;
+        }
+        final long generation = clipboardImageGeneration;
+        final File directory = new File(getCacheDir(), ClipboardImagePolicy.DIRECTORY);
+        final android.content.ContentResolver resolver = getContentResolver();
+        final Uri source = image.uri();
+        clipboardImageWorker.execute(() -> {
+            File copy = null;
+            String failure = null;
+            try (InputStream input = resolver.openInputStream(source)) {
+                copy = ClipboardImageCache.replace(input, directory, mimeType, ClipboardImagePolicy.MAX_BYTES);
+            } catch (ClipboardImageCache.TooLargeException error) {
+                failure = "图片太大，不能直接发送，可以长按输入框粘贴";
+            } catch (IOException | SecurityException | IllegalArgumentException error) {
+                failure = "无法读取复制的图片";
+            }
+            final File sent = copy;
+            final String reason = failure;
+            main.post(() -> commitClipboardImage(generation, sent, mimeType, reason));
+        });
+    }
+
+    /** {@link #sendRecentImage} 在主线程上的后半段：输入框没变时把副本经 FileProvider 交给它，并安排过一会儿删掉副本。 */
+    private void commitClipboardImage(long generation, File copy, String mimeType, String failure) {
+        if (generation != clipboardImageGeneration || connection == null) {
+            // 读图期间换了输入框或收起了键盘：这张不再发，副本也不留。
+            clearClipboardImages();
+            return;
+        }
+        if (failure != null || copy == null) {
+            notice(failure == null ? "无法读取复制的图片" : failure);
+            return;
+        }
+        boolean sent;
+        try {
+            Uri uri = ClipboardImageCache.contentUri(this, copy);
+            InputContentInfo content = new InputContentInfo(uri,
+                new ClipDescription(ClipboardImagePolicy.LABEL, new String[] {mimeType}));
+            sent = connection.commitContent(content,
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null);
+        } catch (IOException | IllegalArgumentException error) {
+            sent = false;
+        }
+        main.removeCallbacks(clipboardImageCleanup);
+        if (!sent) {
+            clearClipboardImages();
+            notice("这个输入框没有收下图片，可以长按输入框粘贴");
+            return;
+        }
+        main.postDelayed(clipboardImageCleanup, ClipboardImagePolicy.RETENTION_MS);
+    }
+
+    /** 在 {@link #clipboardImageWorker} 上清空缓存里的图片副本；键盘进程正在退出、线程已经停了时什么也不做（退出前已经排过一次清理）。 */
+    private void clearClipboardImages() {
+        if (clipboardImageWorker.isShutdown()) return;
+        File directory = new File(getCacheDir(), ClipboardImagePolicy.DIRECTORY);
+        clipboardImageWorker.execute(() -> ClipboardImageCache.clear(directory));
     }
 
     void dismissRecentClip() {
@@ -7823,14 +7975,17 @@ public final class MSIMEInputService extends InputMethodService {
         if (!idle) recentClip.dismiss();
         long nowMs = System.currentTimeMillis();
         // 候选条模式里不换上「最近复制」：它会盖住工具栏上展开软键盘的那个键。
-        String recent = toolbarRow && !keysCollapsed && !anyToolbarPanelOpen() && recentClipEnabled()
-            && connection != null && imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY)
-            ? recentClip.text(nowMs) : null;
-        imeToolbar.updateRecentClipRow(recent);
+        boolean recentAllowed = toolbarRow && !keysCollapsed && !anyToolbarPanelOpen() && recentClipEnabled()
+            && connection != null && imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY);
+        String recent = recentAllowed ? recentClip.text(nowMs) : null;
+        // 图片只在当前输入框收得下时才占这一行（#6781）。
+        boolean recentImage = recentAllowed && recentImageSendable(nowMs);
+        imeToolbar.updateRecentClipRow(recent, recentImage);
         main.removeCallbacks(recentClipExpiry);
-        if (recent != null) main.postDelayed(recentClipExpiry, recentClip.remainingMs(nowMs) + 50);
+        boolean recentShown = recent != null || recentImage;
+        if (recentShown) main.postDelayed(recentClipExpiry, recentClip.remainingMs(nowMs) + 50);
         if (shortcutScroll != null)
-            ViewPolicy.setVisible(shortcutScroll, toolbarRow && recent == null);
+            ViewPolicy.setVisible(shortcutScroll, toolbarRow && !recentShown);
         if (candidateLine != null)
             ViewPolicy.setVisible(candidateLine, !heightMode && !idle && !hasDiagnostic);
         if (!ViewPolicy.isVisible(replyKeyboard))
