@@ -1647,6 +1647,10 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     private void stop(boolean finish) {
+        // Rebuilding the Engine (including an in-place privacy-mode restart) invalidates any
+        // clipboard image copy still running on the worker. Its completion must not submit an
+        // image after the user has enabled the privacy gate.
+        clipboardImageGeneration++;
         candidateTranslationBindingEpoch++;
         candidateTranslationVerifiedGeneration = -1L;
         candidateTranslationAppliedGeneration = -1L;
