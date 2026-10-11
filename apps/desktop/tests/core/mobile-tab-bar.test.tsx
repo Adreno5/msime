@@ -31,10 +31,16 @@ function mount(initialPage?: string, platform = "harmony") {
         load: async () => initial,
         save: vi.fn(),
         home: {},
-        // The four tabs only exist where their pages do, and each page is gated on the capability
-        // behind it. Harmony has all four.
+        // 标签页只在对应页面存在时出现，每个页面又取决于它背后的客户端能力。鸿蒙三个都有；社区客户端在，但已没有「社区」标签页。
         account: {} as never,
-        typingStatistics: {} as never,
+        typingStatistics: {
+          load: vi.fn().mockResolvedValue({
+            availability: "neverWritten",
+            statistics: { enabled: false, total: 0, days: {}, detail: {} },
+          }),
+          setEnabled: vi.fn(),
+          reset: vi.fn(),
+        },
         communitySkins: {
           list: vi.fn().mockResolvedValue({ skins: [], has_more: false }),
         } as never,
@@ -44,8 +50,8 @@ function mount(initialPage?: string, platform = "harmony") {
   );
 }
 
-/** The four the design shows, in its own words: 设置 / 社区 / 统计 / 我的. */
-const tabs = ["设置", "社区", "统计", "我的"];
+/** 设计里的标签页，用它自己的叫法：设置 / 统计 / 我的。社区内容并进了皮肤、词库、AI 辅助这些功能页，不再单独占一个标签页。 */
+const tabs = ["设置", "统计", "我的"];
 
 /** 「设置」根页，把每个没有自己标签页的页面列成一行。 */
 const root = () => screen.getByRole("region", { name: "首页" });
@@ -54,10 +60,8 @@ const rootRowTitles = () =>
 const openRootRow = (title: string) =>
   fireEvent.click(within(root()).getByRole("button", { name: title }));
 
-// The bar used to hold five cells, and the fifth was a `<select>` of thirteen page names — a form
-// control sitting where a tab belongs, and the only way into most of the app. The source's bar is
-// four tabs of an icon over a word and nothing else.
-test("the phone tab bar is the source's four tabs, each an icon over a word", async () => {
+// 标签栏曾有五格，第五格是列出十三个页面名的 `<select>`：一个表单控件占着标签页的位置，还是进入大部分应用的唯一入口。源应用的标签栏只有图标加文字的标签页，社区并进功能页之后是三个。
+test("the phone tab bar is the source's three tabs, each an icon over a word", async () => {
   mount();
   await settingsFormReady();
 
@@ -69,7 +73,6 @@ test("the phone tab bar is the source's four tabs, each an icon over a word", as
   // 鸿蒙画设计里的 Fluent 图标，是 24px 的 `currentColor` SVG，所以选中时取强调色。
   expect(icons.map((icon) => icon!.getAttribute("data-tab-icon"))).toEqual([
     "settings",
-    "people_community",
     "data_bar_vertical",
     "person",
   ]);
@@ -88,12 +91,12 @@ test("a touch host other than HarmonyOS keeps the masked tab icons", async () =>
 
   const bar = screen.getByRole("navigation", { name: "主要功能" });
   const icons = [...bar.querySelectorAll<HTMLElement>("[data-tab-icon]")];
-  expect(icons).toHaveLength(4);
+  expect(icons).toHaveLength(3);
   expect(icons.every((icon) => icon.style.getPropertyValue("--tab-icon").startsWith("url("))).toBe(
     true,
   );
-  // The icons have to differ from one another, or the bar reads as four of the same thing.
-  expect(new Set(icons.map((icon) => icon.getAttribute("data-tab-icon"))).size).toBe(4);
+  // 图标必须各不相同，否则标签栏看上去是同一样东西重复了几遍。
+  expect(new Set(icons.map((icon) => icon.getAttribute("data-tab-icon"))).size).toBe(3);
   expect(bar.querySelector("svg")).toBeNull();
 });
 
@@ -175,8 +178,8 @@ test("each phone tab remembers where the user left it", async () => {
   expect(screen.getByRole("heading", { name: "输入" })).toBeTruthy();
 
   const bar = screen.getByRole("navigation", { name: "主要功能" });
-  fireEvent.click(within(bar).getByRole("button", { name: "社区" }));
-  expect(await screen.findByRole("heading", { name: "社区" })).toBeTruthy();
+  fireEvent.click(within(bar).getByRole("button", { name: "统计" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
   fireEvent.click(within(bar).getByRole("button", { name: "设置" }));
 
   expect(screen.getByRole("heading", { name: "输入" })).toBeTruthy();

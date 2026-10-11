@@ -9,9 +9,13 @@ import * as mobileNavigation from "../../../../packages/ui/src/settings/mobile-n
 const pages = [{ id: "appearance" }, { id: "input" }, { id: "home" }] as const;
 
 test("maps primary and nested pages to the mobile tab stack", () => {
-  expect(mobilePrimaryPageIds).toEqual(["home", "community", "typing-statistics", "account"]);
-  expect(mobileTabForPage("community")).toBe("community");
+  // 社区内容并进了功能页，没有「社区」标签页。
+  expect(mobilePrimaryPageIds).toEqual(["home", "typing-statistics", "account"]);
+  expect(mobileTabForPage("typing-statistics")).toBe("typing-statistics");
   expect(mobileTabForPage("input")).toBe("home");
+  // 社区图库是皮肤、词库、AI 辅助页上的子视图，这些页都在「设置」标签页的栈上。
+  expect(mobileTabForPage("skin")).toBe("home");
+  expect(mobileTabForPage("ai")).toBe("home");
   // 「关于」和它的二级页面「发送哪些内容」都留在「我的」。
   expect(mobileTabForPage("about")).toBe("account");
   expect(mobileTabForPage("usage-reporting")).toBe("account");

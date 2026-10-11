@@ -20,6 +20,10 @@ const project = (overrides: Partial<Parameters<typeof settingsPageProjections>[0
     ...overrides,
   });
 
+test("desktop hosts with a community client keep the 社区 page", () => {
+  expect(project().availablePages.map((page) => page.id)).toContain("community");
+});
+
 test("filters pages by host capabilities while preserving registry order", () => {
   const desktop = project({
     hasHomePage: false,
@@ -86,10 +90,11 @@ test("projects mobile pages into tabs, grouped settings, and sidebar sections", 
   expect(mobile.availablePages.find((page) => page.id === "appearance")?.title).toBe("候选栏");
   expect(mobile.mobilePrimaryPages.map((page) => page.id)).toEqual([
     "home",
-    "community",
     "typing-statistics",
     "account",
   ]);
+  // 触屏宿主即使有社区客户端也没有「社区」页：社区内容列在皮肤、词库、AI 辅助这些功能页里。
+  expect(mobile.availablePages.map((page) => page.id)).not.toContain("community");
   const listed = mobile.mobileSecondaryGroups.flatMap((group) =>
     group.pages.map((page) => page.id),
   );
@@ -115,7 +120,7 @@ test("projects mobile pages into tabs, grouped settings, and sidebar sections", 
   );
 });
 
-// iPad 与手机同样 mobilePlatform 为真：标签栏上的社区、统计、我的不在侧栏里重复出现，侧栏只在首页之后列出分组。
+// iPad 与手机同样 mobilePlatform 为真：标签栏上的统计、我的不在侧栏里重复出现，侧栏只在首页之后列出分组；触屏宿主没有「社区」页，侧栏里也没有它。
 test("keeps the tab pages out of the iPad sidebar", () => {
   const ipad = project({ mobilePlatform: true });
   const sidebar = ipad.sidebarGroups.flatMap((group) => group.pages.map((page) => page.id));

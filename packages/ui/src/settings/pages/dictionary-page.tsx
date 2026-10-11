@@ -64,6 +64,7 @@ export function DictionarySettingsPage() {
     openPanel,
     harmonyPlatform,
     mobilePlatform,
+    openCommunityGallery,
   } = useSettingsForm();
   // HarmonyOS 手机按 Android 的词库页布局：按词库列出，点进去编辑，而不是这张按种类查词条的桌面表单。它在打开时读词库和社区列表，所以只在本页可见时挂载。
   if (harmonyPlatform && mobilePlatform) {
@@ -242,6 +243,19 @@ export function DictionarySettingsPage() {
             description="管理同步到账号的词条和备份"
             action={() => openPanel(client.openCloudDictionary)}
             label="打开云词库"
+          />
+        </GroupList>
+      )}
+      {/* 触屏宿主没有「社区」页，社区词库从这里进入，完整图库在本页上打开。 */}
+      {mobilePlatform && client.communityResources && (
+        <GroupList title="社区词库">
+          <ActionRow
+            title="社区词库"
+            description="看看别人分享的词库，可以添加到本机"
+            action={() =>
+              openCommunityGallery({ category: "dictionary", scope: "", initialMine: false })
+            }
+            label="浏览更多词库"
           />
         </GroupList>
       )}

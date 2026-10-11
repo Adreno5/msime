@@ -10,10 +10,9 @@ export function mobileTabIcon(id: string, icon: string): string {
   return id === "home" ? settingsTabIcon : icon;
 }
 
-/** HarmonyOS 手机设计稿为每个底部标签页绘制的 Fluent 图标；id 不是这四个标签页之一时为 undefined。 */
+/** HarmonyOS 手机设计稿为每个底部标签页绘制的 Fluent 图标；id 不是这三个标签页之一时为 undefined。 */
 export function harmonyTabIcon(id: string): FluentIconName | undefined {
   if (id === "home") return "settings";
-  if (id === "community") return "people_community";
   if (id === "typing-statistics") return "data_bar_vertical";
   if (id === "account") return "person";
   return undefined;

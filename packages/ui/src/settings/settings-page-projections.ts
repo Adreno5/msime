@@ -63,7 +63,8 @@ export function settingsPageProjections({
         (item.id !== "vocabulary" || hasVocabularyReview) &&
         (item.id !== "account" || hasAccount) &&
         (item.id !== "chat" || hasChat) &&
-        (item.id !== "community" || hasCommunity) &&
+        // 触屏宿主没有「社区」页：社区内容列在皮肤、词库、AI 辅助这些功能页里，完整图库是那些页面上的子视图。
+        (item.id !== "community" || (hasCommunity && !mobilePlatform)) &&
         (item.id !== "floating-toolbar" || showFloatingToolbar) &&
         (item.id !== "developer" || showDeveloperPage) &&
         (item.id !== "plugins" || hasPlugins) &&

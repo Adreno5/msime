@@ -1,9 +1,8 @@
-/** The four primary tabs shared by touch settings hosts. */
-export type MobilePrimaryPageId = "home" | "community" | "typing-statistics" | "account";
+/** 触屏设置宿主共用的三个底部标签页：设置、统计、我的。社区内容不再单独占一个标签页，而是列在皮肤、词库、AI 辅助这些功能页里，完整图库从那些页面打开（见 `useCommunityGallerySubview`）。 */
+export type MobilePrimaryPageId = "home" | "typing-statistics" | "account";
 
 export const mobilePrimaryPageIds: readonly MobilePrimaryPageId[] = [
   "home",
-  "community",
   "typing-statistics",
   "account",
 ];
