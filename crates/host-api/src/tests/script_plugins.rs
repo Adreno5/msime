@@ -942,10 +942,11 @@ fn a_grant_whose_hash_no_longer_matches_the_pack_never_runs() {
         vec![json!({"id": "stale", "hash": stale, "enabled": true, "granted": []})],
     );
     opt_in(&fixture, TRAIT_KNOWN);
-    for _ in 0..20 {
-        commit_nihao(fixture.handle);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // 编译请求在聚焦时交给后台线程；它按顺序处理，屏障文件写出来时那次核对已经做完，之后的上屏不再取决于后台线程有没有轮到它。
+    let barrier = fixture.user_data.join("barrier.json");
+    crate::scripts::health_barrier(&barrier);
+    wait_for(|| barrier.exists().then_some(()));
+    assert_eq!(commit_nihao(fixture.handle), "你好");
     assert!(take_log().is_empty());
     assert_eq!(process_health(&fixture, "stale", &stale), (0, None));
 }
