@@ -61,3 +61,5 @@ Status: proposed
 - IBus 两个输入上下文的焦点进出顺序未核实，它直接影响第 2 阶段音乐所有权的验收。
 
 相关：[Windows 打字特效对齐 macOS](../../implemented/feature/2026-10-10-windows-typing-effects-caret-overlay.md) 是第 2 阶段 Windows 接入时要改的那套按键音、特效和 Aux 管道路径。
+
+第 3 阶段的执行器见 [桌面脚本插件的沙箱运行时](2026-10-12-script-runtime-sandbox.md)：脚本 ABI 的 `Hook` 编号沿用本篇 `LifecycleEvent` 的判别值。
