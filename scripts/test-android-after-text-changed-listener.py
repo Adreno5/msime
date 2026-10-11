@@ -7,8 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 HOME = ROOT / "platforms/android/java/app/msime/android/home"
-# 适配方法已随文本监听收拢挪到 ViewPolicy（见 scripts/test-android-view-policy.py），这里跟着检查新位置。
-UI = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
+POLICY = ROOT / "platforms/android/java/app/msime/android/ViewPolicy.java"
 CONSUMERS = {
     "SearchPill.java": 1,
     "InputDialog.java": 1,
@@ -20,7 +19,7 @@ CONSUMERS = {
 
 def main() -> int:
     errors = []
-    ui = UI.read_text(encoding="utf-8")
+    policy = POLICY.read_text(encoding="utf-8")
     required = (
         "public static void afterTextChanged(TextView view, Consumer<Editable> listener)",
         "view.addTextChangedListener(new TextWatcher()",
@@ -29,8 +28,8 @@ def main() -> int:
         "@Override public void afterTextChanged(Editable text) { listener.accept(text); }",
     )
     for snippet in required:
-        if snippet not in ui:
-            errors.append(f"{UI}: 文本监听器适配方法缺少：{snippet}")
+        if snippet not in policy:
+            errors.append(f"{POLICY}: 文本监听器适配方法缺少：{snippet}")
 
     for name, expected in CONSUMERS.items():
         path = HOME / name
@@ -42,8 +41,6 @@ def main() -> int:
             errors.append(f"{path}: 仍在直接实现 TextWatcher")
 
     for path in HOME.glob("*.java"):
-        if path == UI:
-            continue
         if "new TextWatcher()" in path.read_text(encoding="utf-8"):
             errors.append(f"{path}: 应复用 ViewPolicy.afterTextChanged")
 

@@ -56,7 +56,7 @@ public final class InputDialog {
         ViewPolicy.setBackground(root, DrawablePolicy.rounded(ThemeColorPolicy.sheetBackground(context), DimensionPolicy.pixels(context, Ui.DIALOG_RADIUS)));
         root.setClipToOutline(true);
 
-        TextView heading = Ui.headingLabel(context, title, Ui.TEXT_DIALOG_TITLE, 600, ThemeColorPolicy.text(context));
+        TextView heading = ViewPolicy.headingLabel(context, title, Ui.TEXT_DIALOG_TITLE, 600, ThemeColorPolicy.text(context));
         ViewPolicy.setCentered(heading);
         LinearLayout.LayoutParams headingParams = LayoutPolicy.matchWidthWrapParams();
         headingParams.topMargin = DimensionPolicy.pixels(context, 20);
@@ -65,7 +65,7 @@ public final class InputDialog {
         root.addView(heading, headingParams);
 
         if (message != null && message.length() > 0) {
-            TextView note = Ui.centeredLabel(context, message, Ui.TEXT_SHEET_HEADER, 400,
+            TextView note = ViewPolicy.centeredLabel(context, message, Ui.TEXT_SHEET_HEADER, 400,
                 ThemeColorPolicy.subText(context));
             LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
             params.topMargin = DimensionPolicy.pixels(context, 4);
@@ -111,7 +111,7 @@ public final class InputDialog {
      * @param inputType `InputType` 的组合；0 表示普通单行文字
      */
     public EditText addField(CharSequence hint, @Nullable CharSequence initial, int inputType) {
-        EditText input = Ui.styledInput(context, 15, 400, ThemeColorPolicy.text(context));
+        EditText input = ViewPolicy.styledInput(context, 15, 400, ThemeColorPolicy.text(context));
         input.setHint(hint);
         input.setText(initial);
         ViewPolicy.setSingleLine(input);
@@ -183,7 +183,7 @@ public final class InputDialog {
     }
 
     private TextView button(CharSequence label, int weight, int color) {
-        return Ui.textButton(context, label, Ui.TEXT_DIALOG_TITLE, weight, color, ViewPolicy.ripple(context), 0);
+        return ViewPolicy.textButton(context, label, Ui.TEXT_DIALOG_TITLE, weight, color, ViewPolicy.ripple(context), 0);
     }
 
     /** 分隔线：横的在按钮上方，竖的在两个按钮之间。 */

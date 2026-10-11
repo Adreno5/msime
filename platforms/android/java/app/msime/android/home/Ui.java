@@ -17,7 +17,6 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ImageView;
-import android.widget.EditText;
 import android.widget.TextView;
 import app.msime.android.ColorPolicy;
 import app.msime.android.ImageViewPolicy;
@@ -243,62 +242,6 @@ public final class Ui {
         ViewPolicy.hideFromAccessibility(view);
     }
 
-    /** Create a text label with the shared size, weight, and colour policy. */
-    public static TextView styledLabel(Context context, CharSequence text, int sizeSp, int weight,
-                                       @ColorInt int color) {
-        TextView view = new TextView(context);
-        view.setText(text);
-        ViewPolicy.style(view, sizeSp, weight, color);
-        return view;
-    }
-
-    /** 创建双轴居中的普通标签。 */
-    public static TextView centeredLabel(Context context, CharSequence text, float sizeSp,
-                                         @ColorInt int color) {
-        TextView centered = ViewPolicy.label(context, text, sizeSp, color);
-        ViewPolicy.setCentered(centered);
-        return centered;
-    }
-
-    /** 创建带字重且双轴居中的标签。 */
-    public static TextView centeredLabel(Context context, CharSequence text, int sizeSp, int weight,
-                                         @ColorInt int color) {
-        TextView centered = styledLabel(context, text, sizeSp, weight, color);
-        ViewPolicy.setCentered(centered);
-        return centered;
-    }
-
-    /** 创建带字重、双轴居中的单行标签。 */
-    public static TextView centeredSingleLineLabel(Context context, CharSequence text, int sizeSp,
-                                                   int weight, @ColorInt int color) {
-        TextView singleLine = centeredLabel(context, text, sizeSp, weight, color);
-        ViewPolicy.setSingleLine(singleLine);
-        return singleLine;
-    }
-
-    /** 创建带无障碍标题语义的普通标签。 */
-    public static TextView headingLabel(Context context, CharSequence text, float sizeSp,
-                                        @ColorInt int color) {
-        TextView heading = ViewPolicy.label(context, text, sizeSp, color);
-        heading.setAccessibilityHeading(true);
-        return heading;
-    }
-
-    /** 创建带字重与无障碍标题语义的标签。 */
-    public static TextView headingLabel(Context context, CharSequence text, int sizeSp, int weight,
-                                        @ColorInt int color) {
-        TextView heading = styledLabel(context, text, sizeSp, weight, color);
-        heading.setAccessibilityHeading(true);
-        return heading;
-    }
-
-    /** 创建会由辅助功能礼貌播报变化的空状态文本。 */
-    public static TextView liveStatus(Context context, int sizeSp) {
-        TextView status = styledLabel(context, "", sizeSp, 400, ThemeColorPolicy.subText(context));
-        ViewPolicy.setPoliteLiveRegion(status);
-        return status;
-    }
-
     /**
      * 行尾的值文字：单行，最宽只占行内可用宽度的 {@link #TRAILING_VALUE_MAX_SHARE}，再长就在末尾省略。
      *
@@ -319,18 +262,6 @@ public final class Ui {
         ViewPolicy.style(view, sizeSp, 400, color);
         ViewPolicy.setSingleLineEllipsized(view);
         return view;
-    }
-
-    /** Create an editable field with the shared size, weight, and colour policy. */
-    public static EditText styledInput(Context context, int sizeSp, int weight, @ColorInt int color) {
-        EditText view = new EditText(context);
-        ViewPolicy.style(view, sizeSp, weight, color);
-        return view;
-    }
-
-    /** Create the standard accent-coloured group heading. */
-    public static TextView groupHeading(Context context, CharSequence text) {
-        return headingLabel(context, text, TEXT_GROUP_TITLE, 500, ThemeColorPolicy.accent(context));
     }
 
     /** Create a filled accent pill button; callers add their content description and action. */
@@ -363,28 +294,11 @@ public final class Ui {
                                       @ColorInt int fill, @ColorInt int ink,
                                       float horizontalPaddingDp, float verticalPaddingDp,
                                       float minHeightDp, float minWidthDp, Runnable action) {
-        TextView button = centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);
+        TextView button = ViewPolicy.centeredSingleLineLabel(context, label, Math.round(sizeSp), weight, ink);
         ViewPolicy.setBackground(button, ViewPolicy.pillRipple(context, fill));
         setSymmetricPaddingDp(button, context, horizontalPaddingDp, verticalPaddingDp);
         setTextMinHeightDp(button, context, minHeightDp);
         if (minWidthDp > 0) ViewPolicy.setTextMinWidth(button, DimensionPolicy.pixels(context, minWidthDp));
-        bindClick(button, action);
-        return button;
-    }
-
-    /** Create a centered, clickable text button with caller-supplied background and ink. */
-    public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,
-                                      @ColorInt int ink, Drawable background, float minHeightDp) {
-        return textButton(context, label, sizeSp, weight, ink, background, minHeightDp, null);
-    }
-
-    /** Create a centered text button and bind its action. */
-    public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,
-                                      @ColorInt int ink, Drawable background, float minHeightDp,
-                                      Runnable action) {
-        TextView button = centeredLabel(context, label, sizeSp, weight, ink);
-        ViewPolicy.setBackground(button, background);
-        setTextMinHeightDp(button, context, minHeightDp);
         bindClick(button, action);
         return button;
     }

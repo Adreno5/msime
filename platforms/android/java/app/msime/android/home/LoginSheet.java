@@ -118,7 +118,7 @@ final class LoginSheet {
 
         LinearLayout header = LayoutPolicy.row(activity);
         ViewPolicy.setCenteredVertically(header);
-        TextView title = Ui.headingLabel(activity, "link".equals(purpose) ? "添加登录方式" : "登录水杉",
+        TextView title = ViewPolicy.headingLabel(activity, "link".equals(purpose) ? "添加登录方式" : "登录水杉",
             22, 700, ThemeColorPolicy.text(activity));
         header.addView(title, LayoutPolicy.weightedWrapParams(1f));
         ImageView close = ImageViewPolicy.iconButton(activity,
@@ -127,7 +127,7 @@ final class LoginSheet {
         header.addView(close, LayoutPolicy.squareParams(activity, 40));
         root.addView(header);
 
-        TextView subtitle = Ui.styledLabel(activity, "在手机、平板和电脑之间同步词库、皮肤和云剪贴板",
+        TextView subtitle = ViewPolicy.styledLabel(activity, "在手机、平板和电脑之间同步词库、皮肤和云剪贴板",
             14, 400, ThemeColorPolicy.subText(activity));
         root.addView(subtitle, LayoutPolicy.matchWidthWrapParams(activity, 2));
 
@@ -154,7 +154,7 @@ final class LoginSheet {
         }
             root.addView(options, LayoutPolicy.matchWidthWrapParams(activity, 0));
 
-        status = Ui.liveStatus(activity, 13);
+        status = ViewPolicy.liveStatus(activity, 13, ThemeColorPolicy.subText(activity));
         ViewPolicy.setCenteredHorizontally(status);
         ViewPolicy.hide(status);
         root.addView(status, LayoutPolicy.matchWidthWrapParams(activity, 12));
@@ -229,7 +229,7 @@ final class LoginSheet {
 
     private void showCodeEntry() {
         email.removeAllViews();
-        TextView sent = Ui.styledLabel(activity, "验证码已发到 " + emailAddress + "，"
+        TextView sent = ViewPolicy.styledLabel(activity, "验证码已发到 " + emailAddress + "，"
             + BoundsPolicy.bounded(challenge.expiresIn() / 60, 1, Integer.MAX_VALUE)
             + " 分钟内有效", 13, 400, ThemeColorPolicy.subText(activity));
         email.addView(sent, LayoutPolicy.matchWidthWrapParams(activity, 12));
@@ -244,7 +244,7 @@ final class LoginSheet {
             verify(code.getText().toString());
             return true;
         });
-        TextView again = Ui.textButton(activity, "换个邮箱或重新发送", 14, 500,
+        TextView again = ViewPolicy.textButton(activity, "换个邮箱或重新发送", 14, 500,
             ThemeColorPolicy.accent(activity), ViewPolicy.ripple(activity), 40, () -> {
                 if (busy) return;
                 email.removeAllViews();
@@ -318,7 +318,7 @@ final class LoginSheet {
             params.setMarginEnd(DimensionPolicy.pixels(activity, 8));
             button.addView(glyph, params);
         }
-        TextView text = Ui.styledLabel(activity, label, 16, 600, ink);
+        TextView text = ViewPolicy.styledLabel(activity, label, 16, 600, ink);
         button.addView(text);
         button.setContentDescription(label);
         ViewPolicy.setInteractive(button, true);
@@ -327,7 +327,7 @@ final class LoginSheet {
     }
 
     private EditText field(String hint, int inputType, int maxLength) {
-        EditText field = Ui.styledInput(activity, 16, 400, ThemeColorPolicy.text(activity));
+        EditText field = ViewPolicy.styledInput(activity, 16, 400, ThemeColorPolicy.text(activity));
         field.setHint(hint);
         field.setInputType(inputType);
         ViewPolicy.setSingleLine(field);
@@ -361,7 +361,7 @@ final class LoginSheet {
                 paint.setUnderlineText(false);
             }
         }, start, start + "《隐私政策》".length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        TextView view = Ui.styledLabel(activity, spanned, 12, 400, ThemeColorPolicy.subText(activity));
+        TextView view = ViewPolicy.styledLabel(activity, spanned, 12, 400, ThemeColorPolicy.subText(activity));
         view.setMovementMethod(LinkMovementMethod.getInstance());
         ViewPolicy.setCenteredHorizontally(view);
         return view;

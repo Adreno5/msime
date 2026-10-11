@@ -35,11 +35,11 @@ public final class SettingsSheet {
         root.addView(LayoutPolicy.sheetDragHandle(context));
 
         // M3 headline small：面板标题是标题，不是加粗的标签。
-        TextView heading = Ui.headingLabel(context, title, Ui.TEXT_BAR_TITLE, 400, ThemeColorPolicy.text(context));
+        TextView heading = ViewPolicy.headingLabel(context, title, Ui.TEXT_BAR_TITLE, 400, ThemeColorPolicy.text(context));
         root.addView(heading);
 
         if (subtitle != null && !subtitle.isEmpty()) {
-            TextView note = Ui.styledLabel(context, subtitle, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
+            TextView note = ViewPolicy.styledLabel(context, subtitle, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
             LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams(context, 4);
             root.addView(note, params);
         }
@@ -58,7 +58,8 @@ public final class SettingsSheet {
 
     /** 行与行之间的 M3 组标题：强调色、14sp、500 字重。 */
     public void addHeading(String text) {
-        TextView heading = Ui.groupHeading(context, text);
+        TextView heading = ViewPolicy.headingLabel(context, text, Ui.TEXT_GROUP_TITLE, 500,
+            ThemeColorPolicy.accent(context));
         LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
         params.topMargin = DimensionPolicy.pixels(context, 16);
         params.bottomMargin = DimensionPolicy.pixels(context, 2);
@@ -67,7 +68,7 @@ public final class SettingsSheet {
 
     /** 这一列末尾的脚注。 */
     public void addNote(String text) {
-        TextView note = Ui.styledLabel(context, text, 12, 400, ThemeColorPolicy.subText(context));
+        TextView note = ViewPolicy.styledLabel(context, text, 12, 400, ThemeColorPolicy.subText(context));
         LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
         params.topMargin = DimensionPolicy.pixels(context, 14);
         content.addView(note, params);
@@ -75,7 +76,7 @@ public final class SettingsSheet {
 
     /** 一行状态文字，保存成功或失败后由面板改写。 */
     public TextView addStatus() {
-        TextView status = Ui.liveStatus(context, 12);
+        TextView status = ViewPolicy.liveStatus(context, 12, ThemeColorPolicy.subText(context));
         ViewPolicy.setCenteredVertically(status);
         LinearLayout.LayoutParams params = LayoutPolicy.matchWidthHeightDp(context, 20);
         params.topMargin = DimensionPolicy.pixels(context, 10);

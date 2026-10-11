@@ -51,6 +51,13 @@ def main() -> None:
         "public static Drawable pillRipple(Context context, int fill)",
         "public static void style(TextView view, int sizeSp, int weight, int color)",
         "public static TextView singleLineLabel(Context context, CharSequence text, int sizeSp,",
+        "public static TextView centeredLabel(Context context, CharSequence text, float sizeSp,",
+        "public static TextView headingLabel(Context context, CharSequence text, float sizeSp,",
+        "public static TextView centeredSingleLineLabel(Context context, CharSequence text, int sizeSp,",
+        "public static TextView liveStatus(Context context, int sizeSp, int color)",
+        "public static EditText styledInput(Context context, int sizeSp, int weight, int color)",
+        "public static TextView styledLabel(Context context, CharSequence text, int sizeSp,",
+        "public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,",
         "public static TextView label(Context context, CharSequence text, float sizeSp, int color)",
         "public static void afterTextChanged(TextView view, Consumer<Editable> listener)",
     )
@@ -98,8 +105,18 @@ def main() -> None:
         raise AssertionError("Ui 仍保留文本样式转发方法")
     if re.search(r"(?<![.\w])style\(", ui):
         raise AssertionError("Ui 仍调用已移除的文本样式方法")
-    if ui.count("ViewPolicy.style(") != 3:
+    if ui.count("ViewPolicy.style(") != 1:
         raise AssertionError("Ui 文本工厂没有直接调用共享样式方法")
+    if "public static TextView styledLabel(" in ui:
+        raise AssertionError("Ui 仍保留 styledLabel 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.styledLabel(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享样式标签工厂")
+    if "public static TextView textButton(" in ui:
+        raise AssertionError("Ui 仍保留 textButton 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.textButton(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享文本按钮工厂")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.style(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文本样式策略")
@@ -108,6 +125,36 @@ def main() -> None:
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.singleLineLabel(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享单行标签工厂")
+    if "public static TextView centeredLabel(" in ui:
+        raise AssertionError("Ui 仍保留 centeredLabel 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.centeredLabel(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享居中标签工厂")
+    if "public static TextView headingLabel(" in ui:
+        raise AssertionError("Ui 仍保留 headingLabel 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.headingLabel(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享标题标签工厂")
+    if "public static TextView centeredSingleLineLabel(" in ui:
+        raise AssertionError("Ui 仍保留 centeredSingleLineLabel 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.centeredSingleLineLabel(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享居中单行标签工厂")
+    if "public static TextView liveStatus(" in ui:
+        raise AssertionError("Ui 仍保留 liveStatus 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.liveStatus(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享 live status 工厂")
+    if "public static EditText styledInput(" in ui:
+        raise AssertionError("Ui 仍保留 styledInput 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.styledInput(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享编辑框工厂")
+    if "public static TextView groupHeading(" in ui:
+        raise AssertionError("Ui 仍保留 groupHeading 转发方法")
+    for path in ANDROID_JAVA.rglob("*.java"):
+        if "Ui.groupHeading(" in path.read_text(encoding="utf-8"):
+            raise AssertionError(f"{path} 没有直接调用共享标题工厂")
     for path in ANDROID_JAVA.rglob("*.java"):
         if "Ui.afterTextChanged(" in path.read_text(encoding="utf-8"):
             raise AssertionError(f"{path} 没有直接调用共享文字变更策略")

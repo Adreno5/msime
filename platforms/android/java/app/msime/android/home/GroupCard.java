@@ -44,7 +44,8 @@ public final class GroupCard {
         if (parent.getChildCount() > 0) groupParams.topMargin = DimensionPolicy.pixels(context, Ui.GROUP_GAP);
 
         if (title != null && title.length() > 0) {
-            TextView heading = Ui.groupHeading(context, title);
+            TextView heading = ViewPolicy.headingLabel(context, title, Ui.TEXT_GROUP_TITLE, 500,
+                ThemeColorPolicy.accent(context));
             Ui.setPaddingDp(heading, context, Ui.GROUP_TITLE_INSET, 0,
                 Ui.GROUP_TITLE_INSET, 2);
             LinearLayout.LayoutParams params = LayoutPolicy.matchWidthWrapParams();
@@ -142,7 +143,7 @@ public final class GroupCard {
         sliderParams.setMarginStart(DimensionPolicy.pixels(context, Ui.ROW_GAP));
         row.view.addView(control, sliderParams);
 
-        TextView text = Ui.styledLabel(context, label.apply(control.value()), 13, 400, ThemeColorPolicy.subText(context));
+        TextView text = ViewPolicy.styledLabel(context, label.apply(control.value()), 13, 400, ThemeColorPolicy.subText(context));
         ViewPolicy.setEndCenteredVertically(text);
         ViewPolicy.setSingleLine(text);
             Ui.hideFromAccessibility(text);
@@ -172,7 +173,7 @@ public final class GroupCard {
 
     /** 卡片里的一段说明文字，14sp 次要文字色。 */
     public TextView note(CharSequence text) {
-        TextView note = Ui.styledLabel(context, text, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
+        TextView note = ViewPolicy.styledLabel(context, text, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
         Ui.setSymmetricPaddingDp(note, context, Ui.ROW_PADDING_H, 12);
         addDivider();
         card.addView(note, LayoutPolicy.matchWidthWrapParams());
@@ -181,7 +182,7 @@ public final class GroupCard {
 
     /** 卡片下方的脚注，13sp 次要文字色，与组标题同样缩进。 */
     public TextView footer(CharSequence text) {
-        TextView note = Ui.styledLabel(context, text, 13, 400, ThemeColorPolicy.subText(context));
+        TextView note = ViewPolicy.styledLabel(context, text, 13, 400, ThemeColorPolicy.subText(context));
         Ui.setPaddingDp(note, context, Ui.GROUP_TITLE_INSET, 8,
             Ui.GROUP_TITLE_INSET, 0);
         group.addView(note, LayoutPolicy.matchWidthWrapParams());
@@ -244,9 +245,9 @@ public final class GroupCard {
             Ui.setRowPadding(view, owner.context);
 
             LinearLayout texts = LayoutPolicy.column(context);
-            title = Ui.styledLabel(context, titleText, Ui.TEXT_ROW_TITLE, 400, ThemeColorPolicy.text(context));
+            title = ViewPolicy.styledLabel(context, titleText, Ui.TEXT_ROW_TITLE, 400, ThemeColorPolicy.text(context));
             texts.addView(title);
-            subtitle = Ui.styledLabel(context, subtitleText, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
+            subtitle = ViewPolicy.styledLabel(context, subtitleText, Ui.TEXT_ROW_SUBTITLE, 400, ThemeColorPolicy.subText(context));
             LinearLayout.LayoutParams subtitleParams = LayoutPolicy.wrapParams();
             subtitleParams.topMargin = DimensionPolicy.pixels(owner.context, 1);
             texts.addView(subtitle, subtitleParams);

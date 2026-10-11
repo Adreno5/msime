@@ -16,6 +16,7 @@ import android.text.TextUtils;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.util.function.Consumer;
@@ -43,6 +44,14 @@ public final class ViewPolicy {
         setTextColor(view, color);
     }
 
+    /** Create a text label with the shared size, weight, and colour policy. */
+    public static TextView styledLabel(Context context, CharSequence text, int sizeSp,
+                                       int weight, int color) {
+        TextView view = newTextView(context, text);
+        style(view, sizeSp, weight, color);
+        return view;
+    }
+
     /** Create a styled text label constrained to one line. */
     public static TextView singleLineLabel(Context context, CharSequence text, int sizeSp,
                                            int weight, int color) {
@@ -50,6 +59,81 @@ public final class ViewPolicy {
         style(view, sizeSp, weight, color);
         setSingleLine(view);
         return view;
+    }
+
+    /** Create a text label centered on both axes. */
+    public static TextView centeredLabel(Context context, CharSequence text, float sizeSp,
+                                         int color) {
+        TextView view = label(context, text, sizeSp, color);
+        setCentered(view);
+        return view;
+    }
+
+    /** Create a styled text label centered on both axes. */
+    public static TextView centeredLabel(Context context, CharSequence text, int sizeSp,
+                                         int weight, int color) {
+        TextView view = newTextView(context, text);
+        style(view, sizeSp, weight, color);
+        setCentered(view);
+        return view;
+    }
+
+    /** Create a text label carrying accessibility heading semantics. */
+    public static TextView headingLabel(Context context, CharSequence text, float sizeSp,
+                                        int color) {
+        TextView view = label(context, text, sizeSp, color);
+        view.setAccessibilityHeading(true);
+        return view;
+    }
+
+    /** Create a styled text label carrying accessibility heading semantics. */
+    public static TextView headingLabel(Context context, CharSequence text, int sizeSp,
+                                        int weight, int color) {
+        TextView view = newTextView(context, text);
+        style(view, sizeSp, weight, color);
+        view.setAccessibilityHeading(true);
+        return view;
+    }
+
+    /** Create a centered styled text label constrained to one line. */
+    public static TextView centeredSingleLineLabel(Context context, CharSequence text, int sizeSp,
+                                                   int weight, int color) {
+        TextView view = centeredLabel(context, text, sizeSp, weight, color);
+        setSingleLine(view);
+        return view;
+    }
+
+    /** Create a polite live-region status label for accessibility announcements. */
+    public static TextView liveStatus(Context context, int sizeSp, int color) {
+        TextView view = newTextView(context, "");
+        style(view, sizeSp, 400, color);
+        setPoliteLiveRegion(view);
+        return view;
+    }
+
+    /** Create an editable field with the shared size, weight, and colour policy. */
+    public static EditText styledInput(Context context, int sizeSp, int weight, int color) {
+        EditText view = new EditText(context);
+        style(view, sizeSp, weight, color);
+        return view;
+    }
+
+    /** Create a centered, clickable text button with caller-supplied background and ink. */
+    public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,
+                                      int ink, Drawable background, float minHeightDp) {
+        return textButton(context, label, sizeSp, weight, ink, background, minHeightDp, null);
+    }
+
+    /** Create a centered text button and bind its action. */
+    public static TextView textButton(Context context, CharSequence label, int sizeSp, int weight,
+                                      int ink, Drawable background, float minHeightDp,
+                                      Runnable action) {
+        TextView button = centeredLabel(context, label, sizeSp, weight, ink);
+        setBackground(button, background);
+        setTextMinHeight(button, DimensionPolicy.pixels(context, minHeightDp));
+        setInteractive(button, true);
+        bindOptionalClick(button, action);
+        return button;
     }
 
     /** Apply a minimum height to a generic view. */
