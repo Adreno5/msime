@@ -25,7 +25,7 @@ use std::time::Instant;
 pub const FEEDBACK: u32 = 0x1;
 /// 之后的上屏只能观察，不能改写；设着它时候选变换也停下（`crate::scripts::observe_only`）。可随时经 `msime_client_set_lifecycle` 切换。
 pub const COMMIT_OBSERVE_ONLY: u32 = 0x4;
-/// 宿主自己暂存部分选词（Windows）。本阶段只记录，不改变行为。
+/// 宿主自己暂存部分选词（Windows）：部分选词的上屏只是一段，宿主把各段拼好、补齐整个词时才写进文档，所以这个词的各段上屏都不可改写（见 `rewritable`）。
 pub const HOST_HOLDS_PIECES: u32 = 0x8;
 /// `msime_client_set_lifecycle` 接受的全部位，其余位被忽略。
 pub const SUPPORTED_FLAGS: u32 = FEEDBACK | COMMIT_OBSERVE_ONLY | HOST_HOLDS_PIECES;
@@ -362,6 +362,8 @@ pub enum Call {
 pub struct Context {
     pub flags: u32,
     pub traits: u32,
+    /// 设着 `HOST_HOLDS_PIECES` 的会话里，这次组字已经有部分选词交给宿主暂存：之后补齐这个词的上屏也只是最后一段。
+    pub pieces_held: bool,
 }
 
 impl Context {
@@ -492,7 +494,7 @@ fn commit_origin(call: Call, facts: DispatchFacts) -> CommitOrigin {
     }
 }
 
-/// 上屏能不能被脚本改写：来源是选中候选、原样上屏或暂存段送出，本地模式是 none 且算打字，不是以词定字，没设 `COMMIT_OBSERVE_ONLY`，字段属性已知且不是 SECURE、PRIVATE、ELEVATED。以词定字一律不可改写：macOS 开着繁体输出时按宿主自己注入的键重算这段上屏，改写结果会被覆盖。
+/// 上屏能不能被脚本改写：来源是选中候选、原样上屏或暂存段送出，本地模式是 none 且算打字，不是以词定字，没设 `COMMIT_OBSERVE_ONLY`，不是宿主暂存的一段，字段属性已知且不是 SECURE、PRIVATE、ELEVATED。以词定字一律不可改写：macOS 开着繁体输出时按宿主自己注入的键重算这段上屏，改写结果会被覆盖。宿主暂存部分选词时（`HOST_HOLDS_PIECES`，Windows Server 的 `ReplyComposer`），部分选词的上屏和补齐整个词的那次上屏都只是一段，宿主把暂存的前几段接在后面这段前面再写进文档：逐段改写既看不到整个词，也会让文档里是原文的前几段加上改写过的最后一段。
 fn rewritable(
     origin: CommitOrigin,
     context: Context,
@@ -508,7 +510,15 @@ fn rewritable(
             .selection
             .is_some_and(|selection| selection.how == SelectionHow::Edge)
         && context.flags & COMMIT_OBSERVE_ONLY == 0
+        && !(context.flags & HOST_HOLDS_PIECES != 0 && (context.pieces_held || partial(facts)))
         && context.ordinary_field()
+}
+
+/// 这次上屏是部分选词：选中的上屏了，读音还剩一段。
+fn partial(facts: DispatchFacts) -> bool {
+    facts
+        .selection
+        .is_some_and(|selection| selection.outcome == SelectionOutcome::Partial)
 }
 
 fn end_reason(call: Call, committed: bool) -> EndReason {
@@ -540,6 +550,8 @@ pub(crate) struct LifecycleState {
     effect: u32,
     /// 这个会话的脚本插件，和挂在 runtime 上的候选变换共用。移动端是什么都不做的空壳。
     scripts: Rc<RefCell<ScriptSet>>,
+    /// 见 [`Context::pieces_held`]：设着 `HOST_HOLDS_PIECES` 时，这次组字里有部分选词上屏过，组字结束时清掉。
+    pieces_held: bool,
     /// 测试用的消费者：记录事件或故意 panic。
     #[cfg(test)]
     pub(crate) probe: Option<Probe>,
@@ -558,6 +570,7 @@ impl LifecycleState {
             active: false,
             effect: 0,
             scripts: Rc::default(),
+            pieces_held: false,
             #[cfg(test)]
             probe: None,
         }
@@ -611,6 +624,7 @@ impl LifecycleState {
         Context {
             flags: self.flags,
             traits: self.traits,
+            pieces_held: self.pieces_held,
         }
     }
 
@@ -735,7 +749,7 @@ impl LifecycleState {
         derive(call, context, pre, post, facts, commit, page, |event| {
             self.consume(sound, event, context, to_scripts, texts);
         });
-        self.finish_call(sound, call)
+        self.finish_call(sound, call, post, facts, commit.is_some())
     }
 
     /// 派发和 focus 的 transition 完成之后（全角转换之后）推导其余事件，并在 `before_commit` 和 `commit` 之间让脚本改写上屏的 body：改写后的 body 接上原来的 tail 写回 `transition.commit`，`commit` 事件带着改写后的字符数和 `rewritten`。runtime 在这之前已经按原文记下了引擎学习和 AI 上文，改写不回灌。返回本次的打字特效。
@@ -785,7 +799,7 @@ impl LifecycleState {
         derive_rest(call, pre, post, facts, commit, rewritten, page, |event| {
             self.consume(sound, event, context, to_scripts, &texts);
         });
-        self.finish_call(sound, call)
+        self.finish_call(sound, call, post, facts, commit.is_some())
     }
 
     /// 交给脚本的 `before_commit`；有插件改写了 body 时把它接上原来的 tail 写回 `transition.commit`，返回是否改写了。
@@ -841,8 +855,19 @@ impl LifecycleState {
         }
     }
 
-    /// 一次调用的事件都发完之后：destroy 交还音乐，失焦和 destroy 丢弃全部脚本实例。返回本次的打字特效。
-    fn finish_call(&mut self, sound: &SessionSound, call: Call) -> u32 {
+    /// 一次调用的事件都发完之后：记下宿主是否暂存着这次组字的部分选词，destroy 交还音乐，失焦和 destroy 丢弃全部脚本实例。返回本次的打字特效。
+    fn finish_call(
+        &mut self,
+        sound: &SessionSound,
+        call: Call,
+        post: Sample,
+        facts: DispatchFacts,
+        committed: bool,
+    ) -> u32 {
+        // 宿主暂存的部分选词属于这次组字，组字结束（上屏补齐、取消、失焦）时一并清掉。
+        self.pieces_held = self.flags & HOST_HOLDS_PIECES != 0
+            && post.composing
+            && (self.pieces_held || (committed && partial(facts)));
         if call == Call::Destroy {
             self.release_music(sound);
         }

@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::lifecycle::{
-    LifecycleEvent, COMMIT_OBSERVE_ONLY, KEY_PASSTHROUGH, TRAIT_ELEVATED, TRAIT_KNOWN,
-    TRAIT_PRIVATE, TRAIT_SECURE,
+    LifecycleEvent, COMMIT_OBSERVE_ONLY, HOST_HOLDS_PIECES, KEY_PASSTHROUGH, TRAIT_ELEVATED,
+    TRAIT_KNOWN, TRAIT_PRIVATE, TRAIT_SECURE,
 };
 use crate::scripts::{
     insert_ready, TEST_COMPILE_PANIC_ID, TEST_PANIC, TEST_PANICKED, TEST_SCRIPT_LOG, TEST_SLOW,
@@ -1536,6 +1536,53 @@ fn the_candidates_hook_runs_only_in_whitelisted_local_modes() {
         );
         assert_eq!(kinds(&take_log()), [Hook::Candidates.code()], "{mode}");
     }
+}
+
+#[test]
+fn pieces_the_host_holds_are_never_rewritten() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[rewriting(Script::new(
+            "tilde",
+            appender("~", "(i32.const 0)"),
+            &[Hook::BeforeCommit],
+        ))],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 选"你"只用掉 ni，读音还剩 hao：部分选词。
+    let pick_ni = |handle: u64| {
+        let view = compose_nihao(handle);
+        let index = view_texts(&view)
+            .iter()
+            .position(|text| text == "你")
+            .unwrap();
+        let generation = view["generation"].as_u64().unwrap();
+        take_log();
+        msime_client_key(handle, 0);
+        let picked = read(msime_client_select(handle, generation, index));
+        assert_eq!(picked["ok"], true, "{picked}");
+        picked["value"]["commit"].as_str().unwrap().to_owned()
+    };
+    // 宿主不暂存时，部分选词的那一段照样可改写。
+    assert_eq!(pick_ni(fixture.handle), "你~");
+    assert_eq!(kinds(&take_log()), [1, 0]);
+    read(msime_client_command(fixture.handle, 3));
+    // Windows 的做法：宿主自己暂存部分选词，补齐整个词时才把各段拼好写进文档。部分选词的那一段和补齐它的那一段都只能看。
+    assert_eq!(
+        msime_client_set_lifecycle(fixture.handle, HOST_HOLDS_PIECES),
+        HOST_HOLDS_PIECES
+    );
+    assert_eq!(pick_ni(fixture.handle), "你");
+    assert_eq!(kinds(&take_log()), [0, status::DENIED]);
+    assert_eq!(space(fixture.handle), "好");
+    assert_eq!(kinds(&take_log()), [0, status::DENIED]);
+    // 组字结束之后，下一个整词照样可改写。
+    compose_nihao(fixture.handle);
+    take_log();
+    assert_eq!(space(fixture.handle), "你好~");
+    assert_eq!(kinds(&take_log()), [1, 0]);
 }
 
 #[test]
