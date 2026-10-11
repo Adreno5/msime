@@ -162,6 +162,8 @@ pub(super) struct Samples {
     commit: Option<StaticSoundData>,
     achievement: Option<StaticSoundData>,
     melody: Option<MelodySamples>,
+    /// 解码失败而被跳过的样本，每个文件一条「包: 文件: 原因」，由 `loaded` 合成一行报告。
+    pub(super) skipped: Vec<String>,
 }
 
 struct MelodySamples {
@@ -208,31 +210,36 @@ fn sound_pack(roots: &PluginRoots, id: &str) -> Result<(PathBuf, SoundPack), Str
     }
 }
 
-/// Decode every sample `selection` needs, each file once.
+/// 解码 `selection` 要用的样本，每个文件只解码一次。解码失败的样本只空出用到它的位置（那几个键、上屏音、成就音或旋律），原因记进 `skipped`；包解析不了、或旋律包不是旋律时整次载入失败，全部静音。
 pub(super) fn load(selection: &Selection) -> Result<Samples, String> {
-    let mut decoded: HashMap<PathBuf, StaticSoundData> = HashMap::new();
-    let mut sample = |directory: &Path, name: &str| -> Result<StaticSoundData, String> {
-        let path = directory.join(name);
-        if let Some(data) = decoded.get(&path) {
-            return Ok(data.clone());
-        }
-        let data = decode::sample(&path).map_err(|reason| format!("{name}: {reason}"))?;
-        decoded.insert(path, data.clone());
-        Ok(data)
+    let mut decoded: HashMap<PathBuf, Option<StaticSoundData>> = HashMap::new();
+    let mut skipped = Vec::new();
+    // 失败的文件也记进 `decoded`：`default` 被几类键共用，坏了只报一次、不重复解码。
+    let mut sample = |id: &str, directory: &Path, name: &str| -> Option<StaticSoundData> {
+        decoded
+            .entry(directory.join(name))
+            .or_insert_with_key(|path| match decode::sample(path) {
+                Ok(data) => Some(data),
+                Err(reason) => {
+                    skipped.push(format!("{id}: {name}: {reason}"));
+                    None
+                }
+            })
+            .clone()
     };
     let mut samples = Samples::default();
     if let Some((id, _)) = &selection.pack {
         let (directory, pack) = sound_pack(&selection.roots, id)?;
         for class in KeyClass::ALL {
             if let Some(name) = pack.key_sample(class.name()) {
-                samples.keys[class as usize] = Some(sample(&directory, name)?);
+                samples.keys[class as usize] = sample(id, &directory, name);
             }
         }
         if let Some(name) = &pack.sounds.commit {
-            samples.commit = Some(sample(&directory, name)?);
+            samples.commit = sample(id, &directory, name);
         }
         if let Some(name) = &pack.sounds.achievement {
-            samples.achievement = Some(sample(&directory, name)?);
+            samples.achievement = sample(id, &directory, name);
         }
     }
     if let Some((id, _)) = &selection.melody_pack {
@@ -240,12 +247,13 @@ pub(super) fn load(selection: &Selection) -> Result<Samples, String> {
         let sequence = pack
             .sequence
             .ok_or_else(|| format!("sound pack {id}: not a melody"))?;
-        samples.melody = Some(MelodySamples {
-            sample: sample(&directory, &sequence.sample)?,
+        samples.melody = sample(id, &directory, &sequence.sample).map(|sample| MelodySamples {
+            sample,
             semitones: sequence.semitones,
             advance: sequence.advance,
         });
     }
+    samples.skipped = skipped;
     Ok(samples)
 }
 
@@ -424,7 +432,12 @@ where
             return;
         }
         match *result {
-            Ok(Ok(samples)) => self.samples = Some(samples),
+            Ok(Ok(samples)) => {
+                if !samples.skipped.is_empty() {
+                    crate::diagnostics::report("sound sample skipped", &samples.skipped.join("; "));
+                }
+                self.samples = Some(samples);
+            }
             Ok(Err(reason)) => crate::diagnostics::report("sound pack not loaded", &reason),
             Err(_) => disable("decoding a sound pack panicked"),
         }
