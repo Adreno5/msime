@@ -1,6 +1,6 @@
 # 架构与工程约束
 
-这份文档说明水杉输入法共享客户端的分层方式，以及哪些边界是有意为之、不能顺手打破的。修改代码前请先读这里；具体流程见[贡献指南](CONTRIBUTING.md)，公开发布前的检查见[开源发布清单](docs/open-source-release.md)。
+这份文档说明水杉输入法共享客户端的分层方式，以及哪些边界是有意为之、不能顺手打破的。修改代码前请先读这里；具体流程见[贡献指南](../.github/CONTRIBUTING.md)，公开发布前的检查见[开源发布清单](open-source-release.md)。
 
 ## 分层
 
@@ -80,4 +80,4 @@ Rust 改动另需 `cargo fmt` 与 `cargo clippy`；UI 改动另需类型检查�
 - **Linux**：`platforms/linux/build-container.sh` 在固定容器里构建 IBus engine、Fcitx5 插件和全部 provider 入口并跑 ctest；`platforms/linux/tests/tools/check-container.sh` 起独立 D-Bus 与 IBus/Fcitx5 daemon 做隔离验收。
 - **Windows**：`platforms/windows/build-cross.sh` 用 MinGW 交叉构建 host DLL、TSF DLL、Server 和全部原生测试，`platforms/windows/run-tests-wine.sh` 在 Wine 下真跑这些产物；`platforms/windows/Build-Client.ps1` 是 Windows 上的 MSVC 全量构建，安装包由 `platforms/windows/installer/` 的 Inno Setup 脚本和双架构签名链产出。
 
-各平台的构建前置、环境变量和装机步骤见对应的 `platforms/<os>/README.md`，目录与职责总览见 [README](README.md)。
+各平台的构建前置、环境变量和装机步骤见对应的 `platforms/<os>/README.md`，目录与职责总览见 [README](../README.md)。

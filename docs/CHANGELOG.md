@@ -1,6 +1,6 @@
 # 变更记录
 
-本文件记录共享客户端的公开变更。平台细节以对应平台 README 及 [实施记录](docs/implementation.md) 为准。
+本文件记录共享客户端的公开变更。平台细节以对应平台 README 及 [实施记录](implementation.md) 为准。
 
 ## [Unreleased]
 
@@ -16,7 +16,7 @@
 - 输入运行时统一处理焦点、候选翻页、代次选择与全半角转换，并接入固定版本的整句重排模型。
 - macOS 与 Windows 各有一层宿主支持 crate：macOS 提供面板会话、云剪贴板与云词典桥接；Windows 提供语音控制器、语音上屏策略与 Windows Ink 手写。桌面 shell 禁用 `unsafe`，平台 API 调用集中在这两个 crate 里做安全封装。
 - Rust workspace 统一 GPL-3.0-only、`edition 2021` 与 `unsafe_code = "deny"`，工具链由 `rust-toolchain.toml` 钉死。
-- 韩语（Dubeolsik）方案可以把正在组字的那一个音节转换成汉字：宿主接口新增 `MSIME_CONVERT_HANJA`（16），打开后候选是该音节的汉字，按 libhangul 表的顺序排列、不重排，有训音（훈음）的附在注释里；选择后提交汉字，Esc 和退格只关闭列表、保留音节，输入字母关闭列表并继续组字，标点、失焦和结束组字提交的是韩文。已经上屏的音节和词级转换不在本次范围内。汉字表由 `msime-dict-build hanja` 从 libhangul 的 `data/hanja/hanja.txt`（BSD-3-Clause，固定提交）生成，只收单音节，编进引擎；它的 BSD-3-Clause 声明随六个平台的安装包一起分发，位置见[第三方组件清单](docs/third-party.md#编译进共享库的数据)。汉字选择不学习，候选没有置顶、固定排位和删除菜单。
+- 韩语（Dubeolsik）方案可以把正在组字的那一个音节转换成汉字：宿主接口新增 `MSIME_CONVERT_HANJA`（16），打开后候选是该音节的汉字，按 libhangul 表的顺序排列、不重排，有训音（훈음）的附在注释里；选择后提交汉字，Esc 和退格只关闭列表、保留音节，输入字母关闭列表并继续组字，标点、失焦和结束组字提交的是韩文。已经上屏的音节和词级转换不在本次范围内。汉字表由 `msime-dict-build hanja` 从 libhangul 的 `data/hanja/hanja.txt`（BSD-3-Clause，固定提交）生成，只收单音节，编进引擎；它的 BSD-3-Clause 声明随六个平台的安装包一起分发，位置见[第三方组件清单](third-party.md#编译进共享库的数据)。汉字选择不学习，候选没有置顶、固定排位和删除菜单。
 - 汉字候选的显示：主行只显示汉字，训音（훈음）不再跟在汉字后面占一整格，而是画在候选下方的小字释义行，不受「显示译文」和英文释义开关影响；macOS、Windows、Android、iOS 与 HarmonyOS 横排都为这一行预留高度，打开列表时候选窗不再变高。IBus 与 Fcitx5 的候选只有一行，训音放在译文的位置（IBus 用译文颜色，Fcitx5 用斜体）。训音只用于显示，Ctrl+Enter 等「上屏译文」的操作不会提交它。汉字候选同时开放候选释义与译文：共享的翻译查询不再跳过韩语，释义查询在原文查不到时按简体字再查一次（`韓` 按 `韩` 查），繁体输出下的中文候选同样受益；随包的英文释义表只收二到六字的词，单个汉字的英文释义需要在线翻译、自定义或学习到的条目，其他语言的离线释义可以命中单字。
 - 网址输入模式（默认开启，没有设置开关）：全拼、双拼、五笔组字中原文恰好是 `www` 时按 `.`，`http`、`https` 时按 `:`，`ftp` 时按 `.` 或 `:`，就切换到网址输入，后续按键原样作为半角 ASCII 网址输入，不再转成中文；五笔码长只有 4，在 `http` 后按 `s` 就直接进入。网址里能输入字母（保留大小写）、数字和 `-._~:/?#[]@!$&'()*+,;=%^`，最长 512 个字符；`"` `<` `>` `\` `{` `}` `|` 和反引号不属于网址，按下时先上屏网址再按标点处理。模式只有一行显示整段网址的候选，空格或回车上屏网址，全角模式下网址仍是半角，Esc 取消；退格删掉触发键（以及五笔进入用的 `s`）后回到原来的组字，误触发时还能选回原来的字（如五笔 `www` 的「众」）。网址不进英文词库也不参与学习，计入打字统计。宿主接口 View.local_mode 新增 `url`，网址模式和触发键经 `spelling_symbols` 发布；Linux（IBus / Fcitx5，候选标注「网址」）、HarmonyOS（硬件键盘与触屏符号键）、Windows（TSF 键击缓冲最长 64 个字符，超出部分输入不进去）、Android 实体键盘与 iOS 符号面板已适配。
 - 新增识别服务阿里云百炼（`bailian`，#6017）：整句识别，录完一次上传，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` 与模型 `qwen3-asr-flash`，录音作为 `input_audio` 的 Base64 数据 URL 放进 Chat Completions 请求，单次上传上限约 218 秒（百炼限制音频含编码不超过 10 MB）。`MobileVoiceProviderConfiguration` 与 `msime_client_mobile_voice_configuration` 新增请求格式字段（`multipart`、`chat_audio`、`doubao_websocket`、`local`），各宿主按它挑请求构造，不再按 provider 名字判断。暂不支持百炼的实时流式识别。
@@ -101,9 +101,9 @@
 - 用户词库里自己添加的拼音词条作为热词：X-ASR 与 Fun-ASR-Nano 原生使用，SenseVoice 在识别后按拼音做近音替换（`client-core::voice::hotwords`，含 zh/z、n/l、an/ang 等模糊对）。
 - `voice_input.asr_model_path` 接受已安装的模型目录，Unix、Windows 盘符、UNC 等绝对路径写法在任何系统上都能通过校验，同一份偏好文件跨平台读取不再被拒。
 - 宿主接口新增 `msime_client_voice_hotwords`、`msime_client_voice_hotword_correct`、`msime_client_voice_local_models`、`msime_client_voice_local_model_install`、`msime_client_voice_local_model_cancel` 与 `msime_client_voice_local_model_remove`。
-- `msime-voice-local` 辅助进程通过标准输入输出上的 JSON 行协议识别，macOS 与 Linux 的输入法进程由它加载模型，自身不常驻数百 MB 的模型；空闲 120 秒释放模型，空闲 10 分钟退出。协议见 `shared/voice/README.md`，许可证见[第三方组件清单](docs/third-party.md)。
+- `msime-voice-local` 辅助进程通过标准输入输出上的 JSON 行协议识别，macOS 与 Linux 的输入法进程由它加载模型，自身不常驻数百 MB 的模型；空闲 120 秒释放模型，空闲 10 分钟退出。协议见 `shared/voice/README.md`，许可证见[第三方组件清单](third-party.md)。
 - 模型可以不联网安装：用户自己下载目录里列出的压缩包（和附加的 `silero_vad.onnx`），在设置页「从文件导入」选中它们即可，文件按长度和 SHA-256 对应、不看文件名，校验、解压与发布和下载完全相同。`msime_client_voice_local_model_install` 的请求新增可选的 `files`（本地文件的绝对路径），`msime_client_voice_local_models` 的每个模型新增 `import_files`（需要的文件名、上游下载地址和大小），新增错误码 `local_model_import_missing`。macOS、Windows、Linux、iOS 与 HarmonyOS 的设置页提供导入按钮和每个文件的上游下载链接；Android 原生设置页还没有模型管理入口，本次不涉及。只接受内置目录里的模型。
-- 识别全程不联网，只有下载模型时访问 GitHub Releases 或所配置的镜像，见[网络请求与数据流向](PRIVACY.md)。
+- 识别全程不联网，只有下载模型时访问 GitHub Releases 或所配置的镜像，见[网络请求与数据流向](../PRIVACY.md)。
 - 各平台接入：Windows 在 `msime-client-server` 内边录边识别，浮窗与豆包一样显示实时文本；macOS 输入法经辅助进程识别；Linux 由用户级语音服务调用辅助进程，本地识别不再要求保存任何云端凭据，安装模型时顺带启用语音服务；Android 与 HarmonyOS（arm64）在应用内识别，HarmonyOS 设置页可下载与删除模型；iOS 主应用内识别（键盘扩展受内存上限所限不加载模型）。HarmonyOS 的 armeabi-v7a 包没有本地识别。
 - 系统识别：macOS 26 与 iOS 26 起使用 SpeechAnalyzer，更早的系统在支持时要求 SFSpeechRecognizer 设备端识别；HarmonyOS 的 Core Speech Kit 改为写音频模式（`recognitionMode: 0`），识别器只听输入法写入的音频，末尾不足一帧的音频补静音后写入。
 - 修正 macOS CMake 用 `FORCE` 覆盖用户缓存变量的问题。
@@ -111,13 +111,13 @@
 #### 账号、云服务与联网行为
 
 - 账号、云词典、云剪贴板与社区资源统一走 `https://api.msime.app`，凭据存放在各平台的系统密钥库。
-- 跨设备剪贴板（#2451）：Android、iOS、HarmonyOS 键盘的剪贴板面板新增「云端」栏，点选即上屏；本地剪贴板历史可以「发到云剪贴板」（三个手机键盘、共享设置页与 macOS 原生面板）。macOS 输入法菜单新增「云剪贴板…」。Windows、Linux 与从设置窗口打开的 macOS 云剪贴板改为直接使用已登录账号，此前 Windows 上每个请求都返回不可用；Fcitx5 改读服务端返回的 `items` 字段。不自动读取或上传系统剪贴板，细节见[云剪贴板](PRIVACY.md#云剪贴板需要登录)。
+- 跨设备剪贴板（#2451）：Android、iOS、HarmonyOS 键盘的剪贴板面板新增「云端」栏，点选即上屏；本地剪贴板历史可以「发到云剪贴板」（三个手机键盘、共享设置页与 macOS 原生面板）。macOS 输入法菜单新增「云剪贴板…」。Windows、Linux 与从设置窗口打开的 macOS 云剪贴板改为直接使用已登录账号，此前 Windows 上每个请求都返回不可用；Fcitx5 改读服务端返回的 `items` 字段。不自动读取或上传系统剪贴板，细节见[云剪贴板](../PRIVACY.md#云剪贴板需要登录)。
 - Android 原生安装包的候选翻译改用已登录账号的令牌：此前它读取的是 Tauri 合包才写入的会话存储，原生包登录后仍一直使用匿名账号。合包照旧使用其 Rust 会话的令牌。
 - 新装时没有任何功能会把输入内容发出设备（#3817）：云联想把正在组的拼音发给 Google 输入工具，六个平台新装默认关闭，Windows、Linux 与 macOS 在首次使用时询问且默认选项是不启用，已存配置升级沿用原值；语音识别、语音润色、AI 联想默认凭据为空，不填就不发请求；候选翻译在所有平台新装时都不联网，要在设置里选择一个翻译服务才发请求。
-- 在线候选释义走水杉账号（`https://api.msime.app/v1/translate`）改为显式选择：新增偏好 `translation_account`（所有平台新装及恢复默认时都为 `false`；配置文件里缺这个字段按 `false` 读，未选时不写入配置文件），只有在翻译服务里选了「水杉账号」、候选翻译开着、且没有启用你自己的小牛、自定义或凭据可用的腾讯服务时，macOS、iOS、Android 才把当前页的中文候选词发给它。此前这三个平台在没有配置自己的服务时会默认走这条路径。升级影响：没选过翻译服务的用户，包括已登录账号的用户，升级后都不再收到在线释义，要重新在设置里选择「水杉账号」或填入自己的服务；在此之前，非英语目标语言没有释义，英文释义只来自离线词典，iOS 上非英语的释义行（主语言和第二语言都算）会收起。细节见[网络请求与数据流向](PRIVACY.md#候选翻译默认不联网)。
+- 在线候选释义走水杉账号（`https://api.msime.app/v1/translate`）改为显式选择：新增偏好 `translation_account`（所有平台新装及恢复默认时都为 `false`；配置文件里缺这个字段按 `false` 读，未选时不写入配置文件），只有在翻译服务里选了「水杉账号」、候选翻译开着、且没有启用你自己的小牛、自定义或凭据可用的腾讯服务时，macOS、iOS、Android 才把当前页的中文候选词发给它。此前这三个平台在没有配置自己的服务时会默认走这条路径。升级影响：没选过翻译服务的用户，包括已登录账号的用户，升级后都不再收到在线释义，要重新在设置里选择「水杉账号」或填入自己的服务；在此之前，非英语目标语言没有释义，英文释义只来自离线词典，iOS 上非英语的释义行（主语言和第二语言都算）会收起。细节见[网络请求与数据流向](../PRIVACY.md#候选翻译默认不联网)。
 - 六个平台均在安装后首次启动时注册本机匿名水杉账号：Linux 在 `postinst` / `msime-linux-setup`，Windows 在 Server 首次以 `--production` 启动时，macOS 在输入法首次激活时，iOS 与 Android 在应用首次打开时，HarmonyOS 在应用或键盘首次启动时。只发送本机随机生成的标识与口令，不含输入内容，失败时下次启动重试。Windows 与 HarmonyOS 经新的 host C ABI `msime_client_ensure_anonymous_account`，由共享层 `client-core` 实现，与其他平台使用相同的文件名与协议。
-- 六个平台均在启动时上报一次安装事件；Android、iOS、macOS、Linux、Windows 还会在崩溃时上报（HarmonyOS 暂无崩溃上报）。字段、去重与离线重试行为按平台不同，逐条见[网络请求与数据流向](PRIVACY.md)，那里同时记录发送内容、目的地、代码位置和关闭方式。
-- 按需下载的资源包扩展到三个桌面平台：Windows 和 macOS 的安装包不再内置桌面神经联想模型（约 25 MB），打开「桌面神经联想」时由设置应用下载，Linux 在安装布局里没有它时同样下载；Windows 只在系统没有中文 Windows Ink 识别器时才下载手写模型，Ink 可用时手写面板照常识别、不等下载；我们自己发布的 Linux deb/rpm 不再带手写模型，第一次打开手写面板时下载，发行版仓库的包继续内置。下载失败时资源包行和手写面板都提供「设置下载镜像」。已下载的资源包只在文件字节（名字、SHA-256、长度）变了时才算过期：此前每次发布新的词库版本，即使日文词典没变也会因下载地址变化被当成过期而停用。细节见[资源与更新下载](PRIVACY.md#资源与更新下载)。
+- 六个平台均在启动时上报一次安装事件；Android、iOS、macOS、Linux、Windows 还会在崩溃时上报（HarmonyOS 暂无崩溃上报）。字段、去重与离线重试行为按平台不同，逐条见[网络请求与数据流向](../PRIVACY.md)，那里同时记录发送内容、目的地、代码位置和关闭方式。
+- 按需下载的资源包扩展到三个桌面平台：Windows 和 macOS 的安装包不再内置桌面神经联想模型（约 25 MB），打开「桌面神经联想」时由设置应用下载，Linux 在安装布局里没有它时同样下载；Windows 只在系统没有中文 Windows Ink 识别器时才下载手写模型，Ink 可用时手写面板照常识别、不等下载；我们自己发布的 Linux deb/rpm 不再带手写模型，第一次打开手写面板时下载，发行版仓库的包继续内置。下载失败时资源包行和手写面板都提供「设置下载镜像」。已下载的资源包只在文件字节（名字、SHA-256、长度）变了时才算过期：此前每次发布新的词库版本，即使日文词典没变也会因下载地址变化被当成过期而停用。细节见[资源与更新下载](../PRIVACY.md#资源与更新下载)。
 
 #### 工程与文档
 
@@ -128,7 +128,7 @@
 - 整句转换评测与重排延迟测量各有固定数据集与基线文件，可在本地复跑。
 - Git 钩子提供亚秒级的 `pre-commit` 检查（冲突标记、Rust 与前端格式），`pre-merge-commit` 与 `pre-push` 运行快速验证。
 - 前端接入 Oxlint 与 Oxfmt，与 Rust 侧 clippy／rustfmt 对应；`packages/ui/src/upstream` 与 `apps/desktop/src-tauri/gen` 保持上游原样。
-- 文档：[架构说明](ARCHITECTURE.md)、[实施记录](docs/implementation.md)、[网络请求与数据流向](PRIVACY.md)、[第三方组件清单](docs/third-party.md)、[开源发布清单](docs/open-source-release.md)、贡献指南、安全策略、行为准则（Contributor Covenant 2.1）以及问题与拉取请求模板。
+- 文档：[架构说明](ARCHITECTURE.md)、[实施记录](implementation.md)、[网络请求与数据流向](../PRIVACY.md)、[第三方组件清单](third-party.md)、[开源发布清单](open-source-release.md)、贡献指南、安全策略、行为准则（Contributor Covenant 2.1）以及问题与拉取请求模板。
 
 ### 验证
 
@@ -139,7 +139,7 @@
 ### 发布说明
 
 - 源码使用 GPL-3.0-only；第三方依赖、固定 Engine 归档、词库、模型和平台 SDK 仍须遵守各自许可证与通知要求。
-- 提交前请执行 `bash scripts/verify-local.sh --quick`，并按 [开源发布清单](docs/open-source-release.md) 检查敏感文件、来源与通知文件。
+- 提交前请执行 `bash scripts/verify-local.sh --quick`，并按 [开源发布清单](open-source-release.md) 检查敏感文件、来源与通知文件。
 - 六个平台各有独立的发布工作流，手动触发并按各自的 `platforms/<平台>/version.txt` 取版本号。
 
 [Unreleased]: https://github.com/metasequoiaime/msime/compare/develop...HEAD

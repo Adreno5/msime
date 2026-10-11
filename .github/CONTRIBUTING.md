@@ -1,6 +1,6 @@
 # Contributing to 水杉输入法
 
-感谢参与水杉输入法共享客户端。提交改动前，请先阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 了解分层方式、不能打破的四条边界、验证流程和各平台的验证覆盖面，[变更记录](CHANGELOG.md)里是历次改动。使用编码代理的话，[AGENTS.md](AGENTS.md) 里是给它们的操作约定。
+感谢参与水杉输入法共享客户端。提交改动前，请先阅读 [ARCHITECTURE.md](../docs/ARCHITECTURE.md) 了解分层方式、不能打破的四条边界、验证流程和各平台的验证覆盖面，[变更记录](../docs/CHANGELOG.md)里是历次改动。使用编码代理的话，[AGENTS.md](../AGENTS.md) 里是给它们的操作约定。
 
 ## 开发流程
 
