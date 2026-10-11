@@ -5380,7 +5380,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         chip, candidate: page[offset], hint: typesKorean ? "" : annotation,
         reading: typesKorean ? annotation : nil,
         glosses: candidateGlosses(at: offset), markers: candidateMarkers(at: offset), number: offset + 1,
-        converting: japaneseConversionIndex == offset)
+        converting: japaneseConversionIndex == offset,
+        aiPlaceholder: visibleCandidateSources.indices.contains(offset)
+          && visibleCandidateSources[offset] == CandidateMarker.aiPendingSource)
     }
     updateExpandControl()
 
@@ -5792,7 +5794,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   private func updateCandidateButton(
     _ button: KeyboardKeyButton, candidate: String, hint: String, reading: String? = nil, glosses: [String],
-    markers: [CandidateMarker] = [], number: Int, converting: Bool
+    markers: [CandidateMarker] = [], number: Int, converting: Bool, aiPlaceholder: Bool = false
   ) {
     let display = chineseOutput(candidate)
     guard var configuration = button.configuration else { return }
@@ -5828,6 +5830,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     configuration.baseForegroundColor = pinned || selected
       ? candidatePalette?.accent ?? skin.accent
       : candidatePalette?.text ?? skin.keyForeground
+    // AI 座位上的占位行画成次要色，和真候选区分开（#6888）。
+    if aiPlaceholder { configuration.baseForegroundColor = annotationColor }
     // The 훈음 is drawn whole, like an inline hint was, so the chip widens to it rather than cutting it to the gloss column; the glosses under it fit that width.
     var readingWidth: CGFloat = 0
     var glossWidth: CGFloat = 0
@@ -5890,6 +5894,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
     // A Hanja's long press offers nothing (candidateMenuElements(at:)), so its glosses are read but not offered for insertion.
     button.accessibilityHint = spoken.isEmpty || reading != nil ? nil : "轻点输入，长按可输入释义"
+    if aiPlaceholder {
+      button.accessibilityLabel = candidate == "…" ? "AI 候选等待中" : "AI 候选没有结果"
+      button.accessibilityHint = nil
+    }
   }
 
   /// The markers as symbol attachments after the word, at the annotation's size and colour so they read as a suffix rather than as part of the candidate.

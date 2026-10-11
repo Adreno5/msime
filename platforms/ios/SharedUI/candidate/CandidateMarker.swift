@@ -10,6 +10,8 @@ struct CandidateMarker: Equatable {
   /// Engine `CandidateSource` values, shared by every host through the runtime's view.
   static let cloudSource = 2
   static let aiSource = 3
+  /// AI 座位上的占位行（「…」等待中，「—」没有结果）：不是候选，画成次要色，不加标记（#6888）。
+  static let aiPendingSource = 12
 
   static func markers(source: Int, fixedPosition: Int) -> [CandidateMarker] {
     var markers: [CandidateMarker] = []
