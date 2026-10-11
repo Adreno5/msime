@@ -173,6 +173,8 @@ export const applyOnlineCandidates: (
   candidates: string,
   source: number,
 ) => string;
+/** `msime_client_resolve_online_candidates`：AI 回答为空、失败或被拒时调用（source 只认 1），AI 座位上的占位行换成「—」。应答 `{ok, value: {applied, view}}`。 */
+export const resolveOnlineCandidates: (handle: number, query: string, source: number) => string;
 export const personalDictionarySync: (options: string) => string;
 /**
  * `{options,action}` against the queued personal dictionary rather than the Engine.

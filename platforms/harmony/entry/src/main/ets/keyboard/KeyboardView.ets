@@ -15,6 +15,7 @@ import { ChineseHelpcodePolicy } from './input/ChineseHelpcodePolicy';
 import { KeyAccessibilityPolicy } from './input/KeyAccessibilityPolicy';
 import { CandidateGlossPolicy } from './candidate/CandidateGlossPolicy';
 import { CandidateWrapPolicy } from './candidate/CandidateWrapPolicy';
+import { CandidatePresentationPolicy } from './candidate/CandidatePresentationPolicy';
 import { KeyboardLayoutDragPolicy } from './input/KeyboardLayoutDragPolicy';
 import { ExpandedCandidateLayout } from './candidate/ExpandedCandidateLayout';
 import { ShuangpinKeyHintPolicy } from './input/ShuangpinKeyHintPolicy';
@@ -3554,7 +3555,8 @@ struct KeyboardView {
     Row() {
       Text(candidate.text).fontSize(this.settings.candidateFontSize)
         .fontWeight(this.candidateWeight(candidate))
-        .fontColor(CandidateSkinPolicy.rowTextColor(candidate.highlighted,
+        .fontColor(CandidatePresentationPolicy.aiPlaceholder(candidate.source) ? this.candidateDetailColor()
+          : CandidateSkinPolicy.rowTextColor(candidate.highlighted,
           candidate.fixedPosition > 0, this.candidateTextColor(), this.candidateSelectedTextColor()))
       if (candidate.badge.length > 0) {
         Text(candidate.badge).fontSize(Math.max(KEY_HINT_FONT_SIZE, this.settings.candidateFontSize - 8))
@@ -3960,7 +3962,8 @@ struct KeyboardView {
           .fontSize(this.chipFontSize())
           .lineHeight(this.chipFontSize() * CHIP_WORD_LINE_HEIGHT)
           .fontWeight(this.candidateWeight(candidate))
-          .fontColor(CandidateSkinPolicy.rowTextColor(candidate.highlighted, candidate.fixedPosition > 0,
+          .fontColor(CandidatePresentationPolicy.aiPlaceholder(candidate.source) ? this.candidateDetailColor()
+            : CandidateSkinPolicy.rowTextColor(candidate.highlighted, candidate.fixedPosition > 0,
             this.candidateTextColor(), this.candidateSelectedTextColor()))
           .fontFamily(this.candidateFontFamily())
           .maxLines(1)
