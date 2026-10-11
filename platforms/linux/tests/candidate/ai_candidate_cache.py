@@ -73,13 +73,56 @@ class AiCandidateCache(unittest.TestCase):
         changed_model = query()
         changed_model["ai_assistant"]["model"] = "other-model"
         changed_segments = query(segments=["nin", "hao"])
+        other_model_config = {**self.config, "model": "other-model"}
         with mock.patch.object(provider, "load_ai_config",
-                               return_value=self.config), \
+                               side_effect=[self.config, other_model_config, self.config]), \
                 mock.patch.object(provider, "ai", return_value=rows) as ai:
             self.configured(query())
             self.configured(changed_model)
             self.configured(changed_segments)
         self.assertEqual(ai.call_count, 3)
+
+    def test_cache_does_not_survive_profile_mismatch(self):
+        rows = [{"text": "你好", "source": 1}]
+        mismatched = {
+            "provider": "other",
+            "endpoint": "https://ai.invalid/v1/chat/completions",
+            "model": "synthetic-model",
+            "token": "synthetic-token",
+        }
+        with mock.patch.object(provider, "load_ai_config",
+                               side_effect=[self.config, mismatched]), \
+                mock.patch.object(provider, "ai", return_value=rows) as ai:
+            self.assertEqual(self.configured(query()), rows)
+            self.assertIsNone(self.configured(query()))
+        ai.assert_called_once()
+
+    def test_cache_probe_does_not_survive_profile_mismatch(self):
+        mismatched = {
+            "provider": "other",
+            "endpoint": "https://ai.invalid/v1/chat/completions",
+            "model": "synthetic-model",
+            "token": "synthetic-token",
+        }
+        probe = query()
+        probe["ai_cache_only"] = True
+        with mock.patch.object(provider, "load_ai_config",
+                               side_effect=[self.config, mismatched]), \
+                mock.patch.object(
+                    provider, "ai", return_value=[{"text": "你好", "source": 1}]) as ai:
+            self.configured(query())
+            self.assertIsNone(self.configured(probe))
+        ai.assert_called_once()
+
+    def test_token_rotation_partitions_cache(self):
+        rows = [{"text": "你好", "source": 1}]
+        rotated = {**self.config, "token": "synthetic-rotated-token"}
+        with mock.patch.object(provider, "load_ai_config",
+                               side_effect=[self.config, rotated]), \
+                mock.patch.object(provider, "ai", return_value=rows) as ai:
+            self.assertEqual(self.configured(query()), rows)
+            self.assertEqual(self.configured(query()), rows)
+        self.assertEqual(ai.call_count, 2)
 
     def test_candidate_limit_partitions_cache(self):
         rows = [
@@ -107,7 +150,7 @@ class AiCandidateCache(unittest.TestCase):
         self.assertEqual(ai.call_count, 2)
 
     def test_cache_is_bounded_without_retaining_request_secrets(self):
-        key = provider.ai_cache_key(query(context="sensitive", prompt="private"))
+        key = provider.ai_cache_key(query(context="sensitive", prompt="private"), self.config)
         self.assertNotIn("sensitive", key)
         self.assertNotIn("private", key)
         self.assertNotIn("synthetic-token", key)
