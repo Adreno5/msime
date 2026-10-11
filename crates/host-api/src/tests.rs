@@ -13718,3 +13718,5 @@ fn voice_capture_device_export_lists_wasapi_endpoints_on_windows_only() {
         assert_eq!(reply["error"], "voice capture devices unavailable");
     }
 }
+
+mod lifecycle_traces;
