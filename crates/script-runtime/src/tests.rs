@@ -528,29 +528,55 @@ fn the_turn_quota_spans_deliveries_and_refills_on_the_next_turn() {
                 spent += fuel;
                 deliveries += 1;
             }
-            Outcome::Failed { failure, fuel } => {
-                assert_eq!(failure, Failure::OutOfFuel);
+            // 截断它的是本轮剩下的配额，不是钩子自己的上限：不算失败。
+            Outcome::TurnExhausted { fuel } => {
+                assert!(fuel < limits::OBSERVE_FUEL);
                 spent += fuel;
                 break;
             }
-            Outcome::NotSubscribed => unreachable!(),
+            other => panic!("{other:?}"),
         }
         assert!(deliveries < 1_000, "the turn quota never ran out");
     }
     assert!(deliveries > 1);
-    assert!(spent <= limits::TURN_FUEL);
-    // 撞上本轮配额的那一次 trap 了，实例要换新的；新实例在新一轮里重新拿到完整配额。
+    assert_eq!(spent, limits::TURN_FUEL);
+    // 撞上本轮配额的那一次运行到一半被截断，实例要换新的；新实例在新一轮里重新拿到完整配额。
     let mut fresh = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
     assert!(matches!(
         fresh.deliver(8, &input_event()),
         Outcome::Delivered { .. }
     ));
     assert!(fresh.turn_fuel_left() < limits::TURN_FUEL);
+    // 新一轮剩下的恰好是满额减去这一次：没有重新给满时还要再减去第 8 轮那一次。
+    let refilled = match fresh.deliver(9, &input_event()) {
+        Outcome::Delivered { fuel, .. } => fuel,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(fresh.turn_fuel_left(), limits::TURN_FUEL - refilled);
+}
+
+#[test]
+fn an_exhausted_turn_is_skipped_rather_than_failed() {
+    // 宿主在同一轮里重建实例时交过来的剩余是 0（之前的投递已经花光，派发没经过 `msime_client_key` 开新一轮）：不运行，不算失败，实例照样可用。
+    let mut script = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
+    script.resume_turn(3, 0);
+    assert_eq!(
+        script.deliver(3, &input_event()),
+        Outcome::TurnExhausted { fuel: 0 }
+    );
+    assert!(script.is_usable());
     assert!(matches!(
-        fresh.deliver(9, &input_event()),
+        script.deliver(4, &input_event()),
         Outcome::Delivered { .. }
     ));
-    assert!(fresh.turn_fuel_left() > limits::TURN_FUEL - limits::OBSERVE_FUEL);
+    // 本轮只剩一点：运行到一半被截断，不算失败，但实例不再可用。
+    let mut cut = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
+    cut.resume_turn(5, 100);
+    assert_eq!(
+        cut.deliver(5, &input_event()),
+        Outcome::TurnExhausted { fuel: 100 }
+    );
+    assert!(!cut.is_usable());
 }
 
 #[test]

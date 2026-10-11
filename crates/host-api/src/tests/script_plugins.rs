@@ -632,7 +632,7 @@ fn process_health(fixture: &Fixture, id: &str, hash: &str) -> (u32, Option<&'sta
 #[test]
 fn fuel_is_given_per_turn_and_a_new_key_refills_it() {
     let fixture = fixture();
-    install(
+    let hashes = install(
         &fixture,
         &[Script::new("burner", burner(2000), &[Hook::Input])],
         1,
@@ -644,12 +644,13 @@ fn fuel_is_given_per_turn_and_a_new_key_refills_it() {
         read(msime_client_reset_cache(fixture.handle));
     }
     assert_eq!(take_log().len(), 50);
-    // 同一轮里（交给应用的键不开新的一轮）连发：轮配额 125 000 用完后失败。
+    // 同一轮里（交给应用的键不开新的一轮）连发：轮配额 125 000 用完后跳过，不算失败。
     msime_client_key(fixture.handle, KEY_PASSTHROUGH);
     for _ in 0..50 {
         read(msime_client_reset_cache(fixture.handle));
     }
     assert!(take_log().len() < 50);
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]), (0, None));
 }
 
 #[test]
@@ -661,29 +662,60 @@ fn the_turn_quota_belongs_to_the_plugin_not_to_one_instance() {
         1,
     );
     opt_in(&fixture, TRAIT_KNOWN);
-    // 一轮里花光配额：最后一次 fuel 耗尽，实例丢弃。
+    // 一轮的配额够投递几次：花光之后最后一次运行到一半被截断。
     msime_client_key(fixture.handle, 0);
     for _ in 0..50 {
         read(msime_client_reset_cache(fixture.handle));
     }
-    let spent = take_log().len();
-    assert!(spent < 50);
-    assert_eq!(process_health(&fixture, "burner", &hashes[0]).0, 1);
-    // 同一轮里换了个字段（没有按键）：新实例接着这一轮剩下的配额，而不是重新给满 125 000。
-    read(msime_client_focus(fixture.handle, false));
+    let per_turn = take_log().len();
+    assert!(per_turn > 3 && per_turn < 50, "{per_turn}");
+    // 同一轮里换了个字段（没有按键）：这一轮还是花光的，跳过，也不为它重新初始化。
     msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
     read(msime_client_focus(fixture.handle, true));
     read(msime_client_reset_cache(fixture.handle));
     assert!(take_log().is_empty());
-    assert_eq!(process_health(&fixture, "burner", &hashes[0]).0, 2);
-    // 新的一轮配额给满，但这次聚焦里它已经 trap 过，不再重建；下一次聚焦才重新运行。
+    // 新的一轮投递 3 次，再在同一轮里换字段：新实例接着这一轮剩下的配额，而不是重新给满，两个实例合计和一轮一样多。
     msime_client_key(fixture.handle, 0);
-    read(msime_client_reset_cache(fixture.handle));
-    assert!(take_log().is_empty());
+    for _ in 0..3 {
+        read(msime_client_reset_cache(fixture.handle));
+    }
+    assert_eq!(take_log().len(), 3);
+    read(msime_client_focus(fixture.handle, false));
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, true));
+    for _ in 0..50 {
+        read(msime_client_reset_cache(fixture.handle));
+    }
+    assert_eq!(take_log().len(), per_turn - 3);
+    // 用完本轮配额不是插件的失败。
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]), (0, None));
+}
+
+#[test]
+fn an_exhausted_turn_skips_the_plugin_and_never_trips_the_breaker() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 修饰键组合、快捷键和失焦命令不经过 msime_client_key，这些派发和上一次按键共用一轮。每次聚焦都把这一轮花光：插件只是被跳过，连着四次也不熔断（按失败计时第三次就停用了）。
+    for _ in 0..4 {
+        msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+        read(msime_client_focus(fixture.handle, true));
+        msime_client_key(fixture.handle, 0);
+        for _ in 0..50 {
+            read(msime_client_reset_cache(fixture.handle));
+        }
+        let ran = take_log().len();
+        assert!(ran > 1 && ran < 50, "{ran}");
+    }
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]), (0, None));
+    // 被截断的实例这次聚焦里不再重建；下一次聚焦、新的一轮照常运行。
     read(msime_client_focus(fixture.handle, true));
     letter(fixture.handle, b'n');
     assert_eq!(kinds(&take_log()), [Hook::Input.code()]);
-    assert_eq!(process_health(&fixture, "burner", &hashes[0]), (2, None));
 }
 
 #[test]

@@ -154,6 +154,8 @@ pub enum Outcome {
     Delivered { status: i32, fuel: u64 },
     /// 计为插件自己的一次失败。它这次暂存的动作全部丢弃，不影响后面的插件。
     Failed { failure: Failure, fuel: u64 },
+    /// 本轮的配额用完了，不算插件的失败：宿主并不在每次派发之前都开一轮（修饰键组合、快捷键和失焦命令不经过 `msime_client_key`），这样的派发和上一次按键共用一轮，把它花光的可能是之前那几次正常的投递。`fuel` 为 0 时这次没有运行；不为 0 时运行到一半被本轮剩下的配额截断，像 trap 一样暂存的动作全部丢弃，持久实例随之不可用（[`ScriptInstance::is_usable`]）。超出单个钩子自己的上限仍是 [`Outcome::Failed`]。
+    TurnExhausted { fuel: u64 },
 }
 
 /// 实例化或初始化失败。初始化失败（含 ABI 不符）时宿主应立即停用这个插件。
@@ -661,7 +663,7 @@ impl ScriptInstance {
         self.store.data_mut().log_sink = sink;
     }
 
-    /// 投递一个事件。`turn` 是宿主的轮次计数（每个非 PASSTHROUGH 的 `msime_client_key` 加一），换了轮次就重新给满本轮配额；本次能用的 fuel 是本轮剩余和本钩子上限中较小的那个。`before_commit` 在 `msime_init` 之后的快照上运行，看不到之前任何事件留下的状态。
+    /// 投递一个事件。`turn` 是宿主的轮次计数（每个非 PASSTHROUGH 的 `msime_client_key` 加一），换了轮次就重新给满本轮配额；本次能用的 fuel 是本轮剩余和本钩子上限中较小的那个。本轮已经用完时不运行，被本轮剩下的配额截断时不算失败，两者都是 [`Outcome::TurnExhausted`]。`before_commit` 在 `msime_init` 之后的快照上运行，看不到之前任何事件留下的状态。
     pub fn deliver(&mut self, turn: u64, event: &Event<'_>) -> Outcome {
         if !self.module.declaration.hooks.contains(event.hook) {
             return Outcome::NotSubscribed;
@@ -676,12 +678,10 @@ impl ScriptInstance {
             self.turn = Some(turn);
             self.turn_fuel_left = limits::TURN_FUEL;
         }
-        let allowed = self.turn_fuel_left.min(limits::hook_fuel(event.hook));
+        let hook_limit = limits::hook_fuel(event.hook);
+        let allowed = self.turn_fuel_left.min(hook_limit);
         if allowed == 0 {
-            return Outcome::Failed {
-                failure: Failure::OutOfFuel,
-                fuel: 0,
-            };
+            return Outcome::TurnExhausted { fuel: 0 };
         }
         let (result, fuel) = if event.hook == Hook::BeforeCommit && self.snapshot.is_some() {
             self.run_on_snapshot(allowed, event)
@@ -695,6 +695,8 @@ impl ScriptInstance {
         self.turn_fuel_left -= fuel;
         match result {
             Ok(status) => Outcome::Delivered { status, fuel },
+            // 截断它的是本轮剩下的配额，不是本钩子的上限：插件没有超出任何一项自己的限制。
+            Err(Failure::OutOfFuel) if allowed < hook_limit => Outcome::TurnExhausted { fuel },
             Err(failure) => Outcome::Failed { failure, fuel },
         }
     }

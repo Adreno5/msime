@@ -35,7 +35,7 @@ struct Entry {
     /// 从进程缓存拿到的模块，拿到之后不再查缓存。
     module: Option<ScriptModule>,
     instance: Option<Live>,
-    /// 这次聚焦里 trap 过：实例已经丢弃，到下一次聚焦之前不再重建。否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍初始化。
+    /// 这次聚焦里 trap 过（包括运行到一半被本轮配额截断）：实例已经丢弃，到下一次聚焦之前不再重建。否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍初始化。
     trapped: bool,
     /// 这个插件最近一次投递所在的轮次和那一轮还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
     turn: Option<(u64, u64)>,
@@ -345,6 +345,10 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     if !module.declaration().hooks.contains(event.hook) {
         return;
     }
+    // 这个插件本轮的配额已经用完：跳过到下一轮，也不为它在按键路径上重新初始化。
+    if entry.turn == Some((turn, 0)) {
+        return;
+    }
     if entry.instance.is_none() {
         let budget = *init_left;
         if budget == 0 || entry.trapped {
@@ -395,6 +399,17 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     match outcome {
         Outcome::NotSubscribed => {}
         Outcome::Delivered { .. } => entry.health.record(None, slow),
+        // 本轮配额用完不算失败（宿主不在每次派发前都开一轮）；运行过的照样按墙钟记一次。
+        Outcome::TurnExhausted { fuel } => {
+            if fuel > 0 {
+                entry.health.record(None, slow);
+            }
+            // 运行到一半被截断：wasm 的状态可能停在一半，丢掉；这次聚焦里不再重建，否则一个每轮都花光配额的插件会在每一轮的按键路径上重跑一遍初始化。
+            if !live.instance.is_usable() {
+                entry.trapped = true;
+                entry.instance = None;
+            }
+        }
         Outcome::Failed { failure, .. } => {
             entry.health.record(Some(failure), slow);
             // trap 之后 wasm 的状态可能停在一半，丢掉；这次聚焦里不再重建。
