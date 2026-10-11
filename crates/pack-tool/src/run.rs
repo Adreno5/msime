@@ -492,6 +492,15 @@ impl<'m> Session<'m> {
         match outcome {
             Outcome::NotSubscribed => ("not_subscribed".into(), 0, init_fuel, false),
             Outcome::Delivered { fuel, .. } => ("ok".into(), fuel, init_fuel, false),
+            // The shared runtime can exhaust the per-turn budget before this hook's own limit.
+            // This is not a plugin failure, but a partial execution leaves the instance unusable.
+            Outcome::TurnExhausted { fuel } => {
+                if !instance.is_usable() {
+                    self.trapped = true;
+                    self.instance = None;
+                }
+                ("turn_exhausted".into(), fuel, init_fuel, false)
+            }
             Outcome::Failed { failure, fuel } => {
                 if !instance.is_usable() {
                     self.trapped = true;
