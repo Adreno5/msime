@@ -26,6 +26,7 @@ public final class HostDeepLink {
     public static final String ARG_EXTERNAL = "msime_external";
 
     public static final int TAB_SETTINGS = 0;
+    /** 原先的「社区」tab。这个 tab 已经撤掉、社区内容并进了各功能页，下标仍然保留，让其他 tab 的取值和已经发出去的深链不变；宿主收到它时打开社区皮肤的完整列表。 */
     public static final int TAB_COMMUNITY = 1;
     public static final int TAB_STATISTICS = 2;
     public static final int TAB_ACCOUNT = 3;

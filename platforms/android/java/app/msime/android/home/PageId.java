@@ -14,7 +14,7 @@ import java.util.List;
  *
  * <p>页面类的约束见 {@link DetailPage}：必须是 public 类、有 public 无参构造器、参数只放在 arguments Bundle 里。
  *
- * <p>关键词取自对应设计图上的行标题，搜索时与标题一起匹配；{@link #LEXICON_DETAIL} 和 {@link #CLIPBOARD_EDIT} 需要参数才能打开，所以没有关键词，不出现在搜索结果里。页面里新加的开关、导航和滑块行要同时把行标题加进这里，否则设置首页搜不到它（#6132 的「浮动键盘」就是这样漏掉的）；`tests/home/SettingsSearchIndexSmoke.java` 逐页核对。
+ * <p>关键词取自对应设计图上的行标题，搜索时与标题一起匹配；{@link #LEXICON_DETAIL} 和 {@link #CLIPBOARD_EDIT} 需要参数才能打开，{@link #COMMUNITY} 要从功能页带着作品类型进去，所以都没有关键词，不出现在搜索结果里。页面里新加的开关、导航和滑块行要同时把行标题加进这里，否则设置首页搜不到它（#6132 的「浮动键盘」就是这样漏掉的）；`tests/home/SettingsSearchIndexSmoke.java` 逐页核对。
  */
 public enum PageId {
     SKINS("SkinsPage", "皮肤", HostDeepLink.TAB_SETTINGS,
@@ -73,7 +73,9 @@ public enum PageId {
         "设备"),
     PRIVACY("PrivacyPage", "隐私", HostDeepLink.TAB_ACCOUNT,
         "本地优先", "联网功能", "本机数据", "剪贴板历史", "匿名使用统计", "用水杉账号翻译候选", "隐私模式",
-        "隐私政策");
+        "隐私政策"),
+    /** 一类社区作品的完整列表，参数 `kind` 选类型（见 {@link CommunityFragment#ARG_KIND}）；从各功能页的「浏览更多…」进来，本身不进设置搜索，搜索里出现的是那几个功能页。 */
+    COMMUNITY("CommunityFragment", "社区", HostDeepLink.TAB_SETTINGS);
 
     private static final String PACKAGE = "app.msime.android.home.";
 

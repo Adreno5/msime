@@ -24,8 +24,8 @@ public final class SettingsSearchIndexSmoke {
     private static final Pattern PAGE = Pattern.compile(
         "^    ([A-Z_]+)\\(\"([A-Za-z]+)\", \"([^\"]*)\", HostDeepLink\\.TAB_[A-Z]+((?:,\\s*\"[^\"]*\")*)\\s*\\)[,;]",
         Pattern.MULTILINE);
-    /** 独立数一遍 `PageId` 有几项，防止上面的正则漏掉某一项而让检查静悄悄地变少。 */
-    private static final Pattern PAGE_HEAD = Pattern.compile("^    [A-Z_]+\\(\"[A-Za-z]+Page\", ", Pattern.MULTILINE);
+    /** 独立数一遍 `PageId` 有几项，防止上面的正则漏掉某一项而让检查静悄悄地变少。类名不一定以 Page 结尾：社区作品的完整列表是 `CommunityFragment`。 */
+    private static final Pattern PAGE_HEAD = Pattern.compile("^    [A-Z_]+\\(\"[A-Za-z]+\", ", Pattern.MULTILINE);
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
     /** 页面里的设置行：`GroupCard` 的 toggle / nav / slider，以及开发者页包了一层的 uploadToggle。 */
     private static final Pattern ROW = Pattern.compile("\\.(?:toggle|nav|slider)\\(\\s*\"([^\"]+)\"");

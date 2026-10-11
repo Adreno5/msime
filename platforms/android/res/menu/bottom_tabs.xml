@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 四个 tab 的顺序就是 HostDeepLink 的 TAB_* 下标：0 设置、1 社区、2 统计、3 我的。图标是 Material Symbols 的 settings、groups、bar_chart、person。 -->
+<!-- 底部三个 tab：设置、统计、我的，图标是 Material Symbols 的 settings、bar_chart、person。HostDeepLink 的 TAB_* 下标保留撤掉「社区」tab 之前的取值（0 设置、2 统计、3 我的），1 不再对应这里的任何一项，HomeActivity 负责换算。 -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@+id/tab_settings" android:icon="@drawable/ic_ms_settings" android:title="@string/tab_settings" />
-    <item android:id="@+id/tab_community" android:icon="@drawable/ic_ms_groups" android:title="@string/tab_community" />
     <item android:id="@+id/tab_statistics" android:icon="@drawable/ic_ms_bar_chart" android:title="@string/tab_statistics" />
     <item android:id="@+id/tab_account" android:icon="@drawable/ic_ms_person" android:title="@string/tab_account" />
 </menu>
