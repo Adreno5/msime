@@ -81,11 +81,12 @@ function skinsClient(): CommunitySkinClient {
   };
 }
 
-function resourcesClient(): CommunityResourceClient {
-  const polite = reply("10000000-0000-4000-8000-000000000101", "礼貌回复");
+function resourcesClient(
+  items = [reply("10000000-0000-4000-8000-000000000101", "礼貌回复")],
+): CommunityResourceClient {
   return {
-    list: vi.fn().mockResolvedValue({ items: [polite], has_more: false }),
-    detail: vi.fn().mockResolvedValue(polite),
+    list: vi.fn().mockResolvedValue({ items, has_more: false }),
+    detail: vi.fn(async (id: string) => items.find((item) => item.id === id)!),
     publish: vi.fn(),
     apply: vi.fn(),
     save: vi.fn().mockResolvedValue(undefined),
@@ -96,16 +97,18 @@ function resourcesClient(): CommunityResourceClient {
   };
 }
 
-function renderPhone(initialPage: string) {
+function renderPhone(
+  initialPage: string,
+  { platform = "harmony", resources = resourcesClient() } = {},
+) {
   const skins = skinsClient();
-  const resources = resourcesClient();
   render(
     <SettingsPage
       initialPage={initialPage}
       client={{
         load: vi.fn().mockResolvedValue(initial),
         save: vi.fn().mockResolvedValue(initial),
-        host: testHost({ platform: "harmony" }),
+        host: testHost({ platform }),
         home: {},
         account: account(),
         communitySkins: skins,
@@ -204,4 +207,68 @@ test("the gallery is drawn outside the settings form", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "浏览更多皮肤" }));
   const gallery = await screen.findByRole("dialog", { name: "社区皮肤" });
   expect(gallery.closest("form")).toBeNull();
+});
+
+const replies = Array.from({ length: 6 }, (_, index) =>
+  reply(`10000000-0000-4000-8000-00000000020${index}`, `回复模板${index + 1}`),
+);
+
+// 鸿蒙「社区」标签页里叫「短语」的那一段是 AI 高情商回复用的回复模板，现在列在「AI 辅助」页上：前几个可以直接添加，最后一行打开完整图库。
+test("the AI page lists the first community reply templates and adds one to the reply keyboard", async () => {
+  const resources = resourcesClient(replies);
+  renderPhone("ai", { resources });
+
+  const group = await screen.findByRole("region", { name: "回复模板" });
+  await within(group).findByRole("button", { name: "添加回复模板 回复模板1" });
+  expect(within(group).queryByRole("button", { name: "添加回复模板 回复模板6" })).toBeNull();
+  expect(resources.list).toHaveBeenCalledWith("reply", "", "", 0);
+
+  const add = within(group).getByRole("button", { name: "添加回复模板 回复模板2" });
+  fireEvent.click(add);
+  await waitFor(() => expect(add.textContent).toBe("已添加"));
+  expect(resources.save).toHaveBeenCalledWith(replies[1].id, true);
+  expect(resources.detail).toHaveBeenCalledWith(replies[1].id);
+  expect(resources.storeReply).toHaveBeenCalledWith(replies[1]);
+  expect(await screen.findByText("已添加「回复模板2」到高情商回复键盘")).toBeTruthy();
+
+  fireEvent.click(within(group).getByRole("button", { name: "浏览更多回复模板" }));
+  const gallery = await screen.findByRole("dialog", { name: "社区回复模板" });
+  expect(within(gallery).getByRole("button", { name: "全部" }).getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+  expect(window.history.state).toMatchObject({
+    page: "ai",
+    communityGallery: { category: "reply", scope: "", initialMine: false },
+  });
+});
+
+// 其他触屏宿主没有 toast，「添加」的结果写在组里。
+test("another touch host shows the reply templates and says what 添加 did in the group", async () => {
+  const resources = resourcesClient(replies);
+  renderPhone("ai", { platform: "android", resources });
+
+  const group = await screen.findByRole("region", { name: "回复模板" });
+  fireEvent.click(await within(group).findByRole("button", { name: "添加回复模板 回复模板1" }));
+  expect((await within(group).findByRole("status")).textContent).toBe(
+    "已添加「回复模板1」到高情商回复键盘",
+  );
+});
+
+test("the desktop AI page has no reply template group", async () => {
+  const resources = resourcesClient(replies);
+  renderPhone("ai", { platform: "windows", resources });
+
+  expect(await screen.findByRole("heading", { level: 1, name: "AI 辅助" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "回复模板" })).toBeNull();
+  expect(resources.list).not.toHaveBeenCalled();
+});
+
+// 其他触屏宿主的词库页是桌面表单，社区词库从「社区词库」一组进入，图库同样在本页上打开。
+test("another touch host opens the dictionary gallery from the 词库 page", async () => {
+  const { resources } = renderPhone("dictionary", { platform: "android" });
+
+  fireEvent.click(await screen.findByRole("button", { name: "浏览更多词库" }));
+  expect(await screen.findByRole("dialog", { name: "社区词库" })).toBeTruthy();
+  await waitFor(() => expect(resources.list).toHaveBeenCalledWith("dictionary", "", "", 0));
+  expect(screen.getByRole("heading", { level: 1, name: "词库" })).toBeTruthy();
 });
