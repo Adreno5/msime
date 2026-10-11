@@ -226,7 +226,7 @@ int main() {
         assert([local closeWithError:&error]);
         [[NSFileManager defaultManager] removeItemAtPath:localRoot error:nil];
 
-        // 生命周期核心经包装层的往返：选择加入 FEEDBACK 之后，按键特效来自 lifecycleKey:，上屏特效写进派发回复的 feedback，失焦回复不带它，旧的声音和特效调用（事件 0-4）都成了空操作。特效开着、声音全关，所以不起播放器。
+        // 生命周期核心经包装层的往返：选择加入 FEEDBACK 之后，按键特效来自 lifecycleKey:，上屏特效写进派发回复的 feedback，失焦回复不带它，旧的声音和特效调用（事件 0-4）都成了空操作。按键音和上屏音开着、音量为 0：旧调用在选择加入之前真的把请求排进播放器队列（答 YES），之后答 NO，断言才分得出 FEEDBACK 的过滤；音量 0 不会发出任何声音。
         NSString *lifecycleRoot = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         NSMutableDictionary *lifecycleOptions = [options mutableCopy];
         for (NSString *name in @[@"resources", @"user_data", @"cache", @"dictionaries"]) {
@@ -236,7 +236,8 @@ int main() {
             lifecycleOptions[name] = path;
         }
         NSMutableDictionary *lifecyclePreferences = [options[@"preferences"] mutableCopy];
-        lifecyclePreferences[@"plugins"] = @{@"effect_style": @"flash", @"combo_counter": @YES};
+        lifecyclePreferences[@"plugins"] = @{@"effect_style": @"flash", @"combo_counter": @YES,
+                                             @"key_sound": @{@"enabled": @YES, @"volume": @0}, @"commit_sound": @{@"enabled": @YES}};
         lifecycleOptions[@"preferences"] = lifecyclePreferences;
         error = nil;
         MSIMEClientSession *lifecycle = [[MSIMEClientSession alloc] initWithOptions:lifecycleOptions error:&error];
@@ -245,6 +246,8 @@ int main() {
         const uint32_t flash = 1u << 17;
         assert(lifecycle.lifecycleFlags == 0 && [lifecycle lifecycleKey:0] == 0 && [lifecycle setFieldTraits:MSIME_TRAIT_KNOWN] == 0);
         assert([lifecycle typingEffect:0] == (flash | 1));
+        // 选择加入之前旧的声音调用照常排队。
+        assert([lifecycle keySound:0] && [lifecycle commitSound] && [lifecycle setMusicActive:YES]);
         assert([lifecycle setLifecycle:MSIME_LIFECYCLE_FEEDBACK | 0x40000000u] == MSIME_LIFECYCLE_FEEDBACK);
         assert(lifecycle.lifecycleFlags == MSIME_LIFECYCLE_FEEDBACK);
         assert([lifecycle setFieldTraits:MSIME_TRAIT_KNOWN] == MSIME_TRAIT_KNOWN);
