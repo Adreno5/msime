@@ -205,14 +205,25 @@ final class OnboardingUITests: XCTestCase {
     app.buttons["取消"].tap()
   }
 
+  /// 社区没有自己的标签页：词库、回复模板和皮肤的完整社区列表分别从词库页、AI 润色与回复页和皮肤页的「浏览更多…」推入，发布也在那里。
   @MainActor
-  func testCommunityCategoriesPreviewAndPublisher() {
+  func testFeaturePagesBrowseCommunityAndPublish() {
     let app = XCUIApplication()
     app.launchArguments = ["-hasCompletedOnboarding", "YES", "-communityPreview"]
     app.launch()
-    app.tabBars.buttons["社区"].tap()
-    app.buttons["communityCategory-1"].tap()
-    XCTAssertEqual(app.segmentedControls.count, 0)
+    // 一级一级退回去，每退一级等上一屏出现：`reachSettingsLink` 连点返回键时，会去点转场动画里正在消失的那个。
+    func back(to title: String) {
+      app.navigationBars.buttons.element(boundBy: 0).tap()
+      XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 5), "never returned to \(title): \(visible(app))")
+    }
+    XCTAssertFalse(app.tabBars.buttons["社区"].exists)
+    reachSettingsLink("dictionarySettingsLink", in: app)
+    settingsEntry("dictionarySettingsLink", in: app).tap()
+    XCTAssertTrue(app.navigationBars["词库"].waitForExistence(timeout: 5))
+    // 词库页自己就列出社区词库，每份带添加按钮。
+    XCTAssertTrue(app.buttons["discoverDictionary-10000000-0000-4000-8000-000000000001"].waitForExistence(timeout: 5))
+    tapRevealed("dictionaryCommunityLink", in: app)
+    XCTAssertTrue(app.navigationBars["词库社区"].waitForExistence(timeout: 5))
     let first = app.buttons["communityResource-10000000-0000-4000-8000-000000000001"]
     XCTAssertTrue(first.waitForExistence(timeout: 5))
     let second = app.buttons["communityResource-10000000-0000-4000-8000-000000000002"]
@@ -223,22 +234,34 @@ final class OnboardingUITests: XCTestCase {
     first.tap()
     XCTAssertTrue(app.buttons["communityImportLocal"].waitForExistence(timeout: 5))
     app.navigationBars.buttons.firstMatch.tap()
-    app.buttons["communityCategory-2"].tap()
+    app.buttons["publishCommunityResource"].tap()
+    XCTAssertTrue(app.navigationBars["发布词库"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.buttons["添加到待发布词库"].exists)
+    app.buttons["取消"].tap()
+    back(to: "词库")
+    back(to: "设置")
+    // 回复模板只给高情商回复用，所以在配置它所用 AI 服务的页面里。
+    openAISettings(app)
+    XCTAssertTrue(scrollIntoView({ settingsEntry("replyCommunityAdd-10000000-0000-4000-8000-000000000003", in: app) }, in: app),
+                  "the AI page never listed the community reply template: \(visible(app))")
+    tapRevealed("replyCommunityLink", in: app)
+    XCTAssertTrue(app.navigationBars["回复模板社区"].waitForExistence(timeout: 5))
     app.buttons["communityResource-10000000-0000-4000-8000-000000000003"].tap()
     XCTAssertTrue(app.buttons["添加到高情商回复键盘"].waitForExistence(timeout: 5))
     let detail = XCTAttachment(screenshot: app.screenshot()); detail.name = "Community reply preview"; detail.lifetime = .deleteOnSuccess; add(detail)
     app.navigationBars.buttons.firstMatch.tap()
-    app.buttons["publishCommunityWork"].tap()
+    app.buttons["publishCommunityResource"].tap()
     XCTAssertTrue(app.navigationBars["发布回复模板"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.textViews["communityPromptEditor"].exists)
     app.buttons["取消"].tap()
-    app.buttons["communityCategory-1"].tap()
-    app.buttons["publishCommunityWork"].tap()
-    XCTAssertTrue(app.navigationBars["发布词库"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["添加到待发布词库"].exists)
-    app.buttons["取消"].tap()
-    app.buttons["communityCategory-0"].tap()
-    app.buttons["publishCommunityWork"].tap()
+    back(to: "AI 设置")
+    back(to: "键盘")
+    back(to: "设置")
+    reachSettingsLink("skinSettingsLink", in: app)
+    settingsEntry("skinSettingsLink", in: app).tap()
+    tapRevealed("skinCommunityLink", in: app)
+    XCTAssertTrue(app.navigationBars["皮肤社区"].waitForExistence(timeout: 5))
+    app.buttons["publishCommunitySkin"].tap()
     XCTAssertTrue(app.navigationBars["发布皮肤"].waitForExistence(timeout: 5))
   }
 
@@ -446,9 +469,9 @@ final class OnboardingUITests: XCTestCase {
     app.launch()
     XCTAssertTrue(app.tabBars.buttons["设置"].isSelected)
     app.buttons["inputSettingsLink"].tap()
-    app.tabBars.buttons["社区"].tap()
-    XCTAssertTrue(app.navigationBars["社区"].waitForExistence(timeout: 5))
-    XCTAssertEqual(app.tabBars.buttons.count, 4)
+    // 社区不再占一个标签页，它的作品列在各个功能页里。
+    XCTAssertEqual(app.tabBars.buttons.count, 3)
+    XCTAssertFalse(app.tabBars.buttons["社区"].exists)
     app.tabBars.buttons["统计"].tap()
     XCTAssertTrue(app.navigationBars["统计"].waitForExistence(timeout: 5))
     XCTAssertTrue(app.buttons["statisticsTab-0"].exists)

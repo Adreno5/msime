@@ -1,63 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct CommunityHomeView: View {
-  @EnvironmentObject private var navigation: AppNavigation
-  private var category: Int { navigation.communityCategory }
-  @State private var pendingPublish: Int?
-  @State private var publishing: Int?
-  @State private var account = false
-  @State private var refresh = UUID()
-  @State private var didPublish = false
-  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-  var body: some View {
-    Group {
-      if category == 0 { SkinCommunityView(embedded: true) }
-      else { CommunityResourcesView(kind: category == 1 ? .dictionary : .reply).id(category) }
-    }
-    .id(refresh)
-    // An inset rather than a row above the list, so the list stays the page's scroll view and the large title still folds into the bar as it scrolls.
-    .safeAreaInset(edge: .top, spacing: 0) {
-      // 设计稿的第三段是「短语」，但 iOS 上短语包还没有可安装的地方，所以这一段仍是「回复模板」。
-      DesignSegmentedControl(items: [("皮肤", 0), ("词库", 1), ("回复模板", 2)], selection: $navigation.communityCategory,
-                             identifierPrefix: "communityCategory")
-        .frame(maxWidth: horizontalSizeClass == .regular ? CommunityLayout.regularMaxWidth : .infinity)
-        .frame(maxWidth: .infinity)
-        // 这里的 12 加上页面 4pt 的顶部内边距，构成设计稿里到内容的 16pt 间距。
-        .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 12)
-        // 限制在自己的 frame 内：颜色背景默认会延伸进安全区，在这里会盖住大标题。
-        .background(MetasequoiaTheme.canvas, ignoresSafeAreaEdges: [])
-    }
-    .background(MetasequoiaTheme.canvas)
-    .navigationTitle("社区")
-    .navigationBarTitleDisplayMode(.large)
-    .toolbar {
-      ToolbarItem(placement: .navigationBarTrailing) {
-        Button { publish(category) } label: { Label("发布", systemImage: "plus").labelStyle(.titleAndIcon).font(.subheadline.weight(.semibold)) }
-          .accessibilityLabel("发布作品").accessibilityIdentifier("publishCommunityWork")
-      }
-    }
-    .sheet(isPresented: Binding(get: { publishing != nil }, set: { if !$0 { publishing = nil } }), onDismiss: {
-      if didPublish { refresh = UUID(); didPublish = false }
-    }) {
-      if publishing == 0 { CommunityPublishView { didPublish = true } }
-      else { CommunityResourceEditor(kind: publishing == 1 ? .dictionary : .reply, onPublished: { didPublish = true }) }
-    }
-    .sheet(isPresented: $account, onDismiss: {
-      let pending = pendingPublish; pendingPublish = nil
-      Task {
-        if let pending, (try? await SkinCommunityAPI.shared.signedIn()) == true { publishing = pending }
-      }
-    }) { AccountLoginSheet() }
-  }
-  private func publish(_ kind: Int) {
-    #if DEBUG && targetEnvironment(simulator)
-    if CommunityPreviewFixtures.enabled { publishing = kind; return }
-    #endif
-    Task { if (try? await SkinCommunityAPI.shared.signedIn()) == true { publishing = kind } else { pendingPublish = kind; account = true } }
-  }
-}
-
 struct CommunityResourcesView: View {
   let kind: CommunityResourceKind
   var initialScope = ""

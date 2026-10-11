@@ -742,7 +742,7 @@ struct ToastOverlay: View {
 
 // MARK: - 分段控件
 
-/// 设计稿的分段控件。`.capsule` 是社区和剪贴板的切换器（选中的滑块上是强调色文字）；`.rounded` 是统计页的切换器（主文字色，着色轨道）。每一项都是一个按钮，id 为 "<identifierPrefix>-<index>"。
+/// 设计稿的分段控件。`.capsule` 是剪贴板和 AI 设计皮肤的切换器（选中的滑块上是强调色文字）；`.rounded` 是统计页的切换器（主文字色，着色轨道）。每一项都是一个按钮，id 为 "<identifierPrefix>-<index>"。
 struct DesignSegmentedControl<Value: Hashable>: View {
   enum Style { case capsule, rounded }
 

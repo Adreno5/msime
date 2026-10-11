@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SkinCommunityView: View {
   var onlyMine = false
-  var embedded = false
   private var visibleSkins: [CommunitySkin] { onlyMine ? skins.filter(\.owned) : skins }
   @State private var skins: [CommunitySkin] = []
   @State private var more = false
@@ -119,16 +118,14 @@ struct SkinCommunityView: View {
   var body: some View {
     gallery
     .toolbar {
-      ToolbarItem(placement: .navigationBarTrailing) { if !embedded {
-        Button { if signedIn { showPublish = true } else { showAccount = true } } label: {
+      ToolbarItem(placement: .navigationBarTrailing) {
+        Button { if opensPublisher { showPublish = true } else { showAccount = true } } label: {
           Label("发布", systemImage: "plus")
         }.accessibilityLabel("发布我的设计").accessibilityIdentifier("publishCommunitySkin")
       }
-      }
     }
-    .navigationTitle(onlyMine ? "我发布的皮肤" : (embedded ? "社区" : "皮肤社区"))
-    // Embedded is the 社区 tab's own list, which carries the tab's large title.
-    .navigationBarTitleDisplayMode(embedded ? .large : .inline)
+    .navigationTitle(onlyMine ? "我发布的皮肤" : "皮肤社区")
+    .navigationBarTitleDisplayMode(.inline)
     .refreshable { do { try await load() } catch { message = error.localizedDescription } }
     .task {
       signedIn = (try? await api.signedIn()) ?? false
@@ -147,6 +144,13 @@ struct SkinCommunityView: View {
     .alert("皮肤社区", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
       Button("好", role: .cancel) {}
     } message: { Text(message ?? "") }
+  }
+  /// 登录后才能发布。模拟器上的社区预览没有账号，直接打开发布表单，好让 UI 测试走到它。
+  private var opensPublisher: Bool {
+    #if DEBUG && targetEnvironment(simulator)
+    if CommunityPreviewFixtures.enabled { return true }
+    #endif
+    return signedIn
   }
   @MainActor private func load(append: Bool = false) async throws {
     let id = UUID()
