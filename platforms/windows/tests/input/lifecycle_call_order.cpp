@@ -38,6 +38,8 @@ uint64_t fake_generation = 1;
 uint32_t fake_lifecycle = 0;
 // 下一次选词只用掉一部分读音时剩下的字母（部分选词）；空时整段上屏。
 std::string fake_partial_left;
+// 假候选的来源（CandidateSource）；8 是整句，ServerSession::select 把它整段上屏、丢掉剩下的读音。
+uint8_t fake_source = 0;
 // 注入给 FocusedSession 的「全屏应用在前台」。
 bool fake_fullscreen = false;
 // InputState 建的会话用真实的前台窗口判断全屏，比较时去掉 FULLSCREEN 位。
@@ -59,7 +61,7 @@ nlohmann::json view() {
                           {"text", "啊"},
                           {"annotation", ""},
                           {"highlighted", true},
-                          {"source", 0},
+                          {"source", fake_source},
                           {"fixed_position", false},
                           {"translation", ""}});
   return {{"session", fake_session},  {"generation", fake_generation}, {"focused", true},
@@ -69,8 +71,10 @@ nlohmann::json view() {
           {"page", 0}};
 }
 
-// 一次派发的回复。像核心一样：会话开着 FEEDBACK 时每个派发回复都带 feedback，有上屏时特效不为 0。
-char *transition(const nlohmann::json &commit) {
+// 一次派发的回复。像核心一样：会话开着 FEEDBACK 时每个派发回复都带 feedback，有上屏时特效不为 0；`picked` 的选词上屏了、读音还剩时是部分选词，HOST_HOLDS_PIECES 下核心按暂存的一段算，特效为 0。
+char *transition(const nlohmann::json &commit, bool picked = false) {
+  const bool held = picked && !commit.is_null() && !fake_editing.empty() &&
+                    (fake_lifecycle & MSIME_LIFECYCLE_HOST_HOLDS_PIECES) != 0;
   ++fake_generation;
   nlohmann::json value{{"handled", true}, {"commit", commit}, {"diagnostic", nullptr}, {"view", view()}};
   value["commit_context"] = commit.is_null() ? nlohmann::json(nullptr)
@@ -78,7 +82,7 @@ char *transition(const nlohmann::json &commit) {
                                                               {"local_mode", "none"},
                                                               {"typing_statistics", true}};
   if (fake_lifecycle & MSIME_LIFECYCLE_FEEDBACK)
-    value["feedback"] = {{"typing_effect", commit.is_null() ? 0u : (1u << 17) | 3u}};
+    value["feedback"] = {{"typing_effect", commit.is_null() || held ? 0u : (1u << 17) | 3u}};
   return answer(value);
 }
 
@@ -173,12 +177,13 @@ char *msime_client_command(uint64_t, uint32_t command) {
     fake_editing.clear();
     fake_conversion.clear();
   }
-  return transition(commit);
+  return transition(commit, command == MSIME_COMMIT_CANDIDATE);
 }
 char *msime_client_select(uint64_t, uint64_t, size_t index) {
   record("select", index);
-  fake_editing.clear();
-  return transition("啊");
+  fake_editing = fake_partial_left;
+  fake_partial_left.clear();
+  return transition("啊", true);
 }
 char *msime_client_select_edge(uint64_t, uint64_t, size_t index, uint8_t) {
   record("select_edge", index);
@@ -383,6 +388,24 @@ int main() {
                     "command:" + std::to_string(MSIME_COMMIT_RAW),
                     "set_lifecycle:" + std::to_string(lifecycle_flags())});
       REQUIRE(recorded.back() == "g");
+
+      // 整段上屏的候选来源（这里是整句）选中后读音还剩一截：Server 丢掉剩下的读音，选中的一段直接进文档，不是暂存的部分选词。这次选词不带 HOST_HOLDS_PIECES，核心照常出上屏音、写上屏特效，之后再恢复；带着它的话这次整段上屏既不响也不画，还会用 0 把连击徽标清零。
+      REQUIRE(focused.configured_key(lease, key('E', u'e', request), TsfPreeditStyle::Pinyin, {}).has_value());
+      REQUIRE(focused.confirm(lease, request++));
+      calls.clear();
+      fake_source = 8;
+      fake_partial_left = "x";
+      (void)effects.take();
+      const auto whole = focused.select_candidate(lease, fake_session, fake_generation, 0);
+      REQUIRE(whole.has_value() && whole->committed_text == std::optional<std::string>("啊"));
+      EXPECT_TRACE({"key:" + std::to_string(MSIME_KEY_POINTER), "set_lifecycle:" + std::to_string(lifecycle_flags(false, false)),
+                    "select:0", "set_lifecycle:" + std::to_string(lifecycle_flags()),
+                    "command:" + std::to_string(MSIME_CANCEL)});
+      REQUIRE(effects.take() == typing_effect_mark_commit((1u << 17) | 3u));
+      REQUIRE(focused.confirm_ui(lease, whole->source.transition.at("view").at("generation").get<uint64_t>()));
+      REQUIRE(recorded.back() == "啊");
+      fake_source = 0;
+      calls.clear();
 
       // 鼠标点选：先报 MSIME_KEY_POINTER 开启新的一轮，再派发。
       REQUIRE(focused.configured_key(lease, key('D', u'd', request), TsfPreeditStyle::Pinyin, {}).has_value());

@@ -8,6 +8,7 @@
 #include "LifecyclePolicy.h"
 #include "PunctuationPolicy.h"
 #include <algorithm>
+#include <optional>
 #include <stdexcept>
 
 namespace msime::windows {
@@ -36,6 +37,24 @@ bool translation_preferences_changed(const nlohmann::json &before,
   }
   return false;
 }
+
+// 一次选词期间去掉 HOST_HOLDS_PIECES、保留 COMMIT_OBSERVE_ONLY 的当前状态，离开作用域时恢复成平时的位。
+class PiecesReachDocument final {
+public:
+  PiecesReachDocument(uint64_t session, bool commit_observe_only)
+      : session_(session), commit_observe_only_(commit_observe_only) {
+    (void)msime_client_set_lifecycle(session_, lifecycle_flags(commit_observe_only_, false));
+  }
+  ~PiecesReachDocument() {
+    (void)msime_client_set_lifecycle(session_, lifecycle_flags(commit_observe_only_));
+  }
+  PiecesReachDocument(const PiecesReachDocument &) = delete;
+  PiecesReachDocument &operator=(const PiecesReachDocument &) = delete;
+
+private:
+  uint64_t session_;
+  bool commit_observe_only_;
+};
 } // namespace
 ServerSession::ServerSession(uint64_t client_id, const std::string &options)
     : client_(client_id) {
@@ -321,7 +340,14 @@ nlohmann::json ServerSession::select(uint64_t epoch, uint64_t generation,
       }
     }
   }
-  auto result = response(msime_client_select(session_, generation, index));
+  nlohmann::json result;
+  {
+    // 这几类候选整段送进文档，剩下的读音随后由下面的 MSIME_CANCEL 丢掉，选中的这一段不进 Server 的前缀。核心却只看到「上屏了、读音还剩」，按 HOST_HOLDS_PIECES 当作暂存的一段：不出上屏音，回复的 feedback 为 0，之后的 MSIME_CANCEL 又没有上屏，整段上屏就既不响也不画，还会用 0 把连击徽标清零。所以这次选词不带这一位，离开作用域时恢复，选词抛出也一样。
+    std::optional<PiecesReachDocument> whole;
+    if (completes_composition)
+      whole.emplace(session_, commit_observe_only_);
+    result = response(msime_client_select(session_, generation, index));
+  }
   if (completes_composition && !result.at("commit").is_null()) {
     const auto cleared = response(msime_client_command(session_, MSIME_CANCEL));
     result["view"] = cleared.at("view");

@@ -107,6 +107,9 @@ int main() {
     }
     REQUIRE(lifecycle_flags() == (MSIME_LIFECYCLE_FEEDBACK | MSIME_LIFECYCLE_HOST_HOLDS_PIECES));
     REQUIRE(lifecycle_flags(true) == (lifecycle_flags() | MSIME_LIFECYCLE_COMMIT_OBSERVE_ONLY));
+    // 整段上屏的那次选词只去掉 HOST_HOLDS_PIECES，FEEDBACK 和 COMMIT_OBSERVE_ONLY 照旧。
+    REQUIRE(lifecycle_flags(false, false) == MSIME_LIFECYCLE_FEEDBACK);
+    REQUIRE(lifecycle_flags(true, false) == (MSIME_LIFECYCLE_FEEDBACK | MSIME_LIFECYCLE_COMMIT_OBSERVE_ONLY));
     // 全屏前台不再由 Server 自己判断出不出声，而是作为 FULLSCREEN 属性交给核心：声音静音、特效照画。旧 TIP 不报字段属性，属性保持未知，不带 KNOWN。
     REQUIRE(server_field_traits(std::nullopt, false) == 0u);
     REQUIRE(server_field_traits(std::nullopt, true) == MSIME_TRAIT_FULLSCREEN);
