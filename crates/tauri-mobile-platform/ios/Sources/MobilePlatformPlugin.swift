@@ -15,6 +15,10 @@ private struct SaveAccountSessionArgs: Decodable {
   let value: String
 }
 
+private struct SaveCloudClipboardKeystoreArgs: Decodable {
+  let value: String
+}
+
 private struct AppleSignInArgs: Decodable {
   let challengeId: String
   let nonce: String
@@ -814,6 +818,65 @@ private struct AccountSessionKeychain {
   }
 }
 
+/// 云剪贴板端到端加密的密钥串（`docs/cloud-clipboard-e2e.md` 的「密钥串的存放位置」）：与账号会话同一个服务名下账号名为 `cloud-clipboard-keystore` 的通用密码项，访问组与本插件保存的账号会话相同。退出登录（`clearSession`）时随会话一起删除。
+private struct CloudClipboardKeystoreKeychain {
+  static let maximumPayloadBytes = 4096
+
+  private var query: [String: Any] {
+    [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: "app.msime.backend.account",
+      kSecAttrAccount as String: "cloud-clipboard-keystore",
+    ]
+  }
+
+  /// 密钥串只含可见 ASCII，不超过上限。
+  private static func valid(_ data: Data) -> Bool {
+    !data.isEmpty && data.count <= maximumPayloadBytes && data.allSatisfy { (33...126).contains($0) }
+  }
+
+  func load() throws -> String? {
+    var lookup = query
+    lookup[kSecReturnData as String] = true
+    lookup[kSecMatchLimit as String] = kSecMatchLimitOne
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+    if status == errSecItemNotFound {
+      return nil
+    }
+    guard status == errSecSuccess, let data = result as? Data, Self.valid(data),
+          let value = String(data: data, encoding: .utf8) else {
+      throw NSError(domain: "secure_storage", code: Int(status == errSecSuccess ? errSecDecode : status))
+    }
+    return value
+  }
+
+  func save(_ value: String) throws {
+    let data = Data(value.utf8)
+    guard Self.valid(data) else {
+      throw NSError(domain: "secure_storage", code: Int(errSecParam))
+    }
+    let attributes: [String: Any] = [
+      kSecValueData as String: data,
+      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    ]
+    var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    if status == errSecItemNotFound {
+      status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+    }
+    guard status == errSecSuccess else {
+      throw NSError(domain: "secure_storage", code: Int(status))
+    }
+  }
+
+  func clear() throws {
+    let status = SecItemDelete(query as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw NSError(domain: "secure_storage", code: Int(status))
+    }
+  }
+}
+
 /// Keeps the native Apple authorization delegate alive while a Tauri invoke is
 /// pending. The identity token is resolved directly to Rust and never exposed
 /// to the WebView.
@@ -894,6 +957,7 @@ private final class SkinFolderPickerCoordinator: NSObject, UIDocumentPickerDeleg
 final class MobilePlatformPlugin: Plugin {
   private static let onboardingKey = "hasCompletedOnboarding"
   private let accountSession = AccountSessionKeychain()
+  private let cloudClipboardKeystore = CloudClipboardKeystoreKeychain()
   private let keyboardPreferences = IOSKeyboardPreferenceStore()
   private let keyboardAI = IOSKeyboardAIStore()
   private let voiceHandoff = VoiceTextHandoffWriter()
@@ -1039,9 +1103,32 @@ final class MobilePlatformPlugin: Plugin {
     }
   }
 
+  /// 退出登录：云剪贴板密钥串随会话一起删除，先删它，删不掉时会话也留着。
   @objc public func clearSession(_ invoke: Invoke) {
     do {
+      try cloudClipboardKeystore.clear()
       try accountSession.clear()
+      invoke.resolve()
+    } catch {
+      invoke.reject("secure_storage", code: "secure_storage")
+    }
+  }
+
+  /// 读取云剪贴板密钥串，返回 `{"value": string|null}`。
+  @objc public func loadCloudClipboardKeystore(_ invoke: Invoke) {
+    do {
+      let value = try cloudClipboardKeystore.load()
+      invoke.resolve(["value": value as Any? ?? NSNull()])
+    } catch {
+      invoke.reject("secure_storage", code: "secure_storage")
+    }
+  }
+
+  /// 保存（原子替换）云剪贴板密钥串，参数 `{"value": string}`。
+  @objc public func saveCloudClipboardKeystore(_ invoke: Invoke) {
+    do {
+      let args = try invoke.parseArgs(SaveCloudClipboardKeystoreArgs.self)
+      try cloudClipboardKeystore.save(args.value)
       invoke.resolve()
     } catch {
       invoke.reject("secure_storage", code: "secure_storage")
