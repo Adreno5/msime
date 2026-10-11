@@ -5,6 +5,7 @@ import { ToastProvider } from "./core/toast";
 import { appThemeStyle, seasonAttr } from "./core/app-theme-style";
 import type { AppThemeClient, FeedbackClient, HostChromeClient } from "./core/host-contracts";
 import { SetupWarningStrip } from "./keyboard/setup-status-card";
+import { KeyboardSwitchGuideHost } from "./keyboard/keyboard-switch-guide";
 import { TryKeyboardPage } from "./keyboard/try-keyboard-page";
 import { mobilePageTitle } from "./settings/mobile-tab-helpers";
 import { desktopDownloadUrl, fallbackAppVersion } from "./settings/app-resources";
@@ -608,6 +609,7 @@ export {
   type HomePageActions,
   type MoreSettingsGroup,
 } from "./keyboard/home-page";
+export { openKeyboardSwitchGuide } from "./keyboard/keyboard-switch-guide";
 export {
   WelcomeFlowPage,
   type OnboardingActions,
@@ -3495,6 +3497,7 @@ function SettingsShell(props: SettingsPageProps) {
     >
       <ShellToasts enabled={harmonyLook}>
         {confirmation}
+        <KeyboardSwitchGuideHost setup={client.home?.setup} />
         {titlebarShown && (
           <WindowTitlebar
             linux={linuxShell}

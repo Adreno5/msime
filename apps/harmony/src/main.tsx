@@ -5,6 +5,7 @@ import {
   SettingsPage,
   SettingsStartupPage,
   WelcomeFlowPage,
+  openKeyboardSwitchGuide,
   type DictionaryClient,
   type DictionaryCollectionsClient,
   type DictionaryCollectionsView,
@@ -159,6 +160,8 @@ interface NativeBridge {
    * `{"ok":true,"ready":boolean,"value":{"enabled":boolean|null,"current":boolean|null}}`：本键盘是否已在系统中启用、是否为当前输入法。和 `onboardingStatus` 一样是同步调用，宿主第一次读取完成前 `ready` 一直为 false。
    */
   setupStatus(): string;
+  /** 现在重新读一次设置状态，有变化时照常调用 `msimeHarmonySetupChanged`。从键盘的 🌐 菜单切换输入法不会触发宿主监听的 `imeChange`，引导打开期间靠它轮询。 */
+  refreshSetupStatus(): void;
   /**
    * 应用主题：`{operation:"load"}` 和 `{operation:"save",id}` 回复 `{ok,value:{id}}`；`{operation:"resolve",dark}` 回复 `msime_client_resolve_app_theme` 对已保存主题在本月的解析结果；`{operation:"catalog"}` 回复 `msime_client_app_theme_catalog` 的结果。
    */
@@ -413,6 +416,11 @@ function imeSetupClient(native: NativeBridge): ImeSetupClient | undefined {
         setupListeners.delete(listener);
       };
     },
+    // 宿主重读后有变化时经 `msimeHarmonySetupChanged` 推回来，和别的变化一样。
+    refresh:
+      typeof native.refreshSetupStatus === "function"
+        ? () => native.refreshSetupStatus()
+        : undefined,
   };
 }
 
@@ -1426,9 +1434,13 @@ function makeClient(
       // The reply is unwrapped rather than ignored so a host that could not open the picker says
       // so, which the card reports; the welcome flow's own copy of this call is the exception,
       // because that screen has its own failure to show and nothing to add to it.
-      showInputMethodPicker: async () => {
-        unwrap<boolean>(native.showInputMethodPicker());
-      },
+      // 手机上不弹系统的选择对话框（OpenHarmony 自带的那个没有样式的列表），改成引导用户长按键盘下方的 🌐，见 `openKeyboardSwitchGuide`。2in1 用实体键盘，键盘下方没有 🌐，照旧弹系统对话框。
+      showInputMethodPicker:
+        host.mobile_settings !== false
+          ? openKeyboardSwitchGuide
+          : async () => {
+              unwrap<boolean>(native.showInputMethodPicker());
+            },
       // 「设置」卡片各项检查背后的两项设置状态，在 2in1 上也是「输入」和「关于」页警告条的依据。2in1 没有首页要画，但仍需要这些操作：警告条调用的是同样两个。
       setup,
     },
@@ -1524,9 +1536,12 @@ function HarmonyWelcomeFlow({
         // 资源由键盘启动时就绪，这里没有单独的步骤要执行；流程需要的是这个 promise，而不是实际工作。
         prepareResources: async () => {},
         openSystemKeyboardSettings: async () => native.openSystemKeyboardSettings(),
-        showInputMethodPicker: async () => {
-          native.showInputMethodPicker();
-        },
+        showInputMethodPicker:
+          mobileSettings !== false
+            ? openKeyboardSwitchGuide
+            : async () => {
+                native.showInputMethodPicker();
+              },
       }}
       // 方案步骤只提供本版本和本宿主具备的键盘。
       edition={client.host?.edition}
