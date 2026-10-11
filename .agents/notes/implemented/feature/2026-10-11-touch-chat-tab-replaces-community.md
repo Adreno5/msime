@@ -35,3 +35,12 @@ Status: implemented
 - `apps/desktop/tests/core/mobile-tab-bar.test.tsx`：鸿蒙手机的标签栏是「设置 / 对话 / 统计 / 我的」，Fluent 图标依次是 `settings`、`chat`、`data_bar_vertical`、`person`；Android 的四个蒙版图标各不相同，「对话」画的是对话气泡；点「对话」打开 AI 对话页、历史记录是 `page: "chat"`、「对话」高亮而「设置」不高亮、没有返回按钮，去「统计」再回来仍是对话；触屏宿主的「AI 辅助」页没有「AI 对话」那一行；macOS 的「AI 辅助」页仍有这一行并能打开对话。
 - `apps/desktop/tests/settings/mobile-app-chrome.test.tsx`：鸿蒙手机上「对话」带「AI 对话」大标题、没有返回按钮；Android 直接打开 `chat` 时没有「返回AI 辅助」链接，「对话」标签高亮。
 - `apps/desktop/tests/settings/settings-page-projections.test.ts`、`settings-navigation-helpers.test.ts`、`mobile-tab-helpers.test.ts`、`settings.test.tsx`：标签页顺序、`mobileTabForPage("chat")`、没有对话客户端时只剩三格、`chat` 不在「设置」根页的行里也不在 iPad 侧栏里、标签名和图标映射。
+
+## 对话页的触屏样子
+
+对话做成底部标签后，原来的页面直接露在用户面前：标题下一行「边聊天，边试键盘 / 使用共享账号与 EveryAPI 对话」和「刷新模型」按钮，未登录时一个红框报错加一个按钮，中间一大块白卡片，方框输入框和两个文字按钮，底下还有一行「最多保留最近 14 条消息」。触屏上（`touch`）改成和「试用键盘」同一套样子，桌面不变：
+
+- 顶部一行小胶囊：左边模型选择（原生 select 套成胶囊），右边「新对话」。不再有「刷新模型」，每次回到标签自动重读。
+- 对话区不再套卡片，气泡直接放在页面底色上；自己发的是强调色气泡靠右，回复按 Markdown 画（关掉 HTML、链接和图片：设置页在 WebView 里，点链接会把整个设置页导航走）。
+- 这一页是用来试键盘的：空对话时正中一个气泡图标、「打几个字试试键盘」和一句说明（发给 AI，看看候选、皮肤和手感），不给「写生日祝福」这类代写的开头，那些开头点一下就把字填好，用户反而没打字。未登录时同一个位置写「登录后边聊边试键盘」和一个「登录使用 AI」主按钮，不画红框。其他错误是对话里一行次要文字加「重试」。
+- 底部是圆角输入框（最多长到四行）加圆形发送键，发送中变成停止键。页面撑满内容区，输入栏贴着底部标签栏。

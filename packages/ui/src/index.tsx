@@ -3341,6 +3341,8 @@ function SettingsShell(props: SettingsPageProps) {
   const pushedPage = harmonyPhone && !tabRootPage;
   // 「试用键盘」是一页对话：对话区在页面内滚动，输入栏贴着内容区底部，和 Android 的试用页一样不带底部标签栏，键盘弹起时输入栏直接落在键盘上方。
   const fillsContent = mobilePlatform && page === "try-keyboard";
+  // 触屏上的「对话」标签同样是一页对话，内容区撑满、输入栏贴底，但它是标签页，底部标签栏照常显示。
+  const contentFills = fillsContent || (mobilePlatform && page === "chat");
   const pageColumnRef = useRef<HTMLDivElement>(null);
   const launchPage = useRef(page);
   // 从一个推入页面再推入的页面（反馈 到 帮助）会保留内容列的动画类，所以要重启动画，而不是让它停在已结束的状态。用重启动画而不是按页面给内容列设 key，能让表单页面像在其他宿主上一样保持挂载、保留状态。
@@ -3566,7 +3568,7 @@ function SettingsShell(props: SettingsPageProps) {
           <main
             ref={settingsContentRef}
             id="settings-content"
-            className={`${settings.content} ${ipadSidebarShown ? "" : "ipad:col-span-2"} ${fillsContent ? "flex flex-col" : ""}`}
+            className={`${settings.content} ${ipadSidebarShown ? "" : "ipad:col-span-2"} ${contentFills ? "flex flex-col" : ""}`}
             aria-labelledby="page-title"
             onScroll={
               collapsingTitle
@@ -3590,7 +3592,7 @@ function SettingsShell(props: SettingsPageProps) {
             )}
             <div
               ref={pageColumnRef}
-              className={`${settings.contentColumn} ${pushedPage ? "animate-ms-push-in motion-reduce:animate-none" : ""} ${fillsContent ? "flex min-h-0 flex-1 flex-col" : ""}`}
+              className={`${settings.contentColumn} ${pushedPage ? "animate-ms-push-in motion-reduce:animate-none" : ""} ${contentFills ? "flex min-h-0 flex-1 flex-col" : ""}`}
               // 统计 和 我的 使用更紧凑的标签页列表，样式表依据这个属性区分。
               data-tab-page={harmonyPhone && tabRootPage && page !== "home" ? "" : undefined}
             >

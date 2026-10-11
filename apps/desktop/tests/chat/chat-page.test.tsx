@@ -182,3 +182,40 @@ test("can autofocus the composer for the mobile keyboard tryout", async () => {
   const composer = await screen.findByRole("textbox", { name: "聊天消息" });
   await waitFor(() => expect(document.activeElement).toBe(composer));
 });
+
+// 触屏布局和「试用键盘」同一套样子：顶部只有模型和「新对话」两个小胶囊，没有「刷新模型」；这一页是用来试键盘的，空对话时只请用户自己打几个字，不给代写的开头；发出的消息是气泡，回复按 Markdown 画但不带链接。
+test("the touch layout invites typing, sends with the round button and draws replies without links", async () => {
+  const complete = vi.fn(async () => "**好的**，见 [这里](https://example.invalid)");
+  render(<ChatPage client={client({ complete })} touch />);
+  await screen.findByRole("combobox", { name: "聊天模型" });
+  expect(screen.queryByRole("button", { name: "刷新模型" })).toBeNull();
+  expect(screen.queryByText(/最多保留最近/)).toBeNull();
+
+  expect(screen.getByText("打几个字试试键盘")).toBeTruthy();
+  const composer = screen.getByRole("textbox", { name: "聊天消息" });
+  expect(composer.getAttribute("placeholder")).toBe("打几个字试试");
+  fireEvent.change(composer, { target: { value: "水杉输入法" } });
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+  expect(await screen.findByText("水杉输入法", { selector: "p" })).toBeTruthy();
+  const reply = await screen.findByText("好的");
+  expect(reply.tagName).toBe("STRONG");
+  expect(document.querySelector("a")).toBeNull();
+  expect(screen.queryByText("打几个字试试键盘")).toBeNull();
+});
+
+// 触屏上没登录时不画红框报错，对话区正中是一句说明和「登录使用 AI」。
+test("the touch layout asks to sign in in the middle of the conversation", async () => {
+  const onLogin = vi.fn();
+  render(
+    <ChatPage
+      client={client({ models: vi.fn().mockRejectedValue({ code: "account_unauthorized" }) })}
+      touch
+      onLogin={onLogin}
+    />,
+  );
+  expect(await screen.findByText("登录后边聊边试键盘")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "登录使用 AI" }));
+  expect(onLogin).toHaveBeenCalledOnce();
+});
