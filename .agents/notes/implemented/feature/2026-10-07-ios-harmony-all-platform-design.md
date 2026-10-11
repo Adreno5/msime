@@ -17,7 +17,7 @@ Status: implemented
   - 中文模式下 Shift 仍切到英文，不采用设计稿的「单次大写」，Android 也没有采用；iOS 只换了 ⇧ / ⌫ 的图标和 Android `styleShiftKey` 的配色。
   - 再点一次「设置」标签回到它的根页，同 Android 的标签栏。
 - **刻意偏离设计稿的地方：**
-  - 设置首页保留「键盘」一行（两个宿主都是）。设计稿的移动端首页去掉了它，但「键盘」页现在承载候选栏、键盘工具栏、AI 润色与回复、按键反馈，Android 也保留了。鸿蒙首页另外保留候选栏、外接键盘快捷键、剪贴板、AI 辅助这几个真实页面。
+  - 设置首页保留「键盘」一行（两个宿主都是）。设计稿的移动端首页去掉了它，但「键盘」页现在承载候选栏、键盘工具栏、AI 润色与回复、按键反馈，Android 也保留了。鸿蒙首页另外保留候选栏、外接键盘快捷键、剪贴板、AI 辅助这几个真实页面。外接键盘快捷键后来移到「键盘」页里，见 [外接键盘快捷键的入口从手机「设置」根页面移到「键盘」页](2026-10-11-harmony-root-shortcuts-under-keyboard.md)。
   - 工具栏默认值不变：共享的 `touch_toolbar` 默认仍是布局、表情、皮肤开，剪贴板、AI 等关。iOS 新增的「常用语」「输入方式」开关和「显示方式」（输入时显示 / 隐藏）存在 App Group 的 `TouchToolbarLocalPreference`，对应 Android 的 `platform.android.toolbar_*`，默认开；所以 iOS 默认栏与设计稿的「表情 / 常用语 / 剪贴板 / 皮肤 / 输入方式」不同，剪贴板不在默认栏里。鸿蒙不在 `host_surface.rs` 为自己打开 `touch_toolbar` 的显示开关，因为那会让剪贴板默认被隐藏。
   - 按键振动默认仍为关。设计稿画的是开，改默认值是产品决定，不在这次里做。
   - 季节主题只作为应用的强调色，以及「跟随系统」的 `system` 键盘皮肤和品牌标的配色；不进键盘皮肤目录。皮肤页和键盘内皮肤面板没有设计稿里的「水杉四季 / 春芽 / 夏荫 / 秋杉 / 冬雪」皮肤卡：client-core 的 `GlobalTheme` 目录只有 `system` / `shuishan` / `light` / `paper` / `night` / `ink` / `custom`（后来加了只在 iOS 提供的 `native`，见 [2026-10-09-ios-native-keyboard-skin](2026-10-09-ios-native-keyboard-skin.md)），加卡片是跨平台的 Rust 改动。

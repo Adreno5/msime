@@ -13,6 +13,7 @@ import { SetupStatusCard } from "./setup-status-card";
 import {
   RootSettingsList,
   RootSettingsRowView,
+  rootSearchRows,
   rootSettingsGroups,
   skinTitle as rootSkinTitle,
   type RootPage,
@@ -159,15 +160,14 @@ function TouchHomePage({
   const [query, setQuery] = useState("");
   const groups = rootPages ? rootSettingsGroups(rootPages, preferences) : [];
   const needle = query.trim().toLowerCase();
-  const matches = needle
-    ? groups
-        .flat()
-        .filter(
+  const matches =
+    needle && rootPages
+      ? rootSearchRows(rootPages, preferences).filter(
           (row) =>
             row.title.toLowerCase().includes(needle) ||
             Boolean(row.value?.toLowerCase().includes(needle)),
         )
-    : [];
+      : [];
 
   const tryKeyboard = () => {
     const openKeyboard = actions?.openKeyboard;

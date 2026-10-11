@@ -18,7 +18,7 @@ export interface RootSettingsRow {
   value?: string;
 }
 
-// 按设计稿的顺序排列设计稿的分组，再加上设计稿没列出的实际页面（「键盘」「候选栏」「外接键盘快捷键」「剪贴板」和「AI 辅助」），按 Android 的位置安放，这样每个页面都有入口。
+// 按设计稿的顺序排列设计稿的分组，再加上设计稿没列出的实际页面（「键盘」「候选栏」「剪贴板」和「AI 辅助」），按 Android 的位置安放，这样每个页面都有入口。「外接键盘快捷键」不在根页面上，见 `nestedPages`。
 const rootGroupLayout: readonly (readonly { id: string; icon: FluentIconName }[])[] = [
   [
     { id: "skin", icon: "color" },
@@ -29,7 +29,6 @@ const rootGroupLayout: readonly (readonly { id: string; icon: FluentIconName }[]
     { id: "input", icon: "keyboard" },
     { id: "expression", icon: "local_language" },
     { id: "dictionary", icon: "book" },
-    { id: "shortcuts", icon: "keyboard_shift" },
   ],
   [
     { id: "voice", icon: "mic" },
@@ -43,6 +42,16 @@ const rootGroupLayout: readonly (readonly { id: string; icon: FluentIconName }[]
 ];
 
 const laidOutIds = new Set(rootGroupLayout.flat().map((entry) => entry.id));
+
+// 从另一页里进入、不在根页面上单独占一行的页面：`parent` 是放它入口的那一页，`icon` 是它出现在搜索结果里时的图标。只有接了实体键盘才用得到外接键盘快捷键，所以它是「键盘」页底部的一行（`ScreenKeyboardSettingsPage`）。那一页不存在时它照旧落在根页面最后一组，不会失去入口；搜索仍然能找到它，见 `rootSearchRows`。
+const nestedPages: Readonly<Record<string, { parent: string; icon: FluentIconName }>> = {
+  shortcuts: { parent: "screen-keyboard", icon: "keyboard_shift" },
+};
+
+function nestedElsewhere(id: string, offered: ReadonlySet<string>): boolean {
+  const nested = nestedPages[id];
+  return Boolean(nested && offered.has(nested.parent));
+}
 
 // 宿主可能列出、但设计稿没有对应行的页面所用的图标；这些页面落在最后一组。
 const extraPageIcons: Readonly<Record<string, FluentIconName>> = {
@@ -116,10 +125,29 @@ export function rootSettingsGroups(
   const groups = rootGroupLayout.map((group) =>
     group.filter((entry) => titles.has(entry.id)).map((entry) => row(entry.id, entry.icon)),
   );
+  const offered = new Set(titles.keys());
   const rest = rootPages
     .filter((page) => !laidOutIds.has(page.id))
+    .filter((page) => !nestedElsewhere(page.id, offered))
     .map((page) => row(page.id, extraPageIcons[page.id] ?? "settings"));
   return [...groups, rest].filter((group) => group.length > 0);
+}
+
+/** 根页面搜索的候选：根页面上的每一行，加上入口放在别的页里的页面（见 `nestedPages`），这样把一页从根页面挪走不会让它搜不到。 */
+export function rootSearchRows(
+  rootPages: readonly RootPage[],
+  preferences: Preferences,
+): RootSettingsRow[] {
+  const offered = new Set(rootPages.map((page) => page.id));
+  const nested = rootPages
+    .filter((page) => nestedElsewhere(page.id, offered))
+    .map((page) => ({
+      id: page.id,
+      title: page.title,
+      icon: nestedPages[page.id].icon,
+      value: rootPageValue(page.id, preferences),
+    }));
+  return [...rootSettingsGroups(rootPages, preferences).flat(), ...nested];
 }
 
 /** 根页面的一行：带 Fluent 图标的 `NavRow`。 */

@@ -2917,7 +2917,11 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
   const untitledOnPhone: readonly SettingsPageId[] =
     settingsPlatform === "harmony" ? [] : ["home", "typing-statistics", "account"];
   // 设计稿里从一个页面内部打开另一个页面的行，例如「AI 辅助」上的「AI 对话」。
-  const pageEntry = (id: SettingsPageId) => availablePages.find((item) => item.id === id);
+  // 手机上隐藏的页面（`mobileHiddenPageIds`）`selectPage` 不会去，所以它们也没有入口行。
+  const pageEntry = (id: SettingsPageId) =>
+    mobilePlatform && mobileHiddenPageIds.includes(id)
+      ? undefined
+      : availablePages.find((item) => item.id === id);
   const { openCommunity, openLocalDesigns } = useSettingsDestinationActions({
     selectPage,
     setShowTouchSkinEditor,
