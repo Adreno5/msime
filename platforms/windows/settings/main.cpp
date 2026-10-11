@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -911,6 +912,8 @@ constexpr std::wstring_view no_search_results = L"没有找到相关设置";
 
 constexpr const wchar_t *download_url = L"https://msime.app/download/";
 constexpr const wchar_t *privacy_url = L"https://msime.app/privacy/";
+// 共享设置「帮助」页「完整文档」打开的地址（`packages/ui/src/settings/app-resources.ts` 的 `documentationUrl`）。
+constexpr const wchar_t *documentation_url = L"https://msime.app/docs/";
 constexpr const wchar_t *license_url =
     L"https://github.com/metasequoiaime/msime/blob/develop/LICENSE";
 constexpr const wchar_t *releases_url =
@@ -4652,10 +4655,53 @@ private:
     auto group = add_group(page, L"");
     shell_row(group, 0xED15, L"反馈", L"描述遇到的问题并提交给开发者", L"反馈",
               nav::shell_links::feedback);
-    shell_row(group, 0xE897, L"帮助", L"使用说明与常见问题", L"打开",
-              nav::shell_links::help);
     add_row(group, 0xEBE8, L"诊断日志", L"复现问题前在「维护与诊断」中开启日志，反馈时一起发送",
             button_control(L"前往", [this] { navigate("dev", true); }));
+    build_help_section(page);
+  }
+
+  // 共享设置的「帮助」页（`packages/ui/src/settings/help-settings-page.tsx`）在 Windows 上的样子：非 macOS、非移动端的那一支，文案取 `settings/platform-copy.ts` 的 Windows 分支。没有系统键盘设置按钮，也没有 iOS 和 Android 的分组。
+  void build_help_section(StackPanel const &page) {
+    auto help = add_group(page, L"帮助");
+    const std::wstring intro =
+        L"水杉输入法是一款 Windows 平台的中文输入法。目前支持 Windows 11/Windows 10 平台。";
+    record(L"帮助", intro);
+    auto note = make_text(intro, 14, palette_.sub);
+    note.IsTextSelectionEnabled(true);
+    note.Margin(Thickness{4, 0, 4, 4});
+    help.Children().Append(note);
+    mark_search_target(L"帮助", note);
+
+    add_text_card(page, L"快速上手",
+                  {L"安装输入法后，可以使用 Win + Space 快捷键切换到水杉输入法。默认是全拼输入法。"});
+    add_text_card(
+        page, L"基本功能",
+        {L"支持全拼、双拼和五笔，在「输入」页切换。全拼和双拼均支持辅助码，辅助码方案目前支持自然码辅助码、蓝天小雨点、首右 2.0、首右 plus、小鹤、拼音加加和五笔 86。",
+         L"语音识别和 AI 联想需要自行填入 API 和 token。云候选目前支持谷歌的云接口，请注意网络问题。",
+         L"更多功能欢迎自由探索～"});
+    auto more = add_group(page, L"更多");
+    url_row(more, 0xE8A5, L"完整文档", L"", L"完整文档（网页）", documentation_url);
+  }
+
+  // 一个带标题的分组，里面只有一张写着几段说明文字的卡片，对应共享页的 `GroupList` + `SettingsGroupBlock`。搜索按分组标题找到它。
+  void add_text_card(StackPanel const &page, std::wstring const &title,
+                     std::initializer_list<std::wstring_view> paragraphs) {
+    auto group = add_group(page, title);
+    std::wstring detail;
+    StackPanel content;
+    content.Spacing(10);
+    content.Padding(Thickness{25, 20, 25, 20});
+    for (const auto paragraph : paragraphs) {
+      auto block = make_text(paragraph, 14, palette_.text);
+      block.IsTextSelectionEnabled(true);
+      content.Children().Append(block);
+      detail.append(paragraph);
+    }
+    record(title, detail);
+    auto card = make_card();
+    card.Child(content);
+    group.Children().Append(card);
+    mark_search_target(title, card);
   }
 
   void build_about_page(StackPanel const &page) {
