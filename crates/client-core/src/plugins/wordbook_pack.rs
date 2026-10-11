@@ -74,14 +74,19 @@ pub(crate) fn check_identity(id: &str, name: &str) -> Result<(), String> {
 /// 读取并严格解析包目录里的词表。
 pub(crate) fn read(directory: &Path, file: &str) -> Result<WordbookPack, String> {
     let entries = read_entries(directory, file)?;
-    Ok(WordbookPack {
-        file: file.to_owned(),
-        word_count: entries.len(),
-        first_words: entries
+    let word_count = entries.len();
+    // 预览另用小容器，避免 `collect` 原地复用整本词书的预留缓冲。
+    let mut first_words = Vec::with_capacity(word_count.min(PREVIEW_WORDS));
+    first_words.extend(
+        entries
             .into_iter()
             .take(PREVIEW_WORDS)
-            .map(|entry| entry.word)
-            .collect(),
+            .map(|entry| entry.word),
+    );
+    Ok(WordbookPack {
+        file: file.to_owned(),
+        word_count,
+        first_words,
     })
 }
 

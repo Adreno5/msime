@@ -2295,6 +2295,31 @@ fn wordbooks_are_bounded_and_load_as_books() {
 }
 
 #[test]
+fn wordbook_preview_keeps_only_its_small_result_buffer() {
+    for count in [1, 4, 5, 6, wordbook::MAX_ENTRIES] {
+        let directory = tempdir().unwrap();
+        let words: String = (0..count)
+            .rev()
+            .map(|index| format!("synthetic-{index:05}\tmeaning\n"))
+            .collect();
+        fs::write(directory.path().join("words.tsv"), words).unwrap();
+        let pack = wordbook_pack::read(directory.path(), "words.tsv").unwrap();
+        let expected: Vec<_> = (0..count)
+            .rev()
+            .take(wordbook_pack::PREVIEW_WORDS)
+            .map(|index| format!("synthetic-{index:05}"))
+            .collect();
+        assert_eq!(pack.word_count, count);
+        assert_eq!(pack.first_words, expected);
+        assert!(
+            pack.first_words.capacity() <= wordbook_pack::PREVIEW_WORDS,
+            "预览保留了整本词书的缓冲：{}",
+            pack.first_words.capacity()
+        );
+    }
+}
+
+#[test]
 fn wordbook_parser_preserves_column_boundaries() {
     let entries = wordbook_pack::parse_words(
         "two\t 释义 \nthree\t/θriː/\t三\nempty\t\t空音标\n".as_bytes(),
