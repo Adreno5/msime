@@ -1,6 +1,7 @@
 import UIAbility from '@ohos.app.ability.UIAbility';
 import Want from '@ohos.app.ability.Want';
 import AbilityConstant from '@ohos.app.ability.AbilityConstant';
+import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 import window from '@ohos.window';
 import { KeyboardLog } from '../keyboard/KeyboardLog';
 import { BusinessErrorPolicy } from '../keyboard/BusinessErrorPolicy';
@@ -90,17 +91,20 @@ export default class EntryAbility extends UIAbility {
         KeyboardLog.error(`settings page would not load: ${BusinessErrorPolicy.describe(error)}`);
       }
     });
-    // 系统栏先取启动窗的近黑色（`start_window_background`）：页面要等桥接就绪才能调用 setSystemBars，在那之前状态栏是系统默认的浅色，会在深色启动窗和开屏之间闪一条白。页面挂载后会换成它自己的颜色。
+    // 系统栏先取启动窗的颜色（`start_window_background`，浅色和深色各一份，跟随系统外观）：页面要等桥接就绪才能调用 setSystemBars，在那之前状态栏是系统默认色，会在启动画面上下露出一条别的颜色。页面挂载后会换成它自己的颜色。
+    const launchColour: string = this.launchColour();
+    const launchContent: string =
+      this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? '#FFFFFF' : '#000000';
     const launchBars: window.SystemBarProperties = {
-      statusBarColor: '#0A0B0A',
-      statusBarContentColor: '#FFFFFF',
-      navigationBarColor: '#0A0B0A',
-      navigationBarContentColor: '#FFFFFF'
+      statusBarColor: launchColour,
+      statusBarContentColor: launchContent,
+      navigationBarColor: launchColour,
+      navigationBarContentColor: launchContent
     };
     stage.getMainWindow().then((main: window.Window): Promise<void> => {
       // 窗口底色也一样：底部手势条那一块露出的是它，见 Settings 的 setSystemBars。
       try {
-        main.setWindowBackgroundColor('#0A0B0A');
+        main.setWindowBackgroundColor(launchColour);
       } catch (error) {
         KeyboardLog.error(`launch window background not applied: ${describeError(error)}`);
       }
@@ -108,5 +112,11 @@ export default class EntryAbility extends UIAbility {
     }).catch((error: Object): void => {
       KeyboardLog.error(`launch system bar colours not applied: ${describeError(error)}`);
     });
+  }
+
+  /** 启动窗的底色，`#AARRGGBB`。从资源读而不是写死：浅色和深色由资源目录各给一份，系统按当前外观取。 */
+  private launchColour(): string {
+    const argb: number = this.context.resourceManager.getColorSync($r('app.color.start_window_background').id);
+    return `#${(argb >>> 0).toString(16).padStart(8, '0')}`;
   }
 }

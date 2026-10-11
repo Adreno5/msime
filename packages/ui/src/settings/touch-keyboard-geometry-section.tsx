@@ -91,13 +91,14 @@ export interface TouchKeyboardGeometrySectionProps {
   preview?: ReactNode;
 }
 
+// 标题和选项自己就要说清楚：HarmonyOS 手机上这两行不带说明，「数字键盘顺序：电话」这样的叫法要靠联想才懂。所以直接说哪一排在上面、按 123 出来的是什么。
 const NUMBER_KEYPAD_ORDERS: readonly SegmentedOption<"phone" | "calculator">[] = [
-  { value: "phone", label: "电话" },
-  { value: "calculator", label: "计算器" },
+  { value: "phone", label: "123 在上" },
+  { value: "calculator", label: "789 在上" },
 ];
 
 const TWENTY_SIX_KEY_NUMBER_LAYOUTS: readonly SegmentedOption<"row" | "nine_key">[] = [
-  { value: "row", label: "一行" },
+  { value: "row", label: "数字一行" },
   { value: "nine_key", label: "九宫格" },
 ];
 
@@ -149,11 +150,11 @@ export function TouchKeyboardGeometrySection({
     <>
       {twentySixKeyNumberLayout !== undefined && (
         <SegmentedRow
-          title="26 键数字键盘"
+          title="26 键按 123"
           description={
             phone
               ? undefined
-              : "26 键按 123 时的数字键盘：一行把 1 到 0 排在符号上面，九宫格换成和九键一样的 3×3 数字键。"
+              : "26 键和 14 键按 123 时出来的数字键盘：数字一行把 1 到 0 排在符号上面，九宫格换成和九键一样的 3×3 大数字键。"
           }
           options={TWENTY_SIX_KEY_NUMBER_LAYOUTS}
           value={twentySixKeyNumberLayout}
@@ -161,11 +162,11 @@ export function TouchKeyboardGeometrySection({
         />
       )}
       <SegmentedRow
-        title="数字键盘顺序"
+        title="九宫格数字顺序"
         description={
           phone
             ? undefined
-            : "九宫格数字键盘的排列：电话把 1 2 3 放在最上面，计算器把 7 8 9 放在最上面。"
+            : "九宫格数字键的排列：123 在上和电话拨号盘一样，789 在上和计算器、电脑小键盘一样。"
         }
         options={NUMBER_KEYPAD_ORDERS}
         value={numberKeypadOrder}

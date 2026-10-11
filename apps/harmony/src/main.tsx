@@ -5,7 +5,6 @@ import {
   SettingsPage,
   SettingsStartupPage,
   WelcomeFlowPage,
-  HarmonyLaunchSplash,
   type DictionaryClient,
   type DictionaryCollectionsClient,
   type DictionaryCollectionsView,
@@ -1685,36 +1684,6 @@ function HarmonySettings({
   );
 }
 
-/** 开屏用的应用主题按明暗缓存在本页的 localStorage 里：下次冷启动时桥接还没就绪，开屏就靠它画成设置页的季节色。 */
-function launchThemeKey(dark: boolean): string {
-  return `msime.launch-theme.${dark ? "dark" : "light"}`;
-}
-
-function cachedLaunchTheme(dark: boolean): ResolvedAppTheme | null {
-  try {
-    const value = window.localStorage.getItem(launchThemeKey(dark));
-    const theme = value === null ? null : (JSON.parse(value) as unknown);
-    return theme !== null &&
-      typeof theme === "object" &&
-      typeof (theme as ResolvedAppTheme).accent === "string" &&
-      typeof (theme as ResolvedAppTheme).background === "string"
-      ? (theme as ResolvedAppTheme)
-      : null;
-  } catch {
-    // 存储不可用或内容损坏：这次开屏用平台默认色，桥接就绪后会改正。
-    return null;
-  }
-}
-
-function cacheLaunchTheme(dark: boolean, theme: ResolvedAppTheme | null): void {
-  try {
-    if (theme === null) window.localStorage.removeItem(launchThemeKey(dark));
-    else window.localStorage.setItem(launchThemeKey(dark), JSON.stringify(theme));
-  } catch {
-    // 存不下只是下次开屏先用默认色。
-  }
-}
-
 /** 告诉宿主页面已经画出来了。只在页面加载时调用：桥接对象在页面加载前就已注册，等它只是以防万一；等不到时宿主几秒后自己撤掉启动画面。 */
 function reportLaunchPainted(): void {
   whenBridgeReady()
@@ -1727,7 +1696,7 @@ function reportLaunchPainted(): void {
 /**
  * 子树第一次提交后再等两帧（第一帧回调时这一帧还没上屏）调用 `onPainted`。
  *
- * 冷启动时宿主在网页上盖着和系统启动窗一模一样的启动画面，页面加载期间不露出空白的网页；开屏的第一帧又和启动窗一样，所以第一帧上屏后撤掉盖板，看起来是同一个画面接着动起来。每次重画都要包着同一个子树，否则开屏会重新挂载、动画从头播。
+ * 冷启动时宿主在网页上盖着和系统启动窗一模一样的启动画面，页面加载期间不露出空白的网页。设置页第一次提交时还在读设置（「正在读取设置」），但读取是同步的桥接调用，下一个微任务就带着设置重画，所以两帧之后上屏的已经是设置本身；欢迎流程的第一帧则是和启动窗一样的开屏。撤掉盖板时看到的就是画好的页面。
  */
 function AfterFirstPaint({ onPainted, children }: { onPainted: () => void; children: ReactNode }) {
   useEffect(() => {
@@ -1755,68 +1724,39 @@ if (root) {
   const app = createRoot(root);
   // 启动页是第一帧，所以必须在它渲染前设好主题。它跟随系统，直到知道用户自选外观的欢迎流程或设置页接管文档。
   const stopFollowingSystemTheme = followSystemTheme();
-  // 等桥接最多要五秒。手机上每次冷启动都播开屏（与首次启动欢迎流程里的同一段），页面一加载就开始，动画本身盖住等待；播完且桥接就绪才进设置。二合一是桌面形态，没有手机开屏，照旧显示共享的启动页。此时还不知道宿主报告的形态，按与样式表 max-phone 相同的宽度判断。
+  // 等桥接最多要五秒。手机上这段时间什么都不画：宿主盖着和系统启动窗一样的画面（跟随系统深浅色），等设置页或首次启动的欢迎流程画出来才撤掉，中间不露出启动页、空白网页或「正在读取设置」。二合一是桌面形态，照旧显示共享的启动页。此时还不知道宿主报告的形态，按与样式表 max-phone 相同的宽度判断。
   const phoneLaunch = window.matchMedia("(max-width: 600px)").matches;
-  let endSplash: () => void = () => undefined;
-  const splashEnded = new Promise<void>((resolve) => {
-    endSplash = resolve;
-  });
-  // 同一个函数传给每一次重画，开屏的计时才不会从头开始。
-  const finishSplash = () => endSplash();
-  // 开屏用设置页将要使用的季节强调色。桥接就绪前解析不了，用上次启动缓存的那份；没有缓存时是平台默认色。
-  const launchDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  app.render(
-    <StrictMode>
-      <AfterFirstPaint onPainted={reportLaunchPainted}>
-        {phoneLaunch ? (
-          <HarmonyLaunchSplash appTheme={cachedLaunchTheme(launchDark)} onDone={finishSplash} />
-        ) : (
+  if (!phoneLaunch)
+    app.render(
+      <StrictMode>
+        <AfterFirstPaint onPainted={reportLaunchPainted}>
           <SettingsStartupPage />
-        )}
-      </AfterFirstPaint>
-    </StrictMode>,
-  );
+        </AfterFirstPaint>
+      </StrictMode>,
+    );
   whenBridgeReady()
     .then(async (native) => {
-      // 桥接就绪：按当前的应用主题重画开屏并缓存给下次启动（只有换季那次颜色会变），系统栏换成开屏的底色，动画接着播。
-      if (phoneLaunch) {
-        const launchTheme = appThemeClient(native)?.resolve(launchDark) ?? null;
-        cacheLaunchTheme(launchDark, launchTheme);
-        app.render(
-          <StrictMode>
-            <AfterFirstPaint onPainted={reportLaunchPainted}>
-              <HarmonyLaunchSplash
-                appTheme={launchTheme}
-                chrome={hostChrome(native)}
-                onDone={finishSplash}
-              />
-            </AfterFirstPaint>
-          </StrictMode>,
-        );
-      }
       // A refused query answers "no onboarding": someone who has been using the keyboard for weeks
       // should not be sent back to a welcome screen because one system call did not answer.
       const onboarding = await whenOnboardingKnown(native);
       // 在页面表明欢迎流程不会挡路之前，宿主会暂缓显示通知卡片。页面直接打开设置时（包括等首次读取等太久而放弃之后），不会再有别的地方告诉它。
       if (!onboarding && typeof native.onboardingFinished === "function")
         native.onboardingFinished();
-      // 两者都在这里、在 React 之外读取，因为都是一次性的宿主读取：链接的页面只交出一次，而闪屏标记马上就要写入。
+      // 两者都在这里、在 React 之外读取，因为都是一次性的宿主读取：链接的页面只交出一次，而闪屏标记会在欢迎流程播完开屏时写入。
       const linkedPage = pendingLinkedPage(native);
       const splashUnseen = !splashSeen(native);
-      if (phoneLaunch) {
-        await splashEnded;
-        // 开屏已经播过，首次启动的欢迎流程不再重播同一段。
-        if (splashUnseen && typeof native.markSplashSeen === "function") native.markSplashSeen();
-      }
       stopFollowingSystemTheme();
+      // 开屏只属于首次启动：欢迎流程在闪屏标记未写入时播它，平时冷启动直接进设置。
       app.render(
         <StrictMode>
-          <HarmonySettings
-            native={native}
-            onboarding={onboarding}
-            splashUnseen={!phoneLaunch && splashUnseen}
-            linkedPage={linkedPage}
-          />
+          <AfterFirstPaint onPainted={reportLaunchPainted}>
+            <HarmonySettings
+              native={native}
+              onboarding={onboarding}
+              splashUnseen={splashUnseen}
+              linkedPage={linkedPage}
+            />
+          </AfterFirstPaint>
         </StrictMode>,
       );
     })

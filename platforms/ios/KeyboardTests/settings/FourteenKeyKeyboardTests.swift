@@ -230,7 +230,7 @@ final class FourteenKeyKeyboardTests: XCTestCase {
     XCTAssertTrue(shown(qw))
   }
 
-  /// 「26 键数字键盘」选了九宫格时，14 键组字中点 123 借九键的数字层：侧栏照常是 ，。？ 标点列，拼音选择条留在读音行，与 Android、鸿蒙相同。
+  /// 「26 键按 123」选了九宫格时，14 键组字中点 123 借九键的数字层：侧栏照常是 ，。？ 标点列，拼音选择条留在读音行，与 Android、鸿蒙相同。
   func testTheBorrowedDigitPadKeepsItsPunctuationWhileComposing() throws {
     KeyboardLayoutPreference.twentySixKeyNumberLayout = .nineKey
     let controller = makeController(width: 390)

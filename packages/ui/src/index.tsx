@@ -610,7 +610,6 @@ export {
 } from "./keyboard/home-page";
 export {
   WelcomeFlowPage,
-  HarmonyLaunchSplash,
   type OnboardingActions,
   type OnboardingChoices,
   type OnboardingInputScheme,
