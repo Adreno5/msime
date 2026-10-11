@@ -348,17 +348,14 @@ public final class TypingStatisticsSummary {
 
     private static Double number(JSONObject object, String key) {
         if (object.isNull(key)) return null;
-        Object value = object.opt(key);
-        if (!(value instanceof Number number)) return null;
-        double result = number.doubleValue();
+        double result = NumberPolicy.strictDouble(object.opt(key), Double.NaN);
         return Double.isFinite(result) ? result : null;
     }
 
     /** 统计比例字段必须是 0–1 的有限 JSON 数字；越界值按缺省的无数据处理。 */
     public static Double strictRate(Object value) {
-        if (!(value instanceof Number number) || value instanceof Boolean) return null;
-        double rate = number.doubleValue();
-        return Double.isFinite(rate) && rate >= 0d && rate <= 1d ? rate : null;
+        double rate = NumberPolicy.strictRate(value, Double.NaN);
+        return Double.isFinite(rate) ? rate : null;
     }
 
     private static Double rate(JSONObject object, String key) {
@@ -394,9 +391,7 @@ public final class TypingStatisticsSummary {
 
     /** Candidate position buckets are JSON proportions in the closed 0–1 range. */
     public static double strictPositionRate(Object value) {
-        if (!(value instanceof Number number) || value instanceof Boolean) return 0d;
-        double rate = number.doubleValue();
-        return Double.isFinite(rate) && rate >= 0d && rate <= 1d ? rate : 0d;
+        return NumberPolicy.strictRate(value, 0d);
     }
 
     private static List<Double> positions(JSONArray array) {
