@@ -179,3 +179,57 @@ export struct MiniKeyboardPreview {
     .onClick(() => this.onTap())
   }
 }
+
+/**
+ * 皮肤选择器最后一格「更多皮肤」：和皮肤缩略图同样大小的虚线框，中间一个「+」，下方是名称，点了打开设置应用的「皮肤」页。
+ *
+ * 键盘进程读不到设置应用下载的社区皮肤和保存的设计（两边没有共享沙箱，见 `HarmonySharedSandboxPolicy`），选择器里只有内置主题和自定义；这一格把用户带到能用全部皮肤的地方。尺寸、圆角和选中环的留位与 `MiniKeyboardPreview` 相同，放在同一行里对得齐。
+ */
+@Component
+export struct MoreSkinsTile {
+  @Require @Prop hair: string;
+  @Require @Prop foreground: string;
+  @Require @Prop nameColor: string;
+  @Require @Prop name: string;
+  onTap: () => void = () => {};
+
+  build() {
+    Column({ space: NAME_GAP_VP }) {
+      Column() {
+        Stack() {
+          Text('+')
+            .fontSize(26)
+            .fontWeight(300)
+            .fontColor(this.foreground)
+        }
+        .width('100%')
+        .aspectRatio(MINI_WIDTH / MINI_HEIGHT)
+        .borderRadius(THUMB_RADIUS_VP)
+        .border({ width: 1, color: this.hair, style: BorderStyle.Dashed, radius: THUMB_RADIUS_VP })
+      }
+      .width('100%')
+      .padding(RING_GAP_VP + RING_VP)
+
+      Text(this.name)
+        .fontSize(NAME_FONT_SIZE)
+        .fontColor(this.nameColor)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+    }
+    .width('100%')
+    .stateStyles({
+      normal: {
+        .scale({ x: 1, y: 1 })
+      },
+      pressed: {
+        .scale({ x: 0.96, y: 0.96 })
+      }
+    })
+    .animation({ duration: 100 })
+    .accessibilityGroup(true)
+    .accessibilityText(this.name)
+    .onClick(() => this.onTap())
+  }
+}
