@@ -11,8 +11,8 @@ Status: implemented
 - host-api 新增 `msime_client_list_font_families`，返回 `system_fonts::list` 的结果（DirectWrite 目录，GDI 兜底），与 Tauri 读同一份目录；`msime_client.h` 写明错误码和须在工作线程调用。Tauri 本来就调用共享的 `system_fonts::list`，不用改。
 - 预设、主字体、当前预设的判定、字体名校验、字体列表规范化和下拉筛选写成只有头文件的 `CandidateFontPresets.h`，逐条照搬 `candidate-font-presets.ts`、`candidate-font-family.ts`、`font-catalog.ts` 和 `font-family-input.tsx` 在 `platform === "windows"` 下的分支，由 `tests/ui/candidate_font_presets.cpp` 核对，并加进 CMake 测试。
 - 「主题」页原来那一行的位置换成这四行，文案照搬共享页。预设用分段控件，`Option` 加了 `enabled`，圆体照共享页禁用；选中预设经 `change` 保存并重画。回退列表用 `SetOrderedStrings` 按给定顺序写。
-- 「主字体」「英文字体」用 `AutoSuggestBox`：每输入一个字写进文档，350 ms 后保存，失焦时立即保存；不合法的名字不写入，输入框标红，对应共享页不保存不合法字体。主字体输入时只在原处重画「候选字体」那一行，不重建整页，输入框不会丢焦点。
-- 字体列表与 `useFontCatalog` 一样，第一次点开字体输入框时才读，「刷新字体列表」重读；在工作线程上读取和解析，按代号丢弃过期的结果，回到 UI 线程后在原处更新状态行（读屏播报的区域）、按钮和正打开的下拉。列表按用户区域设置排序（`CompareStringEx`，对应 `localeCompare`）。
+- 「主字体」「英文字体」用 `AutoSuggestBox`：每输入一个字写进文档，350 ms 后保存，失焦时立即保存；不合法的名字不写入，输入框标红，框下显示共享页底部错误提示里的规则「名称不能为空、不能含控制字符或超过 128 个 UTF-8 字节。」（去掉指向页面的「请在候选窗口页修正字体」，提示就在框下），同一句写进输入框的读屏帮助文本，对应共享输入框的 `aria-invalid`。只标红不够：WinUI 的输入框获得焦点时用自己的焦点边框，打字时看不到红框。主字体输入时只在原处重画「候选字体」那一行，不重建整页，输入框不会丢焦点。
+- 字体列表与 `useFontCatalog` 一样，第一次点开字体输入框时才读，「刷新字体列表」重读；在工作线程上读取和解析，按代号丢弃过期的结果，回到 UI 线程后在原处更新状态行（读屏播报的区域）、按钮和正打开的下拉。列表按用户区域设置排序（`CompareStringEx`，对应 `localeCompare`），下拉筛选按用户区域设置转小写（`LCMapStringEx`，对应 `toLocaleLowerCase`），转小写的函数由窗口传给头文件里的 `font_menu`。
 - 删掉 `shell_links::appearance`，`all` 从 7 项减为 6 项，导航测试改为核对 `skin`；README 同步。
 
 ## Alternatives considered
@@ -25,7 +25,7 @@ Status: implemented
 
 - 原生窗口不再为候选字体拉起共享应用。
 - 预设表和规则写死在 `CandidateFontPresets.h`，`candidate-font-presets.ts` 改了要同步改这里。
-- 下拉筛选的大小写转换用 `towlower`，只保证 ASCII 与浏览器的 `toLocaleLowerCase` 一致；字体名里的其他大小写字母可能筛不出来。
+- 下拉筛选和浏览器一样按区域设置转小写，个别语言的特殊大小写规则可能与 WebView2 略有出入。
 - 原生预览仍不按候选字体绘制。
 
 ## Verification

@@ -203,18 +203,24 @@ struct FontMenu {
   std::size_t matches = 0;
 };
 
-// 输入框下拉列出的字体（`FontFamilyInput`）：用户还没打字时列出全部，打字后只列名字里含有输入内容（不分大小写）的，最多 100 项。
-inline FontMenu font_menu(std::vector<std::wstring> const &fonts, std::wstring_view value, bool search) {
+// 输入框下拉列出的字体（`FontFamilyInput`）：用户还没打字时列出全部，打字后只列名字里含有输入内容（不分大小写）的，最多 100 项。`lower` 转小写；共享页用 toLocaleLowerCase，设置窗口传入按用户区域设置转换的函数，不传时用 C 运行库的 towlower，默认区域下只转 ASCII 字母。
+template <class Lower>
+FontMenu font_menu(std::vector<std::wstring> const &fonts, std::wstring_view value, bool search,
+                   Lower lower) {
   FontMenu menu;
-  const auto needle = font_name_lowercase(value);
+  const auto needle = search ? lower(value) : std::wstring();
   for (auto const &font : fonts) {
-    if (search && font_name_lowercase(font).find(needle) == std::wstring::npos)
+    if (search && lower(font).find(needle) == std::wstring::npos)
       continue;
     ++menu.matches;
     if (menu.options.size() < font_menu_limit)
       menu.options.push_back(font);
   }
   return menu;
+}
+
+inline FontMenu font_menu(std::vector<std::wstring> const &fonts, std::wstring_view value, bool search) {
+  return font_menu(fonts, value, search, font_name_lowercase);
 }
 
 } // namespace msime::settings

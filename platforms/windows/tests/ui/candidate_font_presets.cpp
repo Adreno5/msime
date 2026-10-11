@@ -91,6 +91,15 @@ int main() {
   const auto searched = font_menu(fonts, L"kait", true);
   check(searched.options == List{L"KaiTi"} && searched.matches == 1, "typing filters case-insensitively");
   check(font_menu(fonts, L"zzz", true).matches == 0, "no match");
+  // The window passes a locale-aware lowercase; the menu matches through whatever it is given.
+  const auto folded = font_menu(List{L"École", L"Arial"}, L"éc", true, [](std::wstring_view value) {
+    std::wstring result(value);
+    for (auto &c : result)
+      if (c == L'É')
+        c = L'é';
+    return result;
+  });
+  check(folded.options == List{L"École"}, "the menu filters through the given lowercase");
 
   if (failures == 0)
     std::puts("candidate font presets: ok");

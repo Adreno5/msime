@@ -1120,6 +1120,23 @@ bool font_name_before(std::wstring const &a, std::wstring const &b) {
                          0) == CSTR_LESS_THAN;
 }
 
+// 共享页用 toLocaleLowerCase 筛选字体；这里按用户的区域设置转小写，ASCII 以外的字母也能不分大小写地匹配。转换失败时保留原样。
+std::wstring font_name_lower(std::wstring_view value) {
+  if (value.empty())
+    return {};
+  constexpr DWORD flags = LCMAP_LOWERCASE | LCMAP_LINGUISTIC_CASING;
+  const int length = static_cast<int>(value.size());
+  const int needed = LCMapStringEx(LOCALE_NAME_USER_DEFAULT, flags, value.data(), length,
+                                   nullptr, 0, nullptr, nullptr, 0);
+  if (needed <= 0)
+    return std::wstring(value);
+  std::wstring result(static_cast<std::size_t>(needed), L'\0');
+  if (LCMapStringEx(LOCALE_NAME_USER_DEFAULT, flags, value.data(), length, result.data(),
+                    needed, nullptr, nullptr, 0) != needed)
+    return std::wstring(value);
+  return result;
+}
+
 // 已安装的字体名，与 Tauri 的 list_font_families 读的是同一份目录（host-api 的 system_fonts）。读取失败、返回内容不是字符串数组或含不合法的名字时为空，页面显示读取失败。枚举系统字体，只在 UI 线程之外调用。
 std::optional<std::vector<std::wstring>> read_font_catalog() {
   const auto response = take_response(msime_client_list_font_families());
@@ -3442,7 +3459,14 @@ private:
     A11y::SetName(input, hstring(label));
     auto note = make_text(L"", 12, palette_.sub);
     note.Visibility(Visibility::Collapsed);
+    // 名字不合法时的说明，用共享页底部那条错误提示的规则部分（「请在候选窗口页修正字体」那半句指的是页面，这里就在输入框下面）；读屏从输入框的帮助文本读到它，对应共享输入框的 aria-invalid。
+    const auto danger = palette_.dark ? rgba(0xFF, 0x99, 0xA4, 1) : rgba(0xC4, 0x2B, 0x1C, 1);
+    auto invalid = make_text(L"名称不能为空、不能含控制字符或超过 128 个 UTF-8 字节。", 12, danger);
+    invalid.TextWrapping(TextWrapping::Wrap);
+    invalid.Visibility(Visibility::Collapsed);
+    A11y::SetLiveSetting(invalid, Automation::Peers::AutomationLiveSetting::Assertive);
     box.Children().Append(input);
+    box.Children().Append(invalid);
     box.Children().Append(note);
 
     // 用户打过字以后才按输入内容筛选，选中一项后又列出全部，与共享页的 search 状态相同。
@@ -3455,7 +3479,8 @@ private:
       if (!field || !hint || !*focused)
         return;
       const auto menu =
-          nav::font_menu(font_catalog_, std::wstring(field.Text().c_str()), *search);
+          nav::font_menu(font_catalog_, std::wstring(field.Text().c_str()), *search,
+                         font_name_lower);
       std::vector<Inspectable> items;
       items.reserve(menu.options.size());
       for (auto const &font : menu.options)
@@ -3473,18 +3498,31 @@ private:
     if (!indexing_)
       font_menu_updaters_.push_back(update_menu);
 
-    auto write = [this, apply = std::move(apply), weak_input = make_weak(input)](
-                     std::wstring const &font) {
+    auto write = [this, apply = std::move(apply), weak_input = make_weak(input),
+                  weak_invalid = make_weak(invalid), danger](std::wstring const &font) {
       auto field = weak_input.get();
-      if (!field)
+      auto message = weak_invalid.get();
+      if (!field || !message)
         return;
-      if (!nav::valid_font_family(font)) {
-        field.BorderBrush(brush(palette_.dark ? rgba(0xFF, 0x99, 0xA4, 1)
-                                              : rgba(0xC4, 0x2B, 0x1C, 1)));
-        return;
+      const bool valid = nav::valid_font_family(font);
+      if (valid) {
+        field.ClearValue(Control::BorderBrushProperty());
+        field.ClearValue(A11y::HelpTextProperty());
+      } else {
+        field.BorderBrush(brush(danger));
+        A11y::SetHelpText(field, message.Text());
       }
-      field.ClearValue(Control::BorderBrushProperty());
-      apply(font);
+      // 只在显隐变化时通知读屏，免得每敲一个字都播报一遍。
+      const auto shown = valid ? Visibility::Collapsed : Visibility::Visible;
+      if (message.Visibility() != shown) {
+        message.Visibility(shown);
+        if (!valid)
+          if (auto peer =
+                  Automation::Peers::FrameworkElementAutomationPeer::FromElement(message))
+            peer.RaiseAutomationEvent(Automation::Peers::AutomationEvents::LiveRegionChanged);
+      }
+      if (valid)
+        apply(font);
     };
 
     input.GotFocus([this, focused, update_menu](Inspectable const &, RoutedEventArgs const &) {
