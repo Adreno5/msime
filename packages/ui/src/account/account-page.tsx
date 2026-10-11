@@ -16,15 +16,12 @@ import { AccountAvatar } from "./account-avatar";
 import { accountProviderName, preferredAccountName } from "./account-labels";
 import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
+import { AccountProfileActions, type HarmonyProfileAction } from "./account-profile-actions";
 import { AccountNicknameField } from "./account-nickname-field";
 import { AccountInputField } from "./account-input-field";
 import { AccountVerificationForm } from "./account-verification-form";
 import { AccountStatusMessages } from "./account-status-messages";
-import {
-  AccountIdentityDetails,
-  AccountIdentityRows,
-  ProfileGroup,
-} from "./account-identity-details";
+import { AccountIdentityDetails, AccountIdentityRows } from "./account-identity-details";
 import { AppThemeRow } from "./app-theme-row";
 import { BottomSheet, LoginSheet } from "./login-sheet";
 import { MeSubpageHeader, MobileDownloadPage, otherPlatformCount } from "./mobile-download-page";
@@ -276,35 +273,7 @@ function MobileAccountProfilePage({
           onCopy={copyId}
         />
       </section>
-      <section className={`${account.section} ${account.stack}`}>
-        <h2 className={account.heading}>账号操作</h2>
-        <div className={account.actionRow}>
-          <ActionButton
-            action={() => setConfirmation("logout")}
-            className="secondary"
-            disabled={busy}
-            label="退出登录"
-          />
-          <ActionButton
-            action={() => setConfirmation("logout-all")}
-            className="secondary"
-            disabled={busy}
-            label="退出所有设备"
-          />
-          <ActionButton
-            action={() => setConfirmation("relogin")}
-            className="secondary"
-            disabled={busy}
-            label="重新登录"
-          />
-          <ActionButton
-            action={() => setConfirmation("delete")}
-            className="danger-text"
-            disabled={busy}
-            label="注销账号"
-          />
-        </div>
-      </section>
+      <AccountProfileActions variant="mobile" busy={busy} onSelect={setConfirmation} />
       {confirmation && (
         <AccountConfirmation
           action={confirmation}
@@ -317,8 +286,6 @@ function MobileAccountProfilePage({
     </div>
   );
 }
-
-type ProfileConfirmation = "logout" | "logout-all" | "delete";
 
 /**
  * 鸿蒙手机上的「个人资料」，从「我的」卡片推入：头像、名字、邮箱和账号登录用的提供方，然后是「账号」和「登录方式」两组，会话操作是居中的红色行。「昵称」打开一个面板，校验与其他地方相同；「水杉 ID」点按即复制自身。结果按设计用 toast 报告；失败则作为错误留在页面上。
@@ -344,7 +311,7 @@ function HarmonyProfilePage({
   const [name, setName] = useState(user.displayName);
   const [renaming, setRenaming] = useState(false);
   const [error, setError] = useState("");
-  const [confirmation, setConfirmation] = useState<ProfileConfirmation | null>(null);
+  const [confirmation, setConfirmation] = useState<HarmonyProfileAction | null>(null);
   const showToast = useToast();
   const { busy, mounted, clientGeneration, perform } = useAccountAction(
     client,
@@ -416,34 +383,7 @@ function HarmonyProfilePage({
         }}
         onCopyId={copyId}
       />
-      <ProfileGroup>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("logout")}
-        >
-          退出登录
-        </button>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("logout-all")}
-        >
-          退出所有设备
-        </button>
-      </ProfileGroup>
-      <ProfileGroup>
-        <button
-          type="button"
-          className={account.profileDangerRow}
-          disabled={busy}
-          onClick={() => setConfirmation("delete")}
-        >
-          注销账号
-        </button>
-      </ProfileGroup>
+      <AccountProfileActions variant="harmony" busy={busy} onSelect={setConfirmation} />
       {confirmation && (
         <div className={account.profileConfirmation}>
           <AccountConfirmation
