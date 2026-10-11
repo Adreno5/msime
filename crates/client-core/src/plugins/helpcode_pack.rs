@@ -61,10 +61,13 @@ pub(crate) fn parse(table: &toml::map::Map<String, Value>) -> Result<String, Str
 /// 读取并严格解析包目录里的码表。
 pub(crate) fn read(directory: &Path, name: &str) -> Result<HelpcodePack, String> {
     let entries = read_entries(directory, name)?;
+    let count = entries.len();
+    let mut preview = Vec::with_capacity(PREVIEW_ENTRIES.min(count));
+    preview.extend(entries.into_iter().take(PREVIEW_ENTRIES));
     Ok(HelpcodePack {
         table: name.to_owned(),
-        entries: entries.len(),
-        preview: entries.into_iter().take(PREVIEW_ENTRIES).collect(),
+        entries: count,
+        preview,
     })
 }
 
