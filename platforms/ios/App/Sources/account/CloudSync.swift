@@ -85,6 +85,8 @@ struct CloudSyncRun {
   let accountID: String
   let sessionID: UUID
   let binding: Int64
+  private var schema: BackendAccountClient.PreferenceSchema?
+  private var preferences: BackendAccountClient.Preferences?
 
   static func perform(state: CloudSyncState, session: BackendAccountSession, client: BackendAccountClient,
                       choice: BackendSyncPolicy.Choice?, force: Bool) async -> Outcome {
@@ -144,12 +146,32 @@ struct CloudSyncRun {
   /// 读云端状态；返回 false 表示有分类第一次同步而云端已有数据，需要先问用户。
   mutating func probe() async throws -> Bool {
     guard await current() else { throw CancellationError() }
-    return true
+    let client = client
+    schema = try await call { try await client.preferenceSchema(token: $0) }
+    let preferences = try await call { try await client.preferences(token: $0) }
+    self.preferences = preferences
+    guard await current() else { throw CancellationError() }
+    if choice != nil { return true }
+    let record = try state.read()
+    let needs = record.cursor(.settings).isEmpty && !preferences.settings.isEmpty
+    return !needs
   }
 
   /// 逐类执行，一类失败不挡其他类；返回第一条要展示的失败原因，全部成功时为 nil。任务取消、登录变了时抛 `CancellationError`，这一轮作废。
   func run() async throws -> String? {
-    nil
+    var failure: String?
+    do {
+      try await settings()
+    } catch {
+      failure = try Self.message(error, fallback: "设置同步失败，稍后自动重试")
+    }
+    return failure
+  }
+
+  /// 失败展示给用户的原因；任务取消或登录变了时把 `CancellationError` 抛出去，整轮作废。
+  private static func message(_ error: Error, fallback: String) throws -> String {
+    guard let message = BackendSyncPolicy.failureMessage(error, fallback: fallback) else { throw CancellationError() }
+    return message
   }
 
   private func mode(_ section: CloudSyncSection, cloudHasData: Bool, cloudChanged: Bool, dirty: Bool) throws -> BackendSyncPolicy.Mode {
@@ -157,6 +179,61 @@ struct CloudSyncRun {
       return BackendSyncPolicy.firstRun(cloudHasData: cloudHasData, choice: choice) ?? .none
     }
     return BackendSyncPolicy.incremental(cloudChanged: cloudChanged, localDirty: dirty)
+  }
+
+  // ---- 设置（含当前自定义键盘皮肤） ----
+
+  private func settings() async throws {
+    guard await current(), let schema, let cloud = preferences else { return }
+    // 先记下改动代数再读本机：上传期间用户又改了设置，代数会变大，标记留着，下一轮再传。
+    let record = try state.read()
+    let generation = record.generation(.settings)
+    let mode = try mode(.settings, cloudHasData: !cloud.settings.isEmpty,
+                        cloudChanged: BackendSyncPolicy.cloudChanged(cursor: record.cursor(.settings), revision: cloud.revision),
+                        dirty: record.dirty(.settings))
+    let result: BackendAccountClient.Preferences
+    switch mode {
+    case .none:
+      result = cloud
+    case .download:
+      try await apply(cloud)
+      result = cloud
+    case .upload, .merge:
+      // 上传和合并都是云端文档为底、本机值覆盖：只上传服务端字段表里有的键，其他平台的键原样保留。
+      let client = client
+      result = try await BackendSyncPolicy.resolvingConflicts(cloud, mode: mode, put: { cloud, _ in
+        let local = try await MainActor.run { try IOSCloudSettings.snapshot() }
+        let merged = try BackendAccountClient.mergedPreferences(cloud, replacing: BackendSyncPolicy.withoutLocalOnly(local),
+                                                               schema: schema)
+        guard await current() else { throw CancellationError() }
+        return try await call { try await client.putPreferences(merged, token: $0) }
+      }, refetch: {
+        try await call { try await client.preferences(token: $0) }
+      })
+      // 合并结果里可能有云端独有的键，应用回本机；与本机相同的部分写不出改动。
+      try await apply(result)
+    }
+    guard await current() else { throw CancellationError() }
+    try state.updateIfCurrent(binding) { $0.cursors[CloudSyncSection.settings.rawValue] = String(result.revision) }
+    try state.clearDirtyIfCurrent(.settings, expected: generation, bindingGeneration: binding)
+  }
+
+  /// 把云端设置应用到本机，与「设置同步」页的「下载并应用」走同一条路（`IOSCloudSettings.apply`），只是不记成本机改动。去掉本地专属的键再应用。
+  private func apply(_ cloud: BackendAccountClient.Preferences) async throws {
+    guard await current() else { throw CancellationError() }
+    let values = BackendSyncPolicy.withoutLocalOnly(cloud.settings)
+    try await MainActor.run { try CloudSyncState.suppressingMarks { try IOSCloudSettings.apply(values) } }
+  }
+}
+
+extension Binding where Value: Equatable {
+  /// 用户经这个绑定改值时记一次设置改动，云同步下一轮上传。别处改了存储（例如同步应用云端设置）不经过绑定，不会被记成本机改动；`onChange` 分不出这两种来源。
+  func markingSettingsChange() -> Binding<Value> {
+    Binding(get: { wrappedValue }, set: { value in
+      let changed = value != wrappedValue
+      wrappedValue = value
+      if changed { CloudSyncState.shared.markDirty(.settings) }
+    })
   }
 }
 

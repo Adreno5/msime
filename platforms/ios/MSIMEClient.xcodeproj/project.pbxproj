@@ -493,6 +493,7 @@
 		91F9EC1353356B1A77EE96FF /* KeyboardLayoutTables.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58FA4200E8A4B07CEFC31B28 /* KeyboardLayoutTables.swift */; };
 		92B9A7AB26701550B0862D96 /* CloudDictionaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCC403F205F97D0B32D52DA5 /* CloudDictionaryView.swift */; };
 		92F55375741FEE1356A50C88 /* KeyboardPunctuationContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03BDF370F68412D2706739B9 /* KeyboardPunctuationContext.swift */; };
+		931C18533F352DF104950528 /* CloudSyncMarkingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B381E4EB8A994D9BAA5646 /* CloudSyncMarkingTests.swift */; };
 		932F90F4AD57D89829769D20 /* KeyboardSkinTrial.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7C0956C2183B09335BD442 /* KeyboardSkinTrial.swift */; };
 		9357E84C7F2063301A7942E0 /* WelcomeFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 874FE91F05D7569EE19499A6 /* WelcomeFlowView.swift */; };
 		935953D6C52344C8E03D0EBC /* TabletSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDBC471A409CDFF3180B5EA /* TabletSettingsView.swift */; };
@@ -1256,6 +1257,7 @@
 		D7513F9E654F6379AEB99C79 /* KeyboardServiceFallback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardServiceFallback.swift; sourceTree = "<group>"; };
 		D877D6A4E98C4CAED197AC82 /* TranslationProviderSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationProviderSettingsView.swift; sourceTree = "<group>"; };
 		D8A34DB3894A5E4FB8CD81C1 /* AboutAndDownloadViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutAndDownloadViews.swift; sourceTree = "<group>"; };
+		D8B381E4EB8A994D9BAA5646 /* CloudSyncMarkingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncMarkingTests.swift; sourceTree = "<group>"; };
 		D900CD54AA5DB955BAC8633F /* CandidateTranslationPreference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandidateTranslationPreference.swift; sourceTree = "<group>"; };
 		D96EEB4FF8EFD1144F0574D7 /* HelpcodeSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpcodeSettingsTests.swift; sourceTree = "<group>"; };
 		DA2F8F4F4625F731687A54BC /* FeatureSettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureSettingsViews.swift; sourceTree = "<group>"; };
@@ -1398,6 +1400,7 @@
 			isa = PBXGroup;
 			children = (
 				13BF4B42BD974D823F751219 /* AppThemePaletteTests.swift */,
+				D8B381E4EB8A994D9BAA5646 /* CloudSyncMarkingTests.swift */,
 				A2FCBDD503ED38EAEC810296 /* CloudSyncStateTests.swift */,
 				25B1C8E88C7D7E0CA6F9BC93 /* CommunityDictionaryImportsTests.swift */,
 				DB19D5E11787887C1A08FCEE /* UsageReportingTests.swift */,
@@ -3058,6 +3061,7 @@
 				39FAEAE03E6F2BFB2CA1F449 /* ClipboardHistoryStore.swift in Sources */,
 				F57BB7659DD384A91B77C403 /* CloudCandidatePreference.swift in Sources */,
 				D104AED0E84E37A090DBB7F3 /* CloudClipboardDriver.swift in Sources */,
+				931C18533F352DF104950528 /* CloudSyncMarkingTests.swift in Sources */,
 				E2576916BB01EE66A86228B6 /* CloudSyncState.swift in Sources */,
 				70676AFFCF880A7935F01E09 /* CloudSyncStateTests.swift in Sources */,
 				49201A7F2E492399C0A09D67 /* CommonPhrasesBridge.swift in Sources */,
