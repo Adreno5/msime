@@ -677,6 +677,34 @@ fn traditional_conversion_boundary_returns_text_or_null() {
 }
 
 #[test]
+fn font_catalog_boundary_lists_sorted_bounded_families() {
+    let result = read(msime_client_list_font_families());
+    if !system_fonts::supported() {
+        assert_eq!(result, json!({ "ok": false, "error": "unsupported" }));
+        return;
+    }
+    // A Linux machine without fontconfig cannot list anything; that is a failure response, never a panic or a partial list.
+    if result["ok"] == false {
+        assert!(
+            !cfg!(windows),
+            "Windows always has a system font collection"
+        );
+        assert!(matches!(
+            result["error"].as_str(),
+            Some("font_catalog" | "font_catalog_limit")
+        ));
+        return;
+    }
+    let names: Vec<String> = serde_json::from_value(result["value"].clone()).unwrap();
+    assert!(!names.is_empty());
+    assert!(names.len() <= 16_384);
+    assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(names
+        .iter()
+        .all(|name| !name.is_empty() && msime_client_core::is_bounded_text(name, 128)));
+}
+
+#[test]
 fn abi_version_reports_the_theme_revision() {
     assert_eq!(msime_client_abi_version(), 3);
 }

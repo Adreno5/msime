@@ -14,7 +14,9 @@
 - 屏幕键盘设置不跳共享应用：「屏幕键盘」页照共享页（`packages/ui/src/settings/pages/screen-keyboard-page.tsx` 和 `touch-keyboard-geometry-section.tsx`）在 Windows 上的内容画四组。「屏幕键盘」组是打开面板的一行（面板本身仍由 `MSIME.exe` 显示）和键盘预览：预览照 `ScreenKeyboardPreview` 的桌面布局画在 1100 单位宽的画布上、最宽缩到 760，配色取 `msime_client_theme_catalog` 的 `keyboard` 调色板（跟随系统和没有调色板的主题用共享预览的系统键盘色），明暗跟「屏幕键盘主题」，自定义主题带键盘设计时按设计画键形、材质、描边、渐变、底纹和照片；在预览上左右拖动调键距、上下拖动调行距，规则与共享页的 `useTouchKeyboardGeometryDrag` 相同。「尺寸」组是键盘高度（`touch_keyboard_height_adjustment`，-12 到 48）、按键间距（`touch_key_spacing_tenths`，30 到 60）、行间距（`touch_row_spacing_tenths`，40 到 100）和「恢复默认」，后者确认后从文档里删掉这三项和 `touch_voice_shortcut`、`touch_toolbar`。「工具栏」组只有「顶部语音入口」（Windows 不是 `touch_toolbar_components` 的宿主）；「外观」组的「前往」落到「主题」页「界面主题」组的「屏幕键盘主题」一行。手机才有的「布局」「手势」和触屏反馈不画。
 - 其他平台下载不单独成页：「关于」页的「版本与更新」组可以打开产品下载页或复制链接。
 
-原生页面不绘制的部分（候选字体选择、皮肤与自定义主题编辑、云词库面板、在线翻译服务、语音识别服务）以按钮的形式跳到共享应用的对应路由，路由 id 与托盘和其他启动方使用的相同。
+原生页面不绘制的部分（皮肤与自定义主题编辑、云词库面板、在线翻译服务、语音识别服务）以按钮的形式跳到共享应用的对应路由，路由 id 与托盘和其他启动方使用的相同。
+
+「主题」页「外观」组的候选字体各行照搬共享设置「候选窗口」页「字体与大小」组在 Windows 上的样子（`CandidateFontPresetRow` 与 `CandidateFontControls`），不跳共享应用：「候选字体」预设（默认、宋体、黑体、楷体、圆体，Windows 没有自带圆体，该项禁用）同时写 `candidate_font_family` 和有序的 `candidate_fallback_fonts`；「主字体」在 Windows 上同时排到回退列表最前；「英文字体」写 `candidate_english_font`，未设置时显示 Segoe UI；「系统字体列表」一行显示读取状态并可「刷新字体列表」。预设、主字体和字体名的规则在 `CandidateFontPresets.h`，由 `tests/ui/candidate_font_presets.cpp` 核对。字体列表由 `msime_client_list_font_families` 读取（与 Tauri 的 `list_font_families` 同一份 `system_fonts` 目录），第一次点开字体输入框时在工作线程上读，读取状态在原处更新，不重建页面，输入框不会丢掉焦点。
 
 「输入」页的辅助码方案下拉框和共享设置的 `HelpcodeSettingsGroup`（`packages/ui/src/settings/pages/helpcode-page.tsx`）规则相同，辅助码插件也在这里选，不跳共享应用。选项依次是内置方案、资源目录 `helpcodes/custom` 里的自定义码表（`custom/<文件名>`，由 `msime_client_helpcode_schemas` 读宿主选项的 `resources`，名字是「中文名 (英文名)」）和已安装的辅助码表插件（「插件名（插件）」，取自 `msime_client_plugins` 的 `catalog` 中种类为 `helpcode` 的包）。选插件只写 `plugins.helpcode_pack_quanpin` / `helpcode_pack_shuangpin`，输入引擎用它替换内置方案；选内置或自定义方案时同时清空插件。已选的插件不在了显示为「id（插件，未找到）」，资源目录读不到时已选的自定义码表也留在列表里。自定义码表只读一次，插件每次进入「输入」页重读，都在工作线程上读。本版本提供全拼或双拼之一就显示这一组，两族都列出（共享页的 `editionUsesHelpcode`）；「在候选窗口中显示…辅助码」不随开关变灰；Windows 不是 Shift 输入辅助码的宿主（`helpcode_shift_entry` 为 false），所以没有共享页那段 Shift 说明。
 

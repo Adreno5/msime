@@ -818,6 +818,14 @@ char *msime_client_simplified_to_traditional(const uint8_t *text, size_t length)
  * Returns the standard response with an array value. Free with string_free.
  * Resolution failure retains the corresponding original family name. */
 char *msime_client_resolve_font_families(const uint8_t *value, size_t length);
+/* Installed font family names, the catalog the shared app's 刷新字体列表 reads.
+ * Returns the standard response with a sorted array of distinct names, each
+ * non-empty, at most 128 UTF-8 bytes and free of control characters; error
+ * "unsupported" on a host without a catalog, "font_catalog" or
+ * "font_catalog_limit" (over 16384 families) when enumeration fails.
+ * Enumerates the system's fonts: call it off the UI thread. Free with
+ * string_free. */
+char *msime_client_list_font_families(void);
 /* Describe what the named host ("windows"/"macos"/"linux"/"android"/"ios") can
  * do, so the shared UI renders from capabilities rather than the user agent. */
 char *msime_client_host_capabilities(const uint8_t *platform, size_t length);

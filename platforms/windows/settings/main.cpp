@@ -33,6 +33,7 @@
 #include "PreferencePath.h"
 #include "AppInputModeRuleList.h"
 #include "FeedbackReport.h"
+#include "CandidateFontPresets.h"
 #include "SettingsDocumentFile.h"
 #include "SettingsNavigation.h"
 #include "SettingsStateDirectory.h"
@@ -1106,7 +1107,40 @@ fire_and_forget show_logo(Image image, int32_t pixels) {
 struct Option {
   std::wstring value;
   std::wstring label;
+  // 只有分段控件读这一项：不可选的选项照常显示，但按不下去（「候选字体」在 Windows 上的「圆体」）。
+  bool enabled = true;
 };
+
+// ---- 系统字体列表 ----
+
+// 共享页用 localeCompare 给字体列表排序；这里按用户的区域设置比较。
+bool font_name_before(std::wstring const &a, std::wstring const &b) {
+  return CompareStringEx(LOCALE_NAME_USER_DEFAULT, 0, a.c_str(), static_cast<int>(a.size()),
+                         b.c_str(), static_cast<int>(b.size()), nullptr, nullptr,
+                         0) == CSTR_LESS_THAN;
+}
+
+// 已安装的字体名，与 Tauri 的 list_font_families 读的是同一份目录（host-api 的 system_fonts）。读取失败、返回内容不是字符串数组或含不合法的名字时为空，页面显示读取失败。枚举系统字体，只在 UI 线程之外调用。
+std::optional<std::vector<std::wstring>> read_font_catalog() {
+  const auto response = take_response(msime_client_list_font_families());
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedArray(L"value");
+    if (value.Size() > nav::font_catalog_limit)
+      return std::nullopt;
+    std::vector<std::wstring> fonts;
+    fonts.reserve(value.Size());
+    for (auto const &item : value) {
+      if (item.ValueType() != JsonValueType::String)
+        return std::nullopt;
+      fonts.emplace_back(item.GetString().c_str());
+    }
+    return nav::normalize_font_catalog(std::move(fonts), font_name_before);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
 
 // ---- 辅助码方案的来源 ----
 
@@ -2653,7 +2687,7 @@ private:
       A11y::SetName(button, hstring(name + L" " + option.label));
       if (on)
         A11y::SetItemStatus(button, L"已选择");
-      button.IsEnabled(enabled && loaded_);
+      button.IsEnabled(enabled && loaded_ && option.enabled);
       button.Click([apply, value = option.value, on](Inspectable const &,
                                                      RoutedEventArgs const &) {
         if (!on)
@@ -3277,10 +3311,7 @@ private:
                L"settings_theme", surface_theme_options(), L"follow", true);
     slider_row(look, 0xE8E9, L"候选窗字号", L"候选词的字号（12–32）",
                L"candidate_font_size", 12, 32, 18);
-    const auto family = document_.String(L"candidate_font_family", L"");
-    shell_row(look, 0xE8D2, L"候选字体",
-              family.empty() ? L"跟随系统默认字体" : family, L"更改",
-              nav::shell_links::appearance);
+    candidate_font_rows(look);
     shell_row(look, 0xE70F, L"自定义主题",
               L"取色器、皮肤包与键盘样式在水杉输入法应用中编辑", L"编辑",
               nav::shell_links::skin);
@@ -3310,6 +3341,243 @@ private:
 
   static std::vector<Option> surface_theme_options() {
     return {{L"follow", L"跟随颜色模式"}, {L"dark", L"深色"}, {L"light", L"浅色"}};
+  }
+
+  // ---- 候选字体 ----
+
+  // 共享设置「候选窗口」页「字体与大小」组里的字体各行，按 Windows 宿主的样子：「候选字体」预设、主字体、英文字体和系统字体列表。规则在 CandidateFontPresets.h。与共享页一样没有回退字体列表的编辑器：预设和主字体会写它。
+  void candidate_font_rows(StackPanel const &group) {
+    StackPanel preset_host;
+    group.Children().Append(preset_host);
+    candidate_font_preset_row(preset_host);
+    if (!indexing_) {
+      font_preset_host_ = preset_host;
+      font_menu_updaters_.clear();
+    }
+
+    add_row(group, 0xE8C1, L"主字体", L"",
+            font_input(L"主字体",
+                       document_.String(L"candidate_font_family",
+                                        nav::candidate_default_font_family),
+                       [this](std::wstring const &font) {
+                         // Windows 的候选窗从回退列表取汉字，主字体同时排到回退列表最前。
+                         const auto patch = nav::candidate_main_font_patch(
+                             font,
+                             document_.String(L"candidate_font_family",
+                                              nav::candidate_default_font_family),
+                             document_.Strings(L"candidate_fallback_fonts"));
+                         document_.SetString(L"candidate_font_family", patch.family);
+                         document_.SetOrderedStrings(L"candidate_fallback_fonts", patch.fallback);
+                         schedule_save();
+                         refresh_font_preset_row();
+                       }));
+    add_row(group, 0xE8D3, L"英文字体",
+            L"优先用于候选和预编辑；缺字时使用主字体，不限英文输入模式。保存后自动应用。",
+            font_input(L"英文字体",
+                       document_.String(L"candidate_english_font",
+                                        nav::candidate_default_english_font),
+                       [this](std::wstring const &font) {
+                         document_.SetString(L"candidate_english_font", font);
+                         schedule_save();
+                       }));
+
+    // 状态是读屏会播报的区域。
+    auto status = make_text(font_catalog_message(), 12, palette_.sub);
+    status.Margin(Thickness{61, 0, 25, 14});
+    A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+    status.Visibility(status.Text().empty() ? Visibility::Collapsed : Visibility::Visible);
+    auto refresh_button = button_control(
+        L"刷新字体列表", [this] { load_font_catalog(); },
+        loaded_ && font_catalog_status_ != FontCatalogStatus::loading);
+    add_row(group, 0xE72C, L"系统字体列表", L"", refresh_button, status);
+    if (!indexing_) {
+      font_catalog_text_ = status;
+      font_catalog_button_ = refresh_button.as<Button>();
+    }
+  }
+
+  // 「候选字体」预设一行。它画在自己的容器里，主字体每输入一个字就在原处重画这一行，不必重建整页而丢掉输入框的焦点。
+  void candidate_font_preset_row(StackPanel const &host) {
+    const auto family =
+        document_.String(L"candidate_font_family", nav::candidate_default_font_family);
+    const auto preset = nav::current_candidate_font_preset(
+        family, document_.Strings(L"candidate_fallback_fonts"));
+    std::vector<Option> options;
+    for (auto const &entry : nav::candidate_font_presets)
+      options.push_back({std::wstring(entry.id), std::wstring(entry.label),
+                         nav::candidate_font_preset_available(entry.id)});
+    add_row(host, 0xE8D2, L"候选字体",
+            preset ? std::wstring(L"Windows 没有自带圆体")
+                   : L"当前为自定义字体 " + family + L"，可在下方修改",
+            segmented_control(L"候选字体", options,
+                              preset ? std::wstring(*preset) : std::wstring(L"custom"),
+                              [this](std::wstring const &id) {
+                                change([&](PreferencesDocument &doc) {
+                                  const auto patch = nav::candidate_font_preset_patch(
+                                      id, doc.Strings(L"candidate_fallback_fonts"));
+                                  doc.SetString(L"candidate_font_family", patch.family);
+                                  doc.SetOrderedStrings(L"candidate_fallback_fonts",
+                                                        patch.fallback);
+                                }, true);
+                              }));
+  }
+
+  void refresh_font_preset_row() {
+    if (!font_preset_host_)
+      return;
+    font_preset_host_.Children().Clear();
+    candidate_font_preset_row(font_preset_host_);
+  }
+
+  // 字体名输入框（共享页的 FontFamilyInput）：可以直接输入，也可以从系统字体列表里选。第一次获得焦点时才读取字体列表；还没打字时列出全部字体，打字后只列名字里含有输入内容的，最多 100 项。每输入一个字就写进设置，停下后保存；不合法的名字（空、超过 128 字节或含控制字符）不写入，输入框标红，与共享页不保存不合法字体的做法相同。
+  FrameworkElement font_input(std::wstring const &label, std::wstring const &value,
+                              std::function<void(std::wstring const &)> apply) {
+    StackPanel box;
+    box.Spacing(4);
+    box.Width(240);
+    AutoSuggestBox input;
+    input.Text(hstring(value));
+    input.UpdateTextOnSelect(false);
+    input.IsEnabled(loaded_);
+    A11y::SetName(input, hstring(label));
+    auto note = make_text(L"", 12, palette_.sub);
+    note.Visibility(Visibility::Collapsed);
+    box.Children().Append(input);
+    box.Children().Append(note);
+
+    // 用户打过字以后才按输入内容筛选，选中一项后又列出全部，与共享页的 search 状态相同。
+    auto search = std::make_shared<bool>(false);
+    auto focused = std::make_shared<bool>(false);
+    std::function<void()> update_menu = [this, weak_input = make_weak(input),
+                                         weak_note = make_weak(note), search, focused] {
+      auto field = weak_input.get();
+      auto hint = weak_note.get();
+      if (!field || !hint || !*focused)
+        return;
+      const auto menu =
+          nav::font_menu(font_catalog_, std::wstring(field.Text().c_str()), *search);
+      std::vector<Inspectable> items;
+      items.reserve(menu.options.size());
+      for (auto const &font : menu.options)
+        items.push_back(box_value(hstring(font)));
+      field.ItemsSource(single_threaded_vector<Inspectable>(std::move(items)));
+      std::wstring message;
+      if (font_catalog_status_ == FontCatalogStatus::ready && menu.options.empty())
+        message = L"没有匹配的字体，可继续手动输入。";
+      else if (menu.matches > nav::font_menu_limit)
+        message = L"显示前 100 项，请输入名称缩小范围。";
+      hint.Text(hstring(message));
+      hint.Visibility(message.empty() ? Visibility::Collapsed : Visibility::Visible);
+      field.IsSuggestionListOpen(!menu.options.empty());
+    };
+    if (!indexing_)
+      font_menu_updaters_.push_back(update_menu);
+
+    auto write = [this, apply = std::move(apply), weak_input = make_weak(input)](
+                     std::wstring const &font) {
+      auto field = weak_input.get();
+      if (!field)
+        return;
+      if (!nav::valid_font_family(font)) {
+        field.BorderBrush(brush(palette_.dark ? rgba(0xFF, 0x99, 0xA4, 1)
+                                              : rgba(0xC4, 0x2B, 0x1C, 1)));
+        return;
+      }
+      field.ClearValue(Control::BorderBrushProperty());
+      apply(font);
+    };
+
+    input.GotFocus([this, focused, update_menu](Inspectable const &, RoutedEventArgs const &) {
+      *focused = true;
+      request_font_catalog();
+      update_menu();
+    });
+    input.LostFocus([this, focused, weak_note = make_weak(note)](Inspectable const &,
+                                                                 RoutedEventArgs const &) {
+      *focused = false;
+      if (auto hint = weak_note.get())
+        hint.Visibility(Visibility::Collapsed);
+      flush_pending();
+    });
+    input.TextChanged([search, update_menu, write](AutoSuggestBox const &sender,
+                                                   AutoSuggestBoxTextChangedEventArgs const &args) {
+      if (args.Reason() != AutoSuggestionBoxTextChangeReason::UserInput)
+        return;
+      *search = true;
+      write(std::wstring(sender.Text().c_str()));
+      update_menu();
+    });
+    input.QuerySubmitted([search, write](AutoSuggestBox const &sender,
+                                         AutoSuggestBoxQuerySubmittedEventArgs const &args) {
+      const auto item = args.ChosenSuggestion();
+      if (!item)
+        return;
+      const std::wstring font = unbox_value_or<hstring>(item, L"").c_str();
+      sender.Text(hstring(font));
+      *search = false;
+      sender.IsSuggestionListOpen(false);
+      write(font);
+    });
+    return box;
+  }
+
+  std::wstring font_catalog_message() const {
+    switch (font_catalog_status_) {
+    case FontCatalogStatus::loading:
+      return L"正在读取字体列表。";
+    case FontCatalogStatus::failed:
+      return L"读取字体列表失败，可重试或手动输入。";
+    case FontCatalogStatus::ready:
+      return font_catalog_.empty() ? L"系统字体列表为空，可手动输入。" : L"";
+    case FontCatalogStatus::idle:
+      break;
+    }
+    return L"";
+  }
+
+  // 第一次点开字体输入框时读取；读过以后只有「刷新字体列表」重读。
+  void request_font_catalog() {
+    if (font_catalog_status_ == FontCatalogStatus::idle)
+      load_font_catalog();
+  }
+
+  // 在 UI 线程之外读取字体列表。读取期间列表是空的；新的一次读取开始后，较早那次的结果到了也丢弃。
+  void load_font_catalog() {
+    const auto generation = ++font_catalog_generation_;
+    font_catalog_status_ = FontCatalogStatus::loading;
+    font_catalog_.clear();
+    show_font_catalog_status();
+    auto fonts = std::make_shared<std::optional<std::vector<std::wstring>>>();
+    run_host(
+        [fonts] {
+          *fonts = read_font_catalog();
+          return Response{};
+        },
+        [this, generation, fonts](Response const &) {
+          if (generation != font_catalog_generation_)
+            return;
+          font_catalog_status_ = *fonts ? FontCatalogStatus::ready : FontCatalogStatus::failed;
+          font_catalog_ = *fonts ? std::move(**fonts) : std::vector<std::wstring>();
+          show_font_catalog_status();
+        });
+  }
+
+  // 在原处更新状态行、刷新按钮和正打开的下拉，不重建页面，免得输入框丢掉焦点。
+  void show_font_catalog_status() {
+    if (font_catalog_text_) {
+      const auto message = font_catalog_message();
+      font_catalog_text_.Text(hstring(message));
+      font_catalog_text_.Visibility(message.empty() ? Visibility::Collapsed
+                                                    : Visibility::Visible);
+      if (auto peer = Automation::Peers::FrameworkElementAutomationPeer::FromElement(
+              font_catalog_text_))
+        peer.RaiseAutomationEvent(Automation::Peers::AutomationEvents::LiveRegionChanged);
+    }
+    if (font_catalog_button_)
+      font_catalog_button_.IsEnabled(loaded_ &&
+                                     font_catalog_status_ != FontCatalogStatus::loading);
+    for (auto const &update : font_menu_updaters_)
+      update();
   }
 
   // ---- 界面预览 ----
@@ -6158,6 +6426,16 @@ private:
   Button feedback_group_button_{nullptr};
   Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_report_timer_{nullptr};
   Microsoft::UI::Dispatching::DispatcherQueueTimer feedback_group_timer_{nullptr};
+
+  // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
+  enum class FontCatalogStatus { idle, loading, ready, failed };
+  FontCatalogStatus font_catalog_status_ = FontCatalogStatus::idle;
+  std::vector<std::wstring> font_catalog_;
+  uint64_t font_catalog_generation_ = 0;
+  TextBlock font_catalog_text_{nullptr};
+  Button font_catalog_button_{nullptr};
+  StackPanel font_preset_host_{nullptr};
+  std::vector<std::function<void()>> font_menu_updaters_;
 
   Grid root_{nullptr};
   Grid titlebar_{nullptr};

@@ -92,7 +92,7 @@ int main() {
     require(msime::windows::shell_route_argument(
                 request_for(find_page("clip")->shell)) == L"settings:tools");
     require(msime::windows::shell_route_argument(
-                request_for(shell_links::appearance)) == L"settings:appearance");
+                request_for(shell_links::skin)) == L"settings:skin");
     require(msime::windows::shell_route_argument(
                 request_for(shell_links::keyboard_panel)) == L"keyboard");
     require(msime::windows::shell_route_argument(request_for(

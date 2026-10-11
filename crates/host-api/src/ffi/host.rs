@@ -58,6 +58,20 @@ pub unsafe extern "C" fn msime_client_resolve_font_families(
     })
 }
 
+/// The installed font family names, from the same catalog the shared app's 刷新字体列表 reads
+/// (`list_font_families` in the Tauri shell): sorted, without repeats, each a bounded display name.
+/// Fails with `unsupported` on a host without a catalog and `font_catalog` / `font_catalog_limit`
+/// when enumeration fails or exceeds its bound. Enumerates the system's fonts, so call it off a
+/// UI thread.
+#[no_mangle]
+pub extern "C" fn msime_client_list_font_families() -> *mut c_char {
+    response(|| {
+        system_fonts::list()
+            .map(|names| json!(names))
+            .map_err(str::to_owned)
+    })
+}
+
 /// Resolve a shared surface route so a native host launches the shared shell by
 /// name instead of hardcoding window labels. Returns the canonical route plus
 /// the panel label, query and geometry, or an error for an unknown route.
