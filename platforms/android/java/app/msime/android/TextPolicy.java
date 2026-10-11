@@ -22,6 +22,16 @@ public final class TextPolicy {
         return isAsciiLetter(codePoint) || (codePoint >= '0' && codePoint <= '9');
     }
 
+    /** Return whether text is a non-empty ASCII token made of letters, digits, hyphens and underscores. */
+    public static boolean validAsciiToken(String value, int minimumLength, int maximumLength) {
+        if (value == null || value.length() < minimumLength || value.length() > maximumLength) return false;
+        for (int index = 0; index < value.length(); index++) {
+            int codePoint = value.charAt(index);
+            if (!isAsciiLetterOrDigit(codePoint) && codePoint != '-' && codePoint != '_') return false;
+        }
+        return true;
+    }
+
     /** Return whether text is exactly a fixed number of lower-case hexadecimal digits. */
     public static boolean isLowerHex(String value, int length) {
         return value != null && value.length() == length
