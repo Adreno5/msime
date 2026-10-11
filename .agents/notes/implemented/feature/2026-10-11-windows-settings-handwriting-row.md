@@ -9,6 +9,7 @@ Status: implemented
 ## Decision
 
 - 删掉 `build_hand_page` 里的「手写设置」行，保留打开手写识别板的那一行，并在函数前注明原因。
+- 留下的那一行改用共享页的文案：分组「手写识别板」，行「打开手写识别板」，说明「使用鼠标或触控方式手写输入，自动识别候选汉字」，按钮「打开」（`OpenPanelButton` 的默认标签）。
 - 删掉不再使用的 `shell_links::handwriting`，`all` 数组从 12 项减为 11 项；`tests/ui/settings_navigation.cpp` 没有引用它，不用改。
 - README 里列举「以按钮跳到共享应用」的部分不再提手写的详细设置。
 

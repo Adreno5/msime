@@ -4597,11 +4597,11 @@ private:
             nullptr, checks_panel(std::move(hotkey_checks), 230));
   }
 
-  // 共享的「手写输入」页在 Windows 上只有「打开手写识别板」和一张静态预览，没有可调的项（手写面板主题在「主题」页），所以这里只留打开面板的一行。
+  // 共享的「手写输入」页在 Windows 上只有「手写识别板」一组：打开面板的一行和一张静态预览，没有可调的项（手写面板主题在「主题」页），所以这里只留打开面板的一行，文案与 handwriting-settings-section.tsx 相同。
   void build_hand_page(StackPanel const &page) {
-    auto group = add_group(page, L"");
-    shell_row(group, 0xE929, L"手写输入", L"打开手写识别板，书写后向当前窗口输入", L"打开",
-              nav::shell_links::handwriting_panel);
+    auto group = add_group(page, L"手写识别板");
+    shell_row(group, 0xE929, L"打开手写识别板", L"使用鼠标或触控方式手写输入，自动识别候选汉字",
+              L"打开", nav::shell_links::handwriting_panel);
   }
 
   // ---- 维护与诊断 ----
