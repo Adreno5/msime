@@ -30,7 +30,7 @@ import { StatusMessage } from "../core/status-message";
 import { copyAccountId as copyAccountIdToClipboard } from "./account-id-copy";
 import { useAccountAction } from "./account-operation";
 import { useAccountRecoveryActions } from "./use-account-recovery-actions";
-import { useAccountSessionActions } from "./use-account-session-actions";
+import { runAccountSessionAction, useAccountSessionActions } from "./use-account-session-actions";
 import { useAccountRename } from "./use-account-rename";
 import { useAccountGoogleLogin } from "./use-account-google-login";
 import { useAccountVerification, type AccountChannel } from "./use-account-verification";
@@ -208,10 +208,8 @@ function MobileAccountProfilePage({
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
-    if (action === "logout") signOut(false);
-    else if (action === "logout-all") signOut(true);
-    else if (action === "relogin") clearExpired();
-    else if (action === "delete") deleteAccount();
+    if (action === "relogin") clearExpired();
+    else if (action) runAccountSessionAction(action, { signOut, deleteAccount });
   };
   const copyId = () => {
     copyAccountIdToClipboard({
@@ -340,9 +338,7 @@ function HarmonyProfilePage({
   const confirmAction = () => {
     const action = confirmation;
     setConfirmation(null);
-    if (action === "logout") signOut(false);
-    else if (action === "logout-all") signOut(true);
-    else if (action === "delete") deleteAccount();
+    if (action) runAccountSessionAction(action, { signOut, deleteAccount });
   };
   const copyId = () =>
     copyAccountIdToClipboard({
@@ -1793,7 +1789,10 @@ function AccountDetailsPage({
               <AccountConfirmation
                 action={confirmation}
                 busy={busy}
-                onConfirm={() => (confirmation === "delete" ? deleteAccount() : signOut(true))}
+                onConfirm={() => {
+                  if (confirmation)
+                    runAccountSessionAction(confirmation, { signOut, deleteAccount });
+                }}
                 onCancel={() => setConfirmation(null)}
               />
             </div>
