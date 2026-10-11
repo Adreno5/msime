@@ -136,7 +136,7 @@ fn parse_word_entries(bytes: &[u8], name: &str) -> Result<Vec<WordbookEntry>, St
             entries.reserve_exact(wordbook::MAX_ENTRIES);
             seen.reserve(wordbook::MAX_ENTRIES);
         }
-        if !seen.insert(entry.word.clone()) {
+        if !seen.insert(word) {
             return Err(format!("{name} 里「{}」出现了不止一次", entry.word));
         }
         if entries.len() == wordbook::MAX_ENTRIES {
