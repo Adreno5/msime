@@ -433,9 +433,16 @@ test("the phone keyboard page opens with 布局 and its Chinese keyboard choice"
   // HarmonyOS 键盘的工具栏上没有语音按钮可供这个开关显示。
   expect(within(page).queryByRole("switch", { name: "顶部语音入口" })).toBeNull();
   expect(shownValue("中文键盘").textContent).toContain("26 键");
+  // 预览画的是当前的中文键盘：26 键是字母键，切到 9 键后是九宫格（左列标点、ABC…WXYZ、右列分词），不再是 26 个字母。
+  expect(within(preview).getByText("q")).toBeTruthy();
+  expect(within(preview).queryByText("ABC")).toBeNull();
 
   fireEvent.click(within(openSheet("中文键盘")).getByRole("button", { name: "9 键" }));
   expect(shownValue("中文键盘").textContent).toContain("9 键");
+  for (const label of ["ABC", "WXYZ", "分词", "@#"]) {
+    expect(within(preview).getByText(label)).toBeTruthy();
+  }
+  expect(within(preview).queryByText("q")).toBeNull();
   saveSettingsNow();
   await waitFor(() => expect(save).toHaveBeenCalled());
   const saved = save.mock.calls.at(-1)?.[1];
@@ -457,6 +464,9 @@ test("the Chinese keyboard row offers 26, 14 and 9 keys for 全拼 and 26 and 9 
   ).toEqual(["26 键", "14 键", "9 键"]);
   fireEvent.click(within(quanpin).getByRole("button", { name: "14 键" }));
   expect(shownValue("中文键盘").textContent).toContain("14 键");
+  const preview = screen.getByRole("group", { name: "屏幕键盘预览" });
+  expect(within(preview).getByText("QW")).toBeTruthy();
+  expect(within(preview).queryByText("q")).toBeNull();
   saveSettingsNow();
   await waitFor(() => expect(save).toHaveBeenCalled());
   const saved = save.mock.calls.at(-1)?.[1];

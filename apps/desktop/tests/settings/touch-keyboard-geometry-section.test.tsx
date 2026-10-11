@@ -170,7 +170,7 @@ test("disables the tablet switch while saving", () => {
 test("offers the number keypad order only where the host has a nine-key digit layer", () => {
   const onNumberKeypadOrderChange = vi.fn();
   const { rerender } = render(<TouchKeyboardGeometrySection {...baseProps} />);
-  expect(screen.queryByText("数字键盘顺序")).toBeNull();
+  expect(screen.queryByText("九宫格数字顺序")).toBeNull();
 
   rerender(
     <TouchKeyboardGeometrySection
@@ -181,9 +181,9 @@ test("offers the number keypad order only where the host has a nine-key digit la
       onNumberKeypadOrderChange={onNumberKeypadOrderChange}
     />,
   );
-  expect(screen.getByText("数字键盘顺序")).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "电话" })).toHaveProperty("checked", true);
-  fireEvent.click(screen.getByRole("radio", { name: "计算器" }));
+  expect(screen.getByText("九宫格数字顺序")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "123 在上" })).toHaveProperty("checked", true);
+  fireEvent.click(screen.getByRole("radio", { name: "789 在上" }));
   expect(onNumberKeypadOrderChange).toHaveBeenCalledWith("calculator");
 });
 
@@ -198,7 +198,7 @@ test("offers the 26-key number layout next to the keypad order when the host has
       onNumberKeypadOrderChange={vi.fn()}
     />,
   );
-  expect(screen.queryByText("26 键数字键盘")).toBeNull();
+  expect(screen.queryByText("26 键按 123")).toBeNull();
 
   rerender(
     <TouchKeyboardGeometrySection
@@ -211,12 +211,12 @@ test("offers the 26-key number layout next to the keypad order when the host has
       onTwentySixKeyNumberLayoutChange={onTwentySixKeyNumberLayoutChange}
     />,
   );
-  const layoutRow = screen.getByText("26 键数字键盘");
+  const layoutRow = screen.getByText("26 键按 123");
   expect(
-    layoutRow.compareDocumentPosition(screen.getByText("数字键盘顺序")) &
+    layoutRow.compareDocumentPosition(screen.getByText("九宫格数字顺序")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "一行" })).toHaveProperty("checked", true);
+  expect(screen.getByRole("radio", { name: "数字一行" })).toHaveProperty("checked", true);
   fireEvent.click(screen.getByRole("radio", { name: "九宫格" }));
   expect(onTwentySixKeyNumberLayoutChange).toHaveBeenCalledWith("nine_key");
 });
@@ -235,7 +235,7 @@ test("puts the number keypad order after 中文键盘 when the size group is alr
   // HarmonyOS 手机的尺寸组就叫「布局」，不再另起一个同名分组。
   expect(screen.getAllByText("布局")).toHaveLength(1);
   const layoutRow = screen.getByText("中文键盘");
-  const orderRow = screen.getByText("数字键盘顺序");
+  const orderRow = screen.getByText("九宫格数字顺序");
   expect(
     layoutRow.compareDocumentPosition(orderRow) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
@@ -243,7 +243,7 @@ test("puts the number keypad order after 中文键盘 when the size group is alr
     orderRow.compareDocumentPosition(screen.getByText("键盘高度")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "计算器" })).toHaveProperty("checked", true);
+  expect(screen.getByRole("radio", { name: "789 在上" })).toHaveProperty("checked", true);
 });
 
 test("offers the shuangpin key hint switch only where the host draws the hints", () => {
@@ -284,7 +284,7 @@ test("puts the shuangpin key hint switch in the size group when that group is al
   const hints = screen.getByRole("switch", { name: "双拼键位提示" }) as HTMLInputElement;
   expect(hints.checked).toBe(false);
   expect(
-    screen.getByText("数字键盘顺序").compareDocumentPosition(hints) &
+    screen.getByText("九宫格数字顺序").compareDocumentPosition(hints) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(

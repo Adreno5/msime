@@ -1,6 +1,7 @@
 import { MobileKeyboardFeedbackSettings } from "../mobile-keyboard-feedback-settings";
 import { keyboardThemeId } from "../../theme/global-theme";
 import { ScreenKeyboardPreview } from "../../keyboard/screen-keyboard-preview";
+import { harmonyTouchKeyboardRows, type HarmonyTouchLayout } from "../../keyboard/keyboard-layouts";
 import * as settings from "../settings-style";
 import { useSettingsForm } from "../settings-form-context";
 import { GroupList, LinkRow, Row } from "../../core/platform-controls";
@@ -36,6 +37,13 @@ const harmonyLayoutTitles: Record<HarmonyKeyboardLayout, string> = {
   fourteen_key: "14 键",
   nine_key: "9 键",
 };
+
+/** 当前方案在 HarmonyOS 键盘上画成的中文键盘，「尺寸」预览照它画。只有 26 键的方案画 26 键。 */
+function harmonyTouchLayout(selected: TouchKeyboardScheme): HarmonyTouchLayout {
+  if (selected === "fourteen_key" || selected === "nine_key" || selected === "japanese_nine_key")
+    return selected;
+  return "twenty_six_key";
+}
 
 /**
  * HarmonyOS 手机的 中文键盘 行：当前方案的 26 键、14 键或 9 键，和 Android 的 `KeyboardOptionsPage` 提供 `touch_keyboard_layout` 的方式一致。选择时像键盘自己的方案选择器那样切到这一组中的另一个键盘，把 `touch_keyboard_layout` 与 `scheme`、`touch_keyboard_schemes.selected` 一起写入（并启用它），因为键盘先读取选中的方案再读布局，只改布局不会让键盘切换。
@@ -123,6 +131,11 @@ export function ScreenKeyboardSettingsPage() {
         keySpacingTenths={touchKeySpacingTenths}
         rowSpacingTenths={touchRowSpacingTenths}
         heightAdjustment={touchKeyboardHeightAdjustment}
+        touchRows={
+          harmonyPhone
+            ? harmonyTouchKeyboardRows[harmonyTouchLayout(selectedTouchKeyboardScheme)]
+            : undefined
+        }
       />
     </div>
   );
