@@ -20,9 +20,10 @@ public final class CandidateGlossPolicy {
 
     /** Read a JSON integer without org.json's lossy numeric coercion. */
     public static long strictInteger(Object value) {
-        if (!(value instanceof Integer) && !(value instanceof Long))
+        Long parsed = JsonPolicy.strictLong(value);
+        if (parsed == null)
             throw new IllegalArgumentException("Expected JSON integer");
-        return ((Number) value).longValue();
+        return parsed;
     }
 
     /** Return a fallback for a missing or malformed protocol integer instead of coercing it. */
