@@ -388,6 +388,15 @@ if rg -n 'optBoolean\("ok"' \
   echo "Android typing host capabilities must require a typed boolean ok field" >&2
   exit 1
 fi
+# 输入页要有「在候选栏中显示辅助码」开关，写回当前方案那一族的 `show_in_candidate_window`，默认值和 client-core 一致（缺整个对象时双拼显示、全拼不显示，对象里缺这一项时显示）。没有它时双拼辅助码一直占着候选提示位，想看释义只能把辅助码整个关掉（#6997）。
+helpcode_body=$(rg -A 12 'if \(helpcodeOn\) \{' \
+  "$repo_root/platforms/android/java/app/msime/android/home/TypingPage.java" || true)
+if ! rg -q 'helpcode == null \? shuangpin : helpcode\.optBoolean\("show_in_candidate_window", true\)' <<< "$helpcode_body" \
+  || ! rg -q 'aux\.toggle\(shuangpin \? "在候选栏中显示双拼辅助码" : "在候选栏中显示全拼辅助码"' <<< "$helpcode_body" \
+  || ! rg -q 'saveHelpcode\(family, shuangpin, "show_in_candidate_window", checked\)' <<< "$helpcode_body"; then
+  echo "Android typing settings must offer the helpcode display switch that writes <family>.show_in_candidate_window (#6997)" >&2
+  exit 1
+fi
 # The typing statistics badge reads a native dictionary count; malformed status must leave the
 # optional badge unavailable instead of accepting a coerced success.
 if rg -n 'optBoolean\("ok"' \
