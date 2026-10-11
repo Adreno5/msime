@@ -22,6 +22,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 #include "CandidatePalette.h"
 #include "CandidateWindowStyle.h"
 #include "GameProcessList.h"
+#include "PluginPageModel.h"
 #include "PreferencePath.h"
 #include "AppInputModeRuleList.h"
 #include "FeedbackReport.h"
@@ -88,6 +90,7 @@ using Inspectable = winrt::Windows::Foundation::IInspectable;
 using Color = winrt::Windows::UI::Color;
 using A11y = Microsoft::UI::Xaml::Automation::AutomationProperties;
 namespace nav = msime::settings;
+namespace pg = msime::settings::plugins;
 
 struct Response {
   std::string text;
@@ -958,8 +961,6 @@ const PageLabel &page_label(std::string_view id) {
 const wchar_t *shell_page_description(std::string_view id) {
   if (id == "account")
     return L"登录水杉输入法账号，管理设置和词库在设备之间的同步。";
-  if (id == "plugins")
-    return L"管理已安装的插件，浏览和安装社区插件；按键音效、背景音乐、/ 指令表和 @ 名单也在这里。";
   if (id == "ai")
     return L"开启 AI 辅助，设置联想、回复与润色使用的模型服务。";
   return L"";
@@ -1234,20 +1235,153 @@ Response helpcode_schemas_call() {
       reinterpret_cast<const uint8_t *>(path.data()), path.size()));
 }
 
-// 数据目录下 plugins 里已安装的插件，与 Tauri 的 plugin_catalog 是同一份 msime_client_plugins catalog。辅助码表插件都是装上的包，所以不传内置声音包的目录。读目录，只在 UI 线程之外调用。
-Response plugin_catalog_call() {
+// 本安装随包带的内置声音包：Server 状态目录下的 sound-packs，与 Tauri 的 builtin_sound_packs 在 Windows 上取的 `server_state_directory()/sound-packs` 相同（StateDirectory.h 的 resolve_state_directory 是同一顺序的 C++ 版本）。目录不在时为空，只列已安装的包。会查文件系统，只在 UI 线程之外调用。
+std::filesystem::path builtin_sound_packs() {
+  const auto root = msime::windows::resolve_state_directory();
+  if (root.empty() || !root.is_absolute())
+    return {};
+  auto directory = root / L"sound-packs";
+  std::error_code error;
+  return std::filesystem::is_directory(directory, error) ? directory : std::filesystem::path();
+}
+
+// 一次 msime_client_plugins 请求：插件目录是数据目录下的 plugins，与 Tauri 的 PluginsState 相同；sounds 为真时带上内置声音包的目录。读写文件，只在 UI 线程之外调用。
+Response plugins_call(JsonObject const &action, bool sounds) {
   const auto root = state_directory();
   if (root.empty() || !root.is_absolute())
-    return {"{\"ok\":false,\"error\":\"no state directory\"}", false};
-  JsonObject action;
-  action.SetNamedValue(L"operation", JsonValue::CreateStringValue(L"catalog"));
+    return {"{\"ok\":false,\"error\":\"plugin_storage\"}", false};
   JsonObject request;
   request.SetNamedValue(L"state_root", JsonValue::CreateStringValue(hstring(root.wstring())));
-  request.SetNamedValue(L"sound_packs", JsonValue::CreateNullValue());
-  request.SetNamedValue(L"action", action);
+  const auto packs = sounds ? builtin_sound_packs() : std::filesystem::path();
+  request.SetNamedValue(L"sound_packs", packs.empty()
+                                            ? JsonValue::CreateNullValue()
+                                            : JsonValue::CreateStringValue(hstring(packs.wstring())));
+  request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
   const auto body = utf8(request.Stringify());
   return take_response(
       msime_client_plugins(reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+}
+
+JsonObject plugin_action(wchar_t const *operation) {
+  JsonObject action;
+  action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+  return action;
+}
+
+// 数据目录下 plugins 里已安装的插件，与 Tauri 的 plugin_catalog 是同一份 msime_client_plugins catalog。辅助码表插件都是装上的包，所以不传内置声音包的目录。读目录，只在 UI 线程之外调用。
+Response plugin_catalog_call() { return plugins_call(plugin_action(L"catalog"), false); }
+
+// 失败的插件请求在页面上的那句话：error 是 client-core 的失败码，detail 是它报告的规则（共享页的 pluginErrorMessage）。
+std::wstring plugin_failure(Response const &response, std::wstring const &fallback) {
+  std::wstring code, detail;
+  try {
+    const auto object = JsonObject::Parse(text(response.text));
+    code = named_string(object, L"error");
+    detail = named_string(object, L"detail");
+  } catch (...) {
+  }
+  return msime::settings::plugins::error_message(code, detail, fallback);
+}
+
+std::optional<double> named_number(JsonObject const &object, wchar_t const *key) {
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  if (value.ValueType() == JsonValueType::Number)
+    return value.GetNumber();
+  return std::nullopt;
+}
+
+std::vector<std::wstring> named_strings(JsonObject const &object, wchar_t const *key) {
+  std::vector<std::wstring> result;
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  if (value.ValueType() != JsonValueType::Array)
+    return result;
+  for (auto const &item : value.GetArray())
+    if (item.ValueType() == JsonValueType::String)
+      result.emplace_back(item.GetString().c_str());
+  return result;
+}
+
+std::vector<JsonObject> named_objects(JsonObject const &object, wchar_t const *key) {
+  std::vector<JsonObject> result;
+  const auto value = object.GetNamedValue(key, JsonValue::CreateNullValue());
+  if (value.ValueType() != JsonValueType::Array)
+    return result;
+  for (auto const &item : value.GetArray())
+    if (item.ValueType() == JsonValueType::Object)
+      result.push_back(item.GetObject());
+  return result;
+}
+
+// catalog 和 import 回答里的一个包（client-core 的 PluginSummary，各类内容平铺在里面）。
+msime::settings::plugins::Package plugin_package(JsonObject const &object) {
+  msime::settings::plugins::Package pack;
+  pack.id = named_string(object, L"id");
+  pack.name = named_string(object, L"name");
+  pack.version = named_string(object, L"version");
+  pack.license = named_string(object, L"license");
+  pack.author = named_string(object, L"author");
+  pack.description = named_string(object, L"description");
+  pack.builtin = object.GetNamedBoolean(L"builtin", false);
+  pack.kind = named_string(object, L"kind");
+  pack.mode = named_string(object, L"mode");
+  pack.tracks = named_strings(object, L"tracks");
+  for (auto const &item : named_objects(object, L"commands"))
+    pack.commands.push_back({named_string(item, L"trigger"), named_string(item, L"title"),
+                             named_string(item, L"template")});
+  for (auto const &item : named_objects(object, L"phrases"))
+    pack.phrases.push_back({named_string(item, L"key"), named_string(item, L"text")});
+  pack.table = named_string(object, L"table");
+  pack.entries = named_number(object, L"entries");
+  for (auto const &item : named_objects(object, L"preview"))
+    pack.preview.push_back({named_string(item, L"character"), named_string(item, L"code")});
+  pack.file = named_string(object, L"file");
+  pack.word_count = named_number(object, L"word_count");
+  pack.first_words = named_strings(object, L"first_words");
+  for (auto const &item : named_objects(object, L"groups"))
+    pack.groups.push_back({named_string(item, L"tab"), named_string(item, L"title"),
+                           named_string(item, L"keywords"), named_strings(item, L"items")});
+  pack.style = named_string(object, L"style");
+  pack.intensity = named_number(object, L"intensity");
+  pack.colors = named_strings(object, L"colors");
+  pack.duration_ms = named_number(object, L"duration_ms");
+  pack.particles = named_number(object, L"particles");
+  return pack;
+}
+
+// catalog 的回答；读不懂时为空。
+std::optional<msime::settings::plugins::Catalog> plugin_catalog(Response const &response) {
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    msime::settings::plugins::Catalog catalog;
+    for (auto const &item : named_objects(value, L"packages"))
+      catalog.packages.push_back(plugin_package(item));
+    for (auto const &item : named_objects(value, L"issues"))
+      catalog.issues.push_back({named_string(item, L"kind"), named_string(item, L"folder"),
+                                named_string(item, L"reason")});
+    return catalog;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+// load_mentions 的回答；读不懂时为空。
+std::optional<std::vector<msime::settings::plugins::Mention>> plugin_mentions(Response const &response) {
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    std::vector<msime::settings::plugins::Mention> mentions;
+    for (auto const &item : JsonObject::Parse(text(response.text)).GetNamedArray(L"value")) {
+      if (item.ValueType() != JsonValueType::Object)
+        return std::nullopt;
+      const auto entry = item.GetObject();
+      mentions.push_back({named_string(entry, L"text"), named_string(entry, L"key")});
+    }
+    return mentions;
+  } catch (...) {
+    return std::nullopt;
+  }
 }
 
 // 自定义码表在下拉框里的名字，与共享页的 customSchemaLabel 相同：中英文名都有且不同时是「中文名 (英文名)」，否则依次退到中文名、英文名、文件名和方案 id。
@@ -2386,6 +2520,8 @@ private:
     }
     if (id == "stats" && id != current_page_)
       reset_statistics_page();
+    if (id == "plugins" && id != current_page_)
+      enter_plugins_page();
     current_page_ = id;
     select_navigation_item();
     render_page(false);
@@ -3440,6 +3576,8 @@ private:
       build_clip_page(page);
     else if (id == "stats")
       build_stats_page(page);
+    else if (id == "plugins")
+      build_plugins_page(page);
     else if (id == "dev")
       build_dev_page(page);
     else if (id == "feedback")
@@ -3448,7 +3586,7 @@ private:
       build_about_page(page);
   }
 
-  // 插件、AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
+  // AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
   void build_shell_page(nav::Page const &model, StackPanel const &page) {
     const auto &label = page_label(model.id);
     auto group = add_group(page, L"");
@@ -5571,10 +5709,8 @@ private:
 
   // ---- 背单词 ----
 
-  // One 背单词 action through msime_client_vocabulary_review, against the same directories the shared app's review uses: the user's state directory, the installed resources beside MSIME.exe and the plugins under the state directory.
-  void vocabulary_request(JsonObject const &action) {
-    if (vocabulary_busy_)
-      return;
+  // One 背单词 request body for msime_client_vocabulary_review, against the same directories the shared app's review uses: the user's state directory, the installed resources beside MSIME.exe and the plugins under the state directory.
+  static std::string vocabulary_body(JsonObject const &action) {
     const auto directory = state_directory();
     JsonObject request;
     request.SetNamedValue(L"directory", JsonValue::CreateStringValue(hstring(directory.wstring())));
@@ -5584,53 +5720,65 @@ private:
                           JsonValue::CreateStringValue(hstring((directory / L"plugins").wstring())));
     request.SetNamedValue(L"day", JsonValue::CreateStringValue(hstring(local_day())));
     request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
+    return utf8(request.Stringify());
+  }
+
+  static Response vocabulary_call(std::string const &body) {
+    return take_response(msime_client_vocabulary_review(
+        reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+  }
+
+  // One 背单词 action; the answer replaces the status the page shows.
+  void vocabulary_request(JsonObject const &action) {
+    if (vocabulary_busy_)
+      return;
     vocabulary_busy_ = true;
-    run_host(
-        [body = utf8(request.Stringify())] {
-          return take_response(msime_client_vocabulary_review(
-              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
-        },
-        [this](Response const &response) {
-          vocabulary_busy_ = false;
-          vocabulary_revealed_ = false;
-          if (!response.ok) {
-            vocabulary_message_ = vocabulary_
-                                      ? L"无法读取或保存背单词进度，请稍后重试。已有的进度不会被自动清空。"
-                                      : L"无法读取背单词进度。";
-            redraw_lexicon();
-            return;
-          }
-          try {
-            const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
-            VocabularyStatus status;
-            for (auto const &item : value.GetNamedArray(L"wordbooks")) {
-              const auto book = item.GetObject();
-              status.books.push_back({named_string(book, L"id"), named_string(book, L"name"),
-                                      named_count(book, L"total"),
-                                      book.GetNamedBoolean(L"builtin", false),
-                                      book.HasKey(L"pack") &&
-                                          book.GetNamedValue(L"pack").ValueType() != JsonValueType::Null});
-            }
-            const auto settings = value.GetNamedObject(L"settings");
-            status.wordbook = named_string(settings, L"wordbook");
-            status.new_per_day = named_count(settings, L"newPerDay");
-            status.session_limit = named_count(settings, L"sessionLimit");
-            status.due = named_count(value, L"due");
-            status.answered = named_count(value, L"answeredToday");
-            status.remaining = named_count(value, L"remaining");
-            for (auto const &item : value.GetNamedArray(L"queue")) {
-              const auto card = item.GetObject();
-              status.queue.push_back({named_string(card, L"word"), named_string(card, L"phonetic"),
-                                      named_string(card, L"meaning")});
-            }
-            vocabulary_ = std::move(status);
-            vocabulary_message_.clear();
-          } catch (...) {
-            vocabulary_message_ = L"无法读取背单词进度。";
-          }
-          redraw_lexicon();
-        });
+    run_host([body = vocabulary_body(action)] { return vocabulary_call(body); },
+             [this](Response const &response) {
+               vocabulary_busy_ = false;
+               apply_vocabulary_response(response);
+               redraw_lexicon();
+             });
     redraw_lexicon();
+  }
+
+  // 把背单词的回答记成页面的状态；失败时留下原来的状态和一句说明。
+  void apply_vocabulary_response(Response const &response) {
+    vocabulary_revealed_ = false;
+    if (!response.ok) {
+      vocabulary_message_ = vocabulary_
+                                ? L"无法读取或保存背单词进度，请稍后重试。已有的进度不会被自动清空。"
+                                : L"无法读取背单词进度。";
+      return;
+    }
+    try {
+      const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+      VocabularyStatus status;
+      for (auto const &item : value.GetNamedArray(L"wordbooks")) {
+        const auto book = item.GetObject();
+        status.books.push_back({named_string(book, L"id"), named_string(book, L"name"),
+                                named_count(book, L"total"),
+                                book.GetNamedBoolean(L"builtin", false),
+                                book.HasKey(L"pack") &&
+                                    book.GetNamedValue(L"pack").ValueType() != JsonValueType::Null});
+      }
+      const auto settings = value.GetNamedObject(L"settings");
+      status.wordbook = named_string(settings, L"wordbook");
+      status.new_per_day = named_count(settings, L"newPerDay");
+      status.session_limit = named_count(settings, L"sessionLimit");
+      status.due = named_count(value, L"due");
+      status.answered = named_count(value, L"answeredToday");
+      status.remaining = named_count(value, L"remaining");
+      for (auto const &item : value.GetNamedArray(L"queue")) {
+        const auto card = item.GetObject();
+        status.queue.push_back({named_string(card, L"word"), named_string(card, L"phonetic"),
+                                named_string(card, L"meaning")});
+      }
+      vocabulary_ = std::move(status);
+      vocabulary_message_.clear();
+    } catch (...) {
+      vocabulary_message_ = L"无法读取背单词进度。";
+    }
   }
 
   static JsonObject vocabulary_action(wchar_t const *operation) {
@@ -7660,6 +7808,1220 @@ private:
     }
   }
 
+  // ---- 插件 ----
+
+  // 共享的「插件」页（packages/ui/src/settings/pages/plugins-page.tsx 和 plugins-section.tsx）在 Windows 上的「我的插件」：列表（plugin-list-view.tsx）先是「声音与效果」和「@ 名单」两个入口，再是按八类分组的已安装插件和缺失的选择，然后是「导入插件」和「无法载入的插件」；点一行在原处打开它的视图（plugin-sound-effects-view.tsx、plugin-mentions-view.tsx、plugin-detail-view.tsx），视图头上的「我的插件」回到列表。Windows 宿主的能力全为真（播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集），辅助码表随版本（与「输入」页的辅助码组同一个条件）。插件目录、导入、删除和名单都经 msime_client_plugins，与 Tauri 的 desktop_plugins.rs 同一份 client-core 规则；内置声音包取 Server 状态目录下的 sound-packs。规则和文案在 PluginPageModel.h。所有读写都在工作线程上。「社区插件」标签不在这里。
+
+  enum class PluginView { list, pack, missing, sound_effects, mentions };
+  enum class PluginCatalogState { loading, loaded, failed };
+
+  void redraw_plugins() {
+    if (!closed_ && current_page_ == "plugins")
+      queue_refresh();
+  }
+
+  // 每次进入页面都与共享页重新激活一样：回到列表，作废上一次留下的请求，下一次绘制时重读目录和名单。没存的名单改动留着。
+  void enter_plugins_page() {
+    ++plugins_generation_;
+    plugins_busy_ = false;
+    plugins_stale_ = true;
+    plugin_view_ = PluginView::list;
+    plugin_pending_focus_.clear();
+  }
+
+  static bool helpcode_offered() {
+    return edition_offers_scheme(L"quanpin") || edition_offers_scheme(L"shuangpin");
+  }
+
+  // 文档里的 plugins，每一项缺省时取出厂值（共享页的 pluginPreferences）。
+  pg::Preferences plugin_preferences() const {
+    pg::Preferences value;
+    value.key_sound_enabled = document_.Boolean(L"plugins.key_sound.enabled", value.key_sound_enabled);
+    value.key_sound_mode = document_.String(L"plugins.key_sound.mode", value.key_sound_mode);
+    value.key_sound_pack = document_.String(L"plugins.key_sound.pack", value.key_sound_pack);
+    value.key_sound_volume = document_.Number(L"plugins.key_sound.volume", value.key_sound_volume);
+    value.commit_sound_enabled =
+        document_.Boolean(L"plugins.commit_sound.enabled", value.commit_sound_enabled);
+    value.melody_pack = document_.String(L"plugins.melody.pack", value.melody_pack);
+    value.music_enabled = document_.Boolean(L"plugins.music.enabled", value.music_enabled);
+    value.music_pack = document_.String(L"plugins.music.pack", value.music_pack);
+    value.music_volume = document_.Number(L"plugins.music.volume", value.music_volume);
+    value.achievements_enabled =
+        document_.Boolean(L"plugins.achievements.enabled", value.achievements_enabled);
+    value.command_tables = document_.Strings(L"plugins.command_tables");
+    value.effect_style = document_.String(L"plugins.effect_style", value.effect_style);
+    value.effect_intensity = document_.Number(L"plugins.effect_intensity", value.effect_intensity);
+    value.effect_pack = document_.String(L"plugins.effect_pack", value.effect_pack);
+    value.combo_counter = document_.Boolean(L"plugins.combo_counter", value.combo_counter);
+    value.combo_tier_sound = document_.Boolean(L"plugins.combo_tier_sound", value.combo_tier_sound);
+    value.phrase_tables = document_.Strings(L"plugins.phrase_tables");
+    value.helpcode_pack_quanpin =
+        document_.String(L"plugins.helpcode_pack_quanpin", value.helpcode_pack_quanpin);
+    value.helpcode_pack_shuangpin =
+        document_.String(L"plugins.helpcode_pack_shuangpin", value.helpcode_pack_shuangpin);
+    return value;
+  }
+
+  // 只写变了的项；两张表的顺序是用户的，原样写入。
+  static void write_plugin_preferences(PreferencesDocument &doc, pg::Preferences const &before,
+                                       pg::Preferences const &after) {
+    auto flag = [&doc](wchar_t const *key, bool from, bool to) {
+      if (from != to)
+        doc.SetBoolean(key, to);
+    };
+    auto word = [&doc](wchar_t const *key, std::wstring const &from, std::wstring const &to) {
+      if (from != to)
+        doc.SetString(key, to);
+    };
+    auto number = [&doc](wchar_t const *key, double from, double to) {
+      if (from != to)
+        doc.SetNumber(key, to);
+    };
+    auto list = [&doc](wchar_t const *key, std::vector<std::wstring> const &from,
+                       std::vector<std::wstring> const &to) {
+      if (from != to)
+        doc.SetOrderedStrings(key, to);
+    };
+    flag(L"plugins.key_sound.enabled", before.key_sound_enabled, after.key_sound_enabled);
+    word(L"plugins.key_sound.mode", before.key_sound_mode, after.key_sound_mode);
+    word(L"plugins.key_sound.pack", before.key_sound_pack, after.key_sound_pack);
+    number(L"plugins.key_sound.volume", before.key_sound_volume, after.key_sound_volume);
+    flag(L"plugins.commit_sound.enabled", before.commit_sound_enabled, after.commit_sound_enabled);
+    word(L"plugins.melody.pack", before.melody_pack, after.melody_pack);
+    flag(L"plugins.music.enabled", before.music_enabled, after.music_enabled);
+    word(L"plugins.music.pack", before.music_pack, after.music_pack);
+    number(L"plugins.music.volume", before.music_volume, after.music_volume);
+    flag(L"plugins.achievements.enabled", before.achievements_enabled, after.achievements_enabled);
+    list(L"plugins.command_tables", before.command_tables, after.command_tables);
+    word(L"plugins.effect_style", before.effect_style, after.effect_style);
+    number(L"plugins.effect_intensity", before.effect_intensity, after.effect_intensity);
+    word(L"plugins.effect_pack", before.effect_pack, after.effect_pack);
+    flag(L"plugins.combo_counter", before.combo_counter, after.combo_counter);
+    flag(L"plugins.combo_tier_sound", before.combo_tier_sound, after.combo_tier_sound);
+    list(L"plugins.phrase_tables", before.phrase_tables, after.phrase_tables);
+    word(L"plugins.helpcode_pack_quanpin", before.helpcode_pack_quanpin, after.helpcode_pack_quanpin);
+    word(L"plugins.helpcode_pack_shuangpin", before.helpcode_pack_shuangpin,
+         after.helpcode_pack_shuangpin);
+  }
+
+  // 共享页的 onChange：存下新的插件设置并重画。
+  void change_plugins(pg::Preferences const &next) {
+    const auto before = plugin_preferences();
+    if (next == before)
+      return;
+    change([&](PreferencesDocument &doc) { write_plugin_preferences(doc, before, next); }, true);
+  }
+
+  // 指令表详情和 @ 名单里的「打开」按钮就地打开「输入 → 快捷模式」里的开关，写的是同一个键。
+  void enable_local_mode(wchar_t const *mode) {
+    change([mode](PreferencesDocument &doc) {
+      doc.SetBoolean(std::wstring(L"local_modes.") + mode, true);
+    }, true);
+  }
+
+  pg::TableModes plugin_table_modes() const {
+    return {document_.Boolean(L"local_modes.quick_phrase", true),
+            document_.Boolean(L"local_modes.command", false),
+            pg::scheme_opens_table_modes(document_.String(L"scheme", MSIME_EDITION_DEFAULT_SCHEME_W))};
+  }
+
+  bool plugin_mentions_dirty() const { return plugin_mentions_ != plugin_saved_mentions_; }
+
+  // 进入页面后读一次目录和名单。读到的目录一直留着，重读失败时不换掉；第一次就失败时列表说没读成功。
+  void load_plugins() {
+    plugins_stale_ = false;
+    const auto generation = plugins_generation_;
+    if (plugin_catalog_state_ != PluginCatalogState::loaded)
+      plugin_catalog_state_ = PluginCatalogState::loading;
+    run_host([] { return plugins_call(plugin_action(L"catalog"), true); },
+             [this, generation](Response const &response) {
+               if (generation != plugins_generation_)
+                 return;
+               if (auto catalog = plugin_catalog(response)) {
+                 plugin_catalog_ = std::move(*catalog);
+                 plugin_catalog_state_ = PluginCatalogState::loaded;
+                 redraw_plugins();
+                 return;
+               }
+               if (plugin_catalog_state_ != PluginCatalogState::loaded)
+                 plugin_catalog_state_ = PluginCatalogState::failed;
+               show_notice(plugin_failure(response, L"无法读取插件列表，请重试。"));
+             });
+    run_host([] { return plugins_call(plugin_action(L"load_mentions"), false); },
+             [this, generation](Response const &response) {
+               if (generation != plugins_generation_)
+                 return;
+               auto mentions = plugin_mentions(response);
+               if (!mentions) {
+                 show_notice(plugin_failure(response, L"无法读取 @ 名单，请重试。"));
+                 return;
+               }
+               // 没存的改动不被重读覆盖。
+               if (!plugin_mentions_dirty())
+                 plugin_mentions_ = *mentions;
+               plugin_saved_mentions_ = std::move(*mentions);
+               redraw_plugins();
+             });
+  }
+
+  // 导入或删除已经成功之后重读目录：重读失败按重读失败报，不说导入或删除失败。
+  void refresh_plugin_catalog(uint64_t generation, std::function<void()> then) {
+    run_host([] { return plugins_call(plugin_action(L"catalog"), true); },
+             [this, generation, then = std::move(then)](Response const &response) {
+               if (generation != plugins_generation_)
+                 return;
+               if (auto catalog = plugin_catalog(response)) {
+                 plugin_catalog_ = std::move(*catalog);
+                 plugin_catalog_state_ = PluginCatalogState::loaded;
+               } else {
+                 show_notice(plugin_failure(response, L"无法读取插件列表，请重试。"));
+               }
+               then();
+             });
+  }
+
+  // 共享页的 runPluginAction：同一时间只有一个；开始时清掉页面上的出错说明和导入提示。
+  bool begin_plugin_action() {
+    if (plugins_busy_)
+      return false;
+    plugins_busy_ = true;
+    notice_.clear();
+    plugins_notice_.clear();
+    return true;
+  }
+
+  void end_plugin_action(uint64_t generation) {
+    if (generation != plugins_generation_)
+      return;
+    plugins_busy_ = false;
+    redraw_plugins();
+  }
+
+  // 导入用的系统对话框，与 Tauri 一样分成文件夹和 .zip 两种：系统的对话框只能选文件或只能选文件夹。用户取消或对话框打不开时返回空。
+  std::optional<std::filesystem::path> pick_plugin_source(bool folder) {
+    com_ptr<IFileDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put()))))
+      return std::nullopt;
+    FILEOPENDIALOGOPTIONS options = 0;
+    dialog->GetOptions(&options);
+    if (folder) {
+      dialog->SetTitle(L"选择插件文件夹");
+      dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    } else {
+      const COMDLG_FILTERSPEC filter{L"插件", L"*.zip"};
+      dialog->SetFileTypes(1, &filter);
+      dialog->SetTitle(L"选择插件");
+      dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    }
+    // 点击按钮时本窗口就是这个线程的活动窗口，对话框以它为所有者，模态地挡住设置窗口。
+    if (dialog->Show(GetActiveWindow()) != S_OK)
+      return std::nullopt;
+    com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put())))
+      return std::nullopt;
+    PWSTR raw = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw)
+      return std::nullopt;
+    std::filesystem::path chosen(raw);
+    CoTaskMemFree(raw);
+    return chosen;
+  }
+
+  void import_plugin_pack(bool folder) {
+    if (!begin_plugin_action())
+      return;
+    const auto generation = plugins_generation_;
+    const auto source = pick_plugin_source(folder);
+    if (!source) {
+      end_plugin_action(generation);
+      return;
+    }
+    run_host(
+        [source = source->wstring()] {
+          auto action = plugin_action(L"import");
+          action.SetNamedValue(L"source", JsonValue::CreateStringValue(hstring(source)));
+          return plugins_call(action, false);
+        },
+        [this, generation](Response const &response) {
+          if (generation != plugins_generation_)
+            return;
+          if (!response.ok) {
+            show_notice(plugin_failure(response, L"导入失败，请重试。"));
+            end_plugin_action(generation);
+            return;
+          }
+          try {
+            const auto value = JsonObject::Parse(text(response.text)).GetNamedValue(L"value");
+            if (value.ValueType() == JsonValueType::Object)
+              plugins_notice_ = pg::imported_notice(plugin_package(value.GetObject()));
+          } catch (...) {
+          }
+          refresh_plugin_catalog(generation, [this, generation] { end_plugin_action(generation); });
+        });
+    redraw_plugins();
+  }
+
+  fire_and_forget remove_plugin_pack(pg::Package pack) {
+    if (plugins_busy_)
+      co_return;
+    auto strong = get_strong();
+    if (!co_await confirm(L"删除" + pg::pack_kind_label(pack),
+                          L"删除「" + pack.name + L"」？包里的文件会从本机移除。", L"删除"))
+      co_return;
+    if (!begin_plugin_action())
+      co_return;
+    const auto generation = plugins_generation_;
+    run_host(
+        [kind = pack.kind, id = pack.id] {
+          auto action = plugin_action(L"remove");
+          action.SetNamedValue(L"kind", JsonValue::CreateStringValue(hstring(kind)));
+          action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          return plugins_call(action, false);
+        },
+        [this, generation, kind = pack.kind, id = pack.id](Response const &response) {
+          if (generation != plugins_generation_)
+            return;
+          if (!response.ok) {
+            show_notice(plugin_failure(response, L"删除失败，请重试。"));
+            end_plugin_action(generation);
+            return;
+          }
+          change_plugins(pg::without_removed_pack(plugin_preferences(), kind, id));
+          refresh_plugin_catalog(generation, [this, generation] {
+            if (generation != plugins_generation_)
+              return;
+            // 详情是从这个包的那一行打开的，那一行随包一起没了：焦点落到同一类的第一行。
+            plugin_pending_focus_ = plugin_opened_from_;
+            plugin_view_ = PluginView::list;
+            end_plugin_action(generation);
+          });
+        });
+    redraw_plugins();
+  }
+
+  void save_plugin_mentions() {
+    if (pg::mention_list_issue(plugin_mentions_) || !begin_plugin_action())
+      return;
+    const auto generation = plugins_generation_;
+    auto trimmed = pg::trimmed_mentions(plugin_mentions_);
+    run_host(
+        [trimmed] {
+          JsonArray entries;
+          for (auto const &entry : trimmed) {
+            JsonObject item;
+            item.SetNamedValue(L"text", JsonValue::CreateStringValue(hstring(entry.text)));
+            item.SetNamedValue(L"key", JsonValue::CreateStringValue(hstring(entry.key)));
+            entries.Append(item);
+          }
+          auto action = plugin_action(L"save_mentions");
+          action.SetNamedValue(L"entries", entries);
+          return plugins_call(action, false);
+        },
+        [this, generation, trimmed](Response const &response) {
+          if (generation != plugins_generation_)
+            return;
+          if (!response.ok) {
+            show_notice(plugin_failure(response, L"名单未能保存，请重试。"));
+          } else {
+            plugin_mentions_ = trimmed;
+            plugin_saved_mentions_ = trimmed;
+          }
+          end_plugin_action(generation);
+        });
+    redraw_plugins();
+  }
+
+  // 单词本详情的「去背单词」：先在背单词里选中这本书（其余设置照旧），再打开「词库」页上的背单词。
+  void open_plugin_wordbook(std::wstring const &book) {
+    if (vocabulary_busy_)
+      return;
+    vocabulary_busy_ = true;
+    run_host(
+        [load = vocabulary_body(vocabulary_action(L"load")), book] {
+          auto loaded = vocabulary_call(load);
+          if (!loaded.ok)
+            return loaded;
+          try {
+            const auto settings = JsonObject::Parse(text(loaded.text))
+                                      .GetNamedObject(L"value")
+                                      .GetNamedObject(L"settings");
+            auto action = vocabulary_action(L"set_settings");
+            action.SetNamedValue(L"wordbook", JsonValue::CreateStringValue(hstring(book)));
+            action.SetNamedValue(L"new_per_day",
+                                 JsonValue::CreateNumberValue(settings.GetNamedNumber(L"newPerDay")));
+            action.SetNamedValue(L"session_limit",
+                                 JsonValue::CreateNumberValue(settings.GetNamedNumber(L"sessionLimit")));
+            return vocabulary_call(vocabulary_body(action));
+          } catch (...) {
+            return Response{"{\"ok\":false,\"error\":\"invalid\"}", false};
+          }
+        },
+        [this](Response const &response) {
+          vocabulary_busy_ = false;
+          if (!response.ok) {
+            show_notice(L"没能打开背单词，请重试。");
+            return;
+          }
+          apply_vocabulary_response(response);
+          focus_row_ = L"词书";
+          navigate("lexicon", true);
+        });
+  }
+
+  void open_plugin_view(PluginView view, std::wstring const &kind, std::wstring const &id,
+                        std::wstring const &row_key) {
+    plugin_view_ = view;
+    plugin_view_kind_ = kind;
+    plugin_view_id_ = id;
+    plugin_opened_from_ = row_key;
+    plugin_pending_focus_ = L"back";
+    queue_refresh();
+  }
+
+  void back_to_plugin_list() {
+    plugin_view_ = PluginView::list;
+    plugin_pending_focus_ = plugin_opened_from_;
+    queue_refresh();
+  }
+
+  // 「保存名单」是主按钮：设计里固定的强调色填充，悬停和按下时也不换成系统强调色。
+  void make_primary(Button const &button) {
+    auto resources = button.Resources();
+    auto put = [&resources](const wchar_t *key, Color const &color) {
+      resources.Insert(box_value(hstring(key)), brush(color));
+    };
+    const auto accent = palette_.accent;
+    auto faded = [accent](double alpha) {
+      return Color{static_cast<uint8_t>(std::lround(alpha * 255)), accent.R, accent.G, accent.B};
+    };
+    put(L"ButtonBackground", accent);
+    put(L"ButtonBackgroundPointerOver", faded(.9));
+    put(L"ButtonBackgroundPressed", faded(.8));
+    put(L"ButtonForeground", palette_.on_accent);
+    put(L"ButtonForegroundPointerOver", palette_.on_accent);
+    put(L"ButtonForegroundPressed", palette_.on_accent);
+  }
+
+  // 列表里打开一个视图的一行（共享页的 PluginNavRow）：整张卡片是一个按钮，读屏读到标题，说明和行尾标记作为帮助文本。
+  Button plugin_nav_row(StackPanel const &group, wchar_t glyph, std::wstring const &title,
+                        std::wstring const &description, std::wstring const &marker,
+                        std::function<void()> open) {
+    record(title, description);
+    Grid header;
+    header.ColumnSpacing(16);
+    for (auto width : {GridLength{20, GridUnitType::Pixel}, GridLength{1, GridUnitType::Star},
+                       GridLength{1, GridUnitType::Auto}, GridLength{1, GridUnitType::Auto}}) {
+      ColumnDefinition column;
+      column.Width(width);
+      header.ColumnDefinitions().Append(column);
+    }
+    auto icon = make_icon(glyph, 20, palette_.text);
+    icon.VerticalAlignment(VerticalAlignment::Center);
+    header.Children().Append(icon);
+    StackPanel texts;
+    texts.Spacing(1);
+    texts.VerticalAlignment(VerticalAlignment::Center);
+    texts.Children().Append(make_text(title, 14, palette_.text));
+    if (!description.empty())
+      texts.Children().Append(make_text(description, 12, palette_.sub));
+    Grid::SetColumn(texts, 1);
+    header.Children().Append(texts);
+    if (!marker.empty()) {
+      auto mark = make_text(marker, 12, palette_.sub);
+      mark.TextWrapping(TextWrapping::NoWrap);
+      mark.VerticalAlignment(VerticalAlignment::Center);
+      Grid::SetColumn(mark, 2);
+      header.Children().Append(mark);
+    }
+    auto chevron = make_icon(0xE76C, 12, palette_.sub);
+    chevron.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(chevron, 3);
+    header.Children().Append(chevron);
+
+    Button row;
+    row.Content(header);
+    row.HorizontalAlignment(HorizontalAlignment::Stretch);
+    row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    row.MinHeight(62);
+    row.Padding(Thickness{25, 10, 25, 10});
+    row.Background(brush(palette_.card));
+    row.BorderBrush(brush(palette_.stroke));
+    row.BorderThickness(Thickness{1, 1, 1, 1});
+    row.CornerRadius(CornerRadius{3, 3, 3, 3});
+    A11y::SetName(row, hstring(title));
+    std::wstring help = description;
+    if (!marker.empty())
+      help += (help.empty() ? L"" : L"，") + marker;
+    if (!help.empty())
+      A11y::SetHelpText(row, hstring(help));
+    row.Click([open = std::move(open)](Inspectable const &, RoutedEventArgs const &) { open(); });
+    group.Children().Append(row);
+    mark_search_target(title, row);
+    return row;
+  }
+
+  // 视图的头（共享页的 PluginViewHeader）：回到列表的「我的插件」，然后是视图的标题。视图刚打开时焦点落在返回上。
+  void plugin_view_header(StackPanel const &page, std::wstring const &title) {
+    StackPanel label;
+    label.Orientation(Orientation::Horizontal);
+    label.Spacing(6);
+    auto chevron = make_icon(0xE76B, 12, palette_.text);
+    chevron.VerticalAlignment(VerticalAlignment::Center);
+    label.Children().Append(chevron);
+    label.Children().Append(make_text(L"我的插件", 14, palette_.text));
+    Button back;
+    back.Content(label);
+    back.Height(32);
+    back.Padding(Thickness{12, 0, 12, 0});
+    A11y::SetName(back, L"返回我的插件");
+    back.Click([this](Inspectable const &, RoutedEventArgs const &) { back_to_plugin_list(); });
+    page.Children().Append(back);
+    auto heading = make_text(title, 20, palette_.text);
+    heading.FontWeight(Windows::UI::Text::FontWeight{600});
+    heading.Padding(Thickness{4, 16, 4, 0});
+    page.Children().Append(heading);
+    if (!indexing_ && plugin_pending_focus_ == L"back") {
+      plugin_pending_focus_.clear();
+      focus_target_ = back;
+    }
+  }
+
+  // 一段说明和一排按钮（共享页的 ActionBlock）。
+  void plugin_action_block(StackPanel const &group, std::wstring const &note,
+                           std::vector<FrameworkElement> const &buttons = {}) {
+    StackPanel body;
+    body.Spacing(10);
+    body.Padding(Thickness{25, 14, 25, 14});
+    if (!note.empty())
+      body.Children().Append(make_text(note, 13, palette_.sub));
+    if (!buttons.empty()) {
+      StackPanel actions;
+      actions.Orientation(Orientation::Horizontal);
+      actions.Spacing(8);
+      for (auto const &button : buttons)
+        actions.Children().Append(button);
+      body.Children().Append(actions);
+    }
+    auto card = make_card();
+    card.Child(body);
+    group.Children().Append(card);
+  }
+
+  // 只显示一个值的一行（共享页的 SummaryRow）：值可以选中复制，长的折行。
+  void plugin_summary_row(StackPanel const &group, wchar_t glyph, std::wstring const &title,
+                          std::wstring const &description, std::wstring const &value) {
+    auto shown = make_text(value, 14, palette_.sub);
+    shown.MaxWidth(360);
+    shown.TextAlignment(TextAlignment::Right);
+    shown.IsTextSelectionEnabled(true);
+    add_row(group, glyph, title, description, shown);
+  }
+
+  // 一列只有文字的行（共享页没有控件的 Row）：标题和可选的说明，行间有分隔线。
+  void plugin_line_card(StackPanel const &group,
+                        std::vector<std::pair<std::wstring, std::wstring>> const &lines) {
+    StackPanel list;
+    bool first = true;
+    for (auto const &[title, description] : lines) {
+      Border divider;
+      divider.BorderThickness(Thickness{0, first ? 0.0 : 1.0, 0, 0});
+      divider.BorderBrush(brush(palette_.divider));
+      first = false;
+      StackPanel texts;
+      texts.Spacing(1);
+      texts.Padding(Thickness{25, 10, 25, 10});
+      auto head = make_text(title, 14, palette_.text);
+      head.IsTextSelectionEnabled(true);
+      texts.Children().Append(head);
+      if (!description.empty()) {
+        auto detail = make_text(description, 12, palette_.sub);
+        detail.IsTextSelectionEnabled(true);
+        texts.Children().Append(detail);
+      }
+      divider.Child(texts);
+      list.Children().Append(divider);
+    }
+    auto card = make_card();
+    card.Child(list);
+    group.Children().Append(card);
+  }
+
+  // 共享页的 SettingsEmptyMessage：列表还没读到、没读成功或空的时候的一句。
+  TextBlock plugin_empty_message(std::wstring_view value) {
+    auto message = make_text(value, 13, palette_.sub);
+    message.HorizontalAlignment(HorizontalAlignment::Center);
+    message.TextAlignment(TextAlignment::Center);
+    message.Margin(Thickness{16, 20, 16, 12});
+    return message;
+  }
+
+  void build_plugins_page(StackPanel const &page) {
+    if (indexing_) {
+      // 搜索既能找到列表上的入口，也能找到「声音与效果」里的设置；记下后者的标题，选中这样的结果时打开那个视图。
+      build_plugin_list(page);
+      const auto first = search_index_.size();
+      StackPanel scratch;
+      build_plugin_sound_effects(scratch);
+      plugin_sound_titles_.clear();
+      for (auto i = first; i < search_index_.size(); ++i)
+        plugin_sound_titles_.insert(search_index_[i].title);
+      return;
+    }
+    plugin_mentions_warning_ = nullptr;
+    plugin_mentions_save_ = nullptr;
+    if (plugins_stale_)
+      load_plugins();
+    if (!focus_row_.empty()) {
+      const bool sound = plugin_sound_titles_.contains(focus_row_);
+      plugin_view_ = sound ? PluginView::sound_effects : PluginView::list;
+      plugin_opened_from_ = sound ? L"sound-effects" : L"";
+      plugin_pending_focus_.clear();
+    }
+    if (plugin_view_ == PluginView::pack) {
+      for (auto const &pack : plugin_catalog_.packages)
+        if (pack.kind == plugin_view_kind_ && pack.id == plugin_view_id_) {
+          build_plugin_detail(page, pack);
+          return;
+        }
+    }
+    if (plugin_view_ == PluginView::missing && plugin_catalog_state_ == PluginCatalogState::loaded) {
+      for (auto const &entry : pg::missing_selections(plugin_preferences(), plugin_catalog_.packages,
+                                                      pg::acted_kinds(helpcode_offered())))
+        if (entry.kind == plugin_view_kind_ && entry.id == plugin_view_id_) {
+          build_plugin_missing(page, entry);
+          return;
+        }
+    }
+    if (plugin_view_ == PluginView::sound_effects) {
+      build_plugin_sound_effects(page);
+      return;
+    }
+    if (plugin_view_ == PluginView::mentions) {
+      build_plugin_mentions(page);
+      return;
+    }
+    // 打开的包或缺失的选择在重读后不在了：回到列表，焦点落到同一类的第一行。
+    if (plugin_view_ != PluginView::list && plugin_pending_focus_.empty())
+      plugin_pending_focus_ = plugin_opened_from_;
+    plugin_view_ = PluginView::list;
+    build_plugin_list(page);
+  }
+
+  // 我的插件：先是不属于任何一个包的两个入口，再是按类型分组的已安装插件和缺失的选择，然后是导入（少见的操作，放在后面）和无法载入的文件夹。
+  void build_plugin_list(StackPanel const &page) {
+    const auto preferences = plugin_preferences();
+    const auto kinds = pg::acted_kinds(helpcode_offered());
+    const auto modes = plugin_table_modes();
+    const bool loaded = plugin_catalog_state_ == PluginCatalogState::loaded;
+    const auto missing = loaded ? pg::missing_selections(preferences, plugin_catalog_.packages, kinds)
+                                : std::vector<pg::MissingSelection>{};
+    std::vector<std::pair<std::wstring, Button>> rows;
+
+    auto entries = add_group(page, L"");
+    rows.emplace_back(L"sound-effects",
+                      plugin_nav_row(entries, 0xE767, L"声音与效果", pg::sound_effects_description(), L"",
+                                     [this] {
+                                       open_plugin_view(PluginView::sound_effects, L"", L"",
+                                                        L"sound-effects");
+                                     }));
+    rows.emplace_back(
+        L"mentions",
+        plugin_nav_row(entries, 0xE716, L"@ 名单",
+                       pg::mentions_description(plugin_mentions_dirty(), plugin_saved_mentions_.size(),
+                                                modes.scheme_opens,
+                                                document_.Boolean(L"local_modes.mention", false)),
+                       L"", [this] { open_plugin_view(PluginView::mentions, L"", L"", L"mentions"); }));
+
+    // 指令表这一组带着 / 模式的说明，所以空着也显示。
+    struct KindGroup {
+      std::wstring kind;
+      std::vector<pg::Package const *> packs;
+      std::vector<pg::MissingSelection const *> gone;
+    };
+    std::vector<KindGroup> groups;
+    for (auto const kind : pg::kind_order) {
+      KindGroup group{std::wstring(kind), {}, {}};
+      for (auto const &pack : plugin_catalog_.packages)
+        if (pack.kind == kind)
+          group.packs.push_back(&pack);
+      for (auto const &entry : missing)
+        if (entry.kind == kind)
+          group.gone.push_back(&entry);
+      if (!group.packs.empty() || !group.gone.empty() || kind == L"command_table")
+        groups.push_back(std::move(group));
+    }
+    if (plugin_catalog_state_ == PluginCatalogState::loading && !indexing_)
+      page.Children().Append(plugin_empty_message(L"正在读取插件…"));
+    if (plugin_catalog_state_ == PluginCatalogState::failed)
+      page.Children().Append(
+          plugin_empty_message(L"插件列表没有读取成功，重新打开这个页面会再试一次。"));
+    if (loaded && groups.empty())
+      page.Children().Append(plugin_empty_message(L"没有插件"));
+    for (auto const &[kind, packs, gone] : groups) {
+      auto group = add_group(page, pg::kind_label(kind));
+      if (kind == L"command_table") {
+        group.Children().Append(group_note(
+            L"在「输入 → 快捷模式」打开 / 指令后，按 / 再输入指令字母即可使用。启用的指令表按启用顺序排列，同一指令以靠前的表为准；最多启用 " +
+            std::to_wstring(pg::max_command_tables) + L" 个。"));
+        if (packs.empty() && gone.empty() && loaded)
+          group.Children().Append(group_note(L"还没有导入指令表。"));
+      }
+      for (auto const *pack : packs) {
+        const auto key = L"pack/" + pack->kind + L"/" + pack->id;
+        rows.emplace_back(key, plugin_nav_row(group, page_label("plugins").glyph, pack->name,
+                                              pg::pack_row_description(*pack),
+                                              pg::pack_marker(*pack, preferences, kinds, modes),
+                                              [this, kind = pack->kind, id = pack->id, key] {
+                                                open_plugin_view(PluginView::pack, kind, id, key);
+                                              }));
+      }
+      for (auto const *entry : gone) {
+        const auto key = L"missing/" + entry->kind + L"/" + entry->id;
+        rows.emplace_back(key, plugin_nav_row(group, 0xE7BA, pg::missing_title(*entry),
+                                              pg::missing_description(*entry), L"",
+                                              [this, kind = entry->kind, id = entry->id, key] {
+                                                open_plugin_view(PluginView::missing, kind, id, key);
+                                              }));
+      }
+    }
+
+    auto import = add_group(page, L"导入插件");
+    StackPanel buttons;
+    buttons.Orientation(Orientation::Horizontal);
+    buttons.Spacing(8);
+    buttons.Children().Append(
+        button_control(L"导入文件夹", [this] { import_plugin_pack(true); }, !plugins_busy_));
+    buttons.Children().Append(
+        button_control(L"导入 .zip", [this] { import_plugin_pack(false); }, !plugins_busy_));
+    add_row(import, 0xE8B5, L"从文件导入", L"只含音频、指令模板等数据，不含可执行内容，每个包须声明许可证",
+            buttons);
+    if (!plugins_notice_.empty()) {
+      auto notice = group_note(plugins_notice_);
+      notice.Margin(Thickness{4, 4, 4, 4});
+      A11y::SetLiveSetting(notice, Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+      import.Children().Append(notice);
+    }
+
+    if (!plugin_catalog_.issues.empty()) {
+      auto issues = add_group(page, L"无法载入的插件");
+      StackPanel list;
+      list.Spacing(6);
+      list.Padding(Thickness{25, 14, 25, 14});
+      for (auto const &issue : plugin_catalog_.issues)
+        list.Children().Append(make_text(pg::kind_label(issue.kind) + L" " +
+                                             (issue.folder.empty() ? std::wstring(L"目录") : issue.folder) +
+                                             L" 无法载入：" + issue.reason,
+                                         13, palette_.sub));
+      auto card = make_card();
+      A11y::SetName(card, L"无法载入的插件");
+      card.Child(list);
+      issues.Children().Append(card);
+    }
+
+    // 关上视图后焦点回到打开它的那一行；那一行没了（包已删除、缺失的选择已去掉）就落到同一类的第一行，再没有就是列表的第一行。
+    if (!indexing_ && !plugin_pending_focus_.empty() && !rows.empty()) {
+      const auto target = plugin_pending_focus_;
+      plugin_pending_focus_.clear();
+      auto kind_of = [](std::wstring const &key) -> std::wstring {
+        for (std::wstring_view prefix : {std::wstring_view(L"pack/"), std::wstring_view(L"missing/")})
+          if (key.starts_with(prefix)) {
+            const auto rest = key.substr(prefix.size());
+            return rest.substr(0, rest.find(L'/'));
+          }
+        return {};
+      };
+      Button chosen{nullptr};
+      for (auto const &[key, row] : rows)
+        if (key == target) {
+          chosen = row;
+          break;
+        }
+      if (!chosen && !kind_of(target).empty())
+        for (auto const &[key, row] : rows)
+          if (kind_of(key) == kind_of(target)) {
+            chosen = row;
+            break;
+          }
+      focus_target_ = chosen ? chosen : rows.front().second;
+    }
+  }
+
+  // 声音与效果：不属于哪一个包的开关、方式和音量。当前用哪个包在包自己的详情里选，这里只写出它的名字。
+  void build_plugin_sound_effects(StackPanel const &page) {
+    plugin_view_header(page, L"声音与效果");
+    const auto preferences = plugin_preferences();
+    const auto &packages = plugin_catalog_.packages;
+    const bool listed = plugin_catalog_state_ == PluginCatalogState::loaded;
+    const std::wstring choose(pg::choose_note);
+    // 从点下时存着的设置改起：滑块拖过之后页面没有重画，这一页画出来时的那份已经旧了。
+    auto set = [this](std::function<void(pg::Preferences &)> const &edit) {
+      auto next = plugin_preferences();
+      edit(next);
+      change_plugins(next);
+    };
+    // 音量和强度像别的滑块一样拖动时写文档、停下后保存。
+    auto percent = [this](std::wstring const &title, wchar_t const *key, double value, bool enabled) {
+      return slider_control(title, 0, 100, value,
+                            [this, key = std::wstring(key)](double next) {
+                              document_.SetNumber(key, next);
+                              schedule_save();
+                            },
+                            enabled, 1, L"%");
+    };
+
+    auto keys = add_group(page, L"按键音效");
+    add_row(keys, 0xE767, L"按键音", L"打字时按键发声。密码等安全输入框中不发声。",
+            toggle_control(L"按键音", preferences.key_sound_enabled, [set](bool on) {
+              set([on](pg::Preferences &next) { next.key_sound_enabled = on; });
+            }));
+    add_row(keys, 0xE8D6, L"发声方式",
+            L"按键音效按普通键、空格、回车和退格各自发声；按键旋律每按一键弹出旋律的下一个音，停顿 3 秒后从头开始。",
+            segmented_control(L"发声方式", {{L"keys", L"按键音效"}, {L"melody", L"按键旋律"}},
+                              preferences.key_sound_mode,
+                              [set](std::wstring const &mode) {
+                                set([mode](pg::Preferences &next) { next.key_sound_mode = mode; });
+                              },
+                              preferences.key_sound_enabled));
+    plugin_summary_row(keys, 0xE8D6, L"音效包", L"按键、上屏和成就音效都取自这个音效包。" + choose,
+                       pg::selected_name(packages, listed, L"sound", preferences.key_sound_pack,
+                                         preferences.key_sound_pack, L"keys"));
+    if (preferences.key_sound_mode == L"melody")
+      plugin_summary_row(keys, 0xEC4F, L"旋律", choose,
+                         pg::selected_name(packages, listed, L"sound", preferences.melody_pack,
+                                           preferences.melody_pack, L"sequence"));
+    add_row(keys, 0xE767, L"音效音量", L"按键音、旋律、上屏音和成就音效共用。",
+            percent(L"音效音量", L"plugins.key_sound.volume", preferences.key_sound_volume, true));
+    add_row(keys, 0xE8FB, L"上屏音", L"文字上屏时播放音效包的上屏音，与按键音各自开关。",
+            toggle_control(L"上屏音", preferences.commit_sound_enabled, [set](bool on) {
+              set([on](pg::Preferences &next) { next.commit_sound_enabled = on; });
+            }));
+    add_row(keys, 0xE734, L"成就音效",
+            L"上屏字数累计达到 100、1000、1 万等里程碑时播放一段短音。按打字统计计数，需要打开打字统计。",
+            toggle_control(L"成就音效", preferences.achievements_enabled, [set](bool on) {
+              set([on](pg::Preferences &next) { next.achievements_enabled = on; });
+            }));
+
+    // 选了特效包时由它决定样式和强度，这两项只描述不选包时画什么。
+    const bool pack_selected = !preferences.effect_pack.empty();
+    auto effects = add_group(page, L"打字效果");
+    plugin_summary_row(effects, 0xE790, L"特效包",
+                       pack_selected ? L"特效包决定样式、强度、颜色和时长，下面的样式和强度不再生效。" : choose,
+                       pg::selected_name(packages, listed, L"effect", preferences.effect_pack, L"不使用"));
+    std::vector<Option> styles;
+    for (auto const &option : pg::effect_style_options)
+      styles.push_back({std::wstring(option.value), std::wstring(option.label)});
+    add_row(effects, 0xE945, L"效果样式",
+            L"闪光：按键时候选栏闪一下；火花：按键和上屏时迸出火花；Power Mode：火花随连击变大。",
+            segmented_control(L"效果样式", styles, preferences.effect_style,
+                              [set](std::wstring const &style) {
+                                set([style](pg::Preferences &next) { next.effect_style = style; });
+                              },
+                              !pack_selected));
+    add_row(effects, 0xE9D2, L"效果强度", L"效果的大小和持续时间。",
+            percent(L"效果强度", L"plugins.effect_intensity", preferences.effect_intensity,
+                    !pack_selected && preferences.effect_style != L"off"));
+    add_row(effects, 0xE8EF, L"连击计数",
+            L"连续打字时在候选栏显示连击数，停顿 3 秒或按退格后重新计数。自动重复的按键不计数。",
+            toggle_control(L"连击计数", preferences.combo_counter, [set](bool on) {
+              set([on](pg::Preferences &next) { next.combo_counter = on; });
+            }));
+    add_row(effects, 0xE767, L"升档音",
+            L"连击达到 10、25、50、100 时播放音效包的上屏音，每升一档音调更高，音量随音效音量。",
+            toggle_control(L"升档音", preferences.combo_tier_sound,
+                           [set](bool on) {
+                             set([on](pg::Preferences &next) { next.combo_tier_sound = on; });
+                           },
+                           preferences.combo_counter));
+
+    auto music = add_group(page, L"背景音乐");
+    add_row(music, 0xEC4F, L"背景音乐", L"默认关闭。只在输入法处于活动状态时播放，切换到其他输入法时暂停。",
+            toggle_control(L"背景音乐", preferences.music_enabled, [set](bool on) {
+              set([on](pg::Preferences &next) { next.music_enabled = on; });
+            }));
+    const bool no_music = listed && std::none_of(packages.begin(), packages.end(), [](pg::Package const &pack) {
+                            return pack.kind == L"music";
+                          });
+    plugin_summary_row(music, 0xE93C, L"音乐包", no_music ? std::wstring(L"还没有导入音乐包。") : choose,
+                       pg::selected_name(packages, listed, L"music", preferences.music_pack, L"未选择"));
+    add_row(music, 0xE767, L"音乐音量", L"",
+            percent(L"音乐音量", L"plugins.music.volume", preferences.music_volume, true));
+  }
+
+  // @ 名单：改动留在这个窗口里，离开视图也不丢，按「保存名单」才写入。@ 模式关着或方案打不开它时，名单上方说明名字不会出候选。输入时就地更新提示和按钮，不重建页面，输入框不会丢掉焦点。
+  void build_plugin_mentions(StackPanel const &page) {
+    plugin_view_header(page, L"@ 名单");
+    const bool mode = document_.Boolean(L"local_modes.mention", false);
+    const auto scheme_note = pg::scheme_table_mode_note(
+        document_.String(L"scheme", MSIME_EDITION_DEFAULT_SCHEME_W), L"名字与地点（@ 模式）");
+    if (!mode || !scheme_note.empty()) {
+      auto notes = add_group(page, L"");
+      if (!mode)
+        plugin_action_block(notes, L"@ 名字与地点（「输入 → 快捷模式」里的开关）已关闭，名单里的名字不会出候选。",
+                            {button_control(L"打开 @ 模式", [this] { enable_local_mode(L"mention"); },
+                                            loaded_)});
+      if (!scheme_note.empty())
+        plugin_action_block(notes, scheme_note);
+    }
+
+    auto group = add_group(page, L"");
+    StackPanel body;
+    body.Spacing(10);
+    body.Padding(Thickness{25, 14, 25, 14});
+    body.Children().Append(make_text(
+        L"在「输入 → 快捷模式」打开 @ 名字与地点后，按 @ 再输入拼音或首字母，就会从这份名单里出候选。名单只保存在本机，不随账号同步，也不会读取通讯录或位置。拼音可以留空，中文名字会自动取读音。",
+        13, palette_.sub));
+    for (std::size_t index = 0; index < plugin_mentions_.size(); ++index) {
+      Grid row;
+      row.ColumnSpacing(8);
+      for (auto width : {GridLength{1, GridUnitType::Star}, GridLength{1, GridUnitType::Star},
+                         GridLength{1, GridUnitType::Auto}}) {
+        ColumnDefinition column;
+        column.Width(width);
+        row.ColumnDefinitions().Append(column);
+      }
+      TextBox name;
+      name.Header(box_value(L"名字或地点"));
+      name.MaxLength(static_cast<int32_t>(pg::max_mention_text_utf16));
+      name.Text(hstring(plugin_mentions_[index].text));
+      A11y::SetName(name, L"名字或地点");
+      name.TextChanged([this, index](Inspectable const &sender, TextChangedEventArgs const &) {
+        edit_plugin_mention(index, std::wstring(sender.as<TextBox>().Text().c_str()), true);
+      });
+      row.Children().Append(name);
+      TextBox key;
+      key.Header(box_value(L"拼音"));
+      key.PlaceholderText(L"zhang'san");
+      key.MaxLength(static_cast<int32_t>(pg::max_mention_key_bytes));
+      key.IsSpellCheckEnabled(false);
+      key.IsTextPredictionEnabled(false);
+      key.Text(hstring(plugin_mentions_[index].key));
+      A11y::SetName(key, L"拼音");
+      key.TextChanged([this, index](Inspectable const &sender, TextChangedEventArgs const &) {
+        edit_plugin_mention(index, std::wstring(sender.as<TextBox>().Text().c_str()), false);
+      });
+      Grid::SetColumn(key, 1);
+      row.Children().Append(key);
+      auto remove = button_control(L"删除", [this, index] {
+        if (index < plugin_mentions_.size()) {
+          plugin_mentions_.erase(plugin_mentions_.begin() + static_cast<std::ptrdiff_t>(index));
+          queue_refresh();
+        }
+      });
+      remove.VerticalAlignment(VerticalAlignment::Bottom);
+      A11y::SetName(remove, hstring(L"删除第 " + std::to_wstring(index + 1) + L" 行"));
+      Grid::SetColumn(remove, 2);
+      row.Children().Append(remove);
+      body.Children().Append(row);
+    }
+    plugin_mentions_warning_ = make_text(L"", 13, palette_.text);
+    A11y::SetLiveSetting(plugin_mentions_warning_,
+                         Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Assertive);
+    body.Children().Append(plugin_mentions_warning_);
+    StackPanel actions;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(8);
+    actions.Children().Append(button_control(
+        L"添加",
+        [this] {
+          plugin_mentions_.push_back({});
+          queue_refresh();
+        },
+        plugin_mentions_.size() < pg::max_mentions));
+    Button save;
+    save.Content(box_value(L"保存名单"));
+    save.Height(32);
+    save.Padding(Thickness{16, 0, 16, 0});
+    make_primary(save);
+    save.Click([this](Inspectable const &, RoutedEventArgs const &) { save_plugin_mentions(); });
+    plugin_mentions_save_ = save;
+    actions.Children().Append(save);
+    body.Children().Append(actions);
+    auto card = make_card();
+    card.Child(body);
+    group.Children().Append(card);
+    update_plugin_mentions_state();
+  }
+
+  // 输入框里的一次改动：只改这一行，再就地更新提示和保存按钮。
+  void edit_plugin_mention(std::size_t index, std::wstring value, bool name) {
+    if (index >= plugin_mentions_.size())
+      return;
+    auto &slot = name ? plugin_mentions_[index].text : plugin_mentions_[index].key;
+    if (slot == value)
+      return;
+    slot = std::move(value);
+    update_plugin_mentions_state();
+  }
+
+  // 有改动且不能保存时显示原因；保存按钮只在有改动、能保存、没有别的操作在进行时可按。
+  void update_plugin_mentions_state() {
+    const auto issue = pg::mention_list_issue(plugin_mentions_);
+    const bool dirty = plugin_mentions_dirty();
+    if (plugin_mentions_warning_) {
+      const bool shown = issue && dirty;
+      plugin_mentions_warning_.Text(hstring(shown ? *issue : std::wstring()));
+      plugin_mentions_warning_.Visibility(shown ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (plugin_mentions_save_)
+      plugin_mentions_save_.IsEnabled(!plugins_busy_ && dirty && !issue);
+  }
+
+  // 一个已安装的包：里面有什么，怎样把它设为这一类的当前选择，不是内置的还可以删除。
+  void build_plugin_detail(StackPanel const &page, pg::Package const &pack) {
+    plugin_view_header(page, pack.name);
+    auto info = add_group(page, L"信息");
+    plugin_summary_row(info, 0xE8EC, L"类型", L"", pg::pack_kind_label(pack));
+    plugin_summary_row(info, 0xE946, L"版本", L"", pack.version);
+    if (!pack.author.empty())
+      plugin_summary_row(info, 0xE77B, L"作者", L"", pack.author);
+    plugin_summary_row(info, 0xE8D7, L"许可证", L"", pack.license);
+    if (pack.builtin)
+      plugin_summary_row(info, 0xE7B8, L"来源", L"", L"内置，不能删除");
+    if (!pack.description.empty())
+      info.Children().Append(group_note(pack.description));
+    build_plugin_content(page, pack);
+    build_plugin_actions(add_group(page, L"使用"), pack);
+    if (!pack.builtin) {
+      auto remove = button_control(L"删除", [this, pack] { remove_plugin_pack(pack); }, !plugins_busy_);
+      A11y::SetName(remove, hstring(L"删除" + pack.name));
+      plugin_action_block(add_group(page, L""),
+                          L"删除后包里的文件会从本机移除；正在使用的话，设置会回到默认选择。", {remove});
+    }
+  }
+
+  // 各类型自己的内容：符号集的各组、单词本和辅助码表的前几条、短语表的前 20 行、音乐包的曲目、指令表的指令、特效包的样式和参数。
+  void build_plugin_content(StackPanel const &page, pg::Package const &pack) {
+    using Lines = std::vector<std::pair<std::wstring, std::wstring>>;
+    if (pack.kind == L"symbol_set") {
+      for (auto const &symbols : pack.groups) {
+        auto group = add_group(page, pg::symbol_group_title(symbols));
+        auto note = group_note(pg::symbol_group_preview(symbols));
+        note.IsTextSelectionEnabled(true);
+        group.Children().Append(note);
+      }
+      return;
+    }
+    if (pack.kind == L"wordbook") {
+      const auto shown = std::min(pack.first_words.size(), pg::wordbook_preview_words);
+      auto group = add_group(
+          page, L"单词（" + pg::js_number(pack.word_count.value_or(static_cast<double>(shown))) + L"）");
+      Lines lines;
+      for (std::size_t i = 0; i < shown; ++i)
+        lines.emplace_back(pack.first_words[i], L"");
+      if (!lines.empty())
+        plugin_line_card(group, lines);
+      if (pack.word_count.value_or(0) > static_cast<double>(shown))
+        group.Children().Append(group_note(L"只显示前 " + std::to_wstring(shown) + L" 个单词。"));
+      return;
+    }
+    if (pack.kind == L"helpcode") {
+      auto group = add_group(
+          page, L"辅助码（" +
+                    pg::js_number(pack.entries.value_or(static_cast<double>(pack.preview.size()))) +
+                    L" 个字）");
+      Lines lines;
+      for (auto const &entry : pack.preview)
+        lines.emplace_back(entry.character, entry.code);
+      if (!lines.empty())
+        plugin_line_card(group, lines);
+      if (pack.entries.value_or(0) > static_cast<double>(pack.preview.size()))
+        group.Children().Append(
+            group_note(L"只显示前 " + std::to_wstring(pack.preview.size()) + L" 个字。"));
+      return;
+    }
+    if (pack.kind == L"phrase_table") {
+      auto group = add_group(page, L"短语（" + std::to_wstring(pack.phrases.size()) + L"）");
+      Lines lines;
+      for (std::size_t i = 0; i < std::min(pack.phrases.size(), pg::phrase_preview_rows); ++i)
+        lines.emplace_back(pack.phrases[i].key, pack.phrases[i].text);
+      if (!lines.empty())
+        plugin_line_card(group, lines);
+      if (pack.phrases.size() > lines.size())
+        group.Children().Append(
+            group_note(L"只显示前 " + std::to_wstring(pg::phrase_preview_rows) + L" 条。"));
+      return;
+    }
+    if (pack.kind == L"music") {
+      auto group = add_group(page, L"曲目（" + std::to_wstring(pack.tracks.size()) + L"）");
+      if (pack.tracks.empty()) {
+        group.Children().Append(group_note(L"没有曲目。"));
+        return;
+      }
+      Lines lines;
+      for (auto const &track : pack.tracks)
+        lines.emplace_back(track, L"");
+      plugin_line_card(group, lines);
+      return;
+    }
+    if (pack.kind == L"command_table") {
+      auto group = add_group(page, L"指令（" + std::to_wstring(pack.commands.size()) + L"）");
+      if (pack.commands.empty()) {
+        group.Children().Append(group_note(L"没有指令。"));
+        return;
+      }
+      Lines lines;
+      for (auto const &command : pack.commands)
+        lines.emplace_back(L"/" + command.trigger, command.title);
+      plugin_line_card(group, lines);
+      return;
+    }
+    if (pack.kind == L"effect") {
+      auto group = add_group(page, L"特效");
+      if (!pack.style.empty())
+        plugin_summary_row(group, 0xE945, L"样式", L"", pg::effect_style_label(pack.style));
+      if (pack.intensity)
+        plugin_summary_row(group, 0xE9D2, L"强度", L"", pg::js_number(*pack.intensity) + L"%");
+      if (!pack.colors.empty()) {
+        StackPanel swatches;
+        swatches.Orientation(Orientation::Horizontal);
+        swatches.Spacing(10);
+        for (auto const &color : pack.colors) {
+          StackPanel item;
+          item.Orientation(Orientation::Horizontal);
+          item.Spacing(4);
+          if (const auto parsed = parse_hex(color)) {
+            Shapes::Ellipse dot;
+            dot.Width(12);
+            dot.Height(12);
+            dot.Fill(brush(*parsed));
+            dot.Stroke(brush(palette_.stroke2));
+            dot.StrokeThickness(1);
+            dot.VerticalAlignment(VerticalAlignment::Center);
+            item.Children().Append(dot);
+          }
+          auto label = make_text(color, 14, palette_.sub);
+          label.IsTextSelectionEnabled(true);
+          item.Children().Append(label);
+          swatches.Children().Append(item);
+        }
+        add_row(group, 0xE790, L"颜色", L"", swatches);
+      }
+      if (pack.duration_ms)
+        plugin_summary_row(group, 0xE916, L"时长", L"", pg::js_number(*pack.duration_ms) + L" 毫秒");
+      if (pack.particles)
+        plugin_summary_row(group, 0xE9D2, L"粒子数", L"", pg::js_number(*pack.particles));
+    }
+  }
+
+  // 「使用」：各类型怎样成为当前选择（共享页的 PackActions，取 Windows 宿主的分支）。
+  void build_plugin_actions(StackPanel const &group, pg::Package const &pack) {
+    const auto preferences = plugin_preferences();
+    const auto scheme = document_.String(L"scheme", MSIME_EDITION_DEFAULT_SCHEME_W);
+    auto select = [this, pack] { change_plugins(pg::with_pack_selected(plugin_preferences(), pack)); };
+    auto go_typing = [this] { navigate("typing", true); };
+    if (pack.kind == L"sound") {
+      const auto action = pg::sound_pack_action(pack, preferences);
+      plugin_action_block(group, action.note,
+                          {button_control(action.label, select, loaded_ && !action.disabled)});
+      return;
+    }
+    if (pack.kind == L"effect") {
+      const bool current = preferences.effect_pack == pack.id;
+      plugin_action_block(
+          group, L"特效包决定样式、强度、颜色和时长，使用后「声音与效果」里的样式和强度不再生效。",
+          {current ? button_control(L"停用",
+                                    [this] {
+                                      auto next = plugin_preferences();
+                                      next.effect_pack.clear();
+                                      change_plugins(next);
+                                    },
+                                    loaded_)
+                   : button_control(L"使用此特效包", select, loaded_)});
+      return;
+    }
+    if (pack.kind == L"music") {
+      const auto action = pg::music_pack_action(pack, preferences);
+      std::vector<FrameworkElement> buttons{
+          button_control(action.label, select, loaded_ && !action.disabled)};
+      if (preferences.music_pack == pack.id)
+        buttons.push_back(button_control(L"不再使用",
+                                         [this] {
+                                           auto next = plugin_preferences();
+                                           next.music_pack.clear();
+                                           change_plugins(next);
+                                         },
+                                         loaded_));
+      plugin_action_block(group, action.note, buttons);
+      return;
+    }
+    if (pack.kind == L"command_table" || pack.kind == L"phrase_table") {
+      const bool command = pack.kind == L"command_table";
+      const auto table = command ? pg::command_table_switch(preferences, pack.id)
+                                 : pg::phrase_table_switch(preferences, pack.id);
+      add_row(group, command ? 0xE756 : 0xE8C1, L"启用", table.description,
+              toggle_control(L"启用", table.on,
+                             [this, command, id = pack.id](bool on) {
+                               auto next = plugin_preferences();
+                               auto &tables = command ? next.command_tables : next.phrase_tables;
+                               tables = pg::with_table(tables, id, on);
+                               change_plugins(next);
+                             },
+                             !table.full));
+      if (command && !document_.Boolean(L"local_modes.command", false))
+        plugin_action_block(
+            group,
+            L"/ 指令（「输入 → 快捷模式」里的开关）已关闭，启用的指令表不会生效。打开后，在中文标点下没有输入时按 / 再输入指令字母即可使用。",
+            {button_control(L"打开 / 指令", [this] { enable_local_mode(L"command"); }, loaded_)});
+      if (!command && !document_.Boolean(L"local_modes.quick_phrase", true))
+        plugin_action_block(
+            group,
+            L"快捷短语（K 模式）已关闭。在「输入 → 快捷模式」打开后，按 Shift+K 再输入编码即可用到短语表。",
+            {button_control(L"前往输入设置", go_typing)});
+      if (const auto note =
+              pg::scheme_table_mode_note(scheme, command ? L"指令（/ 模式）" : L"快捷短语（K 模式）");
+          !note.empty())
+        plugin_action_block(group, note);
+      return;
+    }
+    if (pack.kind == L"symbol_set") {
+      plugin_action_block(group, L"装上即在符号面板里显示：符号组以插件名为分类排在内置符号之后，颜文字组排在颜文字的 All 之后。卸载后不再显示。");
+      return;
+    }
+    if (pack.kind == L"wordbook") {
+      plugin_action_block(group, L"这本书出现在背单词的词书里。卸载插件后复习进度仍会保留，重新安装后可以接着复习。",
+                          {button_control(L"去背单词",
+                                          [this, book = pg::wordbook_book_id(pack.id)] {
+                                            open_plugin_wordbook(book);
+                                          },
+                                          !vocabulary_busy_)});
+      return;
+    }
+    if (pack.kind == L"helpcode") {
+      if (!helpcode_offered()) {
+        plugin_action_block(group, L"这台设备不使用辅助码。");
+        return;
+      }
+      for (const bool quanpin : {true, false}) {
+        const std::wstring title = quanpin ? L"用于全拼" : L"用于双拼";
+        const auto &current = quanpin ? preferences.helpcode_pack_quanpin : preferences.helpcode_pack_shuangpin;
+        add_row(group, 0xE8CB, title,
+                quanpin ? L"替换全拼的辅助码方案；关闭后回到原来的方案。"
+                        : L"替换双拼的辅助码方案；关闭后回到原来的方案。",
+                toggle_control(title, current == pack.id, [this, quanpin, id = pack.id](bool on) {
+                  auto next = plugin_preferences();
+                  (quanpin ? next.helpcode_pack_quanpin : next.helpcode_pack_shuangpin) =
+                      on ? id : std::wstring();
+                  change_plugins(next);
+                }));
+      }
+      plugin_action_block(group, L"辅助码的开关和显示方式在「输入 → 辅助码」里。",
+                          {button_control(L"前往辅助码设置", go_typing)});
+    }
+  }
+
+  // 指名的包已不在本机、或者是另一种方式的声音包的选择，只有一条出路：像删除那个包一样去掉这个选择。
+  void build_plugin_missing(StackPanel const &page, pg::MissingSelection const &entry) {
+    plugin_view_header(page, pg::missing_title(entry));
+    plugin_action_block(add_group(page, L""), pg::missing_note(entry),
+                        {button_control(pg::missing_action(entry),
+                                        [this, entry] {
+                                          change_plugins(pg::missing_dropped(plugin_preferences(), entry));
+                                          back_to_plugin_list();
+                                        },
+                                        loaded_)});
+  }
+
   // ---- 屏幕键盘、语音、手写 ----
 
   // 共享的「屏幕键盘」页（packages/ui/src/settings/pages/screen-keyboard-page.tsx 和 touch-keyboard-geometry-section.tsx）在 Windows 上画四组：「屏幕键盘」（打开面板和可拖动的预览）、「尺寸」（高度、两种间距和恢复默认）、「工具栏」，以及指向「主题」的「外观」。Windows 不是 `touch_toolbar_components` 的宿主，「工具栏」里只有顶部语音入口；「布局」「手势」两组和触屏反馈只在手机上画，这里也不画。面板本身是输入工具，仍由共享应用打开。
@@ -8920,6 +10282,24 @@ private:
   std::chrono::steady_clock::time_point stats_request_started_{};
   std::chrono::steady_clock::time_point stats_last_request_{};
   Microsoft::UI::Dispatching::DispatcherQueueTimer stats_timer_{nullptr};
+
+  // 「插件」页：读到的目录和它的状态、打开的视图（包和缺失的选择按类型和 id 记，每次绘制时到目录里找）、打开它的那一行和关上后焦点要落的地方、名单的草稿和已存的样子，跨页面重建保留。plugins_generation_ 在进入页面时递增，作废上一次留下的请求；plugins_busy_ 是进行中的导入、删除或保存。plugin_sound_titles_ 是搜索索引里「声音与效果」视图的标题。名单的提示和保存按钮是该视图当前的那一组。
+  pg::Catalog plugin_catalog_;
+  PluginCatalogState plugin_catalog_state_ = PluginCatalogState::loading;
+  PluginView plugin_view_ = PluginView::list;
+  std::wstring plugin_view_kind_;
+  std::wstring plugin_view_id_;
+  std::wstring plugin_opened_from_;
+  std::wstring plugin_pending_focus_;
+  bool plugins_stale_ = true;
+  bool plugins_busy_ = false;
+  uint64_t plugins_generation_ = 0;
+  std::wstring plugins_notice_;
+  std::vector<pg::Mention> plugin_mentions_;
+  std::vector<pg::Mention> plugin_saved_mentions_;
+  std::set<std::wstring> plugin_sound_titles_;
+  TextBlock plugin_mentions_warning_{nullptr};
+  Button plugin_mentions_save_{nullptr};
 
   // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
   enum class FontCatalogStatus { idle, loading, ready, failed };
