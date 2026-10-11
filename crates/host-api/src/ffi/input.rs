@@ -34,11 +34,15 @@ pub extern "C" fn msime_client_set_chinese_punctuation(handle: u64, enabled: boo
             let lock = session
                 .punctuation_lock_override
                 .unwrap_or_else(|| punctuation_lock_code(session.applied.punctuation_lock));
-            session
+            // 没有组字时会刷新视图，暂存着词段时也算：按旁路调用推导。
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
+            let switched = session
                 .runtime
                 .set_chinese_punctuation_enabled(engine_chinese_punctuation(enabled, lock))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string());
+            session.lifecycle_on_error(pending, switched)?;
             session.punctuation_override = Some(enabled);
+            session.lifecycle_settle(pending);
             serialized_runtime_view(session)
         })
     })
@@ -62,16 +66,21 @@ pub extern "C" fn msime_client_set_paired_punctuation(handle: u64, enabled: bool
 pub extern "C" fn msime_client_set_punctuation_lock(handle: u64, lock: u8) -> *mut c_char {
     response(|| {
         with_session(handle, |session| {
-            session
+            // 同 `msime_client_set_chinese_punctuation`：按旁路调用推导。
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
+            let locked = session
                 .runtime
                 .set_punctuation_lock(lock)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string());
+            session.lifecycle_on_error(pending, locked)?;
             session.punctuation_lock_override = Some(lock);
             let engine_enabled = session.live_engine_chinese_punctuation();
-            session
+            let switched = session
                 .runtime
                 .set_chinese_punctuation_enabled(engine_enabled)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string());
+            session.lifecycle_on_error(pending, switched)?;
+            session.lifecycle_settle(pending);
             serialized_runtime_view(session)
         })
     })
@@ -81,11 +90,15 @@ pub extern "C" fn msime_client_set_punctuation_lock(handle: u64, lock: u8) -> *m
 pub extern "C" fn msime_client_set_english_mode(handle: u64, enabled: bool) -> *mut c_char {
     response(|| {
         with_session(handle, |session| {
-            session
+            // 切换专用英文会丢掉正在打的组字（IBus 的 Ctrl+Shift+E 不先上屏就调这里）：按旁路调用推导，组字的 end 和候选的 hidden 才不会丢。
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
+            let switched = session
                 .runtime
                 .set_dedicated_english(enabled)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string());
+            session.lifecycle_on_error(pending, switched)?;
             session.english_mode = enabled;
+            session.lifecycle_settle(pending);
             serialized_runtime_view(session)
         })
     })
@@ -202,6 +215,10 @@ pub extern "C" fn msime_client_command(handle: u64, command: u32) -> *mut c_char
         16 => Action::Command(Command::ConvertHanja),
         17 => Action::Command(Command::ConversionLeft),
         18 => Action::Command(Command::ConversionRight),
+        // 宿主已经自己写入了文本：对会话同 Cancel，生命周期里结束原因记 HostCommit。
+        lifecycle::COMMAND_CANCEL_AFTER_HOST_COMMIT => {
+            return dispatch_call(handle, Action::Command(Command::Cancel), true)
+        }
         100 => Action::NextPage,
         101 => Action::PreviousPage,
         102 => Action::NextCandidate,
@@ -493,9 +510,11 @@ pub extern "C" fn msime_client_punctuation_ascii(handle: u64, ascii: u8) -> *mut
 pub extern "C" fn msime_client_rerank_settled(handle: u64) -> *mut c_char {
     response(|| {
         with_session(handle, |session| {
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let moved = session.runtime.rerank_settled();
             if moved {
                 let view = session.runtime.view();
+                session.lifecycle_view(pending, &view);
                 Ok(serde_json::json!({"moved": true, "view": view}))
             } else {
                 Ok(serde_json::json!({"moved": false}))

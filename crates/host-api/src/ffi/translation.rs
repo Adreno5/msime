@@ -443,11 +443,14 @@ pub unsafe extern "C" fn msime_client_apply_translations(
             return Err("translation entries exceed limits".into());
         }
         with_session(handle, |session| {
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let applied = session.runtime.apply_translations(
                 generation,
                 values.into_iter().map(|item| (item.text, item.translation)),
             );
-            Ok(json!({"applied": applied, "view": session.runtime.view()}))
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({"applied": applied, "view": view}))
         })
     })
 }

@@ -1,5 +1,7 @@
 //! Folding externally produced candidates back into the session.
 //!
+//! 这些是旁路调用：选择加入生命周期的会话在这里只给核心发视图类事件（组字和候选的显示变化），不投递给脚本，免得把停顿时长和网络时序透露出去。runtime 报错时也照样推导，见 `HostSession::lifecycle_on_error`。
+//!
 //! Part of the C ABI; see the parent module for what these shims guarantee.
 
 use crate::*;
@@ -38,11 +40,15 @@ pub unsafe extern "C" fn msime_client_apply_online_candidate(
             if source == 1 && !session.ai_query_is_current(&query) {
                 return Ok(json!({"applied":false,"view":session.runtime.view()}));
             }
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let applied = session
                 .runtime
                 .apply_online_candidate_owned(query, candidate, source)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({ "applied": applied, "view": session.runtime.view() }))
+                .map_err(|e| e.to_string());
+            let applied = session.lifecycle_on_error(pending, applied)?;
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({ "applied": applied, "view": view }))
         })
     })
 }
@@ -72,6 +78,7 @@ pub unsafe extern "C" fn msime_client_apply_cloud_response(
             std::slice::from_raw_parts(body, body_length)
         });
         with_session(handle, |session| {
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let applied = if session.cloud_candidates_enabled() {
                 if let Some(candidate) = candidate {
                     let OnlineCandidate {
@@ -79,17 +86,20 @@ pub unsafe extern "C" fn msime_client_apply_cloud_response(
                         text,
                         source,
                     } = candidate;
-                    session
+                    let applied = session
                         .runtime
                         .apply_online_candidate_owned(query, &text, source)
-                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string());
+                    session.lifecycle_on_error(pending, applied)?
                 } else {
                     false
                 }
             } else {
                 false
             };
-            Ok(json!({ "applied": applied, "view": session.runtime.view() }))
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({ "applied": applied, "view": view }))
         })
     })
 }
@@ -131,11 +141,15 @@ pub unsafe extern "C" fn msime_client_apply_online_candidates(
             if source == 1 && !session.ai_query_is_current(&query) {
                 return Ok(json!({"applied":false,"view":session.runtime.view()}));
             }
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let applied = session
                 .runtime
                 .apply_online_candidates_owned(query, &candidates, source)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({ "applied": applied, "view": session.runtime.view() }))
+                .map_err(|e| e.to_string());
+            let applied = session.lifecycle_on_error(pending, applied)?;
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({ "applied": applied, "view": view }))
         })
     })
 }
@@ -163,11 +177,15 @@ pub unsafe extern "C" fn msime_client_resolve_online_candidates(
             if source != 1 || !session.ai_query_is_current(&query) {
                 return Ok(json!({"applied":false,"view":session.runtime.view()}));
             }
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
             let applied = session
                 .runtime
                 .resolve_online_candidates_owned(query, source)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({ "applied": applied, "view": session.runtime.view() }))
+                .map_err(|e| e.to_string());
+            let applied = session.lifecycle_on_error(pending, applied)?;
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({ "applied": applied, "view": view }))
         })
     })
 }
@@ -180,11 +198,15 @@ pub extern "C" fn msime_client_clear_online_candidates(handle: u64, source: u8) 
             return Err("invalid online candidate source".into());
         }
         with_session(handle, |session| {
-            session
+            let pending = session.lifecycle_begin(lifecycle::Call::SideChannel);
+            let cleared = session
                 .runtime
                 .clear_online_candidates(source)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({ "applied": true, "view": session.runtime.view() }))
+                .map_err(|e| e.to_string());
+            session.lifecycle_on_error(pending, cleared)?;
+            let view = session.runtime.view();
+            session.lifecycle_view(pending, &view);
+            Ok(json!({ "applied": true, "view": view }))
         })
     })
 }

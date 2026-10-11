@@ -161,6 +161,7 @@ pub unsafe extern "C" fn msime_client_create(options: *const u8, length: usize) 
                     recorded_settled_model,
                     settled_model,
                     settled_model_loading: None,
+                    lifecycle: None,
                     _dictionary_access: dictionary_access,
                 },
             )
@@ -173,6 +174,8 @@ pub unsafe extern "C" fn msime_client_create(options: *const u8, length: usize) 
 pub extern "C" fn msime_client_focus(handle: u64, focused: bool) -> *mut c_char {
     response(|| {
         with_session(handle, |session| {
+            // 在换插件表之前采样：换表会刷新打开着的 `/` 列表，这也算这次 focus 的变化。
+            let pending = session.lifecycle_begin(lifecycle::Call::Focus(focused));
             // Focus-out is where a host's field ends, so selections counted in it are written here rather than waiting for a batch to fill. The same goes for the engine's delayed context learning: the iOS keyboard extension and the Android IME process can be killed without ever destroying their sessions, and the engine no longer writes that queue at process exit.
             if !focused {
                 session.flush_selections();
@@ -184,8 +187,13 @@ pub extern "C" fn msime_client_focus(handle: u64, focused: bool) -> *mut c_char 
                 // The settings page may have imported the pack in use again, or removed it, since this session last looked.
                 session.sound.restamp();
             }
-            let result = session.runtime.focus(focused).map_err(|e| e.to_string())?;
+            let result = session.runtime.focus(focused).map_err(|e| e.to_string());
+            // 失焦先取消组字再刷新，刷新失败时组字已经没了：照样发 end、hidden 和 focus_out。
+            let result = session.lifecycle_on_error(pending, result)?;
+            let facts = session.runtime.facts();
             let result = session.complete_transition(result);
+            // 失焦上屏不可改写、也不出声；focus_in/focus_out 排在组字结束之后，所以 focus_in 也在上面的重读之后。focus 的回复不带 `feedback`。
+            session.lifecycle_after(pending, facts, &result);
             serde_json::to_value(result).map_err(|e| e.to_string())
         })
     })

@@ -33,8 +33,8 @@ mod effect;
 #[cfg(not(any(target_os = "ios", target_os = "android", target_env = "ohos")))]
 mod player;
 
-pub(crate) use effect::typing_effect;
 use effect::Combo;
+pub(crate) use effect::{typing_effect, EVENT_COMMIT, FLAG_AUTO_REPEAT, FLAG_MUTED};
 
 /// The key classes a host reports, numbered as `msime_client_key_sound` takes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
