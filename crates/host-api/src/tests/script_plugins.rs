@@ -1113,7 +1113,39 @@ fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
         ]
         .map(|value| (reason(value), value as u8)),
     );
-    // 本地模式的名字就是 runtime 的模式名：`LocalModeClass::of` 按名字归类，归回同一个数值。
+    // 本地模式的名字就是 runtime 的模式名：`LocalModeClass::of` 按名字归类，归回同一个数值。名字和是否放行文本都用穷举的 match 写，枚举加了变体这里编译不过。
+    let mode_name = |value: LocalModeClass| match value {
+        LocalModeClass::None => "none",
+        LocalModeClass::TemporaryEnglish => "temporary_english",
+        LocalModeClass::TemporaryJapanese => "temporary_japanese",
+        LocalModeClass::SuperJianpin => "super_jianpin",
+        LocalModeClass::Emoji => "emoji",
+        LocalModeClass::Kaomoji => "kaomoji",
+        LocalModeClass::Mention => "mention",
+        LocalModeClass::Url => "url",
+        LocalModeClass::Command => "command",
+        LocalModeClass::Expression => "expression",
+        LocalModeClass::Unicode => "unicode",
+        LocalModeClass::DateTime => "date_time",
+        LocalModeClass::QuickPhrase => "quick_phrase",
+        LocalModeClass::Unknown => "unknown",
+    };
+    let allows_text = |value: LocalModeClass| match value {
+        LocalModeClass::None
+        | LocalModeClass::TemporaryEnglish
+        | LocalModeClass::TemporaryJapanese
+        | LocalModeClass::SuperJianpin
+        | LocalModeClass::Emoji
+        | LocalModeClass::Kaomoji => true,
+        LocalModeClass::Mention
+        | LocalModeClass::Url
+        | LocalModeClass::Command
+        | LocalModeClass::Expression
+        | LocalModeClass::Unicode
+        | LocalModeClass::DateTime
+        | LocalModeClass::QuickPhrase
+        | LocalModeClass::Unknown => false,
+    };
     let modes = [
         LocalModeClass::None,
         LocalModeClass::TemporaryEnglish,
@@ -1130,23 +1162,18 @@ fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
         LocalModeClass::QuickPhrase,
         LocalModeClass::Unknown,
     ];
-    assert_eq!(values::LOCAL_MODE.len(), modes.len());
-    for ((name, value), mode) in values::LOCAL_MODE.iter().zip(modes) {
-        assert_eq!(*value, mode as u8, "{name}");
+    check(
+        values::LOCAL_MODE,
+        &modes.map(|mode| (mode_name(mode), mode as u8)),
+    );
+    for mode in modes {
+        let name = mode_name(mode);
         if mode != LocalModeClass::Unknown {
             assert_eq!(LocalModeClass::of(name), mode, "{name}");
         }
         assert_eq!(
-            msime_script_runtime::abi::local_mode_allows_text(*value),
-            matches!(
-                mode,
-                LocalModeClass::None
-                    | LocalModeClass::TemporaryEnglish
-                    | LocalModeClass::TemporaryJapanese
-                    | LocalModeClass::SuperJianpin
-                    | LocalModeClass::Emoji
-                    | LocalModeClass::Kaomoji
-            ),
+            msime_script_runtime::abi::local_mode_allows_text(mode as u8),
+            allows_text(mode),
             "{name}"
         );
     }
