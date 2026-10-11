@@ -1,16 +1,23 @@
 package app.msime.android.home;
 
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import app.msime.android.AndroidLocalSettings;
 import app.msime.android.DoubaoAsrPolicy;
 import app.msime.android.LocalVoiceModelPolicy;
 import app.msime.android.LocalVoiceModels;
 import app.msime.android.NativeClient;
+import app.msime.android.OfflineImportPolicy;
 import app.msime.android.ResourcePackService;
 import app.msime.android.ResourcePacks;
 import app.msime.android.TextPolicy;
@@ -20,6 +27,7 @@ import app.msime.android.VoicePolishSettingsPolicy;
 import app.msime.android.VoiceProviderPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -72,6 +80,14 @@ public final class VoicePage extends DetailPage {
     @Nullable private State lastState;
     /** 正在测试的服务（`voice.asr` / `voice.polish`）：测试中再点同一行不再发请求，免得排起一串请求和对话框。 */
     private final Set<String> testing = new HashSet<>(2);
+    /** 「从文件导入」等着文件选择器结果的那一项：资源包 id 或模型键、模型名（资源包为 null）和要的文件长度。 */
+    private record ImportTarget(String pack, @Nullable String title, long[] sizes) {}
+    @Nullable private ImportTarget pendingImport;
+    private static final String SAVED_IMPORT_PACK = "voice.import.pack";
+    private static final String SAVED_IMPORT_TITLE = "voice.import.title";
+    private static final String SAVED_IMPORT_SIZES = "voice.import.sizes";
+    private final ActivityResultLauncher<String[]> openDocuments =
+        registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), this::onImportPicked);
     /** 运行库或本地模型的下载进度变了就重画；下载结束时重读一遍安装状态。 */
     private final ResourcePackService.Listener packListener = (pack, finished) -> {
         if (column == null || !(ResourcePacks.VOICE_RUNTIME.equals(pack) || ResourcePackService.isVoiceModel(pack)))
@@ -79,6 +95,23 @@ public final class VoicePage extends DetailPage {
         if (finished) reload();
         else if (lastState != null) render(lastState);
     };
+
+    /** 文件选择器是另一个 Activity：它打开期间转屏或进程被回收，这个页面会重建，等着的那一项要跟着 Bundle 回来，否则选好的文件没有去处。 */
+    @Override public void onCreate(@Nullable Bundle saved) {
+        super.onCreate(saved);
+        String pack = saved == null ? null : saved.getString(SAVED_IMPORT_PACK);
+        long[] sizes = saved == null ? null : saved.getLongArray(SAVED_IMPORT_SIZES);
+        if (pack != null && sizes != null) pendingImport = new ImportTarget(pack, saved.getString(SAVED_IMPORT_TITLE), sizes);
+    }
+
+    @Override public void onSaveInstanceState(@NonNull Bundle out) {
+        super.onSaveInstanceState(out);
+        ImportTarget target = pendingImport;
+        if (target == null) return;
+        out.putString(SAVED_IMPORT_PACK, target.pack());
+        out.putString(SAVED_IMPORT_TITLE, target.title());
+        out.putLongArray(SAVED_IMPORT_SIZES, target.sizes());
+    }
 
     @Override protected void buildContent(LinearLayout column, Bundle args) {
         this.column = column;
@@ -296,13 +329,92 @@ public final class VoicePage extends DetailPage {
                 case VERIFYING -> group.button(model.title(), running, "校验中", () -> {}).setEnabled(false);
             }
         }
+        List<Runnable> imports = new ArrayList<>();
+        List<String> importLabels = new ArrayList<>();
+        ResourcePacks.Pack runtime = state.runtimePack();
+        ResourcePackService.Status runtimeStatus = ResourcePackService.status(ResourcePacks.VOICE_RUNTIME);
+        if (!state.runtimeReady() && runtime != null && !runtime.importFiles().isEmpty()
+                && (runtimeStatus == null || !runtimeStatus.running())) {
+            importLabels.add(ResourcePackService.title(ResourcePacks.VOICE_RUNTIME));
+            imports.add(() -> explainImport(ResourcePacks.VOICE_RUNTIME, null,
+                ResourcePackService.title(ResourcePacks.VOICE_RUNTIME), runtime.importFiles()));
+        }
+        for (LocalVoiceModels.Model model : state.models()) {
+            String key = ResourcePackService.voiceModelKey(model.id());
+            ResourcePackService.Status status = ResourcePackService.status(key);
+            if (model.installed() || model.importFiles().isEmpty() || (status != null && status.running())) continue;
+            importLabels.add(model.title());
+            imports.add(() -> explainImport(key, model.title(), model.title(), model.importFiles()));
+        }
+        if (!imports.isEmpty()) {
+            group.nav("从文件导入", "网络不通时，用自己下载好的文件安装", null, () -> {
+                OptionSheet sheet = new OptionSheet(requireContext(), "从文件导入", null);
+                for (int index = 0; index < imports.size(); index++) {
+                    sheet.option(importLabels.get(index), false, imports.get(index));
+                }
+                sheet.show();
+            });
+        }
         group.footer("本地模型在手机上识别，录音不离开本机。模型较大，建议连上 Wi-Fi 再下载；下载完成且还没有选用模型时会自动选用。");
+    }
+
+    /** 说明要自己下载哪些文件，再打开文件选择器；「下载地址」用浏览器打开上游地址。 */
+    private void explainImport(String pack, @Nullable String modelTitle, String title, List<ResourcePacks.ImportFile> files) {
+        List<String> lines = new ArrayList<>(files.size());
+        long[] sizes = new long[files.size()];
+        for (int index = 0; index < files.size(); index++) {
+            ResourcePacks.ImportFile file = files.get(index);
+            lines.add(OfflineImportPolicy.fileLine(file.name(), file.size()));
+            sizes[index] = file.size();
+        }
+        new MaterialAlertDialogBuilder(requireContext())
+            .setTitle("导入" + title)
+            .setMessage(OfflineImportPolicy.instructions(lines))
+            .setNegativeButton("取消", null)
+            .setNeutralButton("下载地址", (dialog, which) -> openDownloads(files))
+            .setPositiveButton("选择文件", (dialog, which) -> {
+                pendingImport = new ImportTarget(pack, modelTitle, sizes);
+                try {
+                    openDocuments.launch(new String[] {"*/*"});
+                } catch (ActivityNotFoundException error) {
+                    pendingImport = null;
+                    MsToast.show(requireContext(), "这台设备没有可用的文件选择器");
+                }
+            })
+            .show();
+    }
+
+    private void openDownloads(List<ResourcePacks.ImportFile> files) {
+        if (files.size() == 1) {
+            openUrl(files.get(0).url());
+            return;
+        }
+        OptionSheet sheet = new OptionSheet(requireContext(), "下载地址", null);
+        for (ResourcePacks.ImportFile file : files) sheet.option(file.name(), false, () -> openUrl(file.url()));
+        sheet.show();
+    }
+
+    private void openUrl(String url) {
+        if (url.isEmpty()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (ActivityNotFoundException error) {
+            MsToast.show(requireContext(), "没有可以打开链接的应用");
+        }
+    }
+
+    /** 文件选择器的结果：交给下载服务复制并安装；用户关掉选择器时什么也不做。 */
+    private void onImportPicked(@Nullable List<Uri> uris) {
+        ImportTarget target = pendingImport;
+        pendingImport = null;
+        if (target == null || uris == null || uris.isEmpty() || !isAdded()) return;
+        ResourcePackService.requestImport(requireContext(), target.pack(), target.title(), uris, target.sizes());
     }
 
     private static LocalVoiceModelPolicy.Download download(@Nullable ResourcePackService.Status status) {
         if (status == null) return LocalVoiceModelPolicy.Download.NONE;
         return switch (status.phase()) {
-            case DOWNLOADING -> LocalVoiceModelPolicy.Download.DOWNLOADING;
+            case DOWNLOADING, IMPORTING -> LocalVoiceModelPolicy.Download.DOWNLOADING;
             case VERIFYING -> LocalVoiceModelPolicy.Download.VERIFYING;
             case FAILED -> LocalVoiceModelPolicy.Download.FAILED;
         };

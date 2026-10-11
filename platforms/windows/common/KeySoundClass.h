@@ -3,7 +3,7 @@
 #include <optional>
 
 namespace msime::windows {
-// msime_client_key_sound 的按键类别：1 空格、2 回车、3 退格、0 其他键。单独的修饰键（Shift、Ctrl、Alt、Caps Lock、Windows 键）和 0 不是一次打字，返回空。Server 处理的键（KeySoundPolicy.h）和 TIP 交给应用的键（passthrough_key_sound_class）共用这一张表，两条路出声的键才一致。
+// msime_client_key 低 7 位的按键类别（同 msime_client_key_sound）：1 空格、2 回车、3 退格、0 其他键。单独的修饰键（Shift、Ctrl、Alt、Caps Lock、Windows 键）和 0 不是一次打字，返回空。Server 处理的键（KeySoundPolicy.h）和 TIP 交给应用的键（passthrough_key_sound_class）共用这一张表，两条路出声的键才一致。
 inline std::optional<uint32_t> key_sound_class_for_virtual_key(uint32_t virtual_key) {
   switch (virtual_key) {
   case 0:
