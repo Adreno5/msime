@@ -12088,11 +12088,13 @@ private:
                                                ai_token(current));
         });
 
-    // 「联想」：候选数量是 type=number 的输入框，取值规则见 ais::candidate_limit。
+    // 「联想」：候选数量是 type=number、min=1、max=10 的输入框，取值规则见 ais::candidate_limit。上下限与 min、max 一样让上下箭头停在 1 和 10：不设下限时在 1 上按向下得到 0，按「|| 3」存成了 3。代价是手输 0 被 NumberBox 改成 1，共享页取 3。
     auto suggestion = add_group(page, L"联想");
     NumberBox limit;
     limit.Width(120);
     limit.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+    limit.Minimum(1);
+    limit.Maximum(10);
     limit.SmallChange(1);
     limit.Value(document_.Number(L"ai_assistant.candidate_limit", 3));
     limit.IsEnabled(loaded_);
@@ -12105,7 +12107,7 @@ private:
         ai_edited(false);
         sync_ai();
       }
-      // 输入框受控：清空、0、小数或超出范围时显示存下的值。不在自己的 ValueChanged 里改值。
+      // 输入框受控：清空或小数时显示存下的值。不在自己的 ValueChanged 里改值。
       if (args.NewValue() != static_cast<double>(value))
         DispatcherQueue().TryEnqueue([weak = make_weak(sender), value] {
           if (auto box = weak.get(); box && box.Value() != static_cast<double>(value))

@@ -15,7 +15,7 @@ Status: implemented
 - 共享页 `updateAi` 的副作用集中在 `ai_edited`：每次改 AI 设置都让 `ai_generation_` 加一、清掉测试结果和两个忙碌状态；改服务商或接口地址时再清掉已获取的模型。获取模型（`msime_client_ai_models`）和润色测试（`msime_client_ai_test`）用 `run_host` 在工作线程上调用，回来时代数或请求序号变了就丢弃。失败时只显示共享页的兜底句子，因为 Tauri 拒绝的是错误码字符串，共享页的 `formatError` 不会显示它。获取到的列表不含当前模型时换成第一个并重画。
 - 「复制结果」走剪贴板页已有的 `recopy_clipboard_entry`：放进系统剪贴板，历史开着时记进历史，与 Tauri 的 `copy_text` 相同；`copy_text` 不收的文字（空、含 NUL、超过 `clipboard::MAX_TEXT_BYTES` 即 12000 字节）不复制。
 - 「更多选项」第一次画这一页时按地址能不能用决定是否展开（`MoreOptions` 的 `defaultOpen` 只在挂载时读一次），之后记住用户的展开状态；搜索跳到「接口地址」时也展开。
-- 候选数量用 `NumberBox`，不设上下限，按 `clamp(Number(value) || 3, 1, 10)` 取值，显示值与存下的值不同时在事件之后改回。
+- 候选数量用 `NumberBox`，上下限 1 和 10（对应输入框的 `min`、`max`），按 `clamp(Number(value) || 3, 1, 10)` 取值，显示值与存下的值不同时在事件之后改回。不设下限时在 1 上按向下箭头得到 0，`|| 3` 把它存成 3；设了下限，箭头停在 1 和 10，与浏览器的数字框一样。
 
 ## Alternatives considered
 
@@ -28,7 +28,7 @@ Status: implemented
 
 - 原生窗口不再为 AI 设置拉起共享应用；共享应用里只剩账号与同步一页由「打开」卡片跳转。
 - 共享页的服务商表、默认值、换服务商规则、提示词槽位或文案改了，要同步 `AiSettings.h` 和 `main.cpp`。
-- 与共享页有两处有意的差别（见上）：润色测试不作废进行中的获取模型；候选数量存整数。
+- 与共享页有三处有意的差别（见上）：润色测试不作废进行中的获取模型；候选数量存整数；手输 0 时 `NumberBox` 按下限改成 1，共享页取 3。
 
 ## Verification
 
