@@ -40,7 +40,7 @@ pub use failure::{remove_named, PluginFailure};
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 pub use import::load_script_source;
-pub use import::{import, validate};
+pub use import::{import, import_from_settings, validate};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -354,6 +354,9 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
 }
 
+/// A manifest's `kind` that is not one of `PluginKind::ALL`, and a script pack the settings page's import refuses in a release build (`import_from_settings`).
+pub(crate) const UNKNOWN_KIND: &str = "kind 不是已知的插件类型";
+
 /// `<root>/<kind>`.
 pub fn kind_directory(root: &Path, kind: PluginKind) -> PathBuf {
     root.join(kind.as_str())
@@ -622,7 +625,7 @@ fn load_directory_with(directory: &Path, data_files: DataFiles) -> Result<Plugin
         .get("kind")
         .and_then(Value::as_str)
         .and_then(PluginKind::parse)
-        .ok_or("kind 不是已知的插件类型")?;
+        .ok_or(UNKNOWN_KIND)?;
     #[cfg(any(
         target_os = "macos",
         target_os = "windows",

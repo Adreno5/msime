@@ -545,6 +545,31 @@ fn load_hands_over_the_module_it_hashed_and_scan_lists_scripts_that_pages_leave_
     assert!(community::pack(&root, PluginKind::Script, "pangu").is_err());
 }
 
+#[test]
+fn the_settings_import_refuses_script_packs_in_release_builds_before_installing_anything() {
+    let files = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let root = state.path().join("plugins");
+    let (script, wasm) = reader("pangu");
+    let source = write_pack(files.path(), "pangu", &script, &wasm);
+
+    // release 构建里设置页的导入走的就是这条路：和移动端遇到 `script` 一样报未知类型，不留包目录，也不写授权。
+    match super::import::import_inner(&source, &root, false) {
+        Err(PluginError::Invalid(reason)) => assert_eq!(reason, UNKNOWN_KIND),
+        other => panic!("not refused as an unknown kind: {other:?}"),
+    }
+    assert!(!root.join("script/pangu").exists());
+    assert!(!root.join(script_grants::GRANTS_FILE).exists());
+    assert!(script_grants::read(&root).plugins.is_empty());
+
+    // 设置页的导入只在开发构建里接受脚本包。
+    assert_eq!(
+        import_from_settings(&source, &root).is_ok(),
+        cfg!(debug_assertions)
+    );
+    assert_eq!(root.join("script/pangu").is_dir(), cfg!(debug_assertions));
+}
+
 fn read_commit() -> CapabilitySet {
     CapabilitySet::EMPTY.with(Capability::ReadCommit)
 }
