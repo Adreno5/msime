@@ -21,7 +21,7 @@ Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script
 
 **运行条件，五项同时满足：** 进程开关开着；会话经 `msime_client_set_lifecycle` 选择加入（没选择加入的会话没有 `LifecycleState`，脚本集合就挂在它上面，所以什么都没有）；字段属性带 `KNOWN`；不带 `SECURE` 或 `PRIVATE`；不带 `ELEVATED`。属性未知按不满足处理。`set_field_traits` 让属性变得不满足时，正在跑的实例当场丢弃。
 
-**每次聚焦之后属性要重新确认。** 宿主按契约在每个键之前比较一次属性、变了才报告，聚焦本身不带属性；不重新确认的话，聚焦进密码框、隐私字段或提权窗口时，插件会按上一个字段的普通属性被实例化并收到 `focus_in`，直到第一个键报告了 SECURE 才丢弃。所以 `focus(true)` 把属性记为未确认，确认之前不实例化、不投递。确认有两种：聚焦之前（上一个键或上一次失焦之后）调过 `set_field_traits`，属性没变也算；或者聚焦之后的第一个 `msime_client_key`。头文件写明想让脚本收到 `focus_in` 的宿主要在 `msime_client_focus(true)` 之前报告属性；不这样做的宿主，脚本从第一个键开始运行。
+**每次聚焦之后属性要重新确认。** 宿主按契约在每个键之前比较一次属性、变了才报告，聚焦本身不带属性；不重新确认的话，聚焦进密码框、隐私字段或提权窗口时，插件会按上一个字段的普通属性被实例化并收到 `focus_in`，直到第一个键报告了 SECURE 才丢弃。所以 `focus(true)` 把属性记为未确认，确认之前不实例化、不投递。确认有两种：聚焦之前（上一个键或上一次失焦之后）调过 `set_field_traits`，属性没变也算；或者聚焦之后第一个不带 `PASSTHROUGH` 的 `msime_client_key`。交给应用的键不算确认：Windows 上它经 Aux 管道上报，和 Main 管道上的属性帧没有先后保证，可能先于新字段的属性到达。头文件写明想让脚本收到 `focus_in` 的宿主要在 `msime_client_focus(true)` 之前报告属性；不这样做的宿主，脚本从第一个键开始运行。
 
 **投递哪些事件。** `focus_in`、`focus_out`、`input`、`selection_retracted`、`candidate_selected`、`commit`、`composition_start`、`composition_update`、`composition_end`、`candidates_shown`、`candidates_hidden`，只来自派发类调用、focus 和 destroy（包括报错时的收尾推导）。不投递：`msime_client_key` 的按键（泄露击键节奏）；字段属性、激活和会话结束（只给核心）；旁路调用和设置类调用（`apply_online_*`、`rerank_settled`、`set_english_mode`、`update_preferences` 等）的视图事件（泄露停顿和网络时序）。`before_commit` 和 `candidates` 是修改类钩子，第 4 阶段连同改写一起接通；本阶段只声明了这两个钩子的脚本什么都收不到。
 

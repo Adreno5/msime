@@ -598,9 +598,9 @@ impl LifecycleState {
             return 0;
         }
         self.effect = 0;
-        self.scripts.key_reported();
-        // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给。
+        // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给；它也不确认字段属性：Windows 上这类键走 Aux 管道，和 Main 管道上的属性帧没有先后保证，可能先于新字段的属性到达。
         if key & KEY_PASSTHROUGH == 0 {
+            self.scripts.key_reported();
             self.scripts.next_turn();
         }
         self.emit(

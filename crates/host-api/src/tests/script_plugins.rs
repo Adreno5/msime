@@ -437,6 +437,23 @@ fn a_new_field_runs_nothing_until_its_traits_are_confirmed() {
 }
 
 #[test]
+fn a_passthrough_key_does_not_confirm_the_traits_of_a_new_field() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    opt_in(&fixture, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, false));
+    take_log();
+    // 新字段，宿主没在聚焦前报告属性。Windows 上交给应用的键经 Aux 管道上报，和 Main 管道上新字段的属性帧没有先后保证：它不能当作属性已经比较过，之后的派发什么都不运行。
+    read(msime_client_focus(fixture.handle, true));
+    msime_client_key(fixture.handle, KEY_PASSTHROUGH);
+    read(msime_client_reset_cache(fixture.handle));
+    assert!(take_log().is_empty());
+    // 不交给应用的键才算确认。
+    letter(fixture.handle, b'n');
+    assert!(kinds(&take_log()).contains(&Hook::Input.code()));
+}
+
+#[test]
 fn a_field_turning_secure_drops_the_running_instance() {
     let fixture = fixture();
     install(

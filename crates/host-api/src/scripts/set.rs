@@ -62,7 +62,7 @@ pub(crate) struct ScriptSet {
     turn: u64,
     /// 本轮（或这次聚焦以来）还能花在初始化上的 fuel，所有插件合计。用完的插件推迟到下一轮再实例化，不算失败。
     init_left: u64,
-    /// 字段属性确认过：宿主报告过属性（`msime_client_set_field_traits`），或者按过键（契约是每个键之前比较一次属性）。每次聚焦都重新要求确认，否则新字段在第一个键之前沿用上一个字段的属性，聚焦进密码框时插件照样会被实例化、收到 `focus_in`。
+    /// 字段属性确认过：宿主报告过属性（`msime_client_set_field_traits`），或者按过不带 PASSTHROUGH 的键（契约是每个键之前比较一次属性）。每次聚焦都重新要求确认，否则新字段在第一个键之前沿用上一个字段的属性，聚焦进密码框时插件照样会被实例化、收到 `focus_in`。
     traits_confirmed: bool,
     /// 上一个键或上一次聚焦变化之后宿主报告过属性：聚焦前报告的属性属于新字段，可以直接确认。
     traits_since_key: bool,
@@ -92,7 +92,7 @@ impl ScriptSet {
         }
     }
 
-    /// 宿主按了一个键：按契约它在这之前已经比较过属性，现在的属性就是这个字段的。
+    /// 宿主按了一个不带 PASSTHROUGH 的键：按契约它在这之前已经比较过属性，现在的属性就是这个字段的。交给应用的键不算：Windows 的这类键走 Aux 管道，和 Main 管道上的属性帧没有先后保证。
     pub(crate) fn key_reported(&mut self) {
         self.traits_confirmed = true;
         self.traits_since_key = false;
