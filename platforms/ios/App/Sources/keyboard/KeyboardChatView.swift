@@ -8,16 +8,15 @@ final class KeyboardChatModel: ObservableObject {
     let text: String
   }
   @Published var messages: [Message] = []
-  @Published var models: [BackendAccountClient.ChatModels.Model] = []
-  @Published var selectedModel = ""
   @Published var sending = false
-  @Published var loadingModels = false
+  @Published var loadingAccount = false
   @Published var error: String?
   @Published var loginNeeded = false
+  /// 已确认的账号；为 nil 时还不能发送。用哪个模型由后端决定，这里不加载模型目录，也不让用户选。
+  @Published private(set) var accountID: String?
   private var request: Task<Void, Never>?
   private let api = BackendAccountClient()
   private var generation = 0
-  private var accountID: String?
   private var accountSessionID: UUID?
 
   private func switchAccount(to userID: String?, sessionID: UUID? = nil) {
@@ -25,8 +24,6 @@ final class KeyboardChatModel: ObservableObject {
     clear()
     accountID = userID
     accountSessionID = sessionID
-    models = []
-    selectedModel = ""
   }
 
   private var isFixture: Bool {
@@ -37,27 +34,18 @@ final class KeyboardChatModel: ObservableObject {
     #endif
   }
 
-  func loadModels() async {
-    if isFixture {
-      switchAccount(to: "fixture-chat-account")
-      models = [.init(id: "fixture-chat"), .init(id: "fixture-fast")]
-      selectedModel = "fixture-chat"
-      return
-    }
-    guard !loadingModels else { return }
-    loadingModels = true
-    defer { loadingModels = false }
+  func loadAccount() async {
+    if isFixture { switchAccount(to: "fixture-chat-account"); return }
+    guard !loadingAccount else { return }
+    loadingAccount = true
+    defer { loadingAccount = false }
     do {
       guard let userID = try await BackendAccountSession.shared.user()?.id else {
         switchAccount(to: nil); loginNeeded = true; return
       }
       let identity = try await BackendAccountSession.shared.credentials(matchingUserID: userID)
-      switchAccount(to: identity.userID, sessionID: identity.sessionID)
-      let catalog = try await api.chatModels(session: .shared, matchingUserID: identity.userID,
-                                              matchingSessionID: identity.sessionID)
       try Task.checkCancellation()
-      models = catalog.data
-      if !models.contains(where: { $0.id == selectedModel }) { selectedModel = catalog.default_model }
+      switchAccount(to: identity.userID, sessionID: identity.sessionID)
       loginNeeded = false
       error = nil
     } catch is CancellationError { }
@@ -65,7 +53,7 @@ final class KeyboardChatModel: ObservableObject {
   }
 
   func send(_ text: String) {
-    guard !sending, !selectedModel.isEmpty, accountID != nil else { return }
+    guard !sending, accountID != nil else { return }
     messages.append(Message(role: "user", text: text))
     submit()
   }
@@ -75,7 +63,7 @@ final class KeyboardChatModel: ObservableObject {
     let sessionID = accountSessionID
     error = nil; sending = true
     generation += 1
-    let version = generation, model = selectedModel
+    let version = generation
     // Bound context to the service contract while retaining the newest complete messages.
     let context = KeyboardChatHistoryPolicy.bounded(messages.map { (role: $0.role, text: $0.text) })
       .map { BackendAccountClient.ChatMessage(role: $0.role, content: $0.text) }
@@ -90,7 +78,7 @@ final class KeyboardChatModel: ObservableObject {
           messages.append(Message(role: "assistant", text: "已收到：" + (history.last?.content ?? "")))
           return
         }
-        let reply = try await api.chat(messages: history, model: model,
+        let reply = try await api.chat(messages: history,
                                        session: .shared, matchingUserID: userID,
                                        matchingSessionID: sessionID)
         try Task.checkCancellation()
@@ -107,8 +95,8 @@ final class KeyboardChatModel: ObservableObject {
       loginNeeded = failure.status == 401
       switch failure.status {
       case 401: error = "登录后即可与 AI 对话，输入框仍可试用键盘。"
-      case 404: error = "聊天服务正在更新，请稍后重新加载模型。"
-      case 400: error = "模型或消息暂不受支持，请刷新模型列表后重试。"
+      case 404: error = "聊天服务正在更新，请稍后重试。"
+      case 400: error = "这条消息暂不受支持，请修改后重试。"
       default: error = failure.localizedDescription
       }
     } else { error = "连接失败，请检查网络后重试。" }
@@ -134,16 +122,12 @@ struct KeyboardTryoutView: View {
         Image("EveryAPI").resizable().scaledToFit().frame(width: 22, height: 22)
         Text("EveryAPI").font(.subheadline.weight(.semibold))
         Spacer()
-        if chat.loadingModels { ProgressView() }
-        else if chat.models.isEmpty {
-          Button(chat.loginNeeded ? "登录使用 AI" : "加载模型") {
+        if chat.loadingAccount { ProgressView() }
+        else if chat.loginNeeded || chat.accountID == nil {
+          Button(chat.loginNeeded ? "登录使用 AI" : "重新连接") {
             if chat.loginNeeded { showAccount = true }
-            else { Task { await chat.loadModels() } }
-          }.font(.caption)
-        } else {
-          Picker("模型", selection: $chat.selectedModel) {
-            ForEach(chat.models) { Text($0.id).tag($0.id) }
-          }.pickerStyle(.menu).disabled(chat.sending).accessibilityIdentifier("keyboardChatModelPicker")
+            else { Task { await chat.loadAccount() } }
+          }.font(.caption).accessibilityIdentifier("keyboardChatAccountButton")
         }
       }.padding(.horizontal, 16).padding(.vertical, 10)
       Divider()
@@ -198,7 +182,7 @@ struct KeyboardTryoutView: View {
             guard !text.isEmpty else { return }
             chat.send(text); draft = ""
           } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }
-          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!chat.loginNeeded && chat.selectedModel.isEmpty))
+          .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!chat.loginNeeded && chat.accountID == nil))
           .accessibilityLabel("发送消息").accessibilityIdentifier("keyboardChatSend")
         }
       }.padding(12)
@@ -212,10 +196,10 @@ struct KeyboardTryoutView: View {
       .task {
         if focusOnAppear || focusRequest != handledFocusRequest { focused = true }
         handledFocusRequest = focusRequest
-        await chat.loadModels()
+        await chat.loadAccount()
       }
       .onDisappear { chat.cancel(); focused = false }
-      .sheet(isPresented: $showAccount, onDismiss: { Task { await chat.loadModels() } }) {
+      .sheet(isPresented: $showAccount, onDismiss: { Task { await chat.loadAccount() } }) {
         AccountLoginSheet()
       }
       .confirmationDialog("开始新对话？当前消息将被清空。", isPresented: $clearConfirmation, titleVisibility: .visible) {
