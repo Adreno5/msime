@@ -7151,3 +7151,25 @@ fn a_failed_ai_answer_leaves_a_dash_in_the_seat_until_the_composition_changes() 
     assert_eq!(texts(&runtime), pending);
     assert!(!runtime.resolve_online_candidates_owned(query, 1).unwrap());
 }
+
+/// #6888：重排模型不拿 AI 候选和它的占位行比较。在线座位总会把它们放回 AI 座位，若让它们参与，回答一到就可能抢走本来要提到首位的本地候选，本地候选的次序随之改变。
+#[test]
+fn the_reranker_never_weighs_ai_rows_or_their_placeholder() {
+    use msime_engine::ordering::{rerank_pick, ParallelOrderRows};
+    let mut reranker = Reranker::new(std::sync::Arc::new(favouring_model(
+        &['寒', '韓', '漢'],
+        &['漢'],
+    )));
+    let texts: Vec<String> = ["寒", "韓", "漢"].map(str::to_owned).to_vec();
+    let answers = vec![true; 3];
+    let corrected = vec![false; 3];
+    for (source, expected) in [(LATTICE_SOURCE, Some(2)), (3, None), (12, None)] {
+        let sources = vec![LATTICE_SOURCE, LATTICE_SOURCE, source];
+        let rows = ParallelOrderRows::new(&texts, &sources, &answers, &corrected);
+        assert_eq!(
+            rerank_pick(&mut reranker, "", 0, true, &rows),
+            expected,
+            "source {source}"
+        );
+    }
+}
