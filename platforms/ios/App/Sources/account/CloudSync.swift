@@ -195,6 +195,8 @@ struct CloudSyncRun {
 
   private func settings() async throws {
     guard await current(), let schema, let cloud = preferences else { return }
+    // 社区皮肤试用中，共享文档里是用户还没决定保留的皮肤，不能当成设置上传；也不下载，免得覆盖试用要恢复的原值。待上传标记留着，用户保留或恢复之后的下一轮再同步。
+    if (try? KeyboardSkinTrialStore())?.hasPendingTrial == true { return }
     // 先记下改动代数再读本机：上传期间用户又改了设置，代数会变大，标记留着，下一轮再传。
     let record = try state.read()
     let generation = record.generation(.settings)
