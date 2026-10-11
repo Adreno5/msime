@@ -143,6 +143,7 @@ export function InputSettingsPage() {
         resourcePacks={resourcePacks}
         languageCard={harmonyPhone}
         onEnableAndSelectTouchKeyboardScheme={selectHomeScheme}
+        wubiCodeLookup={client.dictionary?.wubiCodes?.bind(client.dictionary)}
       />
       {harmonyPhone && (
         <>

@@ -29,6 +29,17 @@ Status: implemented
 - **Android 不进队列**：Android 设置页把所有词库操作送进个人词库队列（`personal_dictionary_request_json`），队列是为了等键盘空闲再写词库。查码不写任何东西，所以在入口直接回答，不排队，也不建 `PersonalDictionary` 目录。
 - **上限**：`text` 超过 4096 字节报 `invalid wubi lookup`。粘贴一整篇文章时只列前 64 个不同汉字，结果里标出截断。
 
+## 设置页的「五笔查码」
+
+共享设置页的「输入」页在五笔的设置显示时（当前方案是五笔、触屏方案里启用了五笔，或只有五笔的版本），在方案组之后画一个「五笔查码」组（`packages/ui/src/settings/wubi-code-lookup-section.tsx`）：一个文本框、一个「查码」按钮和一张表，表里先列整段词（有的话），再逐字列出 86 和 98 两列编码，当前所选码表那一列标「（当前）」，码表里没有的写「—」。说明文字同时告诉用户打字时可以按 `z` 加拼音查。
+
+页面只经 `DictionaryClient.wubiCodes` 拿结果；宿主没有提供它时整组不画。各宿主的接法：
+
+- macOS、Linux：Tauri 设置应用的 `dictionary` 客户端（`apps/desktop/src/main.tsx`）发 `dictionary_request`，到 `dictionary_request_json`。
+- Android、iOS：同一个 Tauri 前端，`mobileDictionary` 展开 `dictionary` 带上 `wubiCodes`。Android 的 `dictionary_request` 进 `personal_dictionary_request_json`，那里直接回答；iOS 的 `ios_personal_dictionary_action` 不认 `wubi_codes`，于是走 App 进程里的 `dictionary_request_json`。
+- HarmonyOS：`apps/harmony/src/main.tsx` 的 `dictionary` 客户端经桥方法 `dictionary` 到 `KeyboardSession.dictionary`，再到 `msime_client_dictionary`。
+- Windows：设置窗口是原生 WinUI 的 `msime-client-settings.exe`（`platforms/windows/settings/main.cpp`），不承载共享设置页，所以没有这个组。`z` 反查在 Windows 上照常可用，它在共享引擎里。给 WinUI 设置窗口补一页查码要走 MSVC 构建，属于后续工作。
+
 字根拆分不做：仓库里没有授权清楚的 86/98 拆分数据（`resources/helpcodes` 里只有拼音辅助码用的字根数据），而且很多字根不是 Unicode 字符，要另配字体或图片。
 
 ## Golden 基准
@@ -54,4 +65,6 @@ Status: implemented
 - `cargo test -p msime-engine --lib`：`wubi::scheme` 新增三条（开头 `z` 引导、反查上限 32 与四个字母不是完整码、中间 `z` 仍拒绝、退格离开；不允许时 `z` 被滤掉；宿主编辑整段保留反查原文），`host::tests` 新增六条：反查附码且单字是全码、跟随 98 码表、进入与离开（退格、取消、离开后五笔码照常）、混输里没有 `z` 反查、选走一部分后剩余拼音仍在反查且回车只上屏拼音、反查不学习（并以混输里同样的选择会写日志作对照，证明测得到学习）。不学习那条在去掉 `learn_candidate` 的判断后失败。
 - `cargo test -p msime-engine --test golden`：更新后的三个场景与其余场景全部通过。
 - `cargo test -p msime-engine --lib -- wubi::lookup`：每个字全部编码短码在前、重复编码并成一个；非汉字跳过、重复的字只列一次、带标点的一段不当词查；码表没有的字列出但没有编码；缺 `wubi98` 表或整个文件时只有那一列为空；超过 64 个不同汉字截断。
+- `pnpm --filter @msime/desktop exec vitest run`（全量 524 个文件通过），其中 `tests/settings/wubi-code-lookup-section.test.tsx`：整段词在前、两列编码与当前码表标记；没有汉字和截断的提示；失败时报错并清掉旧结果；「输入」页在五笔方案且宿主有 `wubiCodes` 时画出这一组并用它查，全拼方案或宿主没给 `wubiCodes` 时不画。
+- `platforms/harmony/tests/run.sh`：`DictionaryMaintenancePolicy` 把 `wubi_codes` 当读操作（组字时允许、不要维护、不进队列）。
 - `cargo test -p msime-host-api --lib -- dictionary::tests::wubi`：两个入口对同一请求给出相同回答，个人词库队列不建目录、用户数据目录不变；超长文字两个入口都拒绝。

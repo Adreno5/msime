@@ -84,6 +84,7 @@ import {
   type PluginCatalogResult,
   type PluginClient,
   type PluginPackage,
+  type WubiCodeLookup,
   UNBATCHED_DICTIONARY_FILE_BYTES,
   StatusMessage,
 } from "@msime/ui";
@@ -137,6 +138,9 @@ const dictionary: DictionaryClient = {
     invoke("dictionary_request", { action: { operation: "dismiss_failure", request_id } }).then(
       () => undefined,
     ),
+  // 只读码表。Android 的 `dictionary_request` 把它交给个人词库入口，那里直接回答、不进队列；手机端经 `mobileDictionary` 一并带上。
+  wubiCodes: (text: string) =>
+    invoke<WubiCodeLookup>("dictionary_request", { action: { operation: "wubi_codes", text } }),
 };
 const mobileDictionary: DictionaryClient = {
   ...dictionary,

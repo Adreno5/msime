@@ -35,6 +35,7 @@ import { settingsThemePreferences } from "./settings/settings-theme-preferences"
 import type { VoiceDeviceReader } from "./voice/voice-device-picker";
 import type { LocalVoiceModelClient } from "./voice/local-models";
 import type { ResourcePackClient } from "./settings/resource-packs";
+import type { WubiCodeLookup } from "./settings/wubi-code-lookup-section";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   type DictionaryEntry,
@@ -865,6 +866,14 @@ export {
   type TelemetrySectionProps,
 } from "./settings/telemetry-section";
 export { WubiSection, type WubiPreferences, type WubiSectionProps } from "./settings/wubi-section";
+export {
+  WubiCodeLookupSection,
+  WUBI_CODE_LOOKUP_MAX_LENGTH,
+  type WubiCodeLookup,
+  type WubiCodeLookupClient,
+  type WubiCodeLookupSectionProps,
+  type WubiTextCodes,
+} from "./settings/wubi-code-lookup-section";
 export {
   InputModeSection,
   type InputModeScheme,
@@ -2070,6 +2079,8 @@ export interface DictionaryClient {
   dismissFailure?(request_id: string): Promise<void>;
   /** 一种词库的词条总数，含内置词条；手机「词库」页的「拼音词库」行显示它。 */
   count?(kind: LocalDictionaryKind): Promise<number>;
+  /** 五笔查码（词库请求 `wubi_codes`，只读）：`text` 里每个汉字和整段词的 86、98 五笔编码。宿主提供它时，五笔的设置下面出现「五笔查码」。 */
+  wubiCodes?(text: string): Promise<WubiCodeLookup>;
 }
 export { dictionaryKindKeyHint } from "./settings/pages/dictionary-page";
 export type {
