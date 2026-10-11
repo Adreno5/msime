@@ -86,6 +86,20 @@ public final class EditorActivity extends Activity {
         imageStatus.setContentDescription("msime-test-image-status");
         imageStatus.setText("idle");
         layout.addView(imageStatus);
+        EditText noCursorAnchor = new NoCursorAnchorEditText(this);
+        noCursorAnchor.setInputType(InputType.TYPE_CLASS_TEXT);
+        noCursorAnchor.setContentDescription("msime-test-no-cursor-anchor");
+        noCursorAnchor.setHint("Editor that reports no cursor position");
+        showImeOnFocus(noCursorAnchor);
+        layout.addView(noCursorAnchor);
+        // 窄的多行输入框：一段长组字放不下一行，折到下一行（#6792 候选栏跟随光标要放在组字最后一行下方）。
+        EditText wrapping = new EditText(this);
+        wrapping.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        wrapping.setContentDescription("msime-test-wrapping");
+        wrapping.setHint("Wrap");
+        showImeOnFocus(wrapping);
+        layout.addView(wrapping, new LinearLayout.LayoutParams(
+            Math.round(120 * getResources().getDisplayMetrics().density), LinearLayout.LayoutParams.WRAP_CONTENT));
         setContentView(layout);
     }
 
@@ -187,6 +201,28 @@ public final class EditorActivity extends Activity {
             return new InputConnectionWrapper(connection, false) {
                 @Override public boolean commitText(CharSequence text, int newCursorPosition) {
                     return super.commitText(text, 1);
+                }
+            };
+        }
+    }
+
+    /**
+     * 不报告光标位置的编辑器：`requestCursorUpdates` 一律返回假，与自绘编辑器、部分 WebView 和游戏一样（#6792）。「物理键盘时候选栏跟随光标」在这种输入框里要退回停在底部的候选条。
+     */
+    private static final class NoCursorAnchorEditText extends EditText {
+        NoCursorAnchorEditText(Context context) { super(context); }
+
+        @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            InputConnection connection = super.onCreateInputConnection(outAttrs);
+            if (connection == null) return null;
+            return new InputConnectionWrapper(connection, false) {
+                @Override public boolean requestCursorUpdates(int cursorUpdateMode) {
+                    return false;
+                }
+
+                // 安卓 13 起框架转给编辑器的是带过滤参数的这一个，包装类会直接交给被包装的连接，不经过上面那个。
+                @Override public boolean requestCursorUpdates(int cursorUpdateMode, int cursorUpdateFilter) {
+                    return false;
                 }
             };
         }
