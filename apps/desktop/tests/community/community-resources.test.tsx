@@ -310,6 +310,31 @@ test("mobile resource details join the WebView history stack and system back res
   expect(await screen.findByRole("button", { name: "查看词库 开发词包" })).not.toBeNull();
 });
 
+test("a resource gallery opened inside another settings page keeps its detail history on that page", async () => {
+  const gallery = { category: "reply", scope: "saved", initialMine: false };
+  window.history.replaceState({ msimeSettings: true, page: "ai", communityGallery: gallery }, "");
+  const item = base("reply", "10000000-0000-4000-8000-000000000063");
+  render(
+    <CommunityResourcesPage
+      client={client({
+        list: vi.fn().mockResolvedValue({ items: [item], has_more: false }),
+        detail: vi.fn().mockResolvedValue(item),
+      })}
+      kind="reply"
+      initialScope="saved"
+      mobile
+      historyPage="ai"
+    />,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "查看回复模板 礼貌回复" }));
+  // 详情记录留在「AI 辅助」页，并保留图库的标记：返回时先回到图库，再回到 AI 辅助页。
+  expect(window.history.state).toMatchObject({
+    page: "ai",
+    communityGallery: gallery,
+    communityDetail: { kind: "reply", id: item.id },
+  });
+});
+
 test("dictionary details can import the preview into the local dictionary without cloud mutation", async () => {
   const item = base("dictionary");
   const localImport = vi.fn().mockResolvedValue({ applied: 1 });

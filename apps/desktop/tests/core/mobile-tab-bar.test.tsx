@@ -2,7 +2,7 @@
 import { testHost } from "../support/host";
 import { settingsFormReady } from "../support/settings-form";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { SettingsPage, type Snapshot } from "@msime/ui";
 
 afterEach(() => {
@@ -31,10 +31,22 @@ function mount(initialPage?: string, platform = "harmony") {
         load: async () => initial,
         save: vi.fn(),
         home: {},
-        // The four tabs only exist where their pages do, and each page is gated on the capability
-        // behind it. Harmony has all four.
+        // 标签页只在对应页面存在时出现，每个页面又取决于它背后的客户端能力。鸿蒙四个都有；社区客户端在，但已没有「社区」标签页，第二格是 AI 对话。
         account: {} as never,
-        typingStatistics: {} as never,
+        chat: {
+          models: vi
+            .fn()
+            .mockResolvedValue({ data: [{ id: "fixture-model" }], defaultModel: "fixture-model" }),
+          complete: vi.fn(),
+        },
+        typingStatistics: {
+          load: vi.fn().mockResolvedValue({
+            availability: "neverWritten",
+            statistics: { enabled: false, total: 0, days: {}, detail: {} },
+          }),
+          setEnabled: vi.fn(),
+          reset: vi.fn(),
+        },
         communitySkins: {
           list: vi.fn().mockResolvedValue({ skins: [], has_more: false }),
         } as never,
@@ -44,8 +56,8 @@ function mount(initialPage?: string, platform = "harmony") {
   );
 }
 
-/** The four the design shows, in its own words: 设置 / 社区 / 统计 / 我的. */
-const tabs = ["设置", "社区", "统计", "我的"];
+/** 设计里的标签页，用它自己的叫法：设置 / 对话 / 统计 / 我的。社区内容并进了皮肤、词库、AI 辅助这些功能页，原来「社区」的第二格换成 AI 对话。 */
+const tabs = ["设置", "对话", "统计", "我的"];
 
 /** 「设置」根页，把每个没有自己标签页的页面列成一行。 */
 const root = () => screen.getByRole("region", { name: "首页" });
@@ -54,10 +66,8 @@ const rootRowTitles = () =>
 const openRootRow = (title: string) =>
   fireEvent.click(within(root()).getByRole("button", { name: title }));
 
-// The bar used to hold five cells, and the fifth was a `<select>` of thirteen page names — a form
-// control sitting where a tab belongs, and the only way into most of the app. The source's bar is
-// four tabs of an icon over a word and nothing else.
-test("the phone tab bar is the source's four tabs, each an icon over a word", async () => {
+// 标签栏曾有五格，第五格是列出十三个页面名的 `<select>`：一个表单控件占着标签页的位置，还是进入大部分应用的唯一入口。源应用的标签栏只有图标加文字的标签页，社区并进功能页之后第二格换成了对话，仍是四个。
+test("the phone tab bar is four tabs, each an icon over a word", async () => {
   mount();
   await settingsFormReady();
 
@@ -69,7 +79,7 @@ test("the phone tab bar is the source's four tabs, each an icon over a word", as
   // 鸿蒙画设计里的 Fluent 图标，是 24px 的 `currentColor` SVG，所以选中时取强调色。
   expect(icons.map((icon) => icon!.getAttribute("data-tab-icon"))).toEqual([
     "settings",
-    "people_community",
+    "chat",
     "data_bar_vertical",
     "person",
   ]);
@@ -92,8 +102,10 @@ test("a touch host other than HarmonyOS keeps the masked tab icons", async () =>
   expect(icons.every((icon) => icon.style.getPropertyValue("--tab-icon").startsWith("url("))).toBe(
     true,
   );
-  // The icons have to differ from one another, or the bar reads as four of the same thing.
+  // 图标必须各不相同，否则标签栏看上去是同一样东西重复了几遍。
   expect(new Set(icons.map((icon) => icon.getAttribute("data-tab-icon"))).size).toBe(4);
+  // 「对话」画对话气泡（带尾巴的方框），不用 `chat` 页在注册表里的问号图标。小图标在测试里被内联成 data URL，所以对照路径本身。
+  expect(decodeURIComponent(icons[1].getAttribute("data-tab-icon") ?? "")).toContain("H11L7 19V16");
   expect(bar.querySelector("svg")).toBeNull();
 });
 
@@ -175,12 +187,80 @@ test("each phone tab remembers where the user left it", async () => {
   expect(screen.getByRole("heading", { name: "输入" })).toBeTruthy();
 
   const bar = screen.getByRole("navigation", { name: "主要功能" });
-  fireEvent.click(within(bar).getByRole("button", { name: "社区" }));
-  expect(await screen.findByRole("heading", { name: "社区" })).toBeTruthy();
+  fireEvent.click(within(bar).getByRole("button", { name: "统计" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
   fireEvent.click(within(bar).getByRole("button", { name: "设置" }));
 
   expect(screen.getByRole("heading", { name: "输入" })).toBeTruthy();
   expect(within(bar).getByRole("button", { name: "设置" }).getAttribute("aria-current")).toBe(
     "page",
   );
+});
+
+// 「对话」标签页直接打开现有的 AI 对话页。它是标签页的根页面：鸿蒙手机上不滑入、不带返回按钮，「设置」标签不再高亮；从别的标签回来仍是对话。
+test("the 对话 tab opens the AI chat page as a tab of its own", async () => {
+  mount();
+  await settingsFormReady();
+
+  const bar = screen.getByRole("navigation", { name: "主要功能" });
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "聊天消息" })).toBeTruthy();
+  expect(window.history.state?.page).toBe("chat");
+  expect(within(bar).getByRole("button", { name: "对话" }).getAttribute("aria-current")).toBe(
+    "page",
+  );
+  expect(within(bar).getByRole("button", { name: "设置" }).getAttribute("aria-current")).toBeNull();
+  expect(screen.queryByRole("button", { name: "返回" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "返回AI 辅助" })).toBeNull();
+
+  fireEvent.click(within(bar).getByRole("button", { name: "统计" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+});
+
+// 对话是常驻标签：点进来不弹键盘（输入框不自动聚焦），切到别的标签只是隐藏，回来时没发出去的文字还在。
+test("the 对话 tab keeps its conversation across tabs and does not raise the keyboard", async () => {
+  mount();
+  await settingsFormReady();
+  const bar = screen.getByRole("navigation", { name: "主要功能" });
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  const composer = await screen.findByRole("textbox", { name: "聊天消息" });
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  });
+  expect(document.activeElement).not.toBe(composer);
+  fireEvent.change(composer, { target: { value: "还没发出去的一句话" } });
+
+  fireEvent.click(within(bar).getByRole("button", { name: "统计" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "统计" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "AI 对话" })).toBeNull();
+
+  fireEvent.click(within(bar).getByRole("button", { name: "对话" }));
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "聊天消息" }) as HTMLTextAreaElement).value).toBe(
+    "还没发出去的一句话",
+  );
+});
+
+// 进入 AI 对话的入口由标签页承担，「AI 辅助」页不再列第二个「AI 对话」行。
+test("the AI 辅助 page no longer lists a second way into the chat on a touch host", async () => {
+  mount("ai");
+  await settingsFormReady();
+
+  expect(await screen.findByRole("heading", { level: 1, name: "AI 辅助" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "AI 对话" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^AI 对话/ })).toBeNull();
+});
+
+// 桌面没有底部标签栏，有对话客户端时仍从「AI 辅助」页里的那一行进入。
+test("the desktop AI 辅助 page keeps its row into the chat", async () => {
+  mount("ai", "macos");
+  await settingsFormReady();
+
+  expect(screen.queryByRole("navigation", { name: "主要功能" })).toBeNull();
+  fireEvent.click(await screen.findByRole("button", { name: /^AI 对话/ }));
+  expect(await screen.findByRole("region", { name: "AI 对话" })).toBeTruthy();
 });

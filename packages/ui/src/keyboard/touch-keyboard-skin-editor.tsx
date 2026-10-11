@@ -48,10 +48,10 @@ type Category = "背景" | "按键" | "文本" | "设计" | "我的";
 type NameEditor = { operation: "create" } | { operation: "rename"; id: string };
 type Confirmation = { operation: "update" | "delete"; item: SavedTouchKeyboardSkin };
 
-// 全屏呈现以页面自身的背景覆盖整个设置界面，并避开系统栏。
-const fullScreenSurface =
+// 全屏呈现以页面自身的背景覆盖整个设置界面，并避开系统栏。功能页里打开的社区图库（`CommunityGallerySubview`）也用这一套。
+export const fullScreenSurface =
   "fixed inset-0 z-40 overflow-y-auto bg-[var(--p-bg)] pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)] text-[var(--p-text)] [font-family:var(--p-font)]";
-const fullScreenColumn = "mx-auto flex w-full max-w-[760px] flex-col gap-3.5 px-4 pt-1 pb-6";
+export const fullScreenColumn = "mx-auto flex w-full max-w-[760px] flex-col gap-3.5 px-4 pt-1 pb-6";
 
 /**
  * AI 皮肤抽卡：每次抽三款皮肤，每款都可以使用、保存到「我的皮肤」或发布。编辑器以对话框形式在页面上打开它。`fullScreen` 则把它呈现为独立视图，标题前带返回按钮，手机皮肤网格里的 AI 磁贴就是这样打开它的。`useLabel` 是把方案交给 `onUse` 的那个按钮的名称。
