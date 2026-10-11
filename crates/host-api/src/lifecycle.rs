@@ -9,13 +9,15 @@
 //! 消费者有两类：内置的音效、特效和音乐（`FEEDBACK` 位），以及脚本插件（`crate::scripts`，只在桌面开发构建里、进程开关打开时才有事件可收）。旁路调用的视图事件只给内置消费者。
 
 use crate::key_sound::{self, KeyClass, SessionSound};
-use crate::scripts::{CallTexts, ScriptSet};
+use crate::scripts::{CallTexts, RewriteRequest, ScriptSet};
 use msime_engine::LocalInputMode;
 use msime_input_runtime::{
     DispatchFacts, Runtime, SelectionFact, SelectionHow, SelectionOutcome, SelectionRetraction,
     View,
 };
+use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -244,7 +246,7 @@ pub enum LifecycleEvent {
     },
     SelectionRetracted(SelectionRetraction),
     CandidateSelected(SelectionFact),
-    /// 上屏前，只在派发类调用里出现。本阶段只是内部发出点，不改写。`body_chars` + `tail_chars` 是上屏文本的字符数（Unicode 标量）；tail 是标点或顶字的尾巴，只读。
+    /// 上屏前，只在派发类调用里出现。`body_chars` + `tail_chars` 是改写之前上屏文本的字符数（Unicode 标量）；tail 是标点或顶字的尾巴，只读。可改写时脚本插件可以改写 body，之后的 `commit` 带着改写后的字符数和 `rewritten`。
     BeforeCommit {
         origin: CommitOrigin,
         body_chars: u32,
@@ -370,7 +372,7 @@ impl Context {
     }
 }
 
-/// 从采样和派发事实推导本次调用的事件，按顺序交给 `emit`。纯函数：不读会话、不分配内存。`input` 不在这里：它排在 runtime 调用之前，由调用方先发。
+/// 从采样和派发事实推导本次调用的事件，按顺序交给 `emit`。纯函数：不读会话、不分配内存。`input` 不在这里：它排在 runtime 调用之前，由调用方先发。不改写上屏；会改写的调用方把这三段分开调用，在 `before_commit` 和 `commit` 之间改写。
 #[allow(clippy::too_many_arguments)]
 pub fn derive(
     call: Call,
@@ -382,8 +384,20 @@ pub fn derive(
     page: PageSample,
     mut emit: impl FnMut(LifecycleEvent),
 ) {
-    let dispatch = matches!(call, Call::Dispatch(_));
-    if dispatch {
+    derive_selection(call, facts, &mut emit);
+    if let Some(event) = before_commit_event(call, context, facts, commit) {
+        emit(event);
+    }
+    derive_rest(call, pre, post, facts, commit, false, page, emit);
+}
+
+/// 上屏之前的两个事件，只在派发类调用里：`selection_retracted`、`candidate_selected`。
+pub(crate) fn derive_selection(
+    call: Call,
+    facts: DispatchFacts,
+    emit: &mut impl FnMut(LifecycleEvent),
+) {
+    if matches!(call, Call::Dispatch(_)) {
         if let Some(retraction) = facts.retracted {
             emit(LifecycleEvent::SelectionRetracted(retraction));
         }
@@ -391,23 +405,45 @@ pub fn derive(
             emit(LifecycleEvent::CandidateSelected(selection));
         }
     }
+}
+
+/// `before_commit`：只在派发类调用带着上屏时有。
+pub(crate) fn before_commit_event(
+    call: Call,
+    context: Context,
+    facts: DispatchFacts,
+    commit: Option<CommitSample>,
+) -> Option<LifecycleEvent> {
+    let commit = commit.filter(|_| matches!(call, Call::Dispatch(_)))?;
+    let origin = commit_origin(call, facts);
+    let tail_chars = facts.tail_chars.min(commit.chars);
+    Some(LifecycleEvent::BeforeCommit {
+        origin,
+        body_chars: commit.chars - tail_chars,
+        tail_chars,
+        rewritable: rewritable(origin, context, facts, commit),
+    })
+}
+
+/// `before_commit` 之后的事件：`commit`（`commit` 是改写之后的采样，`rewritten` 由调用方给）、组字的开始或结束、组字更新、候选的显示或隐藏，最后是 focus 和 destroy 的事件。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn derive_rest(
+    call: Call,
+    pre: Sample,
+    post: Sample,
+    facts: DispatchFacts,
+    commit: Option<CommitSample>,
+    rewritten: bool,
+    page: PageSample,
+    mut emit: impl FnMut(LifecycleEvent),
+) {
     // 一次 transition 同时带着上屏和新组字（韩文音节延续）：发 commit{continues}，不发 end 和 start。
     let continues = commit.is_some() && pre.composing && post.composing;
     if let Some(commit) = commit {
-        let origin = commit_origin(call, facts);
-        if dispatch {
-            let tail_chars = facts.tail_chars.min(commit.chars);
-            emit(LifecycleEvent::BeforeCommit {
-                origin,
-                body_chars: commit.chars - tail_chars,
-                tail_chars,
-                rewritable: rewritable(origin, context, facts, commit),
-            });
-        }
         emit(LifecycleEvent::Commit {
-            origin,
+            origin: commit_origin(call, facts),
             chars: commit.chars,
-            rewritten: false,
+            rewritten,
             continues,
             generated: !commit.typed,
         });
@@ -456,7 +492,7 @@ fn commit_origin(call: Call, facts: DispatchFacts) -> CommitOrigin {
     }
 }
 
-/// 上屏能不能被改写（第 4 阶段才真的改写）。以词定字一律不可改写：macOS 开着繁体输出时按宿主自己注入的键重算这段上屏，改写结果会被覆盖。
+/// 上屏能不能被脚本改写：来源是选中候选、原样上屏或暂存段送出，本地模式是 none 且算打字，不是以词定字，没设 `COMMIT_OBSERVE_ONLY`，字段属性已知且不是 SECURE、PRIVATE、ELEVATED。以词定字一律不可改写：macOS 开着繁体输出时按宿主自己注入的键重算这段上屏，改写结果会被覆盖。
 fn rewritable(
     origin: CommitOrigin,
     context: Context,
@@ -502,8 +538,8 @@ pub(crate) struct LifecycleState {
     active: bool,
     /// 本次调用里内置消费者算出的打字特效，FEEDBACK 时由 `msime_client_key` 返回、或写进 transition 的 `feedback`。每次调用开始时清零。
     effect: u32,
-    /// 这个会话的脚本插件。移动端是什么都不做的空壳。
-    scripts: ScriptSet,
+    /// 这个会话的脚本插件，和挂在 runtime 上的候选变换共用。移动端是什么都不做的空壳。
+    scripts: Rc<RefCell<ScriptSet>>,
     /// 测试用的消费者：记录事件或故意 panic。
     #[cfg(test)]
     pub(crate) probe: Option<Probe>,
@@ -521,7 +557,7 @@ impl LifecycleState {
             traits: 0,
             active: false,
             effect: 0,
-            scripts: ScriptSet::default(),
+            scripts: Rc::default(),
             #[cfg(test)]
             probe: None,
         }
@@ -529,18 +565,38 @@ impl LifecycleState {
 
     /// 记下脚本插件的位置：`root` 是 `<state root>/plugins`（宿主没给状态根目录时为 `None`，脚本不运行），健康文件写在 `user_data` 下。
     pub(crate) fn bind_scripts(&mut self, root: Option<std::path::PathBuf>, user_data: &str) {
-        self.scripts.bind(root, user_data);
+        self.with_scripts(|scripts| scripts.bind(root, user_data));
+    }
+
+    /// 把脚本集合挂到 runtime 上，作为它在派发类调用里的候选变换。
+    pub(crate) fn attach_scripts(&self, runtime: &mut msime_input_runtime::Runtime) {
+        crate::scripts::attach(&self.scripts, runtime);
     }
 
     /// `msime_client_focus(true)` 开始时：丢弃上一个字段的脚本实例，按戳重读授权。
     pub(crate) fn scripts_focus_in(&mut self) {
-        self.scripts.focus_in();
+        self.with_scripts(ScriptSet::focus_in);
     }
 
-    /// 测量直接对着脚本集合投递。
-    #[cfg(test)]
-    pub(crate) fn scripts_mut(&mut self) -> &mut ScriptSet {
-        &mut self.scripts
+    /// 测量和测试直接对着脚本集合投递。只有桌面上有这些测试。
+    #[cfg(all(
+        test,
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
+    ))]
+    pub(crate) fn scripts_mut(&mut self) -> std::cell::RefMut<'_, ScriptSet> {
+        self.scripts.borrow_mut()
+    }
+
+    /// 借脚本集合用一次。它只在会话线程上、一次调用之内被借；万一已经借着（runtime 的候选变换正在用）就跳过，不 panic。
+    fn with_scripts<R: Default>(&self, use_scripts: impl FnOnce(&mut ScriptSet) -> R) -> R {
+        match self.scripts.try_borrow_mut() {
+            Ok(mut scripts) => use_scripts(&mut scripts),
+            Err(_) => R::default(),
+        }
     }
 
     pub(crate) fn flags(&self) -> u32 {
@@ -576,7 +632,8 @@ impl LifecycleState {
             self.emit(sound, LifecycleEvent::TraitsChanged { traits });
         }
         // 不论变没变，脚本都把属性记为确认过；变成 SECURE、PRIVATE、ELEVATED 或未知时，正在跑的脚本实例当场丢弃。
-        self.scripts.traits_reported(self.context());
+        let context = self.context();
+        self.with_scripts(|scripts| scripts.traits_reported(context));
         self.traits
     }
 
@@ -598,11 +655,14 @@ impl LifecycleState {
             return 0;
         }
         self.effect = 0;
-        self.scripts.key_reported();
         // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给。
-        if key & KEY_PASSTHROUGH == 0 {
-            self.scripts.next_turn();
-        }
+        let new_turn = key & KEY_PASSTHROUGH == 0;
+        self.with_scripts(|scripts| {
+            scripts.key_reported();
+            if new_turn {
+                scripts.next_turn();
+            }
+        });
         self.emit(
             sound,
             LifecycleEvent::KeyDown(KeyDown {
@@ -626,8 +686,8 @@ impl LifecycleState {
         self.effect = 0;
         let local_mode = LocalModeClass::of(local_mode);
         self.emit(sound, LifecycleEvent::Input { class, local_mode });
-        self.scripts
-            .input(self.context(), class, local_mode, input_char);
+        let context = self.context();
+        self.with_scripts(|scripts| scripts.input(context, class, local_mode, input_char));
     }
 
     /// 调用结束后推导并发出其余事件。返回本次的打字特效（只有 FEEDBACK 下的上屏会写它）。脚本收不到任何文本，见 [`Self::after_texts`]。
@@ -673,16 +733,121 @@ impl LifecycleState {
         let context = self.context();
         let to_scripts = call != Call::SideChannel;
         derive(call, context, pre, post, facts, commit, page, |event| {
-            self.emit(sound, event);
-            if to_scripts {
-                self.scripts.deliver(&event, context, texts);
-            }
+            self.consume(sound, event, context, to_scripts, texts);
         });
+        self.finish_call(sound, call)
+    }
+
+    /// 派发和 focus 的 transition 完成之后（全角转换之后）推导其余事件，并在 `before_commit` 和 `commit` 之间让脚本改写上屏的 body：改写后的 body 接上原来的 tail 写回 `transition.commit`，`commit` 事件带着改写后的字符数和 `rewritten`。runtime 在这之前已经按原文记下了引擎学习和 AI 上文，改写不回灌。返回本次的打字特效。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn after_rewriting(
+        &mut self,
+        sound: &SessionSound,
+        call: Call,
+        pre: Sample,
+        post: Sample,
+        facts: DispatchFacts,
+        transition: &mut msime_input_runtime::Transition,
+        selected: Option<&str>,
+    ) -> u32 {
+        if !matches!(call, Call::Dispatch(_)) {
+            self.effect = 0;
+        }
+        let context = self.context();
+        let to_scripts = call != Call::SideChannel;
+        let commit = CommitSample::of(transition);
+        let page = PageSample::of(&transition.view);
+        {
+            let texts = CallTexts::of(transition, facts, selected);
+            derive_selection(call, facts, &mut |event| {
+                self.consume(sound, event, context, to_scripts, &texts);
+            });
+        }
+        let mut rewritten = false;
+        if let Some(event) = before_commit_event(call, context, facts, commit) {
+            self.emit(sound, event);
+            if let (
+                true,
+                LifecycleEvent::BeforeCommit {
+                    origin, rewritable, ..
+                },
+            ) = (to_scripts, event)
+            {
+                rewritten = self.rewrite(context, origin, rewritable, facts, transition, selected);
+            }
+        }
+        let commit = if rewritten {
+            CommitSample::of(transition)
+        } else {
+            commit
+        };
+        let texts = CallTexts::of(transition, facts, selected);
+        derive_rest(call, pre, post, facts, commit, rewritten, page, |event| {
+            self.consume(sound, event, context, to_scripts, &texts);
+        });
+        self.finish_call(sound, call)
+    }
+
+    /// 交给脚本的 `before_commit`；有插件改写了 body 时把它接上原来的 tail 写回 `transition.commit`，返回是否改写了。
+    fn rewrite(
+        &mut self,
+        context: Context,
+        origin: CommitOrigin,
+        rewritable: bool,
+        facts: DispatchFacts,
+        transition: &mut msime_input_runtime::Transition,
+        selected: Option<&str>,
+    ) -> bool {
+        let Some(commit) = transition.commit.as_deref() else {
+            return false;
+        };
+        let (body, tail) = facts.split_commit(commit);
+        let request = RewriteRequest {
+            origin: origin as u8,
+            rewritable,
+            local_mode: transition
+                .commit_context
+                .as_ref()
+                .map(|context| context.local_mode.as_str()),
+            body,
+            tail,
+            selected,
+        };
+        let Some(mut rewritten) =
+            self.with_scripts(|scripts| scripts.before_commit(context, &request))
+        else {
+            return false;
+        };
+        if !rewritable || rewritten == body {
+            return false;
+        }
+        rewritten.push_str(tail);
+        transition.commit = Some(rewritten);
+        true
+    }
+
+    /// 一个事件交给内置消费者，不是旁路调用时也交给脚本。
+    fn consume(
+        &mut self,
+        sound: &SessionSound,
+        event: LifecycleEvent,
+        context: Context,
+        to_scripts: bool,
+        texts: &CallTexts<'_>,
+    ) {
+        self.emit(sound, event);
+        if to_scripts {
+            self.with_scripts(|scripts| scripts.deliver(&event, context, texts));
+        }
+    }
+
+    /// 一次调用的事件都发完之后：destroy 交还音乐，失焦和 destroy 丢弃全部脚本实例。返回本次的打字特效。
+    fn finish_call(&mut self, sound: &SessionSound, call: Call) -> u32 {
         if call == Call::Destroy {
             self.release_music(sound);
         }
         if matches!(call, Call::Focus(false) | Call::Destroy) {
-            self.scripts.release();
+            self.with_scripts(ScriptSet::release);
         }
         self.effect
     }
@@ -818,35 +983,24 @@ impl crate::HostSession {
         })
     }
 
-    /// 派发或 focus 的 transition 已经完成（全角转换之后）：推导其余事件。返回 FEEDBACK 下本次的打字特效，没开 FEEDBACK 时为 `None`。
+    /// 派发或 focus 的 transition 已经完成（全角转换之后）：推导其余事件，派发类调用的上屏在 `before_commit` 和 `commit` 之间可能被脚本改写（写回 `transition.commit`）。返回 FEEDBACK 下本次的打字特效，没开 FEEDBACK 时为 `None`。
     pub(crate) fn lifecycle_after(
         &mut self,
         pending: Option<Pending>,
         facts: DispatchFacts,
-        transition: &msime_input_runtime::Transition,
+        transition: &mut msime_input_runtime::Transition,
     ) -> Option<u32> {
         let pending = pending?;
         let after = Sample::of(&self.runtime);
         let state = self.lifecycle.as_deref_mut()?;
-        let texts = CallTexts {
-            view: Some(&transition.view),
-            commit: transition.commit.as_deref(),
-            commit_local_mode: transition
-                .commit_context
-                .as_ref()
-                .map(|context| context.local_mode.as_str()),
-            facts,
-            selected: self.runtime.selected_text(),
-        };
-        let effect = state.after_texts(
+        let effect = state.after_rewriting(
             &self.sound,
             pending.call,
             pending.before,
             after,
             facts,
-            CommitSample::of(transition),
-            PageSample::of(&transition.view),
-            &texts,
+            transition,
+            self.runtime.selected_text(),
         );
         state.feedback().then_some(effect)
     }
