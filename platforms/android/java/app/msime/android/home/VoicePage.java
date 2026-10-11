@@ -10,6 +10,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import app.msime.android.AndroidLocalSettings;
 import app.msime.android.DoubaoAsrPolicy;
@@ -72,6 +73,9 @@ public final class VoicePage extends DetailPage {
     /** 「从文件导入」等着文件选择器结果的那一项：资源包 id 或模型键、模型名（资源包为 null）和要的文件长度。 */
     private record ImportTarget(String pack, @Nullable String title, long[] sizes) {}
     @Nullable private ImportTarget pendingImport;
+    private static final String SAVED_IMPORT_PACK = "voice.import.pack";
+    private static final String SAVED_IMPORT_TITLE = "voice.import.title";
+    private static final String SAVED_IMPORT_SIZES = "voice.import.sizes";
     private final ActivityResultLauncher<String[]> openDocuments =
         registerForActivityResult(new ActivityResultContracts.OpenMultipleDocuments(), this::onImportPicked);
     /** 运行库或本地模型的下载进度变了就重画；下载结束时重读一遍安装状态。 */
@@ -81,6 +85,23 @@ public final class VoicePage extends DetailPage {
         if (finished) reload();
         else if (lastState != null) render(lastState);
     };
+
+    /** 文件选择器是另一个 Activity：它打开期间转屏或进程被回收，这个页面会重建，等着的那一项要跟着 Bundle 回来，否则选好的文件没有去处。 */
+    @Override public void onCreate(@Nullable Bundle saved) {
+        super.onCreate(saved);
+        String pack = saved == null ? null : saved.getString(SAVED_IMPORT_PACK);
+        long[] sizes = saved == null ? null : saved.getLongArray(SAVED_IMPORT_SIZES);
+        if (pack != null && sizes != null) pendingImport = new ImportTarget(pack, saved.getString(SAVED_IMPORT_TITLE), sizes);
+    }
+
+    @Override public void onSaveInstanceState(@NonNull Bundle out) {
+        super.onSaveInstanceState(out);
+        ImportTarget target = pendingImport;
+        if (target == null) return;
+        out.putString(SAVED_IMPORT_PACK, target.pack());
+        out.putString(SAVED_IMPORT_TITLE, target.title());
+        out.putLongArray(SAVED_IMPORT_SIZES, target.sizes());
+    }
 
     @Override protected void buildContent(LinearLayout column, Bundle args) {
         this.column = column;
