@@ -1,6 +1,11 @@
 package app.msime.android.test;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
@@ -8,6 +13,14 @@ import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
+import android.view.inputmethod.InputContentInfo;
+import android.widget.Button;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import android.view.WindowInsetsController;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -56,7 +69,110 @@ public final class EditorActivity extends Activity {
         cursorAtEnd.setHint("Editor that ignores newCursorPosition");
         showImeOnFocus(cursorAtEnd);
         layout.addView(cursorAtEnd);
+        // 收图片的输入框（#6781）：经 contentMimeTypes 声明收 PNG 和 GIF，收到 commitContent 时读出图片，把类型、字节数和摘要写进下面的状态行。
+        EditText image = new ImageEditText(this);
+        image.setInputType(InputType.TYPE_CLASS_TEXT);
+        image.setContentDescription("msime-test-image");
+        image.setHint("Editor that accepts images");
+        showImeOnFocus(image);
+        layout.addView(image);
+        // 把一张合成的 PNG 以本测试包的 content URI 放进系统剪贴板，相当于用户在别的应用里「复制图片」。按钮在触摸模式下不抢焦点，输入框和键盘保持不变。
+        Button copyImage = new Button(this);
+        copyImage.setText("Copy synthetic image");
+        copyImage.setContentDescription("msime-test-copy-image");
+        copyImage.setOnClickListener(view -> copySyntheticImage());
+        layout.addView(copyImage);
+        imageStatus = new TextView(this);
+        imageStatus.setContentDescription("msime-test-image-status");
+        imageStatus.setText("idle");
+        layout.addView(imageStatus);
         setContentView(layout);
+    }
+
+    private TextView imageStatus;
+
+    /** 合成图片在本测试包缓存里的位置；{@link ImageClipProvider} 只提供这一个文件。 */
+    static File syntheticImage(Context context) {
+        return new File(context.getCacheDir(), "synthetic-clip.png");
+    }
+
+    private void copySyntheticImage() {
+        File file = syntheticImage(this);
+        Bitmap bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888);
+        // 每次复制都换一个颜色，内容不同，摘要也不同。
+        bitmap.eraseColor(Color.rgb((int) (System.nanoTime() & 0xff), 0x80, 0x40));
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new IOException("compress");
+        } catch (IOException error) {
+            imageStatus.setText("copy-failed");
+            return;
+        } finally {
+            bitmap.recycle();
+        }
+        Uri uri = Uri.parse("content://" + ImageClipProvider.AUTHORITY + "/" + file.getName());
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        clipboard.setPrimaryClip(ClipData.newUri(getContentResolver(), "msime synthetic image", uri));
+        try (InputStream input = java.nio.file.Files.newInputStream(file.toPath())) {
+            imageStatus.setText("copied:" + describe(input));
+        } catch (IOException error) {
+            imageStatus.setText("copy-failed");
+        }
+    }
+
+    /** 字节数和 SHA-256 前 16 位，状态行里只放这些，不放图片本身。 */
+    private static String describe(InputStream input) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException error) {
+            throw new IOException(error);
+        }
+        byte[] buffer = new byte[8192];
+        long total = 0;
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, read);
+            total += read;
+        }
+        StringBuilder hex = new StringBuilder();
+        for (byte value : digest.digest()) hex.append(String.format("%02x", value));
+        return total + ":" + hex.substring(0, 16);
+    }
+
+    /** 输入法经 commitContent 交来的图片：按需取读权限，读完就放掉，状态行写成 `received:<声明的类型>:<provider 报的类型>:<字节数>:<摘要>`。很多应用按 `ContentResolver.getType` 校验收到的内容，所以 provider 报的类型也要和声明的一致。 */
+    private boolean receiveImage(InputContentInfo content, int flags) {
+        boolean granted = (flags & InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0;
+        try {
+            if (granted) content.requestPermission();
+            String type = content.getDescription().getMimeTypeCount() > 0
+                ? content.getDescription().getMimeType(0) : "";
+            try (InputStream input = getContentResolver().openInputStream(content.getContentUri())) {
+                if (input == null) throw new IOException("no stream");
+                String served = getContentResolver().getType(content.getContentUri());
+                imageStatus.setText("received:" + type + ":" + served + ":" + describe(input));
+            }
+            return true;
+        } catch (IOException | SecurityException error) {
+            imageStatus.setText("receive-failed:" + error.getClass().getSimpleName());
+            return false;
+        } finally {
+            if (granted) content.releasePermission();
+        }
+    }
+
+    private final class ImageEditText extends EditText {
+        ImageEditText(Context context) { super(context); }
+
+        @Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            InputConnection connection = super.onCreateInputConnection(outAttrs);
+            outAttrs.contentMimeTypes = new String[] {"image/png", "image/gif"};
+            if (connection == null) return null;
+            return new InputConnectionWrapper(connection, false) {
+                @Override public boolean commitContent(InputContentInfo content, int flags, Bundle options) {
+                    return receiveImage(content, flags);
+                }
+            };
+        }
     }
 
     /**
