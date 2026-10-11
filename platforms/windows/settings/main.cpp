@@ -5755,7 +5755,9 @@ private:
         ClipboardEntry entry;
         entry.text = named_string(object, L"text");
         const auto time = object.GetNamedValue(L"timestampMs", JsonValue::CreateNullValue());
-        if (time.ValueType() == JsonValueType::Number && time.GetNumber() > 0)
+        // Past 2^53 the number is not a real capture time, and a double at 2^64 does not convert to uint64_t at all.
+        if (time.ValueType() == JsonValueType::Number && time.GetNumber() > 0 &&
+            time.GetNumber() < 9007199254740992.0)
           entry.timestamp_ms = static_cast<uint64_t>(time.GetNumber());
         entry.pinned = object.GetNamedBoolean(L"pinned", false);
         if (!entry.text.empty())
@@ -5781,12 +5783,12 @@ private:
         std::move(done));
   }
 
-  // 进入页面、修订号变化或打开历史时读一次。读的期间有写入完成时以写入后的结果为准，这次读到的丢掉；读不到时与共享页一样不提示，列表保持原样。
+  // 进入页面、修订号变化或打开历史时读一次。读的期间有写入完成或又发了一次读取时以后来的为准，这次读到的丢掉（工作线程上的两次读取可能倒序返回）；读不到时与共享页一样不提示，列表保持原样。
   void load_clipboard_history() {
     clip_stale_ = false;
     clip_read_revision_ = document_.revision();
     const auto generation = clip_generation_;
-    const auto read = clip_read_;
+    const auto read = ++clip_read_;
     clipboard_request(clipboard_action(L"list"), [this, generation, read](Response const &response) {
       if (generation != clip_generation_ || read != clip_read_)
         return;
@@ -5839,6 +5841,9 @@ private:
   void toggle_clipboard_history(bool on) {
     const bool was = clipboard_history_enabled();
     change([on](PreferencesDocument &doc) { doc.SetBoolean(L"clipboard_history", on); }, true);
+    // 没存上时 commit 已重读设置、说明了原因，开关回到原样，历史也不能清空。
+    if (clipboard_history_enabled() != on)
+      return;
     ++clip_generation_;
     clip_busy_ = false;
     clip_stale_ = true;
@@ -5978,6 +5983,11 @@ private:
 
   void build_clip_page(StackPanel const &page) {
     const bool enabled = clipboard_history_enabled();
+    // 与共享页一样，存下的开关是关着的就不留历史：别的窗口或另一台设备经同步关掉它时，这里也不再显示旧条目和「清空历史」。
+    if (!enabled) {
+      clip_entries_.clear();
+      clip_clear_armed_ = false;
+    }
     if (!indexing_ && enabled) {
       if (!clip_busy_ && (clip_stale_ || clip_read_revision_ != document_.revision()))
         load_clipboard_history();

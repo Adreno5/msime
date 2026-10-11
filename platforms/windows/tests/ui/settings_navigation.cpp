@@ -72,7 +72,7 @@ int main() {
     }
     require(find_page("account")->shell.page == "account");
     require(find_page("stats")->shell.page == "typing-statistics");
-    // 插件和 AI 辅助打开共享应用的对应页面，和剪贴板、打字统计同在「工具」组。
+    // 插件和 AI 辅助打开共享应用的对应页面，和打字统计同在「工具」组。
     require(find_page("plugins")->shell.page == "plugins" &&
             find_page("plugins")->group == find_page("clip")->group &&
             find_page("plugins")->group == find_page("stats")->group);
