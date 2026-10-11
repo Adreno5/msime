@@ -3939,7 +3939,8 @@ private:
     card.IsEnabled(loaded_);
     card.Click([this, id = theme.id, on](Inspectable const &,
                                          RoutedEventArgs const &) {
-      if (on)
+      // 选中的「自定义」卡片槽位里仍可能有目录里没有的包（删掉了或还没扫描到）；共享页点它照样清掉两个槽位，其他选中的卡片再点不起作用。
+      if (on && (id != L"custom" || sk::skins_in_use(true, custom_skins(document_)).empty()))
         return;
       change([&](PreferencesDocument &doc) {
         doc.SetString(L"global_theme", id);
@@ -4189,6 +4190,8 @@ private:
         ++skins_revision_;
         skin_images_.clear();
         skin_image_failures_.clear();
+        // 用着的包可能改过或删掉了：顶部预览重新解析。
+        resolved_theme_.reset();
         for (auto &image : scan.images) {
           if (image.bytes.empty())
             skin_image_failures_.insert(image.key);
