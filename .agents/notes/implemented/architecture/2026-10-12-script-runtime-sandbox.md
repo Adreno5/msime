@@ -1,6 +1,6 @@
 # Agent Note: 桌面脚本插件的沙箱运行时：wasmi 解释执行、写死的 ABI v1 配置、按插件固定配额与快照复位
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -8,11 +8,11 @@ Status: proposed
 
 导入时（client-core、pack-tool）和加载时（输入法进程）还必须用同一份规则判断一个模块合不合规，否则导入通过的包会在输入法里加载失败，或者反过来。
 
-## Proposal
+## Decision
 
 新建 `crates/script-runtime`（`msime-script-runtime`），只在桌面 cfg 下有内容：`cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))`。依赖 `wasmi 2.0.0` 写在同一个 target 段里，`default-features = false`，只开 `std`、`stable`、`validate`、`auto-dispatch`、`extra-checks`；测试另开 `wat`，模块全用 WAT 文本写，仓库不提交 `.wasm`。crate 根上同样挂这个 cfg，所以即使有人在移动端目标上 `cargo build --workspace`，这里也是空 crate、wasmi 不进依赖图。根 `Cargo.toml` 的 members 和 default-members 加上它，并给 `msime-script-runtime`、`wasmi`、`wasmi_core`、`wasmi_ir`、`wasmi_collections`、`wasmparser`、`libm` 各加 `[profile.dev.package.*] opt-level = 3`，理由见下面的实测。
 
-第一个提交只放一条编译期断言 `wasmi::Module: Send + Sync`，它通过了，所以进程级模块缓存由后台编译线程填充、会话线程读取（host-api 一侧的接入在本阶段的后续部分）。
+第一个提交只放一条编译期断言 `wasmi::Module: Send + Sync`，它通过了，所以进程级模块缓存由后台编译线程填充、会话线程读取，见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。
 
 **接口不带泛型，wasmi 不出现在调用方的签名里。** 对外只有这些：
 
@@ -42,6 +42,13 @@ Status: proposed
 
 翻译后的字节码驻留约为模块大小的 3.3 倍（524 KB 的访存密集合成模块留下 1.75 MB，用只数当前线程的计数分配器量）。去掉 opt-level 覆盖后最小钩子慢约 12 倍，64 页复位从亚毫秒变成 46 ms，所以覆盖是必要的。测量用例在 `crates/script-runtime/src/tests.rs` 的 `measure` 模块里，默认忽略，用 `cargo test -p msime-script-runtime -- --ignored --nocapture --test-threads=1 measure` 运行。
 
+## Testing
+
+- `cargo test -p msime-script-runtime` 和 `cargo clippy -p msime-script-runtime --all-targets -- -D warnings` 通过，覆盖：死循环按钩子上限耗尽 fuel、`unreachable`、越界访问、内存越过预留、深递归撞上栈限制、被拒的提案（multi-memory、tail-call、extended-const、SIMD、memory64、threads）和 start 函数、允许的提案能编译、双向的静态最小权限、import 白名单和签名、能力的依赖与互斥、每轮配额跨多次投递并在新一轮补满、一个插件烧满配额不影响另一个、import 计 fuel、`before_commit` 读不到观察类钩子和上一次 `before_commit` 留下的内存与 global、快照上的 trap 不影响持久实例、授权与本地模式门控、文本复制的 `LIMIT` 和越界 trap、修改类 import 在本阶段返回 `DENIED`、初始化看不到任何事件、`log` 没有调试输出时是空操作。
+- 移动端不编译解释器：`cargo tree -p msime-script-runtime -e normal` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 和 `wasm32-wasip2` 上只有本 crate 自己，在 `x86_64-unknown-linux-gnu` 上是 wasmi 及其 6 个依赖；前三个目标上 `cargo check -p msime-script-runtime` 通过（已跑过）。
+- client-core 一侧（`script_pack`、`script_grants`、`PluginKind::Script`）见 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)，那篇就是取代 `plugins.rs:3` 原则的笔记；host-api 一侧（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。pack-tool 只经 client-core 的 `validate` 用到本 crate，`msime-pack run` 是第 6 阶段的事，直接依赖到那时再加。
+- `test-support` 特性只给依赖本 crate 的测试用：它打开 wasmi 的 `wat` 特性并导出 `compile_text`，让 host-api 的测试用 WAT 写模块。dev-dependencies 打开的特性不并进普通构建，产品里没有它。
+
 ## Alternatives considered
 
 - **wasmtime、wasmer、extism。** 最强的理由是快一到两个数量级，生态成熟，wasmtime 还有 epoch 中断，能做真正的时间上限。不用：它们靠 JIT，macOS 的 hardened runtime 要为此放开可执行内存；wasmtime 在 Windows 上注册进程级 VEH、在 Unix 上装 `sigaction`，会进入 Fcitx5 守护进程这类我们不拥有的进程；wasmtime 的 MSRV 每月都在抬高。脚本的钩子是微秒级的小函数，解释器的速度足够。
@@ -50,19 +57,14 @@ Status: proposed
 - **允许 start 函数。** 最强的理由是有的工具链会生成它，拒绝它会挡住一部分模块。不用：快照复位要重新实例化，start 函数会在每次复位时再跑一遍；初始化有 `msime_init`，它受 fuel 约束、返回值可检查。
 - **把 wasmi 的类型或泛型 `Store<T>` 暴露给调用方。** 最强的理由是调用方可以按需扩展宿主数据。不用：client-core、host-api 和 pack-tool 的签名里一旦出现 wasmi，升级或回退 wasmi（上面的 1.1.0 退路）就要改三个 crate；ABI 的规则也会散到调用方去。
 
-## Acceptance criteria
-
-- `cargo test -p msime-script-runtime` 和 `cargo clippy -p msime-script-runtime --all-targets -- -D warnings` 通过。覆盖：死循环按钩子上限耗尽 fuel、`unreachable`、越界访问、内存越过预留、深递归撞上栈限制、被拒的提案（multi-memory、tail-call、extended-const、SIMD、memory64、threads）和 start 函数、允许的提案能编译、双向的静态最小权限、import 白名单和签名、能力的依赖与互斥、每轮配额跨多次投递并在新一轮补满、一个插件烧满配额不影响另一个、import 计 fuel、`before_commit` 读不到观察类钩子和上一次 `before_commit` 留下的内存与 global、快照上的 trap 不影响持久实例、授权与本地模式门控、文本复制的 `LIMIT` 和越界 trap、修改类 import 在本阶段返回 `DENIED`、初始化看不到任何事件、`log` 没有调试输出时是空操作。
-- 移动端不编译解释器：`cargo tree -p msime-script-runtime -e normal` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 和 `wasm32-wasip2` 上只有本 crate 自己，在 `x86_64-unknown-linux-gnu` 上是 wasmi 及其 6 个依赖；前三个目标上 `cargo check -p msime-script-runtime` 通过（已跑过）。
-- client-core 一侧（`script_pack`、`script_grants`、`PluginKind::Script`）已经接上，见 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)，那篇就是取代 `plugins.rs:3` 原则的笔记。本阶段后续部分再接 host-api（投递观察类钩子、`msime_client_scripts_enable`、后台编译线程、熔断）和 pack-tool，release 构建下 `scripts_enable` 恒返回 false。那时两篇一起转到 `implemented/`。
-
-## Risks
-
-- wasmi 2.0 的执行器没有经过审计，发布至今约 40 天。`extra-checks` 已开，`Cargo.lock` 锁定版本；与 1.1.0 的差分 fuzz 还没做。
-- 64 页、内存全脏时，dev 构建里一次复位最慢量到 0.68 ms，贴着 `before_commit` p99 ≤ 1 ms 的目标。实际插件的快照只到最后一个非零字节，通常远小于预留值；如果真机上仍然超预算，按设计 §4.3 的退路把输出限制成对 body 的编辑。
+## Consequences
+- 收益：解释器、ABI 规则和配额集中在一个不带泛型的 crate 里，导入和加载走同一份校验；fuel、内存和栈都是硬上限，一个插件的行为不改变另一个插件拿到的资源。
+- 代价：解释执行比 JIT 慢一到两个数量级，dev 构建靠 7 段 opt-level 覆盖才够快；每次 `before_commit` 都要重新实例化。
+- wasmi 2.0 的执行器没有经过审计，发布至今约 40 天。`extra-checks` 已开，`Cargo.lock` 锁定版本；与 1.1.0 的差分 fuzz 还没做，是已知缺口。
+- 64 页、内存全脏时，dev 构建里一次复位最慢量到 0.68 ms，贴着 `before_commit` p99 ≤ 1 ms 的目标。实际插件的快照只到最后一个非零字节，通常远小于预留值；第 4 阶段接通 `before_commit` 时在真机上复测，仍然超预算就按设计 §4.3 的退路把输出限制成对 body 的编辑。
 - 字节码驻留约 3.3 倍：8 个 1 MiB 的模块各带 64 页内存，合计约 60 MiB，贴着 64 MiB 的进程总账。准入检查 `limits::fits_memory_budget` 把字节码按 4 倍模块大小估算（`TRANSLATED_BYTES_PER_MODULE_BYTE`），再加一份值栈，所以 8 个这样的模块里第 8 个启用不了；模块大小上限可能要下调。
 - memory64 和 SIMD 由 wasmi 的 cargo 特性控制。依赖图里哪天有别的 crate 打开了这两个特性，`Config` 会随之放开；被拒模块的测试只在本 crate 的测试构建里守着。
 - `Cargo.lock` 里多出的不只设计列的 7 个 crate：可选依赖 `hashbrown 0.15.5`、`foldhash 0.1.5`、`string-interner` 和测试用的 `wat`、`wast`、`wasm-encoder`、`wasmparser 0.261.0`、`leb128fmt`、`unicode-width` 也进了锁文件，但按现在的特性它们都不进产品构建。第三方声明脚本只需覆盖实际编译进产物的那 7 个。
-- 体积增量（x64 `msime_host_api.dll` 和 macOS 输入法可执行文件）要等 host-api 依赖本 crate 之后才能量。
+- 体积增量见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md) 的实测。
 
-相关：[桌面端生命周期核心](2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件，`Hook` 的编号沿用它的 `LifecycleEvent` 判别值。
+相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件，`Hook` 的编号沿用它的 `LifecycleEvent` 判别值。

@@ -1,6 +1,6 @@
 # Agent Note: 桌面脚本插件进入插件包体系：只对 script 放开"包里没有会运行的东西"，清单 v2、内容哈希与 script-grants.json
 
-Status: proposed
+Status: implemented
 
 ## Problem
 
@@ -8,7 +8,7 @@ Status: proposed
 
 脚本插件（`kind = "script"`）要打破这条原则：包里带一个 core wasm 模块，在接收全部击键的桌面输入法进程里运行，并按用户授予的能力读取组字、上屏文本和候选。打破它需要回答几件事：旧客户端和移动端怎样保证仍然拒绝这种包；导入时和输入法加载时怎样用同一份规则判断模块合不合规；用户的授权记在哪里、怎样绑定到用户看过的那一份内容、怎样在删包和重新导入时失效；设置页在授权页落地之前不该看到什么。
 
-## Proposal
+## Decision
 
 **只对 `script` 推翻原则，只在桌面。** `PluginKind::Script` 变体及其在 `ALL`、`as_str`、`is_builtin`、`PluginSummary::kind`、`PluginContent`、清单解析各处的分支，都挂 `cfg(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))`。`ALL` 按 cfg 写两份：桌面是 `[Self; 9]`（`Script` 排最后），其他目标保持原来的 `[Self; 8]`。所以在 iOS、Android、HarmonyOS 和 wasm32 上，`parse("script")` 仍返回 `None`，`scan` 和遗留目录清扫不遍历 `script/`，报错原文一字不变；`plugins.rs` 里一对编译期断言（非桌面 `ALL.len() == 8`、桌面 `== 9`）在任何目标只要编译 client-core 就检查一次，不依赖哪台 CI 机器跑了测试。`msime-script-runtime` 只在同一个 cfg 下作为 client-core 的依赖，移动端的 `cargo tree` 里没有 wasmi（已在 `aarch64-linux-android`、`aarch64-apple-ios`、`aarch64-unknown-linux-ohos` 上核对）。模块文档里的原则改写为"数据类插件里没有会运行的东西"，并写明唯一的例外。
 
@@ -26,9 +26,16 @@ Status: proposed
 - 删包时在同一把锁里、移走包目录之前去掉条目；导入脚本包时在替换包目录之前更新条目：内容哈希没变、并且是原地覆盖一个已安装的包，授权保留；否则停用、清空授予项、保留旧哈希（授权页据此显示"已更新，需要重新授权"）。先改授权再动包：写授权失败时包没变，换包失败时授权已经收紧。包目录被手工删掉后再导入同样的内容，留下的条目也不会复活。
 - 输入法进程只认 `hash` 等于已安装包当前内容哈希的条目，实际能力是 `granted` 与清单 `permissions` 的交集。
 
-**威胁模型与发布构建。** 授权文件和插件目录都在用户可写的宿主状态根下，同一用户下任何没有特权的进程都能放进一个 script 包、再手写一条带正确哈希的授权。`mac` 字段留给 macOS 的钥匙串 MAC（第 5 阶段），本阶段只读不验。在加固落地之前，发布构建里 `msime_client_scripts_enable` 恒返回 false（host-api 一侧，本阶段后续部分），这个文件只在开发构建里起作用。
+**威胁模型与发布构建。** 授权文件和插件目录都在用户可写的宿主状态根下，同一用户下任何没有特权的进程都能放进一个 script 包、再手写一条带正确哈希的授权。`mac` 字段留给 macOS 的钥匙串 MAC（第 5 阶段），本阶段只读不验。在加固落地之前，发布构建里 `msime_client_scripts_enable` 恒返回 false（见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)），这个文件只在开发构建里起作用。输入法进程在聚焦时按带 inode 的戳重读它，后台编译线程用 `script_pack::load` 读包并核对哈希。
 
 **设置页在第 5 阶段之前看不到脚本插件。** `PluginCatalog::without_scripts()` 去掉脚本包和脚本文件夹的问题行，桌面外壳的 `plugin_catalog` 和 host-api 的 `msime_client_plugins` 目录命令都经过它；`host_surface.script_plugins` 不加。导入命令不拦脚本包，开发构建里自测时还要靠它（或手工拷进 `script/<id>/`）装包，再手写授权。`PUBLISHABLE_KINDS` 和 `KINDS_DECLARATION` 不变，`script` 不能发布到社区。
+
+## Testing
+
+- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过 1 MiB 被拒，恰好 1 MiB 可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
+- host-api 的 `plugins_boundary_lists_imports_removes_and_keeps_the_name_list` 断言目录命令不报脚本文件夹。
+- `cargo check -p msime-client-core -p msime-host-api --all-targets` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 上通过（编译期断言 `ALL.len() == 8` 随之成立），`cargo check -p msime-desktop --target aarch64-linux-android --lib` 通过；桌面上 `cargo clippy --all-targets -- -D warnings` 干净。
+- host-api 一侧的测试（授权的哈希绑定在输入法进程里同样生效：哈希对不上的条目从不运行；从磁盘上的包经后台编译线程走完整路径）见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)。
 
 ## Alternatives considered
 
@@ -39,19 +46,13 @@ Status: proposed
 - **`load` 在读出模块时也校验一遍。** 最强的理由是任何拿到字节的调用方都确定这是合规模块。不用：输入法进程拿到字节后马上就要 `compile`，而 `compile` 就是那份校验；在后台编译线程上把同一个模块编译两遍，只是多花一倍时间。
 - **准入检查放到输入法进程加载时，授权写入不管。** 最强的理由是写入方拿不到真实的字节码大小，只能估算。不用：设计要求在授权和启用时拒绝，而不是让脚本在运行时争抢；用户在授权页上就该知道为什么开不了。估算按实测膨胀比 3.3 倍向上取整成 4 倍，偏保守；输入法进程加载时仍会按同一个函数再算一次。
 
-## Acceptance criteria
-
-- `cargo test -p msime-client-core` 的插件测试通过，覆盖：清单版本 × 类型矩阵（script 只认 2、其他只认 1、其余版本先报版本）；数据类插件申请白名单里的权限照旧被拒；权限白名单、重复、依赖、`rewrite_commit` + `read_composition` 被拒；`[script]` 的每条规则；模块不是 wasm、导入了没申请的能力、申请了没用到、超过 1 MiB 被拒，恰好 1 MiB 可以；摘要里的声明和内容哈希；哈希覆盖清单和模块、不覆盖说明文件；`load` 交出的字节就是哈希的那一份；`scan` 列出脚本包而 `without_scripts` 去掉它们；脚本不能发布；授权的哈希绑定、原样重新导入保留、换内容重新导入作废、删包清除、手工删目录后重新导入不复活；授予项必须是清单的子集；未知格式、坏 JSON、符号链接什么都不启用，未知字段和单个坏条目不影响别的；同时启用的个数和内存总账；授权失败的错误码。移动端的既有测试原样（`script` 仍不是已知类型），桌面上对应的三处断言按 cfg 分开。
-- host-api 的 `plugins_boundary_lists_imports_removes_and_keeps_the_name_list` 断言目录命令不报脚本文件夹。
-- `cargo check -p msime-client-core -p msime-host-api --all-targets` 在 `aarch64-apple-ios`、`aarch64-linux-android`、`aarch64-unknown-linux-ohos` 上通过（编译期断言 `ALL.len() == 8` 随之成立），`cargo check -p msime-desktop --target aarch64-linux-android --lib` 通过；桌面上 `cargo clippy --all-targets -- -D warnings` 干净。
-- 本阶段后续部分把 host-api 接上（`msime_client_scripts_enable` 在 release 构建恒返回 false、后台编译线程、熔断、`script-health.json`）之后，本篇与 [沙箱运行时](2026-10-12-script-runtime-sandbox.md) 一起转到 `implemented/`。
-
-## Risks
-
+## Consequences
+- 收益：移动端的类型集合、报错原文和依赖图逐字节不变；导入、`msime-pack validate` 和输入法加载走同一份模块校验；授权绑定在用户看过的那份内容上，换内容就作废。
+- 代价：`plugins.rs` 里多了一批按 cfg 分开的分支；授权文件有了第二种写入时机（导入和删包时在同一把锁里改条目）。
 - 在 macOS 的钥匙串 MAC 落地之前，授权文件可以被同一用户下的任何进程伪造；只有发布构建里 `scripts_enable` 恒为 false 挡着。第 5 阶段打开发布构建之前，三条对策（macOS MAC、Windows 提权窗口不跑脚本、Linux 与 Windows 把残余风险写进授权页）必须都已落地。
 - 准入检查的字节码按 4 倍估算。真实膨胀比因模块而异，访存密集的模块实测约 3.3 倍；如果有模块明显超出，输入法进程加载时按实际编译结果再查一次的那一层要兜住。8 个 1 MiB、64 页的模块正好超出总账，第 8 个会被拒绝。
 - `set` 每次启用都要读出其他已启用的包算总账，最多 8 个、每个至多 1 MiB，只在设置页操作时发生。
 - `scan` 现在会完整编译每个已安装的脚本包（dev 构建里 512 KiB 约 20 ms），设置页的目录命令在后台线程上跑，输入法进程的按键和 focus 路径不调用 `scan`。
 - 导入命令不拦脚本包，设置页导入一个脚本包后的提示会写不出类型名（页面的类型表里没有 `script`），在第 5 阶段补上页面之前只影响开发构建里的自测。
 
-相关：[桌面端生命周期核心](2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 提供本篇用到的 `Capability`、`Hook`、模块校验和 `limits`；数据类插件的门控与诊断见 [插件门控如实显示](../../implemented/bug-fix/2026-10-09-plugin-gates-and-wubi-table-modes.md)；社区可发布类型见 [特效包可分享](../../implemented/feature/2026-10-10-community-effect-packs-shareable.md)。
+相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 产生投递给脚本的事件；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 提供本篇用到的 `Capability`、`Hook`、模块校验和 `limits`；数据类插件的门控与诊断见 [插件门控如实显示](../../implemented/bug-fix/2026-10-09-plugin-gates-and-wubi-table-modes.md)；社区可发布类型见 [特效包可分享](../../implemented/feature/2026-10-10-community-effect-packs-shareable.md)。
