@@ -10,7 +10,7 @@ Status: implemented
 
 每个来源的 `online_dispatched_queries_` 在网络任务成功创建后记录查询。空结果、失败和成功均不对同一查询重复分发；输入查询变化或会话、provider、来源配置失效后重新请求。AI cache-only 探测不写网络分发记录，命中先显示，未命中继续等待空闲防抖，二者均允许一次网络刷新。不新增缓存或 ABI。
 
-原生回包夹具先实际分发，再模拟完成结果；新组合的 AI 用例先消费探测再断言网络分发。隔离 daemon/frontend 用真实合成 socket 检查 `ai_cache_only` 与网络次数，两次组合分别请求一次网络，而不是用 future 存在冒充已请求。离线缺失夹具复用 Fcitx5 `ScopeExit` 恢复资源目录与数据库，正常和异常退出均核对恢复结果。两套真实 daemon 测试复用 `daemon_environment`，统一临时目录与 XDG 状态隔离，避免复制启动夹具后漂移。
+原生回包夹具先实际分发，再模拟完成结果；新组合的 AI 用例先消费探测再断言网络分发。隔离 daemon/frontend 用真实合成 socket 检查 `ai_cache_only` 与网络次数，两次组合分别请求一次网络，而不是用 future 存在冒充已请求。离线缺失夹具复用 Fcitx5 `ScopeExit` 恢复资源目录与数据库，正常和异常退出均核对恢复结果。两套真实 daemon 测试复用 `daemon_environment`，统一临时目录与 XDG 状态隔离，避免复制启动夹具后漂移。创建 daemon 前断言 `XDG_STATE_HOME` 指向夹具目录，防止提取函数时漏带状态隔离而写入用户级统计文件；该遗漏在补审时发现，断言先失败，补回环境变量后通过。
 
 ## Alternatives considered
 

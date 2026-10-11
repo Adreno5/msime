@@ -47,7 +47,8 @@ def daemon_environment(root, addon):
     system_lib = subprocess.check_output(
         ["pkg-config", "--variable=libdir", "Fcitx5Core"], text=True).strip()
     return dict(os.environ, XDG_CONFIG_HOME=str(root / "config"),
-               XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(runtime),
+               XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "xdg-state"),
+               XDG_RUNTIME_DIR=str(runtime),
                MSIME_FCITX5_OPTIONS=str(root / "options.json"),
                FCITX_ADDON_DIRS=f"{addon.parent}:{system_lib}/fcitx5")
 

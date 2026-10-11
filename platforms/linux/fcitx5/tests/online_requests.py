@@ -29,6 +29,8 @@ def main():
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="msime-online-requests-") as directory:
         root = Path(directory)
+        env = daemon_environment(root, addon)
+        assert env.get("XDG_STATE_HOME") == str(root / "xdg-state"), "Fcitx5 统计状态必须隔离"
         host = ctypes.CDLL(str(library))
         decoder = ResponseDecoder(host)
         host.msime_client_prepare_host.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -91,7 +93,6 @@ def main():
 
         worker = threading.Thread(target=serve)
         worker.start()
-        env = daemon_environment(root, addon)
         env["FCITX_X11_USE_CLIENT_SIDE_UI"] = "1"
         with (root / "daemon.log").open("w") as log:
             daemon = subprocess.Popen(["fcitx5", "-D", "--keep"], env=env, stdout=log, stderr=log)

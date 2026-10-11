@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <filesystem>
+#include <stdexcept>
 #include <thread>
 #include <chrono>
 #include <limits>
