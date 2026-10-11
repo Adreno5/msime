@@ -12,7 +12,6 @@ import { SettingsPreviewBlock } from "../settings-preview-block";
 import { SelectRow } from "../select-row";
 import type { TouchKeyboardScheme } from "../touch-keyboard-scheme-helpers";
 import { supportedInputSchemes } from "../input-scheme-options";
-import { SubPageEntries } from "./sub-page-entries";
 
 type HarmonyKeyboardLayout = "twenty_six_key" | "fourteen_key" | "nine_key";
 
@@ -241,13 +240,6 @@ export function ScreenKeyboardSettingsPage() {
         onChange={(value) => void saveMobileKeyboardFeedback(value)}
         onPreview={() => void previewMobileKeyboardHaptics()}
       />
-      {/* 手机「设置」根页面不单列外接键盘快捷键（见 `root-settings-list.tsx` 的 `nestedPages`），入口在这里；宿主不提供这一页时 `SubPageEntries` 不画这一组。桌面的快捷键页在侧栏里。 */}
-      {mobilePlatform && (
-        <SubPageEntries
-          title="外接键盘"
-          pages={[{ id: "shortcuts", description: "连接实体键盘时的中英切换、选词和翻页按键" }]}
-        />
-      )}
       {/* 键盘自己的明暗覆盖与其他按界面的覆盖一起放在「主题 › 高级」下（dc.html）；这一行只是指向那里。全局主题、「我的皮肤」和它的编辑器也都在「主题」页。 */}
       <GroupList title="外观">
         <LinkRow

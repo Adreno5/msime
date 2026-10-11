@@ -122,6 +122,7 @@ test("root rows follow the design's grouping and order, with every other offered
     "输入",
     "表达",
     "词库",
+    "外接键盘快捷键",
     "语音输入",
     "手写输入",
     "剪贴板",
@@ -133,8 +134,7 @@ test("root rows follow the design's grouping and order, with every other offered
   expect(groupOf("键盘")).toBe(groupOf("皮肤"));
   expect(groupOf("候选栏")).toBe(groupOf("皮肤"));
   expect(groupOf("输入")).not.toBe(groupOf("皮肤"));
-  // 外接键盘快捷键的入口在「键盘」页里，根页面上没有这一行。
-  expect(screen.queryByRole("button", { name: "外接键盘快捷键" })).toBeNull();
+  expect(groupOf("外接键盘快捷键")).toBe(groupOf("输入"));
   expect(groupOf("手写输入")).toBe(groupOf("语音输入"));
   expect(groupOf("AI 辅助")).toBe(groupOf("剪贴板"));
   expect(groupOf("开发者选项")).not.toBe(groupOf("剪贴板"));
@@ -266,8 +266,7 @@ test("Escape clears the search and brings back the card and groups", () => {
 
   expect(search.value).toBe("");
   expect(statusCard()).toBeTruthy();
-  // 除了入口在「键盘」页里的外接键盘快捷键，每个页面都回到根页面上。
-  expect(rowTitles(home)).toHaveLength(rootPages.length - 1);
+  expect(rowTitles(home)).toHaveLength(rootPages.length);
 });
 
 // ---- 状态卡片 ----
