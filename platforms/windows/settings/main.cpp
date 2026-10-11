@@ -2781,10 +2781,17 @@ private:
                 InfoBarSeverity::Success);
   }
 
-  static void copy_text(std::wstring const &value) {
-    Windows::ApplicationModel::DataTransfer::DataPackage package;
-    package.SetText(hstring(value));
-    Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+  // 把文字放进剪贴板，成功时返回 true。别的程序正占着剪贴板时 SetContent 会抛 hresult_error，按钮的点击回调里不能让它漏出去；Flush 让内容在本窗口关闭后仍留在剪贴板里（否则 DataPackage 是延迟提供的，进程退出就没了）。
+  static bool copy_text(std::wstring const &value) {
+    try {
+      Windows::ApplicationModel::DataTransfer::DataPackage package;
+      package.SetText(hstring(value));
+      Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+      Windows::ApplicationModel::DataTransfer::Clipboard::Flush();
+      return true;
+    } catch (hresult_error const &) {
+      return false;
+    }
   }
 
   // ---- Pages ----
@@ -4723,8 +4730,11 @@ private:
     actions.Spacing(8);
     auto copy_report =
         button_control(feedback_report_copied_ ? L"已复制报告" : L"复制报告", [this] {
-          copy_text(current_feedback_report());
-          mark_copied(feedback_report_copied_, feedback_report_timer_);
+          // 共享页只在复制成功后才显示「已复制报告」。
+          if (copy_text(current_feedback_report()))
+            mark_copied(feedback_report_copied_, feedback_report_timer_);
+          else
+            show_notice(L"复制失败，请重试");
         });
     actions.Children().Append(copy_report);
     actions.Children().Append(button_control(L"在 GitHub 提交", [this] {
@@ -4754,8 +4764,10 @@ private:
             channel_code(issues.substr(std::wstring_view(L"https://").size())));
     auto copy_group =
         button_control(feedback_group_copied_ ? L"已复制" : L"复制群号", [this, group_number] {
-          copy_text(group_number);
-          mark_copied(feedback_group_copied_, feedback_group_timer_);
+          if (copy_text(group_number))
+            mark_copied(feedback_group_copied_, feedback_group_timer_);
+          else
+            show_notice(L"复制失败，请重试");
         });
     add_row(channels, 0xE8BD, L"QQ 交流群", L"适合中文用户进行日常交流、测试反馈和使用讨论。",
             copy_group, channel_code(L"群号：" + group_number));
@@ -4936,8 +4948,10 @@ private:
             L"打开下载页", download_url);
     add_row(updates, 0xE8C8, L"复制下载链接", download_url,
             button_control(L"复制链接", [this] {
-              copy_text(download_url);
-              show_notice(L"已复制下载链接。", InfoBarSeverity::Success);
+              if (copy_text(download_url))
+                show_notice(L"已复制下载链接。", InfoBarSeverity::Success);
+              else
+                show_notice(L"复制失败，请重试");
             }));
     url_row(updates, 0xE8A5, L"历史版本", L"各版本的更新说明与安装包。", L"查看", releases_url);
 
