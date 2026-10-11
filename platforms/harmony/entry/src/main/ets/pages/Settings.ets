@@ -2288,7 +2288,7 @@ class SettingsBridge {
     }
   }
 
-  /** DeepL 用状态码区分常见错误，与 crates/client-core/src/credential/translation.rs 的提示一致；只用状态码，不转述服务端正文。 */
+  /** DeepL 用状态码区分常见错误，与 crates/client-core/src/credential/translation.rs 的提示逐字相同，scripts/test-harmony-custom-translation-probe.py 核对；只用状态码，不转述服务端正文。 */
   private deepLFailure(status: number): string {
     if (status === 403) return '测试失败：DeepL 拒绝了这个 API Key（HTTP 403），请检查密钥是否正确、是否已停用。';
     if (status === 456) return '测试失败：DeepL API 的字符额度已用完（HTTP 456）。';
