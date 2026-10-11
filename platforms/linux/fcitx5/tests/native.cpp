@@ -1,6 +1,7 @@
 // Real Fcitx input contexts and the real Host API. All input is synthetic.
 #include "../FcitxEngine.cpp"
 #include <fcitx-config/option.h>
+#include <fcitx-utils/misc.h>
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -3040,6 +3041,10 @@ int main(int argc, char **argv) {
     const auto deliverRepeatedOnline = [&] {
       const auto query = response(msime_client_online_query(state->session_)).dump();
       state->online_query_ = query;
+      state->online_due_ = state->ai_due_ = std::chrono::steady_clock::now();
+      state->refreshOnline();
+      require(state->online_dispatched_queries_[repeatedSource] == query,
+              "合成回包必须对应已分发的网络请求");
       state->online_due_ = state->ai_due_ =
           std::chrono::steady_clock::now() + std::chrono::hours(1);
       state->online_job_session_ = state->session_;
@@ -3085,18 +3090,38 @@ int main(int argc, char **argv) {
             "English translation gloss is persisted");
     // 离线探测失败后转在线，空回包也不能清掉当前页保留下来的释义。
     const auto glossResources = state->resources_;
-    std::filesystem::rename(glossPath, glossPath.string() + ".seed-test-backup");
-    state->resources_ = std::string(directory) + "/missing-gloss-resources";
-    state->startTranslation(response(msime_client_translation_query(state->session_)), true);
-    while (state->translation_job_.valid()) {
-      require(state->translation_job_.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
-              "离线与在线译文任务应结束");
-      state->refreshTranslations();
-      require(ic.inputPanel().candidateList()->candidate(0).text().toString().find("synthetic-gloss") != std::string::npos,
-              "离线探测失败或在线空回包使保留的译文消失");
+    const std::filesystem::path backupPath = glossPath.string() + ".seed-test-backup";
+    std::error_code restorationError;
+    const auto missingOfflineGloss = [&](bool interrupt) {
+      auto resources = state->resources_;
+      std::filesystem::rename(glossPath, backupPath);
+      fcitx::ScopeExit restore([&] {
+        state->resources_ = std::move(resources);
+        std::filesystem::rename(backupPath, glossPath, restorationError);
+      });
+      state->resources_ = std::string(directory) + "/missing-gloss-resources";
+      require(!interrupt, "合成夹具中途失败");
+      state->startTranslation(response(msime_client_translation_query(state->session_)), true);
+      while (state->translation_job_.valid()) {
+        require(state->translation_job_.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+                "离线与在线译文任务应结束");
+        state->refreshTranslations();
+        require(ic.inputPanel().candidateList()->candidate(0).text().toString().find("synthetic-gloss") != std::string::npos,
+                "离线探测失败或在线空回包使保留的译文消失");
+      }
+    };
+    bool interrupted = false;
+    try {
+      missingOfflineGloss(true);
+    } catch (const std::runtime_error &error) {
+      interrupted = std::string(error.what()) == "合成夹具中途失败";
     }
-    state->resources_ = glossResources;
-    std::filesystem::rename(glossPath.string() + ".seed-test-backup", glossPath);
+    require(interrupted, "夹具应触发合成中途失败");
+    require(!restorationError && state->resources_ == glossResources && std::filesystem::exists(glossPath),
+            "中途失败后必须恢复资源目录和释义数据库");
+    missingOfflineGloss(false);
+    require(!restorationError && state->resources_ == glossResources && std::filesystem::exists(glossPath),
+            "正常退出也必须恢复资源目录和释义数据库");
     const auto retainedQuery = response(msime_client_translation_query(state->session_));
     state->startTranslation(retainedQuery, true);
     std::promise<Json> emptyTranslation;
@@ -3127,10 +3152,16 @@ int main(int argc, char **argv) {
     require(ic.committed == beforeTranslatedCommit + translatedText, "gloss excluded from committed text");
     require(key(FcitxKey_n) && key(FcitxKey_i), "新的组合仍能发起在线请求");
     state->refreshOnline();
+    if (ai) {
+      require(state->online_slots_[1].job.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+              "新组合的 AI 缓存探测应结束");
+      state->refreshOnline();
+    }
     state->online_due_ = state->ai_due_ = std::chrono::steady_clock::now();
     state->refreshOnline();
-    require(state->online_slots_[repeatedSource].job.valid(),
-            "在线去重不能阻止新组合的请求");
+    require(state->online_dispatched_queries_[repeatedSource] ==
+                response(msime_client_online_query(state->session_)).dump(),
+            "消费缓存探测后，新组合必须实际分发网络请求");
     state->close();
     state->clearPanel();
     // The helpcode annotation on a candidate row follows the scheme's show_in_candidate_window preference, the way the IBus host renders it. This host used to append it whatever the setting said. In / and @ the annotation is the command title or the place's province and city, so neither that preference nor the wubi code hint hides it; Wubi opens / and @ too, and with 五笔剩余编码 off its command rows used to lose their titles. The other local modes still carry helpcodes and stay behind the preference.

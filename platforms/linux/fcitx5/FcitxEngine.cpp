@@ -558,7 +558,6 @@ public:
     waitForPreferenceSave();
     online_socket_.clear();
     online_query_.clear();
-    for (auto &query : online_display_queries_) query.clear();
     online_job_session_ = 0;
     invalidateOnlineRequests();
     online_due_ = {};
@@ -1558,6 +1557,7 @@ public:
   void invalidateOnlineRequests() {
     ++online_epoch_;
     online_query_.clear();
+    for (auto &query : online_dispatched_queries_) query.clear();
     for (auto &slot : online_slots_) {
       // Provider workers are detached and their results are fenced by the
       // epoch. Drop the old handles here so a slow request from a previous
@@ -1569,7 +1569,7 @@ public:
   void clearOnlineCandidates(uint8_t source) {
     if (!session_ || source >= 2) return;
     view_ = response(msime_client_clear_online_candidates(session_, source)).at("view");
-    online_display_queries_[source].clear();
+    online_dispatched_queries_[source].clear();
   }
   static bool translationPreferencesChanged(const Json &before, const Json &after) {
     for (const auto *key : {"candidate_translations", "candidate_english_gloss",
@@ -2018,7 +2018,6 @@ public:
             view_ = response(msime_client_apply_online_candidates(
                 session_, reinterpret_cast<const uint8_t *>(slot.query.data()), slot.query.size(),
                 reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), source)).at("view");
-            online_display_queries_[source] = slot.query;
             render();
           }
         }
@@ -2044,9 +2043,9 @@ public:
       for (uint8_t source = 0; source < 2; ++source) {
         const bool enabled = source == 0 ? cloud : ai;
         auto &slot = online_slots_[source];
-        // 已显示的查询不再请求；重复应用同一批候选会推进代次并清掉译文。
-        if (!enabled || slot.job.valid() || encoded == online_display_queries_[source]) continue;
-        // Windows AiAssistant shows a cached answer as soon as the input changes; only the network request waits for the idle delay. The probe never leaves the provider.
+        // shortcut: 同查询失败后等输入或配置变化再试；需要后台恢复时改为有界退避。
+        if (!enabled || slot.job.valid() || encoded == online_dispatched_queries_[source]) continue;
+        // AI 缓存探测立即显示旧答案；它不占用防抖后网络刷新的分发记录。
         const bool cacheOnly = source == 1 && changed;
         if (!cacheOnly && now < (source == 0 ? online_due_ : ai_due_)) continue;
         auto providerQuery = query;
@@ -2070,6 +2069,7 @@ public:
               result["query"] = encoded;
               return result;
             });
+        if (!cacheOnly) online_dispatched_queries_[source] = encoded;
       }
     } catch (...) {
       online_query_.clear();
@@ -3603,7 +3603,7 @@ public:
   std::string space_convert_preceding_;
   uint8_t punctuation_lock_ = 0;
   std::string online_socket_, online_query_;
-  std::array<std::string, 2> online_display_queries_;
+  std::array<std::string, 2> online_dispatched_queries_;
   uint64_t online_job_session_ = 0;
   struct OnlineSlot {
     std::shared_future<Json> job;
