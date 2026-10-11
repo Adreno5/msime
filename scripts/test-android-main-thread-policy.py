@@ -12,7 +12,7 @@ SITES = (
     JAVA / "core/ResourcePackService.java",
     JAVA / "home/AiSkinPage.java",
     JAVA / "home/HostTask.java",
-    JAVA / "home/KeyboardTryoutActivity.java",
+    JAVA / "home/ChatFragment.java",
     JAVA / "home/LexiconDetailPage.java",
     JAVA / "home/OnboardingChoices.java",
     JAVA / "home/OnboardingActivity.java",

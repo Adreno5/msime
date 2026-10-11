@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 试用键盘，按设计的聊天样式：顶栏「‹ 设置 | 试用键盘 | 清空」，下面是对话气泡（第一条是水杉的问候），底部是「打字试试」输入框和圆形发送键，系统把真正的水杉键盘接在它下面。输入框上方一排小按钮：切换输入法、加载 AI 模型、收起键盘。 -->
+<!-- AI 对话（也是试用键盘），按设计的聊天样式：顶栏「‹ 设置 | 试用键盘 | 清空」，下面是对话气泡（第一条是水杉的问候），底部是「打字试试」输入框和圆形发送键，系统把真正的水杉键盘接在它下面。输入框上方一排小按钮：切换输入法、收起键盘。作为底部「对话」tab 时 ChatFragment 藏起「‹ 设置」，标题换成「对话」。 -->
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -28,6 +28,7 @@
             android:textSize="16sp" />
 
         <TextView
+            android:id="@+id/tryout_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"

@@ -5,7 +5,6 @@ import app.msime.android.DimensionPolicy;
 import app.msime.android.ThemeColorPolicy;
 import app.msime.android.NumberPolicy;
 
-import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.os.Bundle;
 import android.view.LayoutInflater;
@@ -68,10 +67,10 @@ public final class KeyboardFragment extends HomeTabFragment {
             DimensionPolicy.pixels(requireContext(), Ui.NAV_GROUP_RADIUS)));
 
         MaterialButton trial = view.findViewById(R.id.keyboard_try);
-        // The Apple app opens an editor here rather than the system picker: trying the keyboard
-        // means typing with it, and the picker only offers to switch away from it.
-        ViewPolicy.bindClick(trial,
-            () -> startActivity(new Intent(requireContext(), KeyboardTryoutActivity.class)));
+        // 这里和 Apple 一样打开一个输入框而不是系统的输入法选择器：试用键盘就是用它打字，选择器只能把它换走。试用的输入框就是「对话」tab 的那一个，所以切过去并弹出键盘，不再另开一页。
+        ViewPolicy.bindClick(trial, () -> {
+            if (getActivity() instanceof HomeActivity home) home.openChat();
+        });
 
         TextView system = view.findViewById(R.id.keyboard_system_settings);
         system.setText("系统输入法设置 ›");

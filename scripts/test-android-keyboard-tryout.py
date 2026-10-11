@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""确保 Android 试用页默认就能和 AI 对话：有字就能发，编辑草稿时仍能取消请求，模型目录到了会刷新发送键并发出等着的那句。"""
+"""确保 Android 的对话页（底部「对话」tab，也是试用键盘）默认就能和 AI 对话：有字就能发，编辑草稿时仍能取消请求，模型目录到了会刷新发送键并发出等着的那句；换了账号以后旧账号迟到的模型目录不会被收下。"""
 from pathlib import Path
 import ast
 import re
@@ -7,7 +7,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "platforms/android/java/app/msime/android/home/KeyboardTryoutActivity.java"
+SOURCE = ROOT / "platforms/android/java/app/msime/android/home/ChatFragment.java"
 
 
 class KeyboardTryoutSourceContract(unittest.TestCase):
@@ -58,6 +58,21 @@ class KeyboardTryoutSourceContract(unittest.TestCase):
         body = success.group("body")
         self.assertRegex(body, r"ViewPolicy\.setEnabled\(send,[^;]*field\.length\(\)\s*>\s*0")
         self.assertRegex(body, r"flushPendingSend\(send\)")
+
+    def test_model_loader_drops_results_from_a_previous_session(self):
+        # tab 关不掉：换账号时页面改绑新会话并重新加载，旧账号那一次的结果到达时会话已经不同，必须丢掉而不是当成新账号的目录。
+        source = SOURCE.read_text()
+        loader = re.search(
+            r"private void loadModels\(EditText field, MaterialButton send\) \{(?P<body>.*?)\n    \}\n",
+            source,
+            re.S,
+        )
+        self.assertIsNotNone(loader, "could not locate the model loader")
+        body = loader.group("body")
+        self.assertRegex(body, r"String session = pageSessionId;")
+        self.assertRegex(body, r"chatModels\(session\)")
+        guards = re.findall(r"if \(!alive\(\) \|\| !session\.equals\(pageSessionId\)\) return;", body)
+        self.assertEqual(len(guards), 2, "both the success and the failure callback drop a stale session")
 
 
 if __name__ == "__main__":
