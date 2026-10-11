@@ -15,6 +15,7 @@ msime-client-core = { path = "../client-core" }
 msime-path-trust = { path = "../path-trust" }
 msime-engine = { path = "../engine" }
 msime-input-runtime = { path = "../input-runtime" }
+base64 = "0.23"
 hex = "0.4"
 lru = "0.18"
 serde.workspace = true

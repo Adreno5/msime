@@ -23,7 +23,7 @@ use msime_client_core::preferences::PreferencesError;
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DIRECTORY_BYTES: usize = 16 * 1024;
 
-type Session = BackendAccountSession<BackendAccountClient, FileAccountSessionStorage>;
+pub(super) type Session = BackendAccountSession<BackendAccountClient, FileAccountSessionStorage>;
 
 /// 每个会话目录一个会话对象。只在取对象时持锁，账号调用本身在锁外进行。
 static ACCOUNT_SESSIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<Session>>>> = OnceLock::new();
@@ -81,8 +81,11 @@ enum AccountAction {
     },
 }
 
-/// 目录对应的会话对象，第一次用到时建立；建立前先接管旧目录里的会话，与共享应用启动时做的一样。
-fn session_for(directory: &Path, legacy: Option<&Path>) -> Result<Arc<Session>, AccountError> {
+/// 目录对应的会话对象，第一次用到时建立；建立前先接管旧目录里的会话，与共享应用启动时做的一样。社区操作（`msime_client_community`）经同一个对象认证。
+pub(super) fn session_for(
+    directory: &Path,
+    legacy: Option<&Path>,
+) -> Result<Arc<Session>, AccountError> {
     let sessions = ACCOUNT_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut sessions = sessions.lock().map_err(|_| AccountError::Unavailable)?;
     if let Some(session) = sessions.get(directory) {
