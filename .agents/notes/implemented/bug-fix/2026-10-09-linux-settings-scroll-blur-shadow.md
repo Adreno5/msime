@@ -6,7 +6,7 @@ Status: implemented
 
 issue #6403：deepin 25.2.2 上，Linux 设置窗口右侧内容区用鼠标滚轮上下滚动不跟手，任意设置页都这样。
 
-设置启动器 `msime-linux-settings` 默认导出 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 和 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（见 [Linux 设置窗口默认禁用 WebKit DMA-BUF 渲染器](2026-10-08-linux-webkit-dmabuf-renderer.md)）。两个变量各自都会让 WebKitGTK 退回非合成模式：后者让 `AcceleratedBackingStore::rendererBufferTransportMode()` 一种传输方式都不报，硬件加速随之不可用。非合成模式下，内容区 `#settings-content` 是 `overflow-y: auto` 的元素，不是整页滚动，WebKit 没法用整页滚动的位块平移，每滚一步就把整块可见内容在 CPU 上重画一遍。
+设置启动器 `msime-linux-settings` 当时对所有机器默认导出 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 和 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（见 [Linux 设置窗口默认禁用 WebKit DMA-BUF 渲染器](2026-10-08-linux-webkit-dmabuf-renderer.md)）；#6847 之后只在加载了 NVIDIA 专有驱动时导出，见 [Linux 设置窗口的 WebKit 渲染规避只在 NVIDIA 专有驱动下默认启用](2026-10-11-linux-webkit-workaround-nvidia-only.md)。两个变量各自都会让 WebKitGTK 退回非合成模式：后者让 `AcceleratedBackingStore::rendererBufferTransportMode()` 一种传输方式都不报，硬件加速随之不可用。非合成模式下，内容区 `#settings-content` 是 `overflow-y: auto` 的元素，不是整页滚动，WebKit 没法用整页滚动的位块平移，每滚一步就把整块可见内容在 CPU 上重画一遍。
 
 Linux 的分组容器（`--p-group-shadow`）带一层 `0 1px 3px` 的模糊阴影，皮肤卡片带 `shadow-card`（两层模糊阴影）。带模糊的阴影每次重绘都要对整个分组的面积重新做一遍模糊，一页十几个分组，重绘成本就由它们决定。
 
@@ -40,7 +40,7 @@ Linux 设置页不用带模糊的大面积阴影：
 - Linux 设置页分组的下沿由 3px 模糊的淡阴影变成 1px 不带模糊的淡阴影，皮肤卡片在 Linux 下只剩边框；截图对比肉眼几乎分不出来。换来的是十个高于一屏的页面每步滚动都在一帧内画完。
 - 往 Linux 设置页加带模糊的 `box-shadow`、`filter: blur` 或 `backdrop-filter` 会把这个问题带回来。新用例只看分组阴影这一个令牌，其他元素靠 README 和这篇笔记提醒；判据是在关掉合成的 WebKitGTK 里量滚动每步的耗时。
 - 皮肤预览里候选窗、悬浮条自带的阴影（`.container`、`.status-bar`）没动：它们是候选窗外观的一部分，量出来对滚动的影响在帧间隔以内。
-- 如果以后去掉了启动器的两个变量，回到合成模式，这里的约束就可以放松，届时更新这篇笔记。
+- 启动器现在只在 NVIDIA 专有驱动下导出这两个变量（[Linux 设置窗口的 WebKit 渲染规避只在 NVIDIA 专有驱动下默认启用](2026-10-11-linux-webkit-workaround-nvidia-only.md)），其他机器回到合成模式，滚动应当不再每步整块重绘（没有在 deepin 上复测）。NVIDIA 用户仍走非合成路径，所以这里的约束继续保留；哪天 NVIDIA 下也不再需要这两个变量，约束才可以放松，届时更新这篇笔记。
 
 ## Verification
 
