@@ -20,10 +20,12 @@ import app.msime.android.VoicePolishSettingsPolicy;
 import app.msime.android.VoiceProviderPolicy;
 import app.msime.android.core.InputViewValuePolicy;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -68,6 +70,8 @@ public final class VoicePage extends DetailPage {
     @Nullable private LinearLayout column;
     @Nullable private GroupCard.Row contributeRow;
     @Nullable private State lastState;
+    /** 正在测试的服务（`voice.asr` / `voice.polish`）：测试中再点同一行不再发请求，免得排起一串请求和对话框。 */
+    private final Set<String> testing = new HashSet<>(2);
     /** 运行库或本地模型的下载进度变了就重画；下载结束时重读一遍安装状态。 */
     private final ResourcePackService.Listener packListener = (pack, finished) -> {
         if (column == null || !(ResourcePacks.VOICE_RUNTIME.equals(pack) || ResourcePackService.isVoiceModel(pack)))
@@ -91,6 +95,8 @@ public final class VoicePage extends DetailPage {
         column = null;
         contributeRow = null;
         lastState = null;
+        // HostTask fences its callback to this view, so a test still in flight when the view goes away never reports back; the marker must not lock the rebuilt page out of testing again.
+        testing.clear();
         super.onDestroyView();
     }
 
@@ -536,11 +542,13 @@ public final class VoicePage extends DetailPage {
         dialog.show();
     }
 
-    /** 「测试」行：按存着的配置在工作线程上发一次请求，结果用对话框给出（文案可能超过 Toast 的两行）。 */
+    /** 「测试」行：按存着的配置在网络线程上发一次请求，结果用对话框给出（文案可能超过 Toast 的两行）。请求最长约 15 秒，不能占着设置页读写偏好的那条串行线程。 */
     private void testRow(GroupCard group, String service) {
         group.button("测试连接", "用现在保存的设置发一次请求，最长约 15 秒", "测试", () -> {
             MsToast.show(requireContext(), "正在测试…");
-            HostTask.run(this, context -> runTest(context, service), result -> {
+            if (!testing.add(service)) return;
+            HostTask.runNetwork(this, context -> runTest(context, service), result -> {
+                testing.remove(service);
                 if (!isAdded()) return;
                 new MaterialAlertDialogBuilder(requireContext())
                     .setTitle(VoicePolishSettingsPolicy.testTitle(result.ok()))
