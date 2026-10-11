@@ -82,7 +82,9 @@ use msime_client_core::skin::custom_library::{
 use msime_client_core::skin::keyboard_trial::KeyboardSkinTrialStore;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use msime_client_core::typing_statistics::TypingSource;
-use msime_client_core::typing_statistics::{TypingStatistics, TypingStatisticsStore};
+use msime_client_core::typing_statistics::{
+    TypingStatistics, TypingStatisticsStatus, TypingStatisticsStore,
+};
 #[cfg(target_os = "android")]
 use msime_tauri_mobile_platform::{AndroidVoicePlatform, AndroidVoicePolishRequest};
 // Both mobile hosts build the same transcription request; only the transport differs.
@@ -596,34 +598,14 @@ struct VocabularyState(
     Option<std::path::PathBuf>,
 );
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TypingStatisticsStatus {
-    statistics: TypingStatistics,
-    availability: &'static str,
-    last_written_ms: Option<u64>,
-}
-
+// 状态的组装在 client-core（`TypingStatisticsStore::status`），Windows 原生设置窗口经 host-api 读到同样的字段。
 fn typing_statistics_status(
     store: &TypingStatisticsStore,
     statistics: TypingStatistics,
 ) -> Result<TypingStatisticsStatus, CommandError> {
-    let last_written = store
-        .last_written()
-        .map_err(|_| CommandError { code: "storage" })?;
-    Ok(TypingStatisticsStatus {
-        statistics,
-        availability: if last_written.is_some() {
-            "ready"
-        } else {
-            "neverWritten"
-        },
-        last_written_ms: last_written.and_then(|time| {
-            time.duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        }),
-    })
+    store
+        .status(statistics)
+        .map_err(|_| CommandError { code: "storage" })
 }
 
 #[tauri::command]

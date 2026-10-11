@@ -720,6 +720,9 @@ pub unsafe extern "C" fn msime_client_typing_statistics(
     struct Request {
         directory: String,
         action: StatisticsAction,
+        /// 设置页要的是状态：load、set_enabled、set_retention 和 reset 回答 `{statistics, availability, lastWrittenMs}`（client-core 的 `TypingStatisticsStatus`），而不只是统计本身。
+        #[serde(default)]
+        status: bool,
     }
     #[derive(Deserialize)]
     #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -783,11 +786,36 @@ pub unsafe extern "C" fn msime_client_typing_statistics(
             return Err("invalid typing statistics directory".into());
         }
         let store = TypingStatisticsStore::new(request.directory);
-        match request.action {
-            StatisticsAction::Load => {
-                serde_json::to_value(store.load().map_err(|error| error.to_string())?)
-                    .map_err(|_| "typing statistics response failed".to_owned())
+        let status = request.status;
+        if status
+            && !matches!(
+                request.action,
+                StatisticsAction::Load
+                    | StatisticsAction::SetEnabled { .. }
+                    | StatisticsAction::SetRetention { .. }
+                    | StatisticsAction::Reset
+            )
+        {
+            return Err(
+                "typing statistics status applies to load, set_enabled, set_retention and reset"
+                    .into(),
+            );
+        }
+        // 统计本身，或者设置页要的状态。
+        let answer = |statistics: msime_client_core::typing_statistics::TypingStatistics| {
+            if status {
+                serde_json::to_value(
+                    store
+                        .status(statistics)
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                serde_json::to_value(statistics)
             }
+            .map_err(|_| "typing statistics response failed".to_owned())
+        };
+        match request.action {
+            StatisticsAction::Load => answer(store.load().map_err(|error| error.to_string())?),
             StatisticsAction::Record {
                 text,
                 source,
@@ -838,13 +866,12 @@ pub unsafe extern "C" fn msime_client_typing_statistics(
                 let recorded = store.record_skin(&id).map_err(|error| error.to_string())?;
                 Ok(json!({"recorded": recorded}))
             }
-            StatisticsAction::SetEnabled { enabled } => serde_json::to_value(
+            StatisticsAction::SetEnabled { enabled } => answer(
                 store
                     .set_enabled(enabled)
                     .map_err(|error| error.to_string())?,
-            )
-            .map_err(|_| "typing statistics response failed".to_owned()),
-            StatisticsAction::SetRetention { retention, day } => serde_json::to_value(
+            ),
+            StatisticsAction::SetRetention { retention, day } => answer(
                 store
                     .set_retention(
                         msime_client_core::typing_statistics::StatisticsRetention::parse(
@@ -853,12 +880,8 @@ pub unsafe extern "C" fn msime_client_typing_statistics(
                         &day,
                     )
                     .map_err(|error| error.to_string())?,
-            )
-            .map_err(|_| "typing statistics response failed".to_owned()),
-            StatisticsAction::Reset => {
-                serde_json::to_value(store.reset().map_err(|error| error.to_string())?)
-                    .map_err(|_| "typing statistics response failed".to_owned())
-            }
+            ),
+            StatisticsAction::Reset => answer(store.reset().map_err(|error| error.to_string())?),
         }
     })
 }

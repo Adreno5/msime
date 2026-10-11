@@ -40,6 +40,7 @@
 #include "SettingsStateDirectory.h"
 #include "ShellLauncher.h"
 #include "TranslationServiceSettings.h"
+#include "TypingStatisticsModel.h"
 #include "msime_client.h"
 #include "../../common/HostApiString.h"
 #include "../../../shared/contracts/msime_edition.h"
@@ -957,8 +958,6 @@ const PageLabel &page_label(std::string_view id) {
 const wchar_t *shell_page_description(std::string_view id) {
   if (id == "account")
     return L"登录水杉输入法账号，管理设置和词库在设备之间的同步。";
-  if (id == "stats")
-    return L"查看打字字数、速度和常用输入方式的统计。统计只保存在本机。";
   if (id == "plugins")
     return L"管理已安装的插件，浏览和安装社区插件；按键音效、背景音乐、/ 指令表和 @ 名单也在这里。";
   if (id == "ai")
@@ -1530,6 +1529,190 @@ constexpr std::array<std::pair<const wchar_t *, const wchar_t *>, 9>
                    {L"候", L"wait"},
                    {L"后", L"after"}}};
 
+// ---- 打字统计 ----
+
+namespace typing = msime::settings::typing;
+
+// 打字统计的一次状态：统计、文件是否写过和最后写入的时间。signature 是整个回答，轮询时据此判断有没有新数据，与共享页比较 JSON.stringify(next) 一样。
+struct StatisticsStatus {
+  typing::Statistics statistics;
+  bool never_written = true;
+  std::optional<uint64_t> last_written_ms;
+  std::string signature;
+};
+
+// 今天，按本机时区。
+typing::CivilDay local_civil_day() {
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  return {now.wYear, now.wMonth, now.wDay};
+}
+
+// 统计文件的最后写入时间，写成共享页 `new Date(ms).toLocaleString("zh-CN")` 的样子；换算不了时为空。
+std::wstring statistics_written_text(uint64_t milliseconds) {
+  constexpr uint64_t unix_epoch = 116444736000000000ULL;
+  if (milliseconds > 900000000000000ULL)
+    return {};
+  ULARGE_INTEGER ticks{};
+  ticks.QuadPart = milliseconds * 10000ULL + unix_epoch;
+  const FILETIME utc{ticks.LowPart, ticks.HighPart};
+  SYSTEMTIME universal{}, local{};
+  if (!FileTimeToSystemTime(&utc, &universal) ||
+      !SystemTimeToTzSpecificLocalTime(nullptr, &universal, &local))
+    return {};
+  return typing::zh_date_time(local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute,
+                              local.wSecond);
+}
+
+// 一张 `{键: 数}` 表；不是数的项跳过。
+typing::Counts statistics_counts(IJsonValue const &value) {
+  typing::Counts counts;
+  if (!value || value.ValueType() != JsonValueType::Object)
+    return counts;
+  for (auto const &entry : value.GetObject())
+    if (entry.Value().ValueType() == JsonValueType::Number)
+      counts[utf8(entry.Key())] = entry.Value().GetNumber();
+  return counts;
+}
+
+typing::Breakdown statistics_breakdown(IJsonValue const &value) {
+  typing::Breakdown breakdown;
+  if (!value || value.ValueType() != JsonValueType::Object)
+    return breakdown;
+  const auto object = value.GetObject();
+  breakdown.characters =
+      statistics_counts(object.GetNamedValue(L"characters", JsonValue::CreateNullValue()));
+  breakdown.sources =
+      statistics_counts(object.GetNamedValue(L"sources", JsonValue::CreateNullValue()));
+  return breakdown;
+}
+
+// msime_client_typing_statistics 带 status:true 的回答，读不了时为空。在工作线程上读：保留期长时文件有几兆。
+std::optional<StatisticsStatus> statistics_status(Response const &response) {
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    const auto object = value.GetNamedObject(L"statistics");
+    auto named = [&object](wchar_t const *key) {
+      return object.GetNamedValue(key, JsonValue::CreateNullValue());
+    };
+    StatisticsStatus status;
+    status.signature = response.text;
+    status.never_written = named_string(value, L"availability") != L"ready";
+    const auto written = value.GetNamedValue(L"lastWrittenMs", JsonValue::CreateNullValue());
+    if (written.ValueType() == JsonValueType::Number && written.GetNumber() > 0 &&
+        written.GetNumber() < 9007199254740992.0)
+      status.last_written_ms = static_cast<uint64_t>(written.GetNumber());
+    auto &statistics = status.statistics;
+    statistics.enabled = object.GetNamedBoolean(L"enabled", false);
+    statistics.retention = utf8(hstring(named_string(object, L"retention")));
+    if (const auto total = named(L"total"); total.ValueType() == JsonValueType::Number)
+      statistics.total = total.GetNumber();
+    statistics.days = statistics_counts(named(L"days"));
+    statistics.detail = statistics_breakdown(named(L"detail"));
+    if (const auto daily = named(L"dailyDetails"); daily.ValueType() == JsonValueType::Object)
+      for (auto const &entry : daily.GetObject())
+        statistics.daily_details[utf8(entry.Key())] = statistics_breakdown(entry.Value());
+    if (const auto selections = named(L"selections");
+        selections.ValueType() == JsonValueType::Object) {
+      const auto counts = selections.GetObject();
+      const auto ranks = counts.GetNamedValue(L"ranks", JsonValue::CreateNullValue());
+      if (ranks.ValueType() == JsonValueType::Array)
+        for (auto const &rank : ranks.GetArray())
+          statistics.ranks.push_back(rank.ValueType() == JsonValueType::Number ? rank.GetNumber()
+                                                                               : 0);
+      if (const auto beyond = counts.GetNamedValue(L"beyond", JsonValue::CreateNullValue());
+          beyond.ValueType() == JsonValueType::Number)
+        statistics.beyond = beyond.GetNumber();
+    }
+    statistics.daily_active_ms = statistics_counts(named(L"dailyActiveMs"));
+    if (const auto hours = named(L"dailyHours"); hours.ValueType() == JsonValueType::Object)
+      for (auto const &entry : hours.GetObject()) {
+        if (entry.Value().ValueType() != JsonValueType::Array)
+          continue;
+        auto &buckets = statistics.daily_hours[utf8(entry.Key())];
+        for (auto const &bucket : entry.Value().GetArray())
+          buckets.push_back(bucket.ValueType() == JsonValueType::Number ? bucket.GetNumber() : 0);
+      }
+    if (const auto keys = named(L"dailyKeys"); keys.ValueType() == JsonValueType::Object)
+      for (auto const &entry : keys.GetObject())
+        statistics.daily_keys[utf8(entry.Key())] = statistics_counts(entry.Value());
+    return status;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+Color chart_color(uint32_t rgb, double alpha = 1) {
+  return rgba(static_cast<int>((rgb >> 16) & 0xFF), static_cast<int>((rgb >> 8) & 0xFF),
+              static_cast<int>(rgb & 0xFF), alpha);
+}
+
+// 图表上的一条线；虚线是参照线（平均值），与共享页的 ReferenceLine 一样只标阈值，不是网格。
+void chart_line(Canvas const &canvas, double x1, double y1, double x2, double y2,
+                Color const &color, double thickness, bool dashed) {
+  Shapes::Line line;
+  line.X1(x1);
+  line.Y1(y1);
+  line.X2(x2);
+  line.Y2(y2);
+  line.Stroke(brush(color));
+  line.StrokeThickness(thickness);
+  if (dashed) {
+    DoubleCollection dash;
+    dash.Append(4);
+    dash.Append(4);
+    line.StrokeDashArray(dash);
+  }
+  canvas.Children().Append(line);
+}
+
+void chart_polyline(Canvas const &canvas, std::vector<Windows::Foundation::Point> const &points,
+                    Color const &color, double thickness) {
+  Shapes::Polyline line;
+  PointCollection collection;
+  for (auto const &point : points)
+    collection.Append(point);
+  line.Points(collection);
+  line.Stroke(brush(color));
+  line.StrokeThickness(thickness);
+  line.StrokeLineJoin(PenLineJoin::Round);
+  line.StrokeStartLineCap(PenLineCap::Round);
+  line.StrokeEndLineCap(PenLineCap::Round);
+  canvas.Children().Append(line);
+}
+
+// 带一圈底色描边的圆点，圆心在 (x, y)。
+void chart_dot(Canvas const &canvas, double x, double y, double diameter, Color const &fill,
+               Color const &ring) {
+  Shapes::Ellipse dot;
+  const double outer = diameter + 4;
+  dot.Width(outer);
+  dot.Height(outer);
+  dot.Fill(brush(fill));
+  dot.Stroke(brush(ring));
+  dot.StrokeThickness(2);
+  Canvas::SetLeft(dot, x - outer / 2);
+  Canvas::SetTop(dot, y - outer / 2);
+  canvas.Children().Append(dot);
+}
+
+// 铺满所在格子的画布，尺寸一变就按新尺寸重画：图表的横向随窗口伸缩，线和点要按实际像素画，圆点才不会被拉成椭圆。
+Canvas chart_overlay(std::function<void(Canvas const &, double, double)> draw) {
+  Canvas canvas;
+  canvas.IsHitTestVisible(false);
+  canvas.HorizontalAlignment(HorizontalAlignment::Stretch);
+  canvas.VerticalAlignment(VerticalAlignment::Stretch);
+  canvas.SizeChanged([draw = std::move(draw)](Inspectable const &sender,
+                                              SizeChangedEventArgs const &args) {
+    const auto self = sender.as<Canvas>();
+    self.Children().Clear();
+    draw(self, args.NewSize().Width, args.NewSize().Height);
+  });
+  return canvas;
+}
+
 struct MainWindow : WindowT<MainWindow> {
   explicit MainWindow(std::string page) : current_page_(std::move(page)) {
     // 窗口标题和侧栏的产品名按版本取，full 仍是「水杉输入法」。
@@ -1765,6 +1948,8 @@ private:
       flush_pending();
       return;
     }
+    // 与共享页一样，窗口获得焦点时重读打字统计。
+    poll_statistics();
     // Another window (the tray, the shared app, another device through sync) may have changed the settings or Windows may have switched between light and dark while this window was in the background.
     bool changed = false;
     PreferencesDocument fresh;
@@ -2199,6 +2384,8 @@ private:
       clip_stale_ = true;
       reset_cloud_clipboard();
     }
+    if (id == "stats" && id != current_page_)
+      reset_statistics_page();
     current_page_ = id;
     select_navigation_item();
     render_page(false);
@@ -2660,9 +2847,10 @@ private:
     return icon;
   }
 
+  // 开关、下拉框和分段控件写的是偏好，偏好没读到时不可用；`document` 为假的那些（打字统计页的开关、保留期和标签）不碰偏好，照常可用。
   FrameworkElement toggle_control(std::wstring const &name, bool on,
                                   std::function<void(bool)> apply,
-                                  bool enabled = true) {
+                                  bool enabled = true, bool document = true) {
     StackPanel box;
     box.Orientation(Orientation::Horizontal);
     box.Spacing(12);
@@ -2676,7 +2864,7 @@ private:
     toggle.OffContent(box_value(L""));
     toggle.MinWidth(0);
     toggle.IsOn(on);
-    toggle.IsEnabled(enabled && loaded_);
+    toggle.IsEnabled(enabled && (loaded_ || !document));
     A11y::SetName(toggle, hstring(name));
     toggle.Toggled([weak_state = make_weak(state), on_toggle = std::move(apply)](
                        Inspectable const &sender, RoutedEventArgs const &) {
@@ -2693,7 +2881,7 @@ private:
                                   std::vector<Option> options,
                                   std::wstring const &current,
                                   std::function<void(std::wstring const &)> apply,
-                                  bool enabled = true) {
+                                  bool enabled = true, bool document = true) {
     ComboBox combo;
     combo.Width(156);
     int32_t selected = -1;
@@ -2703,7 +2891,7 @@ private:
         selected = static_cast<int32_t>(i);
     }
     combo.SelectedIndex(selected);
-    combo.IsEnabled(enabled && loaded_);
+    combo.IsEnabled(enabled && (loaded_ || !document));
     A11y::SetName(combo, hstring(name));
     combo.SelectionChanged(
         [choices = std::move(options), on_select = std::move(apply)](
@@ -2721,7 +2909,7 @@ private:
                                      std::vector<Option> const &options,
                                      std::wstring const &current,
                                      std::function<void(std::wstring const &)> apply,
-                                     bool enabled = true) {
+                                     bool enabled = true, bool document = true) {
     Border well;
     well.Background(brush(palette_.seg_well));
     well.BorderBrush(brush(palette_.stroke));
@@ -2764,7 +2952,7 @@ private:
       A11y::SetName(button, hstring(name + L" " + option.label));
       if (on)
         A11y::SetItemStatus(button, L"已选择");
-      button.IsEnabled(enabled && loaded_ && option.enabled);
+      button.IsEnabled(enabled && (loaded_ || !document) && option.enabled);
       button.Click([apply, value = option.value, on](Inspectable const &,
                                                      RoutedEventArgs const &) {
         if (!on)
@@ -3250,6 +3438,8 @@ private:
       build_hand_page(page);
     else if (id == "clip")
       build_clip_page(page);
+    else if (id == "stats")
+      build_stats_page(page);
     else if (id == "dev")
       build_dev_page(page);
     else if (id == "feedback")
@@ -3258,7 +3448,7 @@ private:
       build_about_page(page);
   }
 
-  // 打字统计、插件、AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
+  // 插件、AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
   void build_shell_page(nav::Page const &model, StackPanel const &page) {
     const auto &label = page_label(model.id);
     auto group = add_group(page, L"");
@@ -6105,6 +6295,1352 @@ private:
     shell_row(cloud, 0xE753, L"云剪贴板", L"", L"打开云剪贴板", nav::shell_links::cloud_clipboard);
   }
 
+  // ---- 打字统计 ----
+
+  // 共享的「打字统计」页（packages/ui/src/settings/typing-statistics.tsx）在 Windows 上画的那一版：没有手机外观、不是 iOS，有「自动清理」和「打开数据目录」。概览六格、标签（按键、趋势、类型、模式、方案、候选）下的图表、记录开关、保留期、刷新、打开数据目录、清空和「统计没有数据」的说明都照搬；派生数字和文案在 TypingStatisticsModel.h。统计经 msime_client_typing_statistics 读写状态目录下的 typing-statistics.json，与输入法和共享应用是同一份；请求带 status:true，回答里有文件是否写过和最后写入时间。所有读写都在工作线程上。
+
+  static constexpr const wchar_t *statistics_failure =
+      L"无法读取或保存统计，请稍后重试。原有统计不会被自动重置。";
+
+  void redraw_stats() {
+    if (!closed_ && current_page_ == "stats")
+      queue_refresh();
+  }
+
+  // 每次进入页面都与共享页重新挂载一样从头开始：重新读取，标签回到「按键」，不选日子；上一次留下的请求作废。
+  void reset_statistics_page() {
+    ++stats_generation_;
+    stats_.reset();
+    stats_error_.clear();
+    stats_busy_ = true;
+    stats_request_ = 0;
+    stats_last_request_ = {};
+    stats_selected_.reset();
+    stats_tab_ = L"keys";
+  }
+
+  static JsonObject statistics_action(wchar_t const *operation) {
+    JsonObject action;
+    action.SetNamedValue(L"operation", JsonValue::CreateStringValue(operation));
+    return action;
+  }
+
+  // 一次统计请求，在工作线程上调用并读出回答，`done` 在 UI 线程上拿到状态；读不了时是空。
+  fire_and_forget statistics_host(JsonObject action,
+                                  std::function<void(std::optional<StatisticsStatus> const &)> done) {
+    JsonObject request;
+    request.SetNamedValue(L"directory",
+                          JsonValue::CreateStringValue(hstring(state_directory().wstring())));
+    request.SetNamedValue(L"action", action);
+    request.SetNamedValue(L"status", JsonValue::CreateBooleanValue(true));
+    const auto body = utf8(request.Stringify());
+    auto weak = get_weak();
+    auto queue = DispatcherQueue();
+    co_await resume_background();
+    auto status = statistics_status(take_response(msime_client_typing_statistics(
+        reinterpret_cast<const uint8_t *>(body.data()), body.size())));
+    queue.TryEnqueue([weak, done = std::move(done), status = std::move(status)] {
+      if (auto self = weak.get(); self && !self->closed_)
+        done(status);
+    });
+  }
+
+  // 共享页的 update：同一时间只有一个请求，有请求在途时这次操作作废，开关和下拉框重画回统计里的值。
+  void update_statistics(JsonObject const &action, bool overview = false) {
+    if (stats_request_ != 0) {
+      redraw_stats();
+      return;
+    }
+    const auto generation = stats_generation_;
+    const auto request = ++stats_request_counter_;
+    stats_request_ = request;
+    stats_busy_ = true;
+    stats_error_.clear();
+    stats_request_started_ = std::chrono::steady_clock::now();
+    if (overview)
+      stats_last_request_ = stats_request_started_;
+    statistics_host(action, [this, generation, request](std::optional<StatisticsStatus> const &status) {
+      if (generation != stats_generation_ || stats_request_ != request)
+        return;
+      stats_request_ = 0;
+      stats_busy_ = false;
+      if (status)
+        stats_ = *status;
+      else
+        stats_error_ = statistics_failure;
+      redraw_stats();
+    });
+    redraw_stats();
+  }
+
+  bool window_minimized() {
+    if (const auto presenter =
+            AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>())
+      return presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Minimized;
+    return false;
+  }
+
+  // 共享页的 refreshWhenVisible：进入页面、窗口重新激活时和每 5 秒读一次；窗口最小化、上一次请求在途且不到 15 秒，或离上一次不到 1 秒时跳过。读到的与上次相同就不重画。
+  void poll_statistics() {
+    if (closed_ || current_page_ != "stats" || window_minimized())
+      return;
+    const auto now = std::chrono::steady_clock::now();
+    if ((stats_request_ != 0 && now - stats_request_started_ <= std::chrono::seconds(15)) ||
+        now - stats_last_request_ < std::chrono::seconds(1))
+      return;
+    stats_last_request_ = now;
+    const bool had_error = !stats_error_.empty();
+    stats_error_.clear();
+    const auto generation = stats_generation_;
+    const auto request = ++stats_request_counter_;
+    stats_request_ = request;
+    stats_request_started_ = now;
+    statistics_host(statistics_action(L"load"),
+                    [this, generation, request](std::optional<StatisticsStatus> const &status) {
+                      if (generation != stats_generation_ || stats_request_ != request)
+                        return;
+                      stats_request_ = 0;
+                      bool changed = stats_busy_;
+                      stats_busy_ = false;
+                      if (!status) {
+                        stats_error_ = statistics_failure;
+                        changed = true;
+                      } else if (!stats_ || stats_->signature != status->signature) {
+                        stats_ = *status;
+                        changed = true;
+                      }
+                      if (changed)
+                        redraw_stats();
+                    });
+    if (had_error)
+      redraw_stats();
+  }
+
+  void start_statistics_timer() {
+    if (!stats_timer_) {
+      stats_timer_ = DispatcherQueue().CreateTimer();
+      stats_timer_.Interval(std::chrono::seconds(5));
+      stats_timer_.IsRepeating(true);
+      stats_timer_.Tick([this](Microsoft::UI::Dispatching::DispatcherQueueTimer const &,
+                               Inspectable const &) {
+        if (closed_ || current_page_ != "stats") {
+          stats_timer_.Stop();
+          return;
+        }
+        poll_statistics();
+      });
+    }
+    if (!stats_timer_.IsRunning())
+      stats_timer_.Start();
+  }
+
+  void set_statistics_enabled(bool enabled) {
+    auto action = statistics_action(L"set_enabled");
+    action.SetNamedValue(L"enabled", JsonValue::CreateBooleanValue(enabled));
+    update_statistics(action);
+  }
+
+  // 保留期从用户的今天往回数，所以带上本地日期，与 Tauri 外壳的 set_typing_statistics_retention 相同。
+  void set_statistics_retention(std::wstring const &retention) {
+    auto action = statistics_action(L"set_retention");
+    action.SetNamedValue(L"retention", JsonValue::CreateStringValue(hstring(retention)));
+    action.SetNamedValue(L"day", JsonValue::CreateStringValue(hstring(local_day())));
+    update_statistics(action);
+  }
+
+  fire_and_forget reset_statistics() {
+    auto strong = get_strong();
+    if (!co_await confirm(L"清空打字统计",
+                          L"累计字数、分类、每日记录和按键次数都会被删除，无法恢复。", L"清空"))
+      co_return;
+    stats_selected_.reset();
+    update_statistics(statistics_action(L"reset"));
+  }
+
+  // 「打开数据目录」：统计文件所在的状态目录，没有时先建出来，与 Tauri 外壳的 open_typing_statistics_directory 一样；打不开时在页面顶部说明。
+  void open_statistics_directory() {
+    stats_error_.clear();
+    const auto directory = state_directory();
+    std::error_code error;
+    bool opened = !directory.empty() && directory.is_absolute();
+    if (opened) {
+      std::filesystem::create_directories(directory, error);
+      opened = std::filesystem::is_directory(directory, error);
+    }
+    if (opened)
+      opened = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", directory.c_str(), nullptr,
+                                                       nullptr, SW_SHOWNORMAL)) > 32;
+    if (!opened)
+      stats_error_ = L"无法打开数据目录，可能是文件管理器不可用。";
+    redraw_stats();
+  }
+
+  // 点按一天看它的分类与占比，再点一次回到整个时间范围。
+  void select_statistics_day(std::string const &key) {
+    if (stats_selected_ == key)
+      stats_selected_.reset();
+    else
+      stats_selected_ = key;
+    redraw_stats();
+  }
+
+  // 一节统计：标题（可以没有）和放图表的卡片。
+  StackPanel stats_section(StackPanel const &page, std::wstring const &title) {
+    auto group = add_group(page, title);
+    StackPanel body;
+    body.Padding(Thickness{24, 18, 24, 18});
+    auto card = make_card();
+    card.Child(body);
+    group.Children().Append(card);
+    return body;
+  }
+
+  TextBlock stats_caption(std::wstring_view value, double top = 7) {
+    auto caption = make_text(value, 12, palette_.faint);
+    caption.Margin(Thickness{0, top, 0, 0});
+    return caption;
+  }
+
+  TextBlock stats_footer(std::wstring_view value) {
+    auto footer = make_text(value, 12, palette_.sub);
+    footer.Margin(Thickness{0, 14, 0, 0});
+    return footer;
+  }
+
+  TextBlock stats_empty(std::wstring_view value) {
+    auto empty = make_text(value, 13, palette_.sub);
+    empty.TextAlignment(TextAlignment::Center);
+    empty.HorizontalAlignment(HorizontalAlignment::Center);
+    empty.Margin(Thickness{0, 14, 0, 4});
+    return empty;
+  }
+
+  FrameworkElement stats_error_bar() {
+    InfoBar bar;
+    bar.IsOpen(true);
+    bar.IsClosable(false);
+    bar.Severity(InfoBarSeverity::Error);
+    bar.Message(hstring(stats_error_));
+    bar.Margin(Thickness{0, 0, 0, 12});
+    return bar;
+  }
+
+  // 热力图的五档颜色：0 档是底色，其余是不同不透明度的强调色。
+  Color heat_fill(int level) const {
+    if (level <= 0)
+      return palette_.subtle2;
+    return faded(palette_.accent, typing::heat_opacity[static_cast<size_t>(std::min(level, 4))]);
+  }
+
+  Border heat_square(int level, double size) {
+    Border square;
+    square.Width(size);
+    square.Height(size);
+    square.CornerRadius(CornerRadius{2, 2, 2, 2});
+    square.Background(brush(heat_fill(level)));
+    square.VerticalAlignment(VerticalAlignment::Center);
+    return square;
+  }
+
+  // 「少 ■■■■■ 多」。
+  FrameworkElement heat_legend() {
+    StackPanel legend;
+    legend.Orientation(Orientation::Horizontal);
+    legend.Spacing(4);
+    legend.Margin(Thickness{0, 8, 0, 0});
+    legend.Children().Append(make_text(L"少", 10, palette_.faint));
+    for (int level = 0; level < 5; ++level)
+      legend.Children().Append(heat_square(level, 12));
+    legend.Children().Append(make_text(L"多", 10, palette_.faint));
+    A11y::SetAccessibilityView(legend, Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+    return legend;
+  }
+
+  // 图表下的横轴：两个标签分在两端，三个时中间那个居中。
+  FrameworkElement chart_axis(std::vector<std::wstring> const &labels) {
+    Grid axis;
+    axis.Margin(Thickness{0, 7, 0, 0});
+    for (size_t index = 0; index < labels.size(); ++index) {
+      ColumnDefinition column;
+      column.Width(GridLength{1, GridUnitType::Star});
+      axis.ColumnDefinitions().Append(column);
+      auto label = make_text(labels[index], 12, palette_.faint);
+      label.TextAlignment(index == 0                     ? TextAlignment::Left
+                          : index + 1 == labels.size() ? TextAlignment::Right
+                                                       : TextAlignment::Center);
+      Grid::SetColumn(label, static_cast<int32_t>(index));
+      axis.Children().Append(label);
+    }
+    return axis;
+  }
+
+  // 图表上可以点的一格（柱子、热力图的一天），与共享页的 StatisticsChartButton 一样带提示、读屏名和选中状态。
+  Button chart_button(UIElement const &face, std::wstring const &tip, std::wstring const &name,
+                      bool selected, std::function<void()> click) {
+    Button button;
+    button.Padding(Thickness{0, 0, 0, 0});
+    button.MinWidth(0);
+    button.MinHeight(0);
+    button.BorderThickness(Thickness{0, 0, 0, 0});
+    button.Background(brush(transparent_color()));
+    button.HorizontalAlignment(HorizontalAlignment::Stretch);
+    button.VerticalAlignment(VerticalAlignment::Stretch);
+    button.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    button.VerticalContentAlignment(VerticalAlignment::Stretch);
+    button.Content(face);
+    ToolTipService::SetToolTip(button, box_value(hstring(tip)));
+    A11y::SetName(button, hstring(name));
+    if (selected)
+      A11y::SetItemStatus(button, L"已选择");
+    button.Click([on_click = std::move(click)](Inspectable const &, RoutedEventArgs const &) {
+      on_click();
+    });
+    return button;
+  }
+
+  // 参照线的颜色：次要文字色再淡三成。
+  Color reference_color() const {
+    auto color = palette_.faint;
+    color.A = static_cast<uint8_t>(std::lround(color.A * 0.7));
+    return color;
+  }
+
+  // 标签行上方的六格和两行概况。
+  void stats_overview(StackPanel const &page, typing::Statistics const &statistics,
+                      std::string const &today, std::wstring const &scope_title, double scope_total,
+                      typing::Activity const &activity) {
+    auto body = stats_section(page, L"");
+    A11y::SetName(body, L"统计概览");
+    Grid grid;
+    grid.ColumnSpacing(24);
+    grid.RowSpacing(18);
+    for (int column = 0; column < 3; ++column) {
+      ColumnDefinition definition;
+      definition.Width(GridLength{1, GridUnitType::Star});
+      grid.ColumnDefinitions().Append(definition);
+    }
+    const auto metrics = typing::overview_metrics(statistics, today, scope_title, scope_total, activity);
+    for (size_t index = 0; index < metrics.size(); ++index) {
+      auto const &metric = metrics[index];
+      if (index % 3 == 0) {
+        RowDefinition row;
+        row.Height(GridLength{1, GridUnitType::Auto});
+        grid.RowDefinitions().Append(row);
+      }
+      StackPanel cell;
+      cell.Spacing(4);
+      auto label = make_text(metric.label, 12, palette_.sub);
+      if (!metric.title.empty())
+        ToolTipService::SetToolTip(label, box_value(hstring(metric.title)));
+      cell.Children().Append(label);
+      StackPanel line;
+      line.Orientation(Orientation::Horizontal);
+      line.Spacing(4);
+      auto value = make_text(metric.value, 22, palette_.accent);
+      value.FontWeight(Windows::UI::Text::FontWeight{650});
+      value.TextWrapping(TextWrapping::NoWrap);
+      A11y::SetName(value, hstring(metric.accessible + L" " + metric.value + metric.unit));
+      line.Children().Append(value);
+      if (!metric.unit.empty()) {
+        auto unit = make_text(metric.unit, 12, palette_.sub);
+        unit.VerticalAlignment(VerticalAlignment::Bottom);
+        unit.Margin(Thickness{0, 0, 0, 4});
+        line.Children().Append(unit);
+      }
+      cell.Children().Append(line);
+      if (!metric.note.empty())
+        cell.Children().Append(make_text(metric.note, 12, palette_.sub));
+      Grid::SetRow(cell, static_cast<int32_t>(index / 3));
+      Grid::SetColumn(cell, static_cast<int32_t>(index % 3));
+      grid.Children().Append(cell);
+    }
+    body.Children().Append(grid);
+    const auto details = typing::overview_details(activity);
+    Grid lines;
+    lines.Margin(Thickness{0, 7, 0, 0});
+    lines.ColumnSpacing(16);
+    for (int column = 0; column < 2; ++column) {
+      ColumnDefinition definition;
+      definition.Width(GridLength{1, GridUnitType::Star});
+      lines.ColumnDefinitions().Append(definition);
+    }
+    auto summary = make_text(details.summary, 12, palette_.faint);
+    lines.Children().Append(summary);
+    auto best = make_text(details.best, 12, palette_.faint);
+    best.TextAlignment(TextAlignment::Right);
+    Grid::SetColumn(best, 1);
+    lines.Children().Append(best);
+    body.Children().Append(lines);
+    body.Children().Append(stats_footer(
+        activity.has_activity
+            ? L"速度按连续打字的时间计算，两次上屏间隔超过 10 秒算休息、不计入；只统计汉字与字母，数字和标点不参与。"
+            : L"还没有测量到活跃时长。这项从本次更新后开始记录，之前的输入只有字数。"));
+  }
+
+  // 「每日趋势」：近 30 天每天一根柱，点按选中那一天，虚线是有记录的日子的日均。
+  void stats_trend(StackPanel const &page, typing::Statistics const &statistics,
+                   std::vector<typing::DayEntry> const &days) {
+    const auto scale = typing::trend_scale(statistics, days);
+    auto body = stats_section(page, L"每日趋势 · 近 " + std::to_wstring(days.size()) + L" 天");
+    body.Children().Append(stats_caption(typing::trend_caption(scale), 0));
+    constexpr double height = 145;
+    Grid plot;
+    plot.Height(height);
+    plot.Margin(Thickness{0, 12, 0, 0});
+    plot.ColumnSpacing(3);
+    for (size_t index = 0; index < days.size(); ++index) {
+      ColumnDefinition column;
+      column.Width(GridLength{1, GridUnitType::Star});
+      plot.ColumnDefinitions().Append(column);
+      auto const &day = days[index];
+      const double count = typing::value_of(statistics.days, day.key);
+      const bool chosen = stats_selected_ == day.key;
+      const bool dimmed = stats_selected_.has_value() && !chosen;
+      Grid face;
+      Border bar;
+      bar.Height(typing::bar_percent(count, scale.maximum) / 100 * height);
+      bar.VerticalAlignment(VerticalAlignment::Bottom);
+      bar.CornerRadius(CornerRadius{3, 3, 1, 1});
+      bar.Background(brush(chosen ? chart_color(typing::selected_color) : palette_.accent));
+      bar.Opacity(dimmed ? 0.4 : chosen ? 1.0 : 0.85);
+      face.Children().Append(bar);
+      auto button = chart_button(face, day.label + L"：" + typing::js_number(count) + L" 字符",
+                                 day.label + L"，" + typing::js_number(count) + L" 字符", chosen,
+                                 [this, key = day.key] { select_statistics_day(key); });
+      Grid::SetColumn(button, static_cast<int32_t>(index));
+      plot.Children().Append(button);
+    }
+    if (scale.average > 0) {
+      auto overlay = chart_overlay([fraction = scale.average / scale.maximum,
+                                    color = reference_color()](Canvas const &canvas, double width,
+                                                               double plot_height) {
+        const double y = plot_height - fraction * plot_height;
+        chart_line(canvas, 0, y, width, y, color, 1, true);
+      });
+      Grid::SetColumnSpan(overlay, static_cast<int32_t>(days.size()));
+      plot.Children().Append(overlay);
+    }
+    body.Children().Append(plot);
+    body.Children().Append(chart_axis({days.front().label, days.back().label}));
+    body.Children().Append(stats_footer(L"点按柱形查看当天的分类与占比。"));
+    if (stats_selected_) {
+      auto back = button_control(L"返回整个时间范围", [this] {
+        stats_selected_.reset();
+        redraw_stats();
+      });
+      back.Margin(Thickness{0, 12, 0, 0});
+      back.HorizontalAlignment(HorizontalAlignment::Left);
+      body.Children().Append(back);
+    }
+  }
+
+  // 「今日时段」：今天每个小时一根柱，有平时的数据时再画一条前几天平均的线，同一个刻度。
+  void stats_hours(StackPanel const &page, std::vector<double> const &hours,
+                   std::optional<typing::UsualHours> const &usual) {
+    auto body = stats_section(page, L"今日时段");
+    double peak = 1, total = 0, highest = 0;
+    for (const double value : hours) {
+      peak = std::max(peak, value);
+      highest = std::max(highest, value);
+      total += value;
+    }
+    if (usual)
+      for (const double value : usual->hours)
+        peak = std::max(peak, value);
+    body.Children().Append(stats_caption(L"最高 " + typing::zh_number(typing::js_round(highest)) +
+                                             L" 字符 / 小时 · 共 " +
+                                             typing::zh_number(typing::js_round(total)) + L" 字符",
+                                         0));
+    if (usual) {
+      StackPanel legend;
+      legend.Orientation(Orientation::Horizontal);
+      legend.Spacing(16);
+      legend.Margin(Thickness{0, 8, 0, 0});
+      StackPanel today_key;
+      today_key.Orientation(Orientation::Horizontal);
+      today_key.Spacing(6);
+      today_key.Children().Append(heat_square(4, 10));
+      today_key.Children().Append(make_text(L"今日", 11, palette_.sub));
+      legend.Children().Append(today_key);
+      StackPanel usual_key;
+      usual_key.Orientation(Orientation::Horizontal);
+      usual_key.Spacing(6);
+      Border line;
+      line.Width(14);
+      line.Height(2);
+      line.CornerRadius(CornerRadius{1, 1, 1, 1});
+      line.Background(brush(palette_.sub));
+      line.VerticalAlignment(VerticalAlignment::Center);
+      usual_key.Children().Append(line);
+      usual_key.Children().Append(make_text(
+          L"平时（前 " + typing::zh_number(usual->days) + L" 天平均）", 11, palette_.sub));
+      legend.Children().Append(usual_key);
+      A11y::SetAccessibilityView(legend,
+                                 Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+      body.Children().Append(legend);
+    }
+    constexpr double height = 110;
+    Grid plot;
+    plot.Height(height);
+    plot.Margin(Thickness{0, 12, 0, 0});
+    plot.ColumnSpacing(3);
+    A11y::SetName(plot, usual ? L"今日各时段输入分布，与平时对比" : L"今日各时段输入分布");
+    for (size_t hour = 0; hour < hours.size(); ++hour) {
+      ColumnDefinition column;
+      column.Width(GridLength{1, GridUnitType::Star});
+      plot.ColumnDefinitions().Append(column);
+      const double value = hours[hour];
+      Grid cell;
+      cell.Background(brush(transparent_color()));
+      Border bar;
+      bar.Height(typing::bar_percent(value, peak) / 100 * height);
+      bar.VerticalAlignment(VerticalAlignment::Bottom);
+      bar.CornerRadius(CornerRadius{3, 3, 1, 1});
+      bar.Background(brush(palette_.accent));
+      bar.Opacity(value == 0 ? 0.25 : 0.85);
+      cell.Children().Append(bar);
+      std::wstring tip = std::to_wstring(hour) + L" 时：今日 " + typing::js_number(value) + L" 字符";
+      if (usual)
+        tip += L"，平时 " + typing::zh_number(typing::js_round(usual->hours[hour])) + L" 字符";
+      ToolTipService::SetToolTip(cell, box_value(hstring(tip)));
+      A11y::SetName(cell, hstring(std::to_wstring(hour) + L" 时，" + typing::js_number(value) + L" 字符"));
+      Grid::SetColumn(cell, static_cast<int32_t>(hour));
+      plot.Children().Append(cell);
+    }
+    if (usual) {
+      std::vector<std::optional<double>> values(usual->hours.begin(), usual->hours.end());
+      auto overlay = chart_overlay([runs = typing::line_runs(values), peak,
+                                    color = palette_.sub](Canvas const &canvas, double width,
+                                                          double plot_height) {
+        for (auto const &run : runs) {
+          std::vector<Windows::Foundation::Point> points;
+          for (auto const &[x, value] : run)
+            points.push_back(point_at(x / 100 * width, plot_height - value / peak * plot_height));
+          chart_polyline(canvas, points, color, 1.5);
+        }
+      });
+      Grid::SetColumnSpan(overlay, static_cast<int32_t>(hours.size()));
+      plot.Children().Append(overlay);
+    }
+    body.Children().Append(plot);
+    body.Children().Append(chart_axis({L"0 时", L"12 时", L"23 时"}));
+  }
+
+  // 「速度趋势」：每天每分钟的字数画成折线，纵轴从最慢的那天附近起，两端标出刻度；活跃不足一分钟的日子是断开的。
+  void stats_speed(StackPanel const &page, typing::Statistics const &statistics,
+                   std::vector<typing::DayEntry> const &days, double average_speed) {
+    auto body = stats_section(page, L"速度趋势");
+    std::vector<std::string> keys;
+    for (auto const &day : days)
+      keys.push_back(day.key);
+    const auto speeds = typing::daily_speeds(statistics, keys);
+    const auto scale = typing::speed_scale(speeds, average_speed);
+    if (!scale) {
+      body.Children().Append(stats_empty(
+          L"这段时间还没有测量到足够的活跃时长。每天连续打字满 1 分钟后，这里会画出当天的速度。"));
+      return;
+    }
+    body.Children().Append(stats_caption(typing::speed_caption(*scale, average_speed), 0));
+    Grid plot;
+    plot.Height(120);
+    A11y::SetName(plot, hstring(L"每日输入速度折线图，" + typing::js_number(static_cast<double>(scale->measured)) +
+                                L" 天有测量，平均 " + typing::zh_number(typing::js_round(average_speed)) +
+                                L" 字每分钟"));
+    auto top = make_text(typing::js_number(scale->top), 10, palette_.faint);
+    top.VerticalAlignment(VerticalAlignment::Top);
+    top.IsHitTestVisible(false);
+    plot.Children().Append(top);
+    auto bottom = make_text(typing::js_number(scale->bottom), 10, palette_.faint);
+    bottom.VerticalAlignment(VerticalAlignment::Bottom);
+    bottom.Margin(Thickness{0, 0, 0, 4});
+    bottom.IsHitTestVisible(false);
+    plot.Children().Append(bottom);
+    std::optional<size_t> chosen;
+    for (size_t index = 0; index < days.size(); ++index)
+      if (stats_selected_ == days[index].key)
+        chosen = index;
+    std::vector<std::pair<size_t, double>> dots;
+    for (size_t index = 0; index < speeds.size(); ++index)
+      if (speeds[index] && (typing::speed_dotted(speeds, index, days.size()) || chosen == index))
+        dots.emplace_back(index, typing::speed_height(*scale, *speeds[index]));
+    std::vector<std::optional<double>> heights;
+    for (auto const &speed : speeds)
+      heights.push_back(speed ? std::optional<double>(typing::speed_height(*scale, *speed))
+                              : std::nullopt);
+    plot.Children().Append(chart_overlay(
+        [runs = typing::line_runs(heights), dots, chosen, count = days.size(),
+         average = typing::speed_height(*scale, average_speed), reference = reference_color(),
+         accent = palette_.accent, ring = palette_.preview_bg,
+         selected = chart_color(typing::selected_color)](Canvas const &canvas, double width,
+                                                         double height) {
+          auto y = [height](double percent) { return height - percent / 100 * height; };
+          chart_line(canvas, 0, y(average), width, y(average), reference, 1, true);
+          for (auto const &run : runs) {
+            std::vector<Windows::Foundation::Point> points;
+            for (auto const &[x, value] : run)
+              points.push_back(point_at(x / 100 * width, y(value)));
+            chart_polyline(canvas, points, accent, 2);
+          }
+          for (auto const &[index, value] : dots) {
+            const bool picked = chosen == index;
+            chart_dot(canvas, typing::column_center(index, count) / 100 * width, y(value),
+                      picked ? 10 : 7, picked ? selected : accent, ring);
+          }
+        }));
+    Grid columns;
+    for (size_t index = 0; index < days.size(); ++index) {
+      ColumnDefinition column;
+      column.Width(GridLength{1, GridUnitType::Star});
+      columns.ColumnDefinitions().Append(column);
+      Border hover;
+      hover.Background(brush(transparent_color()));
+      ToolTipService::SetToolTip(
+          hover, box_value(hstring(days[index].label + L"：" +
+                                   (speeds[index] ? typing::zh_number(typing::js_round(*speeds[index])) +
+                                                        L" 字 / 分钟"
+                                                  : std::wstring(L"活跃不足 1 分钟，未计算")))));
+      A11y::SetAccessibilityView(hover,
+                                 Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+      Grid::SetColumn(hover, static_cast<int32_t>(index));
+      columns.Children().Append(hover);
+    }
+    plot.Children().Append(columns);
+    Border frame;
+    frame.Margin(Thickness{0, 12, 0, 0});
+    frame.BorderThickness(Thickness{0, 0, 0, 1});
+    frame.BorderBrush(brush(palette_.divider));
+    frame.Child(plot);
+    body.Children().Append(frame);
+    body.Children().Append(chart_axis({days.front().label, days.back().label}));
+  }
+
+  // 「日历热力图」：近 53 周每天一格，一列一周，从星期一排起；点按选中那一天。
+  void stats_calendar(StackPanel const &page, typing::Statistics const &statistics,
+                      typing::CivilDay today) {
+    auto body = stats_section(page, L"日历热力图");
+    body.Children().Append(stats_caption(L"近 12 个月，颜色越深输入越多", 0));
+    const auto weeks = typing::heatmap_weeks(statistics.days, today);
+    double maximum = 1;
+    for (auto const &week : weeks)
+      for (auto const &day : week)
+        maximum = std::max(maximum, day.count);
+    constexpr double cell = 14, gap = 3, gutter = 18;
+    StackPanel grid;
+    A11y::SetName(grid, L"每日输入热力图");
+    Canvas months;
+    months.Height(16);
+    months.Width(gutter + 4 + static_cast<double>(weeks.size()) * (cell + gap));
+    const auto labels = typing::heatmap_month_labels(weeks);
+    for (size_t index = 0; index < labels.size(); ++index) {
+      if (labels[index].empty())
+        continue;
+      auto label = make_text(labels[index], 9, palette_.faint);
+      label.TextWrapping(TextWrapping::NoWrap);
+      Canvas::SetLeft(label, gutter + 4 + static_cast<double>(index) * (cell + gap));
+      Canvas::SetTop(label, 3);
+      months.Children().Append(label);
+    }
+    A11y::SetAccessibilityView(months, Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+    grid.Children().Append(months);
+    StackPanel rows;
+    rows.Orientation(Orientation::Horizontal);
+    rows.Spacing(4);
+    StackPanel weekdays;
+    weekdays.Width(gutter);
+    weekdays.Spacing(gap);
+    for (const wchar_t *name : {L"一", L"", L"三", L"", L"五", L"", L""}) {
+      auto label = make_text(name, 9, palette_.faint);
+      label.Height(cell);
+      label.TextAlignment(TextAlignment::Right);
+      label.LineHeight(cell);
+      weekdays.Children().Append(label);
+    }
+    A11y::SetAccessibilityView(weekdays,
+                               Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+    rows.Children().Append(weekdays);
+    StackPanel columns;
+    columns.Orientation(Orientation::Horizontal);
+    columns.Spacing(gap);
+    for (auto const &week : weeks) {
+      StackPanel column;
+      column.Spacing(gap);
+      for (auto const &day : week) {
+        if (day.future) {
+          Border blank;
+          blank.Width(cell);
+          blank.Height(cell);
+          column.Children().Append(blank);
+          continue;
+        }
+        const bool chosen = stats_selected_ == day.key;
+        Border fill;
+        fill.CornerRadius(CornerRadius{3, 3, 3, 3});
+        fill.Background(brush(heat_fill(typing::day_heat_level(day.count, maximum))));
+        if (chosen) {
+          fill.BorderThickness(Thickness{2, 2, 2, 2});
+          fill.BorderBrush(brush(chart_color(typing::selected_color)));
+        }
+        auto button = chart_button(
+            fill,
+            day.label + L"：" +
+                (day.count > 0 ? typing::zh_number(day.count) + L" 字符" : std::wstring(L"无记录")),
+            L"热力图：" + day.label + L"，" + typing::js_number(day.count) + L" 字符", chosen,
+            [this, key = day.key] { select_statistics_day(key); });
+        button.Width(cell);
+        button.Height(cell);
+        button.CornerRadius(CornerRadius{3, 3, 3, 3});
+        column.Children().Append(button);
+      }
+      columns.Children().Append(column);
+    }
+    rows.Children().Append(columns);
+    grid.Children().Append(rows);
+    ScrollViewer scroller;
+    scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
+    scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    scroller.HorizontalScrollMode(ScrollMode::Enabled);
+    scroller.VerticalScrollMode(ScrollMode::Disabled);
+    scroller.Margin(Thickness{0, 8, 0, 0});
+    scroller.Padding(Thickness{0, 0, 0, 4});
+    scroller.Content(grid);
+    body.Children().Append(scroller);
+    body.Children().Append(heat_legend());
+  }
+
+  // 一排排按键，宽度按键的单位数分，颜色按次数分档；没有 id 的是对齐用的空位。
+  FrameworkElement key_rows(std::vector<std::vector<typing::HeatKey>> const &rows, double maximum) {
+    StackPanel panel;
+    panel.Spacing(4);
+    for (auto const &row : rows) {
+      Grid line;
+      line.ColumnSpacing(4);
+      for (size_t index = 0; index < row.size(); ++index) {
+        auto const &key = row[index];
+        ColumnDefinition column;
+        column.Width(GridLength{key.weight, GridUnitType::Star});
+        line.ColumnDefinitions().Append(column);
+        if (key.code.empty())
+          continue;
+        const int level = typing::key_heat_level(key.count, maximum);
+        Border cap;
+        cap.Height(36);
+        cap.CornerRadius(CornerRadius{5, 5, 5, 5});
+        cap.BorderThickness(Thickness{1, 1, 1, 1});
+        cap.BorderBrush(brush(palette_.stroke2));
+        cap.Background(brush(heat_fill(level)));
+        auto label = make_text(key.label, 11, level >= 3 ? palette_.on_accent : palette_.sub);
+        label.TextWrapping(TextWrapping::NoWrap);
+        label.TextTrimming(TextTrimming::CharacterEllipsis);
+        label.HorizontalAlignment(HorizontalAlignment::Center);
+        label.VerticalAlignment(VerticalAlignment::Center);
+        label.Margin(Thickness{2, 0, 2, 0});
+        cap.Child(label);
+        const auto name = key.name + L"，" + typing::zh_number(key.count) + L" 次";
+        ToolTipService::SetToolTip(cap, box_value(hstring(name)));
+        A11y::SetName(cap, hstring(name));
+        Grid::SetColumn(cap, static_cast<int32_t>(index));
+        line.Children().Append(cap);
+      }
+      panel.Children().Append(line);
+    }
+    return panel;
+  }
+
+  // 「按键热力图」：当前范围内每个键按了多少次，画在记下这些次数的那种键盘上。
+  void stats_keys(StackPanel const &page, typing::Statistics const &statistics,
+                  std::optional<std::vector<std::string>> const &scope, std::wstring const &scope_label) {
+    const auto model = typing::keyboard_model(typing::scoped_key_counts(statistics.daily_keys, scope));
+    auto body = stats_section(page, L"按键热力图 · " + scope_label);
+    if (model.total == 0) {
+      body.Children().Append(stats_empty(L"这段时间还没有按键记录"));
+    } else {
+      body.Children().Append(
+          stats_caption(L"共 " + typing::zh_number(model.total) + L" 次按键，颜色越深按得越多"));
+      auto board = key_rows(model.rows, model.maximum);
+      board.Margin(Thickness{0, 12, 0, 0});
+      A11y::SetName(board, L"按键热力图");
+      body.Children().Append(board);
+      if (model.nine) {
+        body.Children().Append(stats_caption(L"九宫格", 14));
+        auto nine = key_rows(*model.nine, model.maximum);
+        nine.MaxWidth(260);
+        nine.HorizontalAlignment(HorizontalAlignment::Center);
+        nine.Margin(Thickness{0, 8, 0, 0});
+        A11y::SetName(nine, L"九宫格按键");
+        body.Children().Append(nine);
+      }
+      if (!model.others.empty()) {
+        body.Children().Append(stats_caption(L"其他键", 14));
+        VariableSizedWrapGrid others;
+        others.Orientation(Orientation::Horizontal);
+        others.ItemWidth(190);
+        others.ItemHeight(32);
+        others.Margin(Thickness{0, 8, 0, 0});
+        A11y::SetName(others, L"其他键");
+        for (auto const &key : model.others) {
+          Border chip;
+          chip.CornerRadius(CornerRadius{5, 5, 5, 5});
+          chip.BorderThickness(Thickness{1, 1, 1, 1});
+          chip.BorderBrush(brush(palette_.stroke2));
+          chip.Padding(Thickness{8, 4, 8, 4});
+          chip.Margin(Thickness{0, 0, 6, 6});
+          chip.HorizontalAlignment(HorizontalAlignment::Left);
+          StackPanel content;
+          content.Orientation(Orientation::Horizontal);
+          content.Spacing(6);
+          content.Children().Append(heat_square(typing::key_heat_level(key.count, model.maximum), 10));
+          auto label = make_text(key.label, 12, palette_.text);
+          label.TextWrapping(TextWrapping::NoWrap);
+          content.Children().Append(label);
+          auto count = make_text(typing::zh_number(key.count), 12, palette_.sub);
+          count.FontWeight(Windows::UI::Text::FontWeight{500});
+          content.Children().Append(count);
+          chip.Child(content);
+          A11y::SetName(chip, hstring(key.label + L"，" + typing::zh_number(key.count) + L" 次"));
+          others.Children().Append(chip);
+        }
+        body.Children().Append(others);
+      }
+      body.Children().Append(heat_legend());
+      StackPanel top;
+      top.Spacing(6);
+      top.Margin(Thickness{0, 14, 0, 0});
+      A11y::SetName(top, L"最常按的键");
+      for (size_t index = 0; index < model.top.size(); ++index) {
+        auto const &key = model.top[index];
+        Grid row;
+        row.ColumnSpacing(8);
+        ColumnDefinition rank;
+        rank.Width(GridLength{16, GridUnitType::Pixel});
+        ColumnDefinition name;
+        name.Width(GridLength{1, GridUnitType::Star});
+        ColumnDefinition count;
+        count.Width(GridLength{1, GridUnitType::Auto});
+        row.ColumnDefinitions().Append(rank);
+        row.ColumnDefinitions().Append(name);
+        row.ColumnDefinitions().Append(count);
+        auto number = make_text(std::to_wstring(index + 1), 12, palette_.faint);
+        number.TextAlignment(TextAlignment::Right);
+        row.Children().Append(number);
+        auto label = make_text(key.label, 12, palette_.text);
+        label.TextWrapping(TextWrapping::NoWrap);
+        label.TextTrimming(TextTrimming::CharacterEllipsis);
+        Grid::SetColumn(label, 1);
+        row.Children().Append(label);
+        auto times = make_text(typing::zh_number(key.count) + L" 次", 12, palette_.sub);
+        times.FontWeight(Windows::UI::Text::FontWeight{500});
+        Grid::SetColumn(times, 2);
+        row.Children().Append(times);
+        top.Children().Append(row);
+      }
+      body.Children().Append(top);
+    }
+    body.Children().Append(stats_footer(
+        L"只保存每个键每天被按下的次数，不保存按键顺序和输入内容；按住不放只算一次，密码框中的按键不计入。"));
+  }
+
+  // 环形图：扇区从 12 点钟方向顺时针排，中间是总数。几何与共享页的 SVG 相同，按 190 像素画。
+  FrameworkElement make_donut(std::vector<typing::Slice> const &slices, double total,
+                              std::wstring const &title) {
+    constexpr double size = 190;
+    constexpr double scale = size / 100;
+    Grid holder;
+    holder.Width(size);
+    holder.Height(size);
+    holder.HorizontalAlignment(HorizontalAlignment::Center);
+    holder.VerticalAlignment(VerticalAlignment::Center);
+    A11y::SetName(holder, hstring(title + L"环形图"));
+    Canvas canvas;
+    canvas.Width(size);
+    canvas.Height(size);
+    auto at = [](typing::DonutPoint point) { return point_at(point.x * scale, point.y * scale); };
+    for (auto const &segment : typing::donut_segments(slices)) {
+      if (segment.ring) {
+        Shapes::Ellipse ring;
+        const double diameter = (typing::donut_outer - typing::donut_thickness / 2) * 2 * scale;
+        ring.Width(diameter);
+        ring.Height(diameter);
+        ring.Stroke(brush(chart_color(segment.color)));
+        ring.StrokeThickness(typing::donut_thickness * scale);
+        Canvas::SetLeft(ring, (size - diameter) / 2);
+        Canvas::SetTop(ring, (size - diameter) / 2);
+        canvas.Children().Append(ring);
+        continue;
+      }
+      PathFigure figure;
+      figure.IsClosed(true);
+      figure.IsFilled(true);
+      figure.StartPoint(at(segment.outer_start));
+      ArcSegment outer;
+      outer.Point(at(segment.outer_end));
+      outer.Size({static_cast<float>(typing::donut_outer * scale),
+                  static_cast<float>(typing::donut_outer * scale)});
+      outer.SweepDirection(SweepDirection::Clockwise);
+      outer.IsLargeArc(segment.large);
+      figure.Segments().Append(outer);
+      LineSegment across;
+      across.Point(at(segment.inner_end));
+      figure.Segments().Append(across);
+      ArcSegment inner;
+      inner.Point(at(segment.inner_start));
+      inner.Size({static_cast<float>(typing::donut_inner * scale),
+                  static_cast<float>(typing::donut_inner * scale)});
+      inner.SweepDirection(SweepDirection::Counterclockwise);
+      inner.IsLargeArc(segment.large);
+      figure.Segments().Append(inner);
+      PathGeometry geometry;
+      geometry.Figures().Append(figure);
+      Shapes::Path path;
+      path.Data(geometry);
+      path.Fill(brush(chart_color(segment.color)));
+      canvas.Children().Append(path);
+    }
+    holder.Children().Append(canvas);
+    StackPanel center;
+    center.HorizontalAlignment(HorizontalAlignment::Center);
+    center.VerticalAlignment(VerticalAlignment::Center);
+    auto number = make_text(typing::zh_number(total), 25, palette_.text);
+    number.FontWeight(Windows::UI::Text::FontWeight{600});
+    number.HorizontalAlignment(HorizontalAlignment::Center);
+    center.Children().Append(number);
+    auto unit = make_text(L"字符", 11, palette_.faint);
+    unit.HorizontalAlignment(HorizontalAlignment::Center);
+    center.Children().Append(unit);
+    holder.Children().Append(center);
+    return holder;
+  }
+
+  // 「字符类型」「语言模式」：环形图和图例，卡片够宽（520 以上）时并排，窄了环形图回到图例上方。
+  void stats_donut(StackPanel const &page, std::wstring const &title,
+                   std::vector<typing::Slice> const &slices, std::wstring const &footer) {
+    auto body = stats_section(page, title);
+    const double total = typing::slices_total(slices);
+    if (total == 0) {
+      body.Children().Append(stats_empty(L"暂无输入记录"));
+    } else {
+      auto donut = make_donut(slices, total, title);
+      StackPanel legend;
+      legend.Spacing(11);
+      legend.VerticalAlignment(VerticalAlignment::Center);
+      for (auto const &slice : typing::legend_slices(slices)) {
+        Grid row;
+        row.ColumnSpacing(9);
+        for (auto const &width : {GridLength{22, GridUnitType::Pixel}, GridLength{1, GridUnitType::Star},
+                                  GridLength{1, GridUnitType::Auto}, GridLength{58, GridUnitType::Pixel}}) {
+          ColumnDefinition column;
+          column.Width(width);
+          row.ColumnDefinitions().Append(column);
+        }
+        Border dot;
+        dot.Width(22);
+        dot.Height(22);
+        dot.CornerRadius(CornerRadius{7, 7, 7, 7});
+        dot.Background(brush(chart_color(slice.color, 0x1a / 255.0)));
+        auto symbol = make_text(slice.symbol, 12, chart_color(slice.color));
+        symbol.FontWeight(Windows::UI::Text::FontWeight{650});
+        symbol.TextWrapping(TextWrapping::NoWrap);
+        symbol.HorizontalAlignment(HorizontalAlignment::Center);
+        symbol.VerticalAlignment(VerticalAlignment::Center);
+        dot.Child(symbol);
+        row.Children().Append(dot);
+        auto name = make_text(slice.title, 14, palette_.text);
+        name.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(name, 1);
+        row.Children().Append(name);
+        auto count = make_text(typing::zh_number(slice.count), 14, palette_.text);
+        count.FontWeight(Windows::UI::Text::FontWeight{500});
+        count.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(count, 2);
+        row.Children().Append(count);
+        auto share = make_text(typing::zh_percent(slice.count, total), 12, palette_.sub);
+        share.TextAlignment(TextAlignment::Right);
+        share.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(share, 3);
+        row.Children().Append(share);
+        A11y::SetName(row, hstring(slice.title + L" " + typing::js_number(slice.count) + L" 字符，" +
+                                   typing::zh_percent(slice.count, total)));
+        legend.Children().Append(row);
+      }
+      Grid layout;
+      layout.Margin(Thickness{0, 16, 0, 0});
+      ColumnDefinition chart_column;
+      chart_column.Width(GridLength{1, GridUnitType::Auto});
+      ColumnDefinition legend_column;
+      legend_column.Width(GridLength{1, GridUnitType::Star});
+      layout.ColumnDefinitions().Append(chart_column);
+      layout.ColumnDefinitions().Append(legend_column);
+      RowDefinition first;
+      first.Height(GridLength{1, GridUnitType::Auto});
+      RowDefinition second;
+      second.Height(GridLength{1, GridUnitType::Auto});
+      layout.RowDefinitions().Append(first);
+      layout.RowDefinitions().Append(second);
+      layout.Children().Append(donut);
+      layout.Children().Append(legend);
+      auto arrange = [](Grid const &grid, FrameworkElement const &chart, FrameworkElement const &list,
+                        bool wide) {
+        grid.ColumnSpacing(wide ? 32 : 0);
+        Grid::SetColumnSpan(chart, wide ? 1 : 2);
+        Grid::SetRow(list, wide ? 0 : 1);
+        Grid::SetColumn(list, wide ? 1 : 0);
+        Grid::SetColumnSpan(list, wide ? 1 : 2);
+        list.Margin(Thickness{0, wide ? 0.0 : 20.0, 0, 0});
+      };
+      arrange(layout, donut, legend, true);
+      layout.SizeChanged([arrange, weak_chart = make_weak(donut), weak_list = make_weak(legend)](
+                             Inspectable const &sender, SizeChangedEventArgs const &args) {
+        auto chart = weak_chart.get();
+        auto list = weak_list.get();
+        if (chart && list)
+          arrange(sender.as<Grid>(), chart, list, args.NewSize().Width >= 520);
+      });
+      body.Children().Append(layout);
+    }
+    if (!footer.empty())
+      body.Children().Append(stats_footer(footer));
+  }
+
+  // 排行的一行：名字、按最多的那一项缩放的横条、数量和占比。
+  FrameworkElement rank_row(std::wstring const &label, double count, double total, double peak,
+                            Color const &fill, std::wstring const &name) {
+    Grid row;
+    row.ColumnSpacing(9);
+    ColumnDefinition title_column;
+    title_column.Width(GridLength{1, GridUnitType::Star});
+    title_column.MinWidth(88);
+    ColumnDefinition track_column;
+    track_column.Width(GridLength{2, GridUnitType::Star});
+    track_column.MinWidth(80);
+    ColumnDefinition count_column;
+    count_column.Width(GridLength{72, GridUnitType::Pixel});
+    ColumnDefinition share_column;
+    share_column.Width(GridLength{48, GridUnitType::Pixel});
+    row.ColumnDefinitions().Append(title_column);
+    row.ColumnDefinitions().Append(track_column);
+    row.ColumnDefinitions().Append(count_column);
+    row.ColumnDefinitions().Append(share_column);
+    auto title = make_text(label, 12, palette_.text);
+    title.TextWrapping(TextWrapping::NoWrap);
+    title.TextTrimming(TextTrimming::CharacterEllipsis);
+    title.VerticalAlignment(VerticalAlignment::Center);
+    row.Children().Append(title);
+    Grid track;
+    track.Height(11);
+    track.CornerRadius(CornerRadius{5.5, 5.5, 5.5, 5.5});
+    track.Background(brush(palette_.subtle2));
+    track.VerticalAlignment(VerticalAlignment::Center);
+    const double fraction = std::clamp(count / peak, 0.0, 1.0);
+    ColumnDefinition filled;
+    filled.Width(GridLength{fraction, GridUnitType::Star});
+    ColumnDefinition rest;
+    rest.Width(GridLength{1 - fraction, GridUnitType::Star});
+    track.ColumnDefinitions().Append(filled);
+    track.ColumnDefinitions().Append(rest);
+    Border bar;
+    bar.CornerRadius(CornerRadius{5.5, 5.5, 5.5, 5.5});
+    bar.Background(brush(fill));
+    track.Children().Append(bar);
+    Grid::SetColumn(track, 1);
+    row.Children().Append(track);
+    auto number = make_text(typing::zh_number(count), 12, palette_.sub);
+    number.TextAlignment(TextAlignment::Right);
+    number.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(number, 2);
+    row.Children().Append(number);
+    auto share = make_text(typing::zh_percent(count, total), 12, palette_.faint);
+    share.TextAlignment(TextAlignment::Right);
+    share.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(share, 3);
+    row.Children().Append(share);
+    A11y::SetName(row, hstring(name));
+    return row;
+  }
+
+  // 「输入方案」：方案可能多到颜色分不清，所以是单色排行，名字说明是哪一项。
+  void stats_rank(StackPanel const &page, std::wstring const &title,
+                  std::vector<typing::Slice> const &slices, std::wstring const &footer) {
+    auto body = stats_section(page, title);
+    const double total = typing::slices_total(slices);
+    if (total == 0) {
+      body.Children().Append(stats_empty(L"暂无输入记录"));
+    } else {
+      const auto ranked = typing::ranked_slices(slices);
+      double peak = 1;
+      for (auto const &slice : ranked)
+        peak = std::max(peak, slice.count);
+      StackPanel chart;
+      chart.Spacing(11);
+      chart.Margin(Thickness{0, 16, 0, 18});
+      A11y::SetName(chart, hstring(title + L"排行"));
+      for (auto const &slice : ranked)
+        chart.Children().Append(rank_row(slice.title, slice.count, total, peak, palette_.accent,
+                                         slice.title + L" " + typing::js_number(slice.count) +
+                                             L" 字符，" + typing::zh_percent(slice.count, total)));
+      body.Children().Append(chart);
+    }
+    if (!footer.empty())
+      body.Children().Append(stats_footer(footer));
+  }
+
+  // 「候选命中位置」：按位置排，不按多少排，看的是从第一条往后掉得多快。
+  void stats_candidate_ranks(StackPanel const &page, typing::Statistics const &statistics) {
+    const auto ranks = typing::candidate_ranks(statistics);
+    auto body = stats_section(page, L"候选命中位置");
+    Grid head;
+    head.Margin(Thickness{0, 0, 0, 4});
+    head.ColumnSpacing(8);
+    for (auto const &width : {GridLength{1, GridUnitType::Auto}, GridLength{1, GridUnitType::Auto},
+                              GridLength{1, GridUnitType::Star}}) {
+      ColumnDefinition column;
+      column.Width(width);
+      head.ColumnDefinitions().Append(column);
+    }
+    auto rate = make_text(typing::zh_percent(ranks.first, ranks.total), 30, palette_.text);
+    rate.TextWrapping(TextWrapping::NoWrap);
+    A11y::SetName(rate, hstring(L"首选命中率 " + typing::zh_percent(ranks.first, ranks.total)));
+    head.Children().Append(rate);
+    auto caption = make_text(L"首选命中率", 13, palette_.sub);
+    caption.VerticalAlignment(VerticalAlignment::Bottom);
+    caption.Margin(Thickness{0, 0, 0, 6});
+    A11y::SetAccessibilityView(caption, Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Raw);
+    Grid::SetColumn(caption, 1);
+    head.Children().Append(caption);
+    auto summary = make_text(ranks.total == 0 ? std::wstring(L"暂无记录")
+                                              : L"共 " + typing::zh_number(ranks.total) + L" 次上屏",
+                             12, palette_.faint);
+    summary.TextAlignment(TextAlignment::Right);
+    summary.VerticalAlignment(VerticalAlignment::Bottom);
+    summary.Margin(Thickness{0, 0, 0, 6});
+    Grid::SetColumn(summary, 2);
+    head.Children().Append(summary);
+    body.Children().Append(head);
+    if (ranks.total == 0) {
+      body.Children().Append(stats_empty(L"暂无候选记录。用水杉键盘上屏几次后再回来查看。"));
+    } else {
+      StackPanel chart;
+      chart.Spacing(11);
+      chart.Margin(Thickness{0, 16, 0, 18});
+      A11y::SetName(chart, L"候选命中位置分布");
+      for (auto const &row : ranks.rows)
+        chart.Children().Append(rank_row(row.label, row.count, ranks.total, ranks.peak,
+                                         chart_color(typing::chart_palette[0]),
+                                         row.label + L"：" + typing::js_number(row.count) + L" 次，" +
+                                             typing::zh_percent(row.count, ranks.total)));
+      body.Children().Append(chart);
+    }
+    body.Children().Append(stats_footer(
+        L"每次上屏记录选中的是第几条候选，只记位置，不记任何文字。首选命中率越高，说明排序越贴合你的输入。"));
+  }
+
+  // 「按日明细」：最近 30 个有记录的日子，新的在上。
+  void stats_details(StackPanel const &page, typing::Statistics const &statistics,
+                     std::string const &today) {
+    const auto rows = typing::daily_detail_rows(statistics, today);
+    auto body = stats_section(page, L"按日明细 · 最近 " + std::to_wstring(typing::detail_days) + L" 天");
+    if (rows.empty()) {
+      body.Children().Append(stats_empty(L"暂无输入记录"));
+    } else {
+      constexpr std::array<const wchar_t *, 9> titles{L"日期", L"字数", L"汉字", L"字母", L"数字",
+                                                      L"标点", L"其他", L"活跃", L"速度"};
+      Grid table;
+      table.MinWidth(560);
+      for (size_t index = 0; index < titles.size(); ++index) {
+        ColumnDefinition column;
+        column.Width(GridLength{index == 8 ? 1.6 : 1, GridUnitType::Star});
+        table.ColumnDefinitions().Append(column);
+      }
+      auto place = [&table](FrameworkElement const &element, size_t row, size_t column) {
+        Grid::SetRow(element, static_cast<int32_t>(row));
+        Grid::SetColumn(element, static_cast<int32_t>(column));
+        table.Children().Append(element);
+      };
+      auto cell = [this](std::wstring const &value, Color const &color, size_t column, bool header) {
+        auto block = make_text(value, 12, color);
+        block.TextWrapping(TextWrapping::NoWrap);
+        block.TextAlignment(column == 0 ? TextAlignment::Left : TextAlignment::Right);
+        block.Padding(header ? Thickness{8, 0, 8, 6} : Thickness{8, 6, 8, 6});
+        if (header)
+          block.FontWeight(Windows::UI::Text::FontWeight{500});
+        return block;
+      };
+      for (size_t row = 0; row <= rows.size(); ++row) {
+        RowDefinition definition;
+        definition.Height(GridLength{1, GridUnitType::Auto});
+        table.RowDefinitions().Append(definition);
+      }
+      for (size_t column = 0; column < titles.size(); ++column)
+        place(cell(titles[column], palette_.faint, column, true), 0, column);
+      for (size_t index = 0; index < rows.size(); ++index) {
+        auto const &row = rows[index];
+        Border line;
+        line.BorderThickness(Thickness{0, 1, 0, 0});
+        line.BorderBrush(brush(palette_.divider));
+        Grid::SetColumnSpan(line, static_cast<int32_t>(titles.size()));
+        place(line, index + 1, 0);
+        place(cell(typing::day_label(row.key), palette_.text, 0, false), index + 1, 0);
+        auto total = cell(typing::zh_number(row.total), palette_.text, 1, false);
+        total.FontWeight(Windows::UI::Text::FontWeight{500});
+        place(total, index + 1, 1);
+        const std::array<double, 5> values{row.han, row.latin, row.number, row.punctuation, row.other};
+        for (size_t column = 0; column < values.size(); ++column)
+          place(cell(typing::zh_number(values[column]), palette_.sub, column + 2, false), index + 1,
+                column + 2);
+        place(cell(row.active_ms ? typing::active_time(*row.active_ms) : std::wstring(L"—"),
+                   palette_.text, 7, false),
+              index + 1, 7);
+        place(cell(row.speed ? typing::zh_number(typing::js_round(*row.speed)) + L" 字/分钟"
+                             : std::wstring(L"—"),
+                   palette_.text, 8, false),
+              index + 1, 8);
+      }
+      A11y::SetName(table, hstring(L"按日明细 · 最近 " + std::to_wstring(typing::detail_days) + L" 天"));
+      ScrollViewer scroller;
+      scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
+      scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
+      scroller.HorizontalScrollMode(ScrollMode::Enabled);
+      scroller.VerticalScrollMode(ScrollMode::Disabled);
+      scroller.Margin(Thickness{0, 12, 0, 0});
+      scroller.Content(table);
+      body.Children().Append(scroller);
+    }
+    body.Children().Append(stats_footer(
+        L"列出最近 " + std::to_wstring(typing::detail_days) +
+        L" 个有记录的日期，新的在上；「其他」含其他文字、表情、符号与历史未分类。活跃与速度显示「—」的日期早于活跃时长的记录。"));
+  }
+
+  void build_stats_page(StackPanel const &page) {
+    if (indexing_) {
+      // 统计要从工作线程读回来才画得出，搜索索引里先登记页面底部的两项设置。
+      record(L"记录打字统计", L"关闭后，新提交不会增加统计。");
+      record(L"自动清理", L"按保留策略删除超期的每日记录并从累计中扣除，跨天后首次记录时执行。");
+      return;
+    }
+    start_statistics_timer();
+    if (!stats_ && stats_request_ == 0 && stats_error_.empty())
+      poll_statistics();
+    if (!stats_) {
+      if (stats_error_.empty())
+        page.Children().Append(make_text(L"正在读取打字统计…", 14, palette_.sub));
+      else
+        page.Children().Append(stats_error_bar());
+      return;
+    }
+    const auto status = *stats_;
+    auto const &statistics = status.statistics;
+    const auto today_date = local_civil_day();
+    const auto today = typing::day_key(today_date);
+    const auto trend_days = typing::recent_days(typing::desktop_trend_days, today_date);
+    std::optional<std::vector<std::string>> scope;
+    if (stats_selected_)
+      scope = std::vector<std::string>{*stats_selected_};
+    const auto breakdown = typing::scoped_breakdown(statistics, scope);
+    const double scope_total =
+        stats_selected_ ? typing::value_of(statistics.days, *stats_selected_) : statistics.total;
+    const auto selected_label =
+        stats_selected_ ? std::optional<std::wstring>(typing::day_label(*stats_selected_)) : std::nullopt;
+    const auto activity = typing::activity_metrics(statistics, today);
+
+    if (!stats_error_.empty())
+      page.Children().Append(stats_error_bar());
+    if (!statistics.enabled) {
+      auto body = stats_section(page, L"输入统计已关闭");
+      body.Children().Append(make_text(
+          L"开启后这里会显示输入字数、速度、时段分布与按键热力图。统计只保存在本机，不记录输入内容，也不联网。",
+          14, palette_.sub));
+      auto enable = button_control(stats_busy_ ? L"处理中…" : L"启用输入统计",
+                                   [this] { set_statistics_enabled(true); }, !stats_busy_);
+      enable.Margin(Thickness{0, 12, 0, 0});
+      enable.HorizontalAlignment(HorizontalAlignment::Left);
+      body.Children().Append(enable);
+    }
+    stats_overview(page, statistics, today, selected_label.value_or(L"累计输入"), scope_total, activity);
+
+    auto tabs = segmented_control(
+        L"统计内容",
+        {{L"keys", L"按键"}, {L"trend", L"趋势"}, {L"kind", L"类型"}, {L"mode", L"模式"},
+         {L"scheme", L"方案"}, {L"ranks", L"候选"}},
+        stats_tab_,
+        [this](std::wstring const &value) {
+          // 桌面上切换标签时保留选中的那一天：它的柱子在「趋势」里，其他标签正是用来看这一天的分项。
+          stats_tab_ = value;
+          redraw_stats();
+        },
+        true, false);
+    tabs.HorizontalAlignment(HorizontalAlignment::Left);
+    tabs.Margin(Thickness{0, 24, 0, 0});
+    page.Children().Append(tabs);
+
+    if (stats_tab_ == L"trend") {
+      stats_trend(page, statistics, trend_days);
+      if (activity.today_hours)
+        stats_hours(page, *activity.today_hours, typing::usual_hours(statistics, today));
+      stats_speed(page, statistics, trend_days, activity.average_speed);
+      stats_calendar(page, statistics, today_date);
+    }
+    if (stats_tab_ == L"keys")
+      stats_keys(page, statistics, scope, selected_label.value_or(L"累计"));
+    if (stats_tab_ == L"kind")
+      stats_donut(page, L"字符类型", typing::character_slices(breakdown), L"");
+    if (stats_tab_ == L"mode")
+      stats_donut(page, L"语言模式", typing::language_slices(breakdown),
+                  L"按提交时使用的键盘模式统计，不推测文本语言；中文模式下输入的数字仍计入中文模式。AI 润色和语音输入单独按来源统计。");
+    if (stats_tab_ == L"scheme")
+      stats_rank(page, L"输入方案", typing::source_slices(breakdown),
+                 L"输入方案统计其上屏字符数；拼音等按键另由按键热力图计数，只记每个键每天的按下次数。来源无法归类的字数计入历史未分类。");
+    if (stats_tab_ == L"trend")
+      stats_details(page, statistics, today);
+    if (stats_tab_ == L"ranks")
+      stats_candidate_ranks(page, statistics);
+
+    auto group = add_group(page, L"");
+    group.Margin(Thickness{0, 28, 0, 0});
+    add_row(group, 0xE9D2, L"记录打字统计", L"关闭后，新提交不会增加统计。",
+            toggle_control(L"记录打字统计", statistics.enabled,
+                           [this](bool on) { set_statistics_enabled(on); }, !stats_busy_, false));
+    std::vector<Option> retention;
+    for (auto const &choice : typing::retention_choices)
+      retention.push_back({typing::widen(choice.value), choice.label});
+    const auto current = typing::widen(typing::retention_value(statistics.retention));
+    add_row(group, 0xE823, L"自动清理",
+            L"按保留策略删除超期的每日记录并从累计中扣除，跨天后首次记录时执行。",
+            select_control(L"自动清理", std::move(retention), current,
+                           [this, current](std::wstring const &value) {
+                             if (value != current)
+                               set_statistics_retention(value);
+                           },
+                           !stats_busy_, false));
+    StackPanel actions;
+    actions.Padding(Thickness{24, 16, 24, 18});
+    StackPanel buttons;
+    buttons.Orientation(Orientation::Horizontal);
+    buttons.Spacing(9);
+    buttons.Children().Append(button_control(stats_busy_ ? L"处理中…" : L"刷新统计",
+                                             [this] { update_statistics(statistics_action(L"load"), true); },
+                                             !stats_busy_));
+    buttons.Children().Append(
+        button_control(L"打开数据目录", [this] { open_statistics_directory(); }, !stats_busy_));
+    auto clear = button_control(L"清空统计", [this] { reset_statistics(); }, !stats_busy_);
+    clear.as<Button>().Foreground(brush(danger_color()));
+    buttons.Children().Append(clear);
+    actions.Children().Append(buttons);
+    auto privacy = make_text(
+        L"字数统计水杉键盘提交的字符，以及英文模式和放行给应用的字母、数字与符号（按按键时估计），含标点及表情，不含空格和换行。组合表情计为一个字符，删除文字不扣减。按键热力图只保存每个键每天被按下的次数，不保存按键顺序和输入内容。仅在本机保存日期、分类和数量，不保存输入内容。每日明细默认永久保留，可在「自动清理」中改为只保留最近一段时间；清理删除的日期同时从累计总数与分类中扣除。",
+        12, palette_.sub);
+    privacy.Margin(Thickness{0, 16, 0, 0});
+    actions.Children().Append(privacy);
+    auto card = make_card();
+    card.Child(actions);
+    group.Children().Append(card);
+
+    const auto message = typing::availability_notice(
+        statistics.enabled, statistics.total, status.never_written,
+        status.last_written_ms ? statistics_written_text(*status.last_written_ms) : std::wstring());
+    if (!message.empty()) {
+      auto body = stats_section(page, L"统计没有数据");
+      body.Children().Append(make_text(message, 14, palette_.sub));
+    }
+  }
+
   // ---- 屏幕键盘、语音、手写 ----
 
   // 共享的「屏幕键盘」页（packages/ui/src/settings/pages/screen-keyboard-page.tsx 和 touch-keyboard-geometry-section.tsx）在 Windows 上画四组：「屏幕键盘」（打开面板和可拖动的预览）、「尺寸」（高度、两种间距和恢复默认）、「工具栏」，以及指向「主题」的「外观」。Windows 不是 `touch_toolbar_components` 的宿主，「工具栏」里只有顶部语音入口；「布局」「手势」两组和触屏反馈只在手机上画，这里也不画。面板本身是输入工具，仍由共享应用打开。
@@ -7349,6 +8885,19 @@ private:
   bool cloud_sending_ = false;
   std::wstring cloud_notice_;
   uint64_t cloud_generation_ = 0;
+
+  // 「打字统计」页：读到的状态、出错说明、选中的日子和标签，跨页面重建保留，每次进入页面时重置（共享页的组件状态）。stats_generation_ 在进入页面时递增，作废上一次留下的请求；stats_request_ 是在途请求的序号，0 表示没有；两个时间点是共享页轮询用的 requestStartedAt 和 lastRequestAt。
+  std::optional<StatisticsStatus> stats_;
+  std::wstring stats_error_;
+  bool stats_busy_ = true;
+  std::optional<std::string> stats_selected_;
+  std::wstring stats_tab_ = L"keys";
+  uint64_t stats_generation_ = 0;
+  uint64_t stats_request_ = 0;
+  uint64_t stats_request_counter_ = 0;
+  std::chrono::steady_clock::time_point stats_request_started_{};
+  std::chrono::steady_clock::time_point stats_last_request_{};
+  Microsoft::UI::Dispatching::DispatcherQueueTimer stats_timer_{nullptr};
 
   // 系统字体列表：读取状态和结果跨页面重建保留，与共享页一样第一次点开字体输入框时才读取。控件是主题页当前的那一组。
   enum class FontCatalogStatus { idle, loading, ready, failed };

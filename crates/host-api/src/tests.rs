@@ -3659,6 +3659,52 @@ fn typing_statistics_boundary_persists_only_aggregate_counts() {
     );
 }
 #[test]
+fn typing_statistics_boundary_answers_the_settings_status() {
+    let directory = tempfile::tempdir().unwrap();
+    let call = |action: Value, status: bool| {
+        let request = serde_json::to_vec(&json!({
+            "directory": directory.path(),
+            "action": action,
+            "status": status,
+        }))
+        .unwrap();
+        read(unsafe { msime_client_typing_statistics(request.as_ptr(), request.len()) })
+    };
+    let fresh = call(json!({"operation": "load"}), true);
+    assert_eq!(fresh["value"]["availability"], "neverWritten");
+    assert_eq!(fresh["value"]["lastWrittenMs"], Value::Null);
+    assert_eq!(fresh["value"]["statistics"]["enabled"], false);
+    let enabled = call(json!({"operation": "set_enabled", "enabled": true}), true);
+    assert_eq!(enabled["value"]["availability"], "ready");
+    assert!(enabled["value"]["lastWrittenMs"]
+        .as_u64()
+        .is_some_and(|ms| ms > 0));
+    assert_eq!(enabled["value"]["statistics"]["enabled"], true);
+    let retention = call(
+        json!({"operation": "set_retention", "retention": "30d", "day": "2026-10-11"}),
+        true,
+    );
+    assert_eq!(retention["value"]["statistics"]["retention"], "30d");
+    let reset = call(json!({"operation": "reset"}), true);
+    assert_eq!(reset["value"]["statistics"]["total"], 0);
+    assert_eq!(reset["value"]["availability"], "ready");
+    // 不带 status 时回答与以前一样，只有统计本身。
+    assert_eq!(
+        call(json!({"operation": "load"}), false)["value"]["enabled"],
+        true
+    );
+    // 记录类操作没有状态可答，整个请求被拒绝，也不写入。
+    let rejected = call(
+        json!({"operation": "record_keys", "day": "2026-10-11", "keys": {"KeyA": 1}}),
+        true,
+    );
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(
+        call(json!({"operation": "load"}), false)["value"]["dailyKeys"],
+        json!({})
+    );
+}
+#[test]
 fn typing_statistics_boundary_records_key_press_counts() {
     let directory = tempfile::tempdir().unwrap();
     let call = |action: Value| {

@@ -274,6 +274,7 @@ char *msime_client_load_preferences(const uint8_t *directory, size_t length);
  *   Hosts batch in memory and call this from a worker, never per key.
  * {directory,action:{operation:"summary",day:"YYYY-MM-DD",user_words?:n}} 返回调用方本地 `day` 的派生指标（总览、习惯、按键、成就）；统计开着时，新解锁的成就在锁内写下。user_words 是词库 "count" 加 user_only:true 的结果。隐私模式不影响它：它只读。
  * {directory,action:{operation:"record_voice",day,milliseconds}} 记一次语音输入的时长；{directory,action:{operation:"record_skin",id}} 记一次用到的皮肤。两者都返回 {recorded}。
+ * 请求顶层可加 status:true（只用于 load、set_enabled、set_retention 和 reset，用于别的操作时整个请求被拒绝）：回答换成设置页读的状态 {statistics,availability:"ready"|"neverWritten",lastWrittenMs:n|null}，availability 和 lastWrittenMs 来自统计文件的修改时间，与 Tauri 外壳的 load_typing_statistics 相同。
  */
 char *msime_client_typing_statistics(const uint8_t *request, size_t length);
 /* Read only the aggregate-statistics master switch from an absolute UTF-8

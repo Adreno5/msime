@@ -37,7 +37,7 @@ inline constexpr std::array<Page, 18> pages{{
     {"voice", 2, PageHost::Native, {}},
     {"hand", 2, PageHost::Native, {}},
     {"clip", 3, PageHost::Native, {}},
-    {"stats", 3, PageHost::Shell, {"", "typing-statistics"}},
+    {"stats", 3, PageHost::Native, {}},
     // Sound packs, music and command tables are imported and chosen in the shared app, which reads packs from a folder or archive the user picks; this window only opens it there.
     {"plugins", 3, PageHost::Shell, {"", "plugins"}},
     // AI 辅助 holds the 启用 switch, the providers, models and keys; all of it is set in the shared app.
