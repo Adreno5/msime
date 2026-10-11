@@ -4345,6 +4345,152 @@ static void TestModifierTaps() {
     MSIMERemoveTestPreferenceSuite(defaults, suite);
 }
 
+// 单按 Caps Lock 切换中英文。合成的时钟、按键状态和撤回大写锁定：单测不能动跑测试那台机器的真实大写锁定。
+static std::int64_t gCapsNow = 0;
+static bool gCapsHeld = false;
+static bool gCapsReleaseWorks = true;
+static NSUInteger gCapsReleases = 0;
+static std::int64_t SyntheticCapsNow() { return gCapsNow; }
+static bool SyntheticCapsHeld() { return gCapsHeld; }
+static bool SyntheticCapsRelease() { ++gCapsReleases; return gCapsReleaseWorks; }
+
+static void TestCapsLockTap() {
+    const auto realRelease = MSIMECapsLockRelease;
+    const auto realHeld = MSIMECapsLockKeyHeld;
+    const auto realNow = MSIMECapsLockNow;
+    MSIMECapsLockRelease = &SyntheticCapsRelease;
+    MSIMECapsLockKeyHeld = &SyntheticCapsHeld;
+    MSIMECapsLockNow = &SyntheticCapsNow;
+    gCapsReleases = 0;
+    gCapsReleaseWorks = true;
+
+    NSString *suite = [@"msime.caps-lock-tap." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *prefs = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    // 缺省关，共享偏好的键读得进来也写得回去。
+    assert(!prefs.capsLockTapShortcut);
+    [prefs applySharedInputPreferences:@{@"keybindings":@{@"switch_language_caps_lock":@YES}}];
+    assert(prefs.capsLockTapShortcut);
+    prefs.capsLockTapShortcut = YES;
+    assert([[prefs sharedPreferencesByMerging:@{}][@"keybindings"][@"switch_language_caps_lock"] isEqual:@YES]);
+    NSSwitch *toggle = (id)PreferenceControl(prefs, NSSelectorFromString(@"capsLockTapShortcutChanged:"));
+    assert(toggle.state == NSControlStateValueOn);
+
+    ModeController *controller = [ModeController alloc];
+    ShortcutClient *client = [ShortcutClient new];
+    ShortcutSession *session = [ShortcutSession new];
+    [controller setValue:prefs forKey:@"appearance"];
+    [controller setValue:client forKey:@"activeClient"];
+    [controller setValue:session forKey:@"session"];
+    session.finishTransition = @{@"handled":@YES, @"view":@{@"editing_text":@"", @"caret_position":@0, @"candidates":@[]}};
+    session.cancelTransition = session.finishTransition;
+    prefs.englishMode = NO;
+    session.capsLock = NO;
+    auto capsOn = [](double seconds) { return TapEvent(NSEventTypeFlagsChanged, 0x39, NSEventModifierFlagCapsLock, seconds); };
+    auto capsOff = [](double seconds) { return TapEvent(NSEventTypeFlagsChanged, 0x39, 0, seconds); };
+
+    // 轻点：大写锁定打开的那一刻不报告，松开后撤回大写锁定并切到英文；键交还应用。
+    NSUInteger reports = session.capsLockCalls;
+    gCapsNow = 1000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(1.0) client:client]);
+    assert(session.capsLockCalls == reports && !session.capsLock);
+    gCapsNow = 1100;
+    [controller pollCapsLockTap];
+    assert(gCapsReleases == 0 && !prefs.englishMode);
+    gCapsNow = 1150; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(gCapsReleases == 1 && prefs.englishMode);
+    assert(session.capsLockCalls == reports && !session.capsLock);
+    // 撤回之后系统报来的「大写锁定关」不会再切换，也不用报告。
+    assert(![controller handleEvent:capsOff(1.2) client:client]);
+    assert(prefs.englishMode && session.capsLockCalls == reports);
+    // 再轻点一次切回中文。
+    gCapsNow = 2000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(2.0) client:client]);
+    gCapsNow = 2050; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(gCapsReleases == 2 && !prefs.englishMode);
+
+    // 长按：超过 300 毫秒还按着，大写锁定照常生效并报告给会话，不切换。
+    gCapsNow = 3000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(3.0) client:client]);
+    gCapsNow = 3301;
+    [controller pollCapsLockTap];
+    assert(session.capsLock && session.capsLockCalls == reports + 1 && !prefs.englishMode && gCapsReleases == 2);
+    gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(gCapsReleases == 2 && !prefs.englishMode);
+    // 大写锁定开着时按它是关掉大写锁定，照常处理，不切换。
+    assert(![controller handleEvent:capsOff(3.5) client:client]);
+    assert(!session.capsLock && session.capsLockCalls == reports + 2 && !prefs.englishMode);
+
+    // 两次轮询之间松开、但已经过了分界：仍然算长按。
+    gCapsNow = 4000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(4.0) client:client]);
+    gCapsNow = 4350; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(session.capsLock && !prefs.englishMode && gCapsReleases == 2);
+    assert(![controller handleEvent:capsOff(4.5) client:client]);
+
+    // 按着 Caps Lock 打字是在用大写锁定：大写锁定立即报告，松开也不切换。
+    gCapsNow = 5000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(5.0) client:client]);
+    (void)[controller handleEvent:ModeKey(0, NSEventModifierFlagCapsLock, NO) client:client];
+    assert(session.capsLock);
+    gCapsNow = 5050; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(!prefs.englishMode && gCapsReleases == 2);
+    assert(![controller handleEvent:capsOff(5.5) client:client]);
+
+    // 和别的修饰键一起按是组合键，不布防。
+    gCapsNow = 6000; gCapsHeld = true;
+    assert(![controller handleEvent:TapEvent(NSEventTypeFlagsChanged, 0x39, NSEventModifierFlagCapsLock | NSEventModifierFlagShift, 6.0) client:client]);
+    assert(session.capsLock);
+    gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(!prefs.englishMode && gCapsReleases == 2);
+    assert(![controller handleEvent:capsOff(6.5) client:client]);
+
+    // 撤不回大写锁定时不切换，大写锁定照实报告。
+    gCapsReleaseWorks = false;
+    gCapsNow = 7000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(7.0) client:client]);
+    gCapsNow = 7050; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(gCapsReleases == 3 && session.capsLock && !prefs.englishMode);
+    gCapsReleaseWorks = true;
+    assert(![controller handleEvent:capsOff(7.5) client:client]);
+
+    // 组字中轻点：先上屏原文再切换，和单按 Shift 一样。
+    session.rawTransition = @{@"handled":@YES, @"commit":@"msime",
+        @"view":@{@"editing_text":@"", @"caret_position":@0, @"candidates":@[]}};
+    [controller setValue:@{@"editing_text":@"msime", @"caret_position":@5, @"candidates":@[]} forKey:@"view"];
+    const NSUInteger rawBefore = session.rawCommitCalls;
+    gCapsNow = 8000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(8.0) client:client]);
+    gCapsNow = 8080; gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(session.rawCommitCalls == rawBefore + 1 && [client.committed isEqual:@"msime"] && prefs.englishMode);
+    assert(!session.capsLock && gCapsReleases == 4);
+    session.rawTransition = nil;
+    [controller setValue:nil forKey:@"view"];
+    assert(![controller handleEvent:capsOff(8.5) client:client]);
+
+    // 开关关掉：大写锁定照常，立即报告。
+    prefs.capsLockTapShortcut = NO;
+    gCapsNow = 9000; gCapsHeld = true;
+    assert(![controller handleEvent:capsOn(9.0) client:client]);
+    assert(session.capsLock);
+    gCapsHeld = false;
+    [controller pollCapsLockTap];
+    assert(prefs.englishMode && gCapsReleases == 4);
+
+    MSIMECapsLockRelease = realRelease;
+    MSIMECapsLockKeyHeld = realHeld;
+    MSIMECapsLockNow = realNow;
+    MSIMERemoveTestPreferenceSuite(defaults, suite);
+}
+
 @interface ApplicationShortcutClient : ShortcutClient
 @property(nonatomic, copy) NSString *bundleIdentifier;
 @end
@@ -10085,6 +10231,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestRealSessionComposition(); }
         @autoreleasepool { TestModifierTaps(); }
         @autoreleasepool { TestModifierTapSurvivesALostRelease(); }
+        @autoreleasepool { TestCapsLockTap(); }
         @autoreleasepool { TestStaleClientDeactivation(); }
         @autoreleasepool { TestStaleDeactivationLeavesTheCurrentPairOpen(); }
         @autoreleasepool { TestSoundsFollowKeysCommitsAndActivation(); }
