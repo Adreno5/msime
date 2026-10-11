@@ -1388,7 +1388,6 @@ std::optional<std::vector<msime::settings::plugins::Mention>> plugin_mentions(Re
   }
 }
 
-// 自定义码表在下拉框里的名字，与共享页的 customSchemaLabel 相同：中英文名都有且不同时是「中文名 (英文名)」，否则依次退到中文名、英文名、文件名和方案 id。
 // 偏好库会不会接受本地识别的下载镜像（asr_model_mirror）或模型目录（asr_model_path）这个值，见 msime_client_voice_model_setting_check。语音页只把认可的值写进设置，免得一个没输完的地址让保存失败。
 bool voice_model_setting_accepted(wchar_t const *field, std::wstring const &value) {
   JsonObject request;
@@ -1405,6 +1404,7 @@ bool voice_model_setting_accepted(wchar_t const *field, std::wstring const &valu
   }
 }
 
+// 自定义码表在下拉框里的名字，与共享页的 customSchemaLabel 相同：中英文名都有且不同时是「中文名 (英文名)」，否则依次退到中文名、英文名、文件名和方案 id。
 std::wstring custom_helpcode_label(JsonObject const &schema) {
   const auto name = named_string(schema, L"name");
   const auto name_en = named_string(schema, L"name_en");
@@ -10723,6 +10723,14 @@ private:
       render_page(true);
   }
 
+  // 在当前事件处理完后再 sync_voice：下拉框不在自己的 SelectionChanged 里改选中项。
+  void resync_voice() {
+    DispatcherQueue().TryEnqueue([weak = get_weak()] {
+      if (auto self = weak.get(); self && !self->closed_)
+        self->sync_voice();
+    });
+  }
+
   // 语音页上随输入内容变化的控件：下拉框的选中项和两个「测试配置」按钮。
   void sync_voice() {
     for (auto const &update : voice_sync_)
@@ -10851,8 +10859,11 @@ private:
                        preset->models.end();
     auto combo = select_control(label + L"预置模型", std::move(options), known ? model : L"",
                                 [this, model_key](std::wstring const &value) {
-                                  if (value.empty() || value == document_.String(model_key, L""))
+                                  if (value.empty() || value == document_.String(model_key, L"")) {
+                                    // 共享页的下拉框受控：选「自定义模型…」不改模型，选中项回到模型框里的值。
+                                    resync_voice();
                                     return;
+                                  }
                                   change([&](PreferencesDocument &doc) {
                                     doc.SetString(model_key, value);
                                   }, true);
@@ -10916,7 +10927,10 @@ private:
                 change([&](PreferencesDocument &doc) {
                   doc.SetString(L"voice_input.asr_endpoint", endpoint);
                 }, true);
+                return;
               }
+            // 「自定义地址」不改地址（共享页的 updateDoubaoStreamEndpoint），选中项回到地址对应的那一项。
+            resync_voice();
           });
       stream.Width(200);
       add_row(group, 0xE895, L"流式接口",
