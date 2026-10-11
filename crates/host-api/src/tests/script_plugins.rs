@@ -1537,3 +1537,62 @@ fn the_candidates_hook_runs_only_in_whitelisted_local_modes() {
         assert_eq!(kinds(&take_log()), [Hook::Candidates.code()], "{mode}");
     }
 }
+
+#[test]
+fn observe_only_dispatches_neither_run_nor_replay_the_transform() {
+    let fixture = fixture_with(Preferences {
+        cloud_candidates: true,
+        ..chinese_preferences()
+    });
+    install(
+        &fixture,
+        &[transforming(Script::new(
+            "swap",
+            transformer(
+                r"\01\00\00\00\00\00\00\00",
+                "(drop (call $order (i32.const 0) (i32.const 2)))",
+            ),
+            &[Hook::Candidates],
+        ))],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // Windows 上 TIP 自己选词的列表：Server 每次派发前设上 COMMIT_OBSERVE_ONLY、派发后清掉。插件一次都不运行，列表是引擎的顺序，数字 1 选的就是它的首行。
+    for key in b"nihao" {
+        msime_client_set_lifecycle(fixture.handle, COMMIT_OBSERVE_ONLY);
+        letter(fixture.handle, *key);
+        msime_client_set_lifecycle(fixture.handle, 0);
+    }
+    let plain = view_texts(&read(msime_client_view(fixture.handle))["value"]);
+    assert!(plain.len() >= 2, "{plain:?}");
+    assert!(take_log().is_empty());
+    msime_client_set_lifecycle(fixture.handle, COMMIT_OBSERVE_ONLY);
+    msime_client_key(fixture.handle, 0);
+    let picked = read(msime_client_character(fixture.handle, b'1', false));
+    msime_client_set_lifecycle(fixture.handle, 0);
+    assert_eq!(picked["value"]["commit"], plain[0].as_str());
+    assert!(take_log().is_empty());
+
+    // 没设这个位的派发照常对调。
+    let swapped = view_texts(&compose_nihao(fixture.handle));
+    assert_eq!(swapped[..2], [plain[1].clone(), plain[0].clone()]);
+    assert!(!take_log().is_empty());
+    // 设着这个位时旁路调用也不重放：云候选到达后首行回到引擎的首行。
+    msime_client_set_lifecycle(fixture.handle, COMMIT_OBSERVE_ONLY);
+    let query = read(msime_client_online_query(fixture.handle))["value"].to_string();
+    let candidates = serde_json::to_vec(&json!(["云候选"])).unwrap();
+    let applied = read(unsafe {
+        msime_client_apply_online_candidates(
+            fixture.handle,
+            query.as_ptr(),
+            query.len(),
+            candidates.as_ptr(),
+            candidates.len(),
+            0,
+        )
+    });
+    msime_client_set_lifecycle(fixture.handle, 0);
+    assert_eq!(applied["value"]["applied"], true, "{applied}");
+    assert_eq!(view_texts(&applied["value"]["view"])[0], plain[0]);
+    assert!(take_log().is_empty());
+}

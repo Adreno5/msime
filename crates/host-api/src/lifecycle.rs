@@ -23,7 +23,7 @@ use std::time::Instant;
 
 /// 核心驱动按键音、上屏音、打字特效和背景音乐。本会话的 `msime_client_key_sound`、`msime_client_commit_sound`、`msime_client_typing_effect`（事件 0-4）和 `msime_client_music_set_active` 随之变为空操作。
 pub const FEEDBACK: u32 = 0x1;
-/// 之后的上屏只能观察，不能改写。可随时经 `msime_client_set_lifecycle` 切换。
+/// 之后的上屏只能观察，不能改写；设着它时候选变换也停下（`crate::scripts::observe_only`）。可随时经 `msime_client_set_lifecycle` 切换。
 pub const COMMIT_OBSERVE_ONLY: u32 = 0x4;
 /// 宿主自己暂存部分选词（Windows）。本阶段只记录，不改变行为。
 pub const HOST_HOLDS_PIECES: u32 = 0x8;

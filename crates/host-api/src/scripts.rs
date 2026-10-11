@@ -67,6 +67,23 @@ pub(crate) fn attach(
 ) {
 }
 
+/// 上屏只能观察（`COMMIT_OBSERVE_ONLY`）时暂停候选变换：派发里不运行 `candidates`，旁路调用也不重放。Windows 上 TIP 在自己的会话里选词的列表（注音等 AlwaysInlinePreedit 方案）按那个会话的顺序选，这边重排或隐藏，显示的顺序就和数字选中的对不上。移动端什么都不做。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+pub(crate) fn observe_only(runtime: &mut msime_input_runtime::Runtime, observe_only: bool) {
+    runtime.suspend_candidate_transform(observe_only);
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+)))]
+pub(crate) fn observe_only(_runtime: &mut msime_input_runtime::Runtime, _observe_only: bool) {}
+
 /// 一次调用里脚本可能读到的文本，借自这次调用的 transition 和 runtime。每个插件按自己的授权和本地模式各复制一份，没有授权的文本根本不复制。
 #[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(

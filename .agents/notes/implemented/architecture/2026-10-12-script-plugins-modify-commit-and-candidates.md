@@ -18,6 +18,8 @@ Status: implemented
 
 **什么时候运行脚本。** `Runtime::set_candidate_transform` 挂上一个 `CandidateTransform`。`Runtime::dispatch` 在桌面上把一个标记置位再派发，标记期间的 `refresh` 和 `expand_cached_candidates` 调用变换，也就是运行脚本；派发 panic 时先放下标记再继续展开，之后的旁路调用不会误跑脚本。其余所有调用（`apply_online_*`、`resolve/clear_online_candidates`、`rerank_settled`、`all_candidates`、`apply_translations`、`set_caret`、设置类调用）不运行任何脚本代码，只按候选身份（文本加来源）重放本组字内最近一次记下的操作。列表为空时记下的操作清掉；跳过的列表（见下）在派发里清掉记录。
 
+**上屏只能观察时停下。** 宿主设着 `COMMIT_OBSERVE_ONLY` 时，host-api 经 `Runtime::suspend_candidate_transform` 把变换暂停：派发里不运行插件，旁路调用也不重放，记下的操作清掉，列表保持内置排序。Windows 上 TIP 在自己的会话里选词的列表（注音等 AlwaysInlinePreedit 方案）按那个会话的顺序选，那个会话从不运行脚本；Server 一侧重排或隐藏，显示的顺序就和数字选中的对不上。所以这类列表的每一次派发都要设着这个位，头文件里写明了。
+
 **插件看到什么。** 窗口是内置排序之后、任何插件变换之前的前 20 行，带引擎原始的注释。每个插件看同一份窗口，交回的操作用窗口行号表达，runtime 立即把行号换成候选身份记下，再按授权顺序合成：重排是后面的插件优先（倒序收集点名的行，同一行只收第一次），隐藏取并集，同一行的注释后面的覆盖前面的。下一次派发里插件看到的仍是原始窗口，读不到任何插件的改动。
 
 **怎么排。** 先定隐藏的行：被点名隐藏、不是锁定座位、引擎下标不是 0。锁定座位是固定了位置的词（`candidate_positions > 0`）、来源 2、3、12（云、AI、AI 占位）的行，以及五笔四码唯一（`wubi_unique_four_code`）时的 0 号座位。引擎下标 0 的行永远可见，所以至少有一行可见。可见行里锁定的座位不动，其余座位先放插件点名的行（按合成后的优先次序，锁定的行不认点名），再放没点名的行（保持原来的相对顺序）；隐藏的行按原来的顺序排在最后。得到的排列同时作用于 7 个平行数组和 `engine_order`，缺一个或重一个下标时什么都不动。
@@ -65,9 +67,9 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 
 ## Testing
 
-- `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次，展开时插件多藏了几行、翻页又让高亮原地不动时，空格、结束组字和标点仍只交给可见的行；只改注释也推进 epoch；组字结束后记录清空。
+- `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次，展开时插件多藏了几行、翻页又让高亮原地不动时，空格、结束组字和标点仍只交给可见的行；只改注释也推进 epoch；组字结束后记录清空；暂停时派发不调用变换、旁路调用不重放，恢复后下一次派发重新调用。
 - `crates/script-runtime/src/tests.rs`：改写只在可改写的 `before_commit` 里、授予了能力时可用；换行、U+202E、U+200B、U+2028、U+2029、空串、非 UTF-8 被拒，256 个码元的上限和 4096 字节的上限，前一个插件缩短或放大了 body 时上限仍按原文算；持久实例把这一轮的配额烧到连一次 `input` 都放不下之后，`before_commit` 仍能用掉比剩余更多的 fuel、不扣其余钩子的配额，新一轮两份都补满；返回负数、trap、越界之后不交出动作，下一次观察类投递清掉上一次的动作；三种候选修改的暂存结果、坏行号、重复、超长和带 Cf 或 U+2028 的注释、错的钩子、没授权、本地模式屏蔽；Cc、Cf 和行、段分隔符的判定；原生栈。
-- `crates/host-api/src/tests/script_plugins.rs`：两个插件依次改写、tail 原样接回、`commit` 观察者读到改写后的文本；第一个插件把 2 个码元的原文放大到 256 个，第二个插件的 600 个字母拿到 `LIMIT`，上屏停在第一个插件的结果；trap、返回负数、fuel 耗尽、改写成 `\n` 或 U+202E 都上屏原文；Windows 式在派发前后切换 `COMMIT_OBSERVE_ONLY` 时空格选词和回车原样上屏都只能看（`REWRITABLE == 0`，改写 `DENIED`），清掉后同样两条路径能改写，以词定字永远不能；SECURE、PRIVATE、ELEVATED 和未知字段不改写也不投递；经 C ABI 重排之后空格上屏显示的首行，`script_annotation` 跟着行走，读窗口的插件读不到别的插件的注释和顺序；隐藏的行不出现在视图里、数字选不到、引擎下标 0 隐藏不了；`apply_online_candidates` 和 `rerank_settled` 不运行脚本、重排按身份重放；本地模式不在白名单里时一个插件都不运行。
+- `crates/host-api/src/tests/script_plugins.rs`：两个插件依次改写、tail 原样接回、`commit` 观察者读到改写后的文本；第一个插件把 2 个码元的原文放大到 256 个，第二个插件的 600 个字母拿到 `LIMIT`，上屏停在第一个插件的结果；trap、返回负数、fuel 耗尽、改写成 `\n` 或 U+202E 都上屏原文；Windows 式在派发前后切换 `COMMIT_OBSERVE_ONLY` 时空格选词和回车原样上屏都只能看（`REWRITABLE == 0`，改写 `DENIED`），清掉后同样两条路径能改写，以词定字永远不能；Windows 式每次派发前后切换 `COMMIT_OBSERVE_ONLY` 时插件一次都不运行、数字选的是引擎顺序的首行，设着它时云候选到达也不重放之前的对调；SECURE、PRIVATE、ELEVATED 和未知字段不改写也不投递；经 C ABI 重排之后空格上屏显示的首行，`script_annotation` 跟着行走，读窗口的插件读不到别的插件的注释和顺序；隐藏的行不出现在视图里、数字选不到、引擎下标 0 隐藏不了；`apply_online_candidates` 和 `rerank_settled` 不运行脚本、重排按身份重放；本地模式不在白名单里时一个插件都不运行。
 
 ## Alternatives considered
 

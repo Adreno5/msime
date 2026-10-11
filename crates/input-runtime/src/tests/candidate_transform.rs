@@ -602,3 +602,29 @@ fn expanding_with_more_rows_hidden_pulls_the_highlight_back_into_view() {
         assert_eq!(harness.runtime.engine.picks, [0], "{name}");
     }
 }
+
+/// 宿主暂停候选变换时（上屏只能观察），派发不运行插件、旁路调用不重放，选中的是内置排序里的那一行；恢复之后从下一次派发起重新运行。
+#[test]
+fn a_suspended_transform_neither_runs_nor_replays() {
+    let mut harness = reranked_and_filtered();
+    assert_eq!(harness.calls(), 1);
+    assert_eq!(harness.shown(), ["丁", "乙", "甲", "戊"]);
+
+    harness.runtime.suspend_candidate_transform(true);
+    // 旁路调用不再重放之前记下的重排和隐藏。
+    harness.runtime.refresh_online_candidates().unwrap();
+    assert_eq!(harness.shown(), FIVE);
+    assert!(!harness.runtime.has_candidate_ops());
+    // 派发里也不运行插件，数字选的是内置排序里的第二行。
+    harness.key(b'a');
+    assert_eq!(harness.calls(), 1);
+    assert_eq!(harness.shown(), FIVE);
+    let picked = harness.key(b'2');
+    assert_eq!(picked.commit.as_deref(), Some("乙"));
+    assert_eq!(harness.runtime.engine.picks, [1]);
+
+    harness.runtime.suspend_candidate_transform(false);
+    harness.key(b'a');
+    assert_eq!(harness.calls(), 2);
+    assert_eq!(harness.shown(), ["丁", "乙", "甲", "戊"]);
+}

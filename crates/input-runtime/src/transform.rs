@@ -5,6 +5,7 @@
 //! - **重排**同步移动全部平行数组和 `engine_order`，选中的永远是显示的那一行。**过滤不删行**：被隐藏的行降到列表末尾，视图、分页、高亮和选择 ID 只认可见前缀；`engine_order` 仍覆盖引擎的全部候选，座位映射不会错位。
 //! - **不能动的行。** 引擎下标 0 的行不可隐藏：引擎有自己按首位取词的路径（失焦上屏、14 键原样上屏等），它取的永远是这一行，所以它必须可见，也因此至少留一行可见。锁定的座位既不移动也不隐藏：固定了位置的词、云和 AI（含占位）行、五笔四码唯一时的 0 号座位（第四键自动上屏的就是它）。
 //! - **跳过**：平行数组长度不一致、整句改字中、方案的候选列表打开着（韩文汉字）。本地模式的白名单是插件一侧的规则，由宿主的实现判断。
+//! - **暂停**（[`Runtime::suspend_candidate_transform`]）：派发里不运行插件，旁路调用也不重放，记下的操作清掉，列表保持内置排序。宿主在上屏只能观察（`COMMIT_OBSERVE_ONLY`）时暂停：Windows 上 TIP 在自己的会话里选词的列表按那个会话的顺序选，这边重排或隐藏，显示的顺序就和数字选中的对不上。
 //!
 //! 只在桌面编译（macOS、Windows、非 ohos 的 Linux）。移动端和网页引擎里同名的几个方法什么都不做，可见前缀就是整个列表。
 
@@ -103,6 +104,8 @@ mod desktop {
         annotations: Vec<(Identity, String)>,
         /// 降到末尾、不显示的行数。
         hidden_rows: usize,
+        /// 宿主暂停了候选变换：不运行、不重放。
+        suspended: bool,
     }
 
     impl PluginState {
@@ -124,6 +127,11 @@ mod desktop {
                 self.plugins.clear_recorded();
             }
             self.plugins.transform = transform;
+        }
+
+        /// 暂停或恢复候选变换。暂停期间派发里的 refresh 和展开不运行插件，旁路调用也不重放，记下的操作在下一次排列时清掉，列表保持内置排序；恢复之后从下一次派发起重新运行。宿主在上屏只能观察时暂停，见模块说明。
+        pub fn suspend_candidate_transform(&mut self, suspended: bool) {
+            self.plugins.suspended = suspended;
         }
 
         /// 派发一个动作，期间的 refresh 和展开运行候选变换。panic 也要先把标记放下再继续展开，否则之后的旁路调用会运行脚本。
@@ -160,11 +168,12 @@ mod desktop {
             }
         }
 
-        /// 当前列表能不能做插件变换：有候选、平行数组等长、不在整句改字、方案的候选列表没打开。
+        /// 当前列表能不能做插件变换：没有暂停、有候选、平行数组等长、不在整句改字、方案的候选列表没打开。
         fn transform_ready(&self) -> bool {
             let snapshot = &self.cached;
             let count = snapshot.candidates.len();
-            count > 0
+            !self.plugins.suspended
+                && count > 0
                 && snapshot.candidate_codes.len() == count
                 && snapshot.candidate_annotations.len() == count
                 && snapshot.candidate_sources.len() == count
@@ -180,7 +189,8 @@ mod desktop {
             let hidden_before = self.plugins.hidden_rows;
             let ready = self.transform_ready();
             let mut annotations_changed = false;
-            if self.cached.candidates.is_empty() {
+            // 暂停时和没有候选时一样把记下的操作清掉：恢复之后的旁路调用不能把暂停之前的操作重放到新列表上。
+            if self.cached.candidates.is_empty() || self.plugins.suspended {
                 annotations_changed = !self.plugins.annotations.is_empty();
                 self.plugins.clear_recorded();
             } else if self.plugins.live {
