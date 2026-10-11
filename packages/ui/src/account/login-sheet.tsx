@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { privacyUrl } from "../settings/app-resources";
 import { AccountInputField } from "./account-input-field";
+import { AccountVerificationCodeField } from "./account-verification-code-field";
 import { AccountStatusMessages } from "./account-status-messages";
 import { useAccountAction } from "./account-operation";
 import { useAccountGoogleLogin } from "./use-account-google-login";
@@ -283,17 +284,13 @@ export function LoginSheet({
             </button>
             {challenge && (
               <>
-                <AccountInputField
-                  label={<span className="sr-only">6 位验证码</span>}
-                  ariaLabel="6 位验证码"
+                <AccountVerificationCodeField
                   className={account.sheetInput}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
+                  visuallyHiddenLabel
                   placeholder="6 位验证码"
-                  maxLength={6}
                   value={code}
                   disabled={busy}
-                  onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
+                  onChange={setCode}
                 />
                 <button
                   type="button"

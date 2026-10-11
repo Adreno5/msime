@@ -23,6 +23,7 @@ import { accountMessage, isAccountCancellation } from "./account-errors";
 import { AccountConfirmation } from "./account-confirmation";
 import { AccountNicknameField } from "./account-nickname-field";
 import { AccountInputField } from "./account-input-field";
+import { AccountVerificationCodeField } from "./account-verification-code-field";
 import { AccountStatusMessages } from "./account-status-messages";
 import {
   AccountIdentityDetails,
@@ -1725,16 +1726,7 @@ function AccountDetailsPage({
               />
               {challenge && (
                 <div className={account.code}>
-                  <AccountInputField
-                    label="6 位验证码"
-                    ariaLabel="6 位验证码"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    value={code}
-                    disabled={busy}
-                    onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
-                  />
+                  <AccountVerificationCodeField value={code} disabled={busy} onChange={setCode} />
                   <ActionButton
                     action={signIn}
                     className={account.submit}
