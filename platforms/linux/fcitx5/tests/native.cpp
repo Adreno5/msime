@@ -1,7 +1,6 @@
 // Real Fcitx input contexts and the real Host API. All input is synthetic.
 #include "../FcitxEngine.cpp"
 #include <fcitx-config/option.h>
-#include <fcitx-utils/misc.h>
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -3204,10 +3203,17 @@ int main(int argc, char **argv) {
     const auto checkMissingOfflineGloss = [&](bool interrupt) {
       auto resources = state->resources_;
       std::filesystem::rename(glossPath, backupPath);
-      fcitx::ScopeExit restore([&] {
-        state->resources_ = std::move(resources);
-        std::filesystem::rename(backupPath, glossPath, restorationError);
-      });
+      struct RestoreOfflineGloss {
+        FcitxState &state;
+        std::string resources;
+        const std::filesystem::path &backup;
+        const std::filesystem::path &original;
+        std::error_code &error;
+        ~RestoreOfflineGloss() {
+          state.resources_ = std::move(resources);
+          std::filesystem::rename(backup, original, error);
+        }
+      } restore{*state, std::move(resources), backupPath, glossPath, restorationError};
       state->resources_ = std::string(directory) + "/missing-gloss-resources";
       if (interrupt) throw std::logic_error("合成夹具中途失败");
       state->startTranslation(response(msime_client_translation_query(state->session_)), true);
