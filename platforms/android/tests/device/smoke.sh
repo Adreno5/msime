@@ -68,14 +68,19 @@ done
 [[ "$ready" == true ]] || { echo "Device bootstrap timed out" >&2; exit 1; }
 sdk=$("$adb" -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')
 [[ "$sdk" =~ ^[0-9]+$ ]] || { echo "Android API level was unavailable" >&2; exit 1; }
-# API 31 起可附着到已运行的目标进程。普通 instrument 会强停目标包，连同 :ime 服务一起杀掉；
-# 连续跑设备套件时，系统偶尔来不及重新绑定输入法，后面的用例只能看到空 IME 窗口。
+# API 31 起可附着到已运行的产品进程。普通 instrument 若以产品包为目标，会连同 :ime 服务一起强停；
+# 连续跑设备套件时，系统偶尔来不及重新绑定输入法。以测试 APK 为目标的用例继续正常启动 instrumentation。
 run_instrumentation() {
-  if (( sdk >= 31 )); then
+  local component=$1 class=${1#*/} target
+  target=$(xmllint --xpath "string(//instrumentation[@*[local-name()='name']='$class']/@*[local-name()='targetPackage'])" \
+    platforms/android/tests/device/AndroidManifest.xml)
+  [[ "$target" == app.msime.android || "$target" == app.msime.android.test ]] \
+    || { echo "Unknown instrumentation target: $component" >&2; return 1; }
+  if (( sdk >= 31 )) && [[ "$target" == app.msime.android ]]; then
     "$adb" -s "$serial" shell am start -W -n app.msime.android/app.msime.android.home.HomeActivity >/dev/null
-    "$adb" -s "$serial" shell am instrument --no-restart -w "$1"
+    "$adb" -s "$serial" shell am instrument --no-restart -w "$component"
   else
-    "$adb" -s "$serial" shell am instrument -w "$1"
+    "$adb" -s "$serial" shell am instrument -w "$component"
   fi
 }
 # 输入法 id 必须写成 `ime list` 给出的短写：系统按字符串原样查找，长写 app.msime.android/app.msime.android.MSIMEInputService 在 `ime enable` 时报 Unknown input method。设备测试里的 `ime` 命令都用同一个短写。
