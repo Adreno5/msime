@@ -115,19 +115,9 @@ pub fn valid_mobile_voice_endpoint(endpoint: &str, websocket: bool) -> bool {
         return false;
     }
     let expected_scheme = if websocket { "wss" } else { "https" };
-    reqwest::Url::parse(endpoint).ok().is_some_and(|url| {
-        url.scheme() == expected_scheme
-            && endpoint.split_once("://").is_some_and(|(_, authority)| {
-                authority
-                    .as_bytes()
-                    .first()
-                    .is_some_and(|byte| *byte != b'/')
-            })
-            && url.host_str().is_some_and(|host| !host.is_empty())
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.fragment().is_none()
-    })
+    reqwest::Url::parse(endpoint)
+        .ok()
+        .is_some_and(|url| crate::endpoint::valid_endpoint_shape(endpoint, &url, expected_scheme))
 }
 
 fn bounded_resolved_voice_fields(fields: &ResolvedVoiceFields) -> bool {

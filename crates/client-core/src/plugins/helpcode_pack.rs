@@ -97,8 +97,10 @@ pub(crate) fn parse_table(bytes: &[u8], name: &str) -> Result<Vec<HelpcodeEntry>
             return Err(format!("{name} 第 {number} 行的码必须是 1 到 2 个小写字母"));
         }
         if entries.is_empty() {
-            entries.reserve(MAX_ENTRIES);
-            seen.reserve(MAX_ENTRIES);
+            // 最短合法行是两字节字符、等号和一个码字母；除最后一行外还要有换行。
+            let capacity = (bytes.len().saturating_add(1) / 5).min(MAX_ENTRIES);
+            entries.reserve_exact(capacity);
+            seen.reserve(capacity);
         }
         if !seen.insert(scalar) {
             return Err(format!("{name} 里「{scalar}」出现了不止一次"));
