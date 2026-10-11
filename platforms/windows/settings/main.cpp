@@ -4677,15 +4677,27 @@ private:
                          JsonValue::CreateStringValue(hstring(state_directory().wstring())));
     action.SetNamedValue(L"user_id", JsonValue::CreateStringValue(hstring(sync_user_)));
     action.SetNamedValue(L"preferences", JsonValue::Parse(sync_cloud_->Stringify()));
-    sync_request(action, [this](Response const &response) {
-      // 应用成功时本机设置已换成云端的那一份，写回被拒绝时也可能是别处刚改过，两种情况都重读，各页显示存下的值。
-      reload_document();
-      if (!response.ok) {
-        sync_finish(account_failure(response));
-        return;
-      }
-      sync_finish({}, std::wstring(am::sync_applied));
-    });
+    if (account_directory().empty()) {
+      sync_finish(L"account_storage");
+      co_return;
+    }
+    // 不经 sync_request：应用期间离开了这一页或换了账号，卡片的结果作废，但本机设置可能已经换掉，本窗口的设置文档照样要重读，免得之后在别的页上按旧文档保存。
+    const auto generation = sync_generation_;
+    const auto page_generation = account_generation_;
+    run_host([body = account_body(action)] { return account_call(body); },
+             [this, generation, page_generation](Response const &response) {
+               // 应用成功时本机设置已换成云端的那一份，写回被拒绝时也可能是别处刚改过，两种情况都重读，各页显示存下的值。
+               reload_document();
+               if (generation != sync_generation_ || page_generation != account_generation_) {
+                 queue_refresh();
+                 return;
+               }
+               if (!response.ok) {
+                 sync_finish(account_failure(response));
+                 return;
+               }
+               sync_finish({}, std::wstring(am::sync_applied));
+             });
   }
 
   bool sync_has_settings() const {
@@ -4908,7 +4920,11 @@ private:
       target.InputScope(scope);
     }
     target.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
-      account_target_ = std::wstring(sender.as<TextBox>().Text().c_str());
+      // TextChanged 是异步事件，重画页面时给框填回的号码也会晚一步报上来；号码没变就不是用户改的，不能把刚发的验证码丢掉。
+      std::wstring typed(sender.as<TextBox>().Text().c_str());
+      if (typed == account_target_)
+        return;
+      account_target_ = std::move(typed);
       // 共享页改号码就丢掉已发的验证码：验证码一栏收起，不重画页面，输入框的焦点留着。
       if (account_challenge_) {
         account_challenge_.reset();
