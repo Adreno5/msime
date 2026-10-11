@@ -36,9 +36,10 @@ Status: implemented
 页面只经 `DictionaryClient.wubiCodes` 拿结果；宿主没有提供它时整组不画。各宿主的接法：
 
 - macOS、Linux：Tauri 设置应用的 `dictionary` 客户端（`apps/desktop/src/main.tsx`）发 `dictionary_request`，到 `dictionary_request_json`。
-- Android、iOS：同一个 Tauri 前端，`mobileDictionary` 展开 `dictionary` 带上 `wubiCodes`。Android 的 `dictionary_request` 进 `personal_dictionary_request_json`，那里直接回答；iOS 的 `ios_personal_dictionary_action` 不认 `wubi_codes`，于是走 App 进程里的 `dictionary_request_json`。
+- Android：同一个 Tauri 前端，`mobileDictionary` 展开 `dictionary` 带上 `wubiCodes`，`dictionary_request` 进 `personal_dictionary_request_json`，那里直接回答。
 - HarmonyOS：`apps/harmony/src/main.tsx` 的 `dictionary` 客户端经桥方法 `dictionary` 到 `KeyboardSession.dictionary`，再到 `msime_client_dictionary`。
 - Windows：设置窗口是原生 WinUI 的 `msime-client-settings.exe`（`platforms/windows/settings/main.cpp`），自己不画查码组，但同目录的共享应用 `MSIME.exe` 画「输入」页，它用的就是上面 macOS、Linux 那个 `dictionary` 客户端，`dictionary_request` 在 Windows 上同样到 `dictionary_request_json`。所以 WinUI「输入」页的五笔组末尾加一行「五笔查码」，和辅助码插件那一行一样用 `nav::shell_links::input` 打开共享应用的「输入」页。这一行不能省：五笔版只提供五笔，辅助码组不显示，原来本窗口没有任何一行通到共享应用的「输入」页。
+- iOS：分发的产品是原生 `MSIMEApp`（`platforms/ios/README.md`），它的「输入设置」是 SwiftUI 的 `InputSettingsView`（`platforms/ios/App/Sources/app/OnboardingView.swift`），五笔组只有混输、剩余编码和四码自动上屏三个开关；App 里没有 WebView，承载不了共享设置页，所以 **iOS 用户在设置里目前没有「五笔查码」**。共享前端的 iOS 工程（`apps/desktop/src-tauri/gen/apple`）虽然经 `mobileDictionary` 带上了 `wubiCodes`（`ios_personal_dictionary_action` 不认 `wubi_codes`，于是走 App 进程里的 `dictionary_request_json`），但那个工程只是公共组件，不作为产品分发，不能算 iOS 有这个功能。补法是在 `InputSettingsView` 的五笔组里加一个原生查码页，从 App 进程经 `msime_client_dictionary` 发 `{operation:"wubi_codes",text}`，App 本来就打包了引擎词库；这要一次 iOS 构建和模拟器上的验证，这次没有做，作为已知缺口留着，不靠这条笔记假装已经覆盖。`z` 反查在 iOS 键盘上照常可用，它在共享引擎里。
 
 字根拆分不做：仓库里没有授权清楚的 86/98 拆分数据（`resources/helpcodes` 里只有拼音辅助码用的字根数据），而且很多字根不是 Unicode 字符，要另配字体或图片。
 
@@ -59,6 +60,7 @@ Status: implemented
 - 混输关闭的五笔用户按 `z` 加拼音就能看到候选和它们的五笔编码，跟随所选的 86/98 码表；混输打开的用户行为不变。
 - 代价：混输关闭时，五笔里单独按 `z` 不再原样输入 `z`，而是开始一个反查组字。反查的预编辑显示键入的原文（`znihao`），没有拼音分词。反查不支持撇号分隔，这一点与混输相同。
 - 反查的拼音候选按拼音词库原有的顺序排列，不受个人学习影响，也不留下学习记录。
+- iOS 产品 App 的设置里还没有「五笔查码」（见上文 iOS 一条），iOS 用户目前只能在键盘里用 `z` 反查；Windows 经 WinUI「输入」页的一行跳到共享应用里查。
 
 ## Verification
 
