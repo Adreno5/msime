@@ -653,9 +653,11 @@ export {
 export {
   CLOUD_CLIPBOARD_DISABLED,
   CLOUD_CLIPBOARD_MAX_UTF16,
+  CLOUD_CLIPBOARD_PENDING,
   CLOUD_CLIPBOARD_SIGNED_OUT,
   CLOUD_CLIPBOARD_UNAVAILABLE,
   cloudClipboardAvailabilityNote,
+  cloudClipboardErrorMessage,
   cloudClipboardFailure,
   type CloudClipboardAvailability,
   type CloudClipboardRequest,
