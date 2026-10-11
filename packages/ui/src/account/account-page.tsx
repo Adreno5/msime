@@ -1048,6 +1048,7 @@ function AccountDetailsPage({
     selectChannel,
     updateTarget,
     sendCode,
+    signIn: runVerificationSignIn,
   } = useAccountVerification({ client, mounted, clientGeneration, setNotice });
   const {
     waiting: googleWaiting,
@@ -1133,18 +1134,14 @@ function AccountDetailsPage({
 
   const signIn = () =>
     void perform(async () => {
-      const generation = clientGeneration.current;
-      if (!challenge || code.length !== 6 || !/^\d{6}$/.test(code) || expiresAt <= Date.now())
-        throw { code: "account_invalid" };
-      const result = await client.login(challenge.challengeId, code);
-      if (!mounted.current || generation !== clientGeneration.current) return;
-      if (!result.user) throw { code: "account_unavailable" };
+      const result = await runVerificationSignIn();
+      if (!result) return;
       setUser(result.user);
       setChannel(null);
       setChallenge(null);
       setCode("");
-      await loadProfile(generation);
-      if (!mounted.current || generation !== clientGeneration.current) return;
+      await loadProfile(result.generation);
+      if (!mounted.current || result.generation !== clientGeneration.current) return;
       setNotice("登录成功。");
       onLoginComplete?.();
     });

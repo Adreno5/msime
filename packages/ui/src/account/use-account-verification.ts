@@ -10,7 +10,7 @@ export function useAccountVerification({
   clientGeneration,
   setNotice,
 }: {
-  client: Pick<AccountClient, "requestCode">;
+  client: Pick<AccountClient, "requestCode" | "login">;
   mounted: MutableRefObject<boolean>;
   clientGeneration: MutableRefObject<number>;
   setNotice: (message: string) => void;
@@ -58,6 +58,16 @@ export function useAccountVerification({
     setNotice("验证码已发送，请查收。");
   };
 
+  const signIn = async () => {
+    const generation = clientGeneration.current;
+    if (!challenge || !/^\d{6}$/.test(code) || expiresAt <= Date.now())
+      throw { code: "account_invalid" };
+    const result = await client.login(challenge.challengeId, code);
+    if (!mounted.current || generation !== clientGeneration.current) return undefined;
+    if (!result.user) throw { code: "account_unavailable" };
+    return { user: result.user, generation };
+  };
+
   return {
     channel,
     setChannel,
@@ -72,5 +82,6 @@ export function useAccountVerification({
     selectChannel,
     updateTarget,
     sendCode,
+    signIn,
   };
 }
