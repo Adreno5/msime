@@ -405,7 +405,10 @@ test("the phone handwriting page offers the pad's delay, ink colour and width", 
   const { saveFeedback } = renderSettings({ page: "handwriting", feedback: padFeedback });
   await settingsFormReady();
   const page = screen.getByRole("group", { name: "手写输入" });
-  await waitFor(() => expect(groupTitles(page)).toEqual(["书写", "笔迹"]));
+  await waitFor(() => expect(groupTitles(page)).toEqual(["预览", "书写", "笔迹"]));
+  // 预览画的是手写板：用皮肤的颜色写「水」，笔迹按当前的颜色和粗细画。
+  const preview = page.querySelector("[data-handwriting-preview]");
+  expect(preview?.querySelectorAll("path")).toHaveLength(4);
   const delay = within(page).getByRole("slider", { name: "识别等待时间" }) as HTMLInputElement;
   expect([delay.min, delay.max, delay.step, delay.value]).toEqual(["200", "1500", "100", "600"]);
   expect(within(page).getByText("600ms")).toBeTruthy();
