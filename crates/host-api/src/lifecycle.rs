@@ -527,7 +527,7 @@ impl LifecycleState {
         }
     }
 
-    /// 记下脚本插件的位置：`root` 是 `<state root>/plugins`（宿主没给状态根目录时为 `None`，脚本不运行），健康计数写在 `user_data` 下。
+    /// 记下脚本插件的位置：`root` 是 `<state root>/plugins`（宿主没给状态根目录时为 `None`，脚本不运行），健康文件写在 `user_data` 下。
     pub(crate) fn bind_scripts(&mut self, root: Option<std::path::PathBuf>, user_data: &str) {
         self.scripts.bind(root, user_data);
     }
@@ -574,9 +574,9 @@ impl LifecycleState {
         if traits != self.traits {
             self.traits = traits;
             self.emit(sound, LifecycleEvent::TraitsChanged { traits });
-            // 变成 SECURE、PRIVATE、ELEVATED 或未知时，正在跑的脚本实例当场丢弃。
-            self.scripts.traits_changed(self.context());
         }
+        // 不论变没变，脚本都把属性记为确认过；变成 SECURE、PRIVATE、ELEVATED 或未知时，正在跑的脚本实例当场丢弃。
+        self.scripts.traits_reported(self.context());
         self.traits
     }
 
@@ -598,6 +598,7 @@ impl LifecycleState {
             return 0;
         }
         self.effect = 0;
+        self.scripts.key_reported();
         // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给。
         if key & KEY_PASSTHROUGH == 0 {
             self.scripts.next_turn();

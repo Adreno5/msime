@@ -1,8 +1,8 @@
-//! 进程级的部分：模块缓存和后台编译线程、内存总账、熔断与健康计数、panic 总开关。
+//! 进程级的部分：模块缓存和后台编译线程、内存总账、熔断与健康文件、panic 总开关。
 //!
 //! - **模块缓存**按内容哈希存放编译好的 `ScriptModule`（内部是 `Arc`，可以跨线程共享）。会话线程只登记请求、查结果；读包、核对哈希、校验和 Eager 编译都在后台编译线程上做，不在按键和 focus 路径上。还没编译好的插件这一次跳过，不算失败。
 //! - **熔断**按 (插件根目录, id, 哈希) 计，不按会话：IBus 改一个设置就重建会话，按会话熔断会让坏插件在每个新会话里重来一次。初始化失败、ABI 不符或模块不合规立即停用；否则最近 50 次投递里失败 3 次、或最近 20 次里有 3 次超过 4 ms，就停用。停用持续到授权文件的 `revision` 变化或进程重启。
-//! - **健康计数**只有次数和封闭的原因码，不带任何文本；在失焦和 destroy 时交给后台线程批量写进 `<user_data>/script-health.json`。
+//! - **健康文件** `<user_data>/script-health.json` 只记被停用的插件和停用的类别（`invalid`、`init`、`failed`、`slow`），在失焦和 destroy 时交给后台线程写出，只有停用或恢复之后才重写。不记失败次数，也不按原因细分：哪种 trap、失败几次都由脚本自己选，按次数或原因写出去，同一用户下的进程每次失焦后对比文件，就是一条能反复使用、按位传文本的通道；只记停用，熔断之后要等 `revision` 变化或进程重启才能再触发，剩下的是设计接受的一次性约 1 bit。具体的原因码只在停用时进一次诊断。
 //! - **panic 总开关**：投递里任何一处 panic 都关掉本进程的全部脚本，直到进程重启；那次调用照常返回上屏结果。
 //!
 //! import 从不回调宿主，所以这里的锁都不会在脚本代码运行时被重入；锁的顺序固定为先 `REGISTRY` 后单个 `Health`，从不反过来。
@@ -11,7 +11,7 @@ use msime_client_core::file_lock;
 use msime_client_core::plugins::script_pack;
 use msime_script_runtime::{limits, Failure, ScriptModule};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -306,7 +306,31 @@ pub(super) fn reserve(bytes: usize) -> Option<Reservation> {
         .map(|_| Reservation(bytes))
 }
 
-// ---- 熔断与健康计数 ----
+// ---- 熔断与健康文件 ----
+
+/// 停用的类别。健康文件里只有它；具体原因码只进诊断。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Trip {
+    /// 模块不符合 ABI v1，或者编译时出了 panic。
+    Invalid,
+    /// 实例化或 `msime_init` 失败，包括 ABI 版本不符。
+    Init,
+    /// 投递时失败太多次。
+    Failed,
+    /// 投递太慢的次数太多。
+    Slow,
+}
+
+impl Trip {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::Init => "init",
+            Self::Failed => "failed",
+            Self::Slow => "slow",
+        }
+    }
+}
 
 /// 一个 (根目录, id, 哈希) 的健康状况，进程里只有一份，各会话共用。
 pub(super) struct Health {
@@ -320,14 +344,12 @@ pub(super) struct Health {
 
 #[derive(Default)]
 struct HealthState {
-    failures: u64,
     /// 最近 `FAILURE_WINDOW` 次投递，位为 1 的是失败，最新的在最低位。
     recent: u64,
     /// 最近 `SLOW_WINDOW` 次投递，位为 1 的是慢。
     slow: u64,
-    /// 各原因的失败次数。
-    reasons: BTreeMap<&'static str, u64>,
-    disabled: Option<&'static str>,
+    /// 停用的类别和具体原因码。
+    disabled: Option<(Trip, &'static str)>,
 }
 
 fn window(bits: u64, width: u32) -> u64 {
@@ -339,7 +361,7 @@ impl Health {
         self.disabled.load(Ordering::Acquire)
     }
 
-    /// 记一次投递。`failure` 为 `None` 是成功。窗口里的失败或慢的次数到了上限就停用。
+    /// 记一次投递。`failure` 为 `None` 是成功。窗口里的失败或慢的次数到了上限就停用。没停用时什么都不写出。
     pub(super) fn record(&self, failure: Option<Failure>, slow: bool) {
         let tripped = {
             let mut state = lock(&self.state);
@@ -351,48 +373,40 @@ impl Health {
                 FAILURE_WINDOW,
             );
             state.slow = window(state.slow << 1 | u64::from(slow), SLOW_WINDOW);
-            if let Some(failure) = failure {
-                state.failures += 1;
-                *state.reasons.entry(failure.as_str()).or_default() += 1;
-            }
-            let tripped = if state.recent.count_ones() >= FAILURE_LIMIT {
-                failure.map(Failure::as_str)
-            } else if state.slow.count_ones() >= SLOW_LIMIT {
-                Some("slow")
-            } else {
-                None
+            let tripped = match failure {
+                Some(failure) if state.recent.count_ones() >= FAILURE_LIMIT => {
+                    Some((Trip::Failed, failure.as_str()))
+                }
+                _ if state.slow.count_ones() >= SLOW_LIMIT => Some((Trip::Slow, "slow")),
+                _ => None,
             };
-            if let Some(reason) = tripped {
-                state.disabled = Some(reason);
+            if tripped.is_some() {
+                state.disabled = tripped;
                 self.disabled.store(true, Ordering::Release);
             }
             tripped
         };
-        if failure.is_some() || tripped.is_some() {
+        if let Some((_, reason)) = tripped {
             mark_dirty(&self.root);
-        }
-        if let Some(reason) = tripped {
             self.report(reason);
         }
     }
 
-    /// 立即停用：初始化失败、ABI 不符、模块不合规。
-    pub(super) fn disable(&self, reason: &'static str) {
+    /// 立即停用：模块不合规、初始化失败、ABI 不符。
+    pub(super) fn disable(&self, trip: Trip, reason: &'static str) {
         {
             let mut state = lock(&self.state);
             if state.disabled.is_some() {
                 return;
             }
-            state.failures += 1;
-            *state.reasons.entry(reason).or_default() += 1;
-            state.disabled = Some(reason);
+            state.disabled = Some((trip, reason));
             self.disabled.store(true, Ordering::Release);
         }
         mark_dirty(&self.root);
         self.report(reason);
     }
 
-    /// 诊断行只有插件 id 和封闭的原因码，不带任何文本。
+    /// 诊断行只有插件 id 和封闭的原因码，不带任何文本；每次停用只报一次。
     fn report(&self, reason: &'static str) {
         crate::diagnostics::report("script plugin disabled", &format!("{} {reason}", self.id));
     }
@@ -435,12 +449,15 @@ pub(super) fn health(root: &Path, id: &str, hash: &str) -> Arc<Health> {
         .clone()
 }
 
-/// 测试读一个插件的 (失败次数, 停用原因)。
+/// 测试读一个插件的 (最近 50 次投递里的失败次数, 停用的具体原因码)。
 #[cfg(test)]
-pub(crate) fn health_snapshot(root: &Path, id: &str, hash: &str) -> (u64, Option<&'static str>) {
+pub(crate) fn health_snapshot(root: &Path, id: &str, hash: &str) -> (u32, Option<&'static str>) {
     let health = health(root, id, hash);
     let state = lock(&health.state);
-    (state.failures, state.disabled)
+    (
+        state.recent.count_ones(),
+        state.disabled.map(|(_, reason)| reason),
+    )
 }
 
 /// 会话重读了授权：`revision` 和上次看到的不同（用户在设置页改过授权、删过或重新导入过包），这个根目录下被熔断的插件全部恢复。第一次看到时只记下来。
@@ -458,7 +475,16 @@ pub(super) fn observe_revision(root: &Path, revision: u64) {
     registry.dirty.insert(root.to_owned());
 }
 
-/// 这个根目录的健康计数有变化时，交给后台线程写进 `file`。只有次数、原因码和停用原因，不带任何文本。
+/// 测试用的屏障：后台线程按顺序处理，`file` 写出来时，之前交过去的写入都已经完成。
+#[cfg(test)]
+pub(crate) fn health_barrier(file: &Path) {
+    send(Job::WriteHealth {
+        path: file.to_owned(),
+        bytes: b"{}".to_vec(),
+    });
+}
+
+/// 这个根目录下有插件停用或恢复过时，交给后台线程写进 `file`：每个停用的插件只有 id、哈希和停用的类别。
 pub(super) fn flush_health(root: &Path, file: &Path) {
     let plugins = {
         let mut registry = lock(&REGISTRY);
@@ -470,16 +496,12 @@ pub(super) fn flush_health(root: &Path, file: &Path) {
             .values()
             .filter(|health| health.root == root)
             .filter_map(|health| {
-                let state = lock(&health.state);
-                (state.failures > 0 || state.disabled.is_some()).then(|| {
-                    json!({
-                        "id": health.id,
-                        "hash": health.hash,
-                        "failures": state.failures,
-                        "reasons": state.reasons,
-                        "disabled": state.disabled,
-                    })
-                })
+                let (trip, _) = lock(&health.state).disabled?;
+                Some(json!({
+                    "id": health.id,
+                    "hash": health.hash,
+                    "disabled": trip.as_str(),
+                }))
             })
             .collect();
         plugins.sort_by(|a, b| {

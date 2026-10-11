@@ -1,6 +1,6 @@
 //! 每个会话的脚本集合：按授权顺序的插件、各自延迟创建的实例、轮次和初始化预算，以及把一个生命周期事件变成脚本看到的 `Event`。
 
-use super::process::{self, Health, Lookup, Reservation};
+use super::process::{self, Health, Lookup, Reservation, Trip};
 use super::CallTexts;
 use crate::key_sound::{stamp, PackStamp};
 use crate::lifecycle::{Context, InputClass, LifecycleEvent, LocalModeClass};
@@ -35,6 +35,10 @@ struct Entry {
     /// 从进程缓存拿到的模块，拿到之后不再查缓存。
     module: Option<ScriptModule>,
     instance: Option<Live>,
+    /// 这次聚焦里 trap 过：实例已经丢弃，到下一次聚焦之前不再重建。否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍初始化。
+    trapped: bool,
+    /// 这个插件最近一次投递所在的轮次和那一轮还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
+    turn: Option<(u64, u64)>,
 }
 
 /// 一个活着的实例和它在内存总账里占的那份。
@@ -58,6 +62,10 @@ pub(crate) struct ScriptSet {
     turn: u64,
     /// 本轮（或这次聚焦以来）还能花在初始化上的 fuel，所有插件合计。用完的插件推迟到下一轮再实例化，不算失败。
     init_left: u64,
+    /// 字段属性确认过：宿主报告过属性（`msime_client_set_field_traits`），或者按过键（契约是每个键之前比较一次属性）。每次聚焦都重新要求确认，否则新字段在第一个键之前沿用上一个字段的属性，聚焦进密码框时插件照样会被实例化、收到 `focus_in`。
+    traits_confirmed: bool,
+    /// 上一个键或上一次聚焦变化之后宿主报告过属性：聚焦前报告的属性属于新字段，可以直接确认。
+    traits_since_key: bool,
 }
 
 impl ScriptSet {
@@ -75,24 +83,38 @@ impl ScriptSet {
         self.init_left = limits::FOCUS_INIT_FUEL;
     }
 
-    /// 字段属性变了。变得不能运行脚本（SECURE、PRIVATE、ELEVATED 或未知）时，正在跑的实例当场丢弃。
-    pub(crate) fn traits_changed(&mut self, context: Context) {
+    /// 宿主报告了字段属性（不论变没变）：属性确认过了。变得不能运行脚本（SECURE、PRIVATE、ELEVATED 或未知）时，正在跑的实例当场丢弃。
+    pub(crate) fn traits_reported(&mut self, context: Context) {
+        self.traits_confirmed = true;
+        self.traits_since_key = true;
         if !context.ordinary_field() {
             self.drop_instances();
         }
     }
 
-    /// `msime_client_focus(true)` 开始时，在任何事件之前：丢弃上一个字段留下的实例，初始化预算给满，按戳重读授权。
+    /// 宿主按了一个键：按契约它在这之前已经比较过属性，现在的属性就是这个字段的。
+    pub(crate) fn key_reported(&mut self) {
+        self.traits_confirmed = true;
+        self.traits_since_key = false;
+    }
+
+    /// `msime_client_focus(true)` 开始时，在任何事件之前：丢弃上一个字段留下的实例，清掉 trap 的记号，初始化预算给满，按戳重读授权。属性要重新确认，聚焦之前刚报告过的除外。
     pub(crate) fn focus_in(&mut self) {
         self.drop_instances();
+        for entry in &mut self.plan {
+            entry.trapped = false;
+        }
+        self.traits_confirmed = self.traits_since_key;
+        self.traits_since_key = false;
         self.init_left = limits::FOCUS_INIT_FUEL;
         if self.root.is_some() && process::running() {
             self.refresh();
         }
     }
 
-    /// 失焦（`focus_out` 送达之后）和 destroy：丢弃全部实例，把有变化的健康计数交给后台线程写出。
+    /// 失焦（`focus_out` 送达之后）和 destroy：丢弃全部实例，有插件停用或恢复过时把健康文件交给后台线程写出。之后报告的属性属于下一个字段。
     pub(crate) fn release(&mut self) {
+        self.traits_since_key = false;
         self.drop_instances();
         if let (Some(root), Some(file)) = (self.root.as_deref(), self.health_file.as_deref()) {
             process::flush_health(root, file);
@@ -140,6 +162,8 @@ impl ScriptSet {
                 health: process::health(&root, &grant.id, &grant.hash),
                 module: None,
                 instance: None,
+                trapped: false,
+                turn: None,
             })
             .collect();
         for entry in &self.plan {
@@ -151,9 +175,13 @@ impl ScriptSet {
         self.loaded = true;
     }
 
-    /// 这次能不能投递：五项运行条件（选择加入已经由调用方保证），授权在第一次需要时读。
+    /// 这次能不能投递：五项运行条件（选择加入已经由调用方保证），属性确认过，授权在第一次需要时读。
     fn prepare(&mut self, context: Context) -> bool {
-        if self.root.is_none() || !context.ordinary_field() || !process::running() {
+        if self.root.is_none()
+            || !self.traits_confirmed
+            || !context.ordinary_field()
+            || !process::running()
+        {
             return false;
         }
         if !self.loaded {
@@ -305,7 +333,7 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
             Lookup::Ready(module) => entry.module = Some(module),
             Lookup::Waiting => return,
             Lookup::Invalid(reason) => {
-                entry.health.disable(reason);
+                entry.health.disable(Trip::Invalid, reason);
                 return;
             }
         }
@@ -319,15 +347,18 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     }
     if entry.instance.is_none() {
         let budget = *init_left;
-        if budget == 0 {
+        if budget == 0 || entry.trapped {
             return;
         }
         let Some(reservation) = process::reserve(module.reserved_memory_bytes()) else {
             return;
         };
         match ScriptInstance::new(module, entry.granted, budget) {
-            Ok(instance) => {
+            Ok(mut instance) => {
                 *init_left = budget.saturating_sub(instance.init_fuel());
+                if let Some((last, left)) = entry.turn.filter(|(last, _)| *last == turn) {
+                    instance.resume_turn(last, left);
+                }
                 #[cfg(test)]
                 let instance = {
                     let mut instance = instance;
@@ -347,7 +378,7 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
                 if failure == Failure::OutOfFuel && budget < limits::INIT_FUEL {
                     return;
                 }
-                entry.health.disable(failure.as_str());
+                entry.health.disable(Trip::Init, failure.as_str());
                 return;
             }
         }
@@ -358,13 +389,19 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     let started = Instant::now();
     let outcome = live.instance.deliver(turn, event);
     let slow = process::slow(started);
+    if !matches!(outcome, Outcome::NotSubscribed) {
+        entry.turn = Some((turn, live.instance.turn_fuel_left()));
+    }
     match outcome {
         Outcome::NotSubscribed => {}
         Outcome::Delivered { .. } => entry.health.record(None, slow),
         Outcome::Failed { failure, .. } => {
             entry.health.record(Some(failure), slow);
-            // trap 之后 wasm 的状态可能停在一半，丢掉，需要时重建。
-            if !live.instance.is_usable() || entry.health.disabled() {
+            // trap 之后 wasm 的状态可能停在一半，丢掉；这次聚焦里不再重建。
+            if !live.instance.is_usable() {
+                entry.trapped = true;
+                entry.instance = None;
+            } else if entry.health.disabled() {
                 entry.instance = None;
             }
         }

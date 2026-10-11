@@ -384,6 +384,46 @@ fn secure_private_elevated_and_unknown_fields_deliver_nothing() {
 }
 
 #[test]
+fn a_new_field_runs_nothing_until_its_traits_are_confirmed() {
+    let fixture = fixture();
+    install(&fixture, &[Script::new("logger", logger(), &OBSERVE)], 1);
+    opt_in(&fixture, TRAIT_KNOWN);
+    assert_eq!(kinds(&take_log()), [Hook::FocusIn.code()]);
+    read(msime_client_focus(fixture.handle, false));
+    take_log();
+
+    // 聚焦进一个新字段，宿主在聚焦前没有报告属性：上一个字段的普通属性不算数，`focus_in` 不投递，也不实例化。按契约宿主在第一个键之前才比较属性，这里它发现是密码框。
+    read(msime_client_focus(fixture.handle, true));
+    assert!(take_log().is_empty());
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN | TRAIT_SECURE);
+    assert_eq!(commit_nihao(fixture.handle), "你好");
+    read(msime_client_focus(fixture.handle, false));
+    assert!(take_log().is_empty());
+
+    // 下一个字段是普通字段，属性和上一次报告的不同，宿主照样只在第一个键之前报告：从那个键开始运行。
+    read(msime_client_focus(fixture.handle, true));
+    assert!(take_log().is_empty());
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    letter(fixture.handle, b'n');
+    assert!(kinds(&take_log()).contains(&Hook::Input.code()));
+    read(msime_client_focus(fixture.handle, false));
+    take_log();
+
+    // 属性没变时宿主不报告，第一个键本身就是确认。
+    read(msime_client_focus(fixture.handle, true));
+    assert!(take_log().is_empty());
+    letter(fixture.handle, b'n');
+    assert!(kinds(&take_log()).contains(&Hook::Input.code()));
+    read(msime_client_focus(fixture.handle, false));
+    take_log();
+
+    // 聚焦之前报告过属性（哪怕没变）：`focus_in` 照常投递。
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, true));
+    assert_eq!(kinds(&take_log()), [Hook::FocusIn.code()]);
+}
+
+#[test]
 fn a_field_turning_secure_drops_the_running_instance() {
     let fixture = fixture();
     install(
@@ -548,13 +588,14 @@ fn one_plugin_burning_its_quota_leaves_the_next_one_untouched() {
         assert_eq!(commit_nihao(fixture.handle), "你好");
         assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
     }
+    // 死循环只在第一次运行：fuel 耗尽是 trap，这次聚焦里不再重建。
     let spinner = process_health(&fixture, "spinner", &hashes[0]);
-    assert_eq!(spinner.0, 2);
+    assert_eq!(spinner.0, 1);
     assert_eq!(process_health(&fixture, "logger", &hashes[1]).0, 0);
 }
 
-/// (失败次数, 停用原因)，直接读进程级的健康表。
-fn process_health(fixture: &Fixture, id: &str, hash: &str) -> (u64, Option<&'static str>) {
+/// (最近 50 次投递里的失败次数, 停用的具体原因码)，直接读进程级的健康表。
+fn process_health(fixture: &Fixture, id: &str, hash: &str) -> (u32, Option<&'static str>) {
     crate::scripts::health_snapshot(&fixture.plugins, id, hash)
 }
 
@@ -582,33 +623,79 @@ fn fuel_is_given_per_turn_and_a_new_key_refills_it() {
 }
 
 #[test]
+fn the_turn_quota_belongs_to_the_plugin_not_to_one_instance() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 一轮里花光配额：最后一次 fuel 耗尽，实例丢弃。
+    msime_client_key(fixture.handle, 0);
+    for _ in 0..50 {
+        read(msime_client_reset_cache(fixture.handle));
+    }
+    let spent = take_log().len();
+    assert!(spent < 50);
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]).0, 1);
+    // 同一轮里换了个字段（没有按键）：新实例接着这一轮剩下的配额，而不是重新给满 125 000。
+    read(msime_client_focus(fixture.handle, false));
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, true));
+    read(msime_client_reset_cache(fixture.handle));
+    assert!(take_log().is_empty());
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]).0, 2);
+    // 新的一轮配额给满，但这次聚焦里它已经 trap 过，不再重建；下一次聚焦才重新运行。
+    msime_client_key(fixture.handle, 0);
+    read(msime_client_reset_cache(fixture.handle));
+    assert!(take_log().is_empty());
+    read(msime_client_focus(fixture.handle, true));
+    letter(fixture.handle, b'n');
+    assert_eq!(kinds(&take_log()), [Hook::Input.code()]);
+    assert_eq!(process_health(&fixture, "burner", &hashes[0]), (2, None));
+}
+
+#[test]
 fn repeated_failures_trip_the_breaker_until_the_revision_changes() {
     let fixture = fixture();
     let scripts = || [Script::new("trapper", trapper(), &[Hook::Commit])];
     let hashes = install(&fixture, &scripts(), 1);
     opt_in(&fixture, TRAIT_KNOWN);
-    for _ in 0..5 {
-        // 脚本 trap 不影响上屏。
-        assert_eq!(commit_nihao(fixture.handle), "你好");
+    let file = fixture.user_data.join("script-health.json");
+    for focus in 0..4 {
+        if focus > 0 {
+            read(msime_client_focus(fixture.handle, true));
+        }
+        // 脚本 trap 不影响上屏；trap 之后这次聚焦里不再重建实例，第二次上屏不运行。
+        for _ in 0..2 {
+            assert_eq!(commit_nihao(fixture.handle), "你好");
+        }
+        if focus == 1 {
+            // 还没停用：失焦时什么都不写，次数和原因不出进程。后台线程按顺序处理，屏障文件写出来时，之前交过去的写入都已经完成。
+            read(msime_client_focus(fixture.handle, false));
+            let barrier = fixture.user_data.join("barrier.json");
+            crate::scripts::health_barrier(&barrier);
+            wait_for(|| barrier.exists().then_some(()));
+            assert!(!file.exists());
+        }
     }
-    // 第 3 次失败停用，之后不再运行。
+    // 第 3 次失败（第 3 次聚焦）停用，之后不再运行。
     assert_eq!(take_log().len(), 3);
     assert_eq!(
         process_health(&fixture, "trapper", &hashes[0]),
         (3, Some("unreachable"))
     );
 
-    // 失焦时健康计数交给后台线程写出：只有次数和原因码。
+    // 失焦时交给后台线程写出：只有停用的插件和停用的类别，没有次数，也不分是哪种 trap。
     read(msime_client_focus(fixture.handle, false));
-    let file = fixture.user_data.join("script-health.json");
     let health = wait_for(|| {
         let bytes = std::fs::read(&file).ok()?;
-        let value: Value = serde_json::from_slice(&bytes).ok()?;
-        (value["plugins"][0]["failures"] == 3).then_some(value)
+        serde_json::from_slice::<Value>(&bytes).ok()
     });
     assert_eq!(
         health,
-        json!({"format_version": 1, "plugins": [{"id": "trapper", "hash": hashes[0], "failures": 3, "reasons": {"unreachable": 3}, "disabled": "unreachable"}]})
+        json!({"format_version": 1, "plugins": [{"id": "trapper", "hash": hashes[0], "disabled": "failed"}]})
     );
 
     // 授权文件的 revision 变了：恢复。
@@ -633,7 +720,7 @@ fn a_failed_init_disables_the_plugin_at_once() {
     assert!(take_log().is_empty());
     assert_eq!(
         process_health(&fixture, "init-failure", &hashes[0]),
-        (1, Some("init_failed"))
+        (0, Some("init_failed"))
     );
 }
 

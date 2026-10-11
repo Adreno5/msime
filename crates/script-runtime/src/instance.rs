@@ -645,6 +645,12 @@ impl ScriptInstance {
         self.turn_fuel_left
     }
 
+    /// 接着插件这一轮已经用掉的配额。宿主在同一轮里重建实例时（上一个实例因为换字段或属性变化被丢弃）把这一轮还剩多少交给新实例，轮配额按插件算，不按实例算。
+    pub fn resume_turn(&mut self, turn: u64, fuel_left: u64) {
+        self.turn = Some(turn);
+        self.turn_fuel_left = fuel_left.min(limits::TURN_FUEL);
+    }
+
     /// 持久实例上出过 trap 之后返回 false：wasm 的状态（例如影子栈指针）可能停在一半，宿主应当丢弃这个实例。
     pub fn is_usable(&self) -> bool {
         self.usable
