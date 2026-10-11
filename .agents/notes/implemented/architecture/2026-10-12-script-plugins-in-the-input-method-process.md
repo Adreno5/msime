@@ -17,11 +17,11 @@ Status: implemented
 | Linux IBus | `msime-linux-ibus` | `ibus_main.cpp`，`ibus_init()` 之前 |
 | Linux Fcitx5 | fcitx5 守护进程（addon 是它加载的共享库） | `FcitxEngine` 构造函数开头 |
 
-Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script-plugin-hosts.py` 检查这 4 处各有一次调用，`platforms/windows/tsf` 和其余任何源码（host-api 自己的定义和测试除外）都不调用它、不按名字取它的地址。
+Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script-plugin-hosts.py` 检查这 4 处各有一次调用，`platforms/windows/tsf` 和其余任何源码（定义它的 `ffi/lifecycle.rs` 和测试除外，host-api 的其余源码同样受检）都不调用它、不按名字取它的地址，也不直接调用内部的 `scripts::enable`。
 
 **运行条件，五项同时满足：** 进程开关开着；会话经 `msime_client_set_lifecycle` 选择加入（没选择加入的会话没有 `LifecycleState`，脚本集合就挂在它上面，所以什么都没有）；字段属性带 `KNOWN`；不带 `SECURE` 或 `PRIVATE`；不带 `ELEVATED`。属性未知按不满足处理。`set_field_traits` 让属性变得不满足时，正在跑的实例当场丢弃。
 
-**每次聚焦之后属性要重新确认。** 宿主按契约在每个键之前比较一次属性、变了才报告，聚焦本身不带属性；不重新确认的话，聚焦进密码框、隐私字段或提权窗口时，插件会按上一个字段的普通属性被实例化并收到 `focus_in`，直到第一个键报告了 SECURE 才丢弃。所以 `focus(true)` 把属性记为未确认，确认之前不实例化、不投递。确认有两种：聚焦之前（上一个键或上一次失焦之后）调过 `set_field_traits`，属性没变也算；或者聚焦之后的第一个 `msime_client_key`。头文件写明想让脚本收到 `focus_in` 的宿主要在 `msime_client_focus(true)` 之前报告属性；不这样做的宿主，脚本从第一个键开始运行。
+**每次聚焦之后属性要重新确认。** 宿主按契约在每个键之前比较一次属性、变了才报告，聚焦本身不带属性；不重新确认的话，聚焦进密码框、隐私字段或提权窗口时，插件会按上一个字段的普通属性被实例化并收到 `focus_in`，直到第一个键报告了 SECURE 才丢弃。所以 `focus(true)` 把属性记为未确认，确认之前不实例化、不投递。确认有两种：聚焦之前（上一个键或上一次失焦之后）调过 `set_field_traits`，属性没变也算；或者聚焦之后第一个不带 `PASSTHROUGH` 的 `msime_client_key`。交给应用的键不算确认：Windows 上它经 Aux 管道上报，和 Main 管道上的属性帧没有先后保证，可能先于新字段的属性到达。头文件写明想让脚本收到 `focus_in` 的宿主要在 `msime_client_focus(true)` 之前报告属性；不这样做的宿主，脚本从第一个键开始运行。
 
 **投递哪些事件。** `focus_in`、`focus_out`、`input`、`selection_retracted`、`candidate_selected`、`commit`、`composition_start`、`composition_update`、`composition_end`、`candidates_shown`、`candidates_hidden`，只来自派发类调用、focus 和 destroy（包括报错时的收尾推导）。不投递：`msime_client_key` 的按键（泄露击键节奏）；字段属性、激活和会话结束（只给核心）；旁路调用和设置类调用（`apply_online_*`、`rerank_settled`、`set_english_mode`、`update_preferences` 等）的视图事件（泄露停顿和网络时序）。`before_commit` 和 `candidates` 是修改类钩子，什么时候运行、怎么改写和合成见 [脚本插件改写上屏与重排、注释、过滤候选](2026-10-12-script-plugins-modify-commit-and-candidates.md)。
 
@@ -34,7 +34,7 @@ Windows TIP、设置应用（Tauri）和 MCP 从不调用。`scripts/test-script
 - `candidates_shown`：`read_candidates` 下当前页（最多 20 行，在栈上的数组里借用视图，不分配）、页码和高亮。
 - `composition_end`/`candidates_hidden`：原因。
 
-**实例。** 每个选择加入的会话一组（`scripts::ScriptSet`），按授权顺序，第一次需要投递一个它声明过的钩子时才实例化。初始化预算是所有插件合计 `FOCUS_INIT_FUEL`，每次 focus 和每一轮都给满；被本轮剩下的预算卡住（而不是被插件自己的 `INIT_FUEL` 上限卡住）的插件推迟到下一轮，不算失败。轮次是每个不带 `PASSTHROUGH` 的 `msime_client_key` 加一，fuel 按轮给，轮配额记在插件上而不是实例上：同一轮里重建的实例（换了字段、属性变过）接着用这一轮剩下的，不重新给满 125 000。**一个插件 trap 之后，这次聚焦里不再重建它的实例**，下一次聚焦才重新实例化；否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍至多 5 000 000 fuel 的初始化。返回负数不算 trap，实例照用。**每次 `msime_client_focus` 和 destroy 都把这个会话的全部实例丢弃**：`focus(false)` 在 `focus_out` 送达之后丢，`focus(true)` 在任何事件之前丢（只有 `focus(true)`、没有失焦的换字段也算）。import 只读写本次调用的上下文，从不回调宿主，会话正借给这次调用。
+**实例。** 每个选择加入的会话一组（`scripts::ScriptSet`），按授权顺序，第一次需要投递一个它声明过的钩子时才实例化。初始化预算是所有插件合计 `FOCUS_INIT_FUEL`，每次 focus 和每一轮都给满；被本轮剩下的预算卡住（而不是被插件自己的 `INIT_FUEL` 上限卡住）的插件推迟到下一轮，不算失败。轮次是每个不带 `PASSTHROUGH` 的 `msime_client_key` 加一，fuel 按轮给，轮配额记在插件上而不是实例上：同一轮里重建的实例（换了字段、属性变过）接着用这一轮剩下的，不重新给满 125 000。三个桌面宿主都有不先调 `msime_client_key` 的派发（Linux、Windows 的修饰键组合，macOS 的 Cmd/Ctrl 快捷键，失焦命令），它们和上一次按键共用一轮，把这一轮花光的可能是之前几次完全正常的投递，所以**本轮配额用完不算插件的失败**：剩余为 0 时跳过这个插件（`Outcome::TurnExhausted`），也不为它在按键路径上重新初始化；运行到一半被本轮剩下的配额截断时，实例和 trap 一样丢弃、这次聚焦里不再重建，但不计入熔断。只有超出单个钩子自己的上限才算一次失败；一轮刚开始时剩余不少于任何观察类钩子的上限，死循环总是先撞上钩子上限。**一个插件 trap 之后，这次聚焦里不再重建它的实例**，下一次聚焦才重新实例化；否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍至多 5 000 000 fuel 的初始化。返回负数不算 trap，实例照用。**每次 `msime_client_focus` 和 destroy 都把这个会话的全部实例丢弃**：`focus(false)` 在 `focus_out` 送达之后丢，`focus(true)` 在任何事件之前丢（只有 `focus(true)`、没有失焦的换字段也算）。import 只读写本次调用的上下文，从不回调宿主，会话正借给这次调用。
 
 **授权的重读。** `focus(true)` 紧挨着 `refresh_plugin_tables` 给 `script-grants.json` 打戳（`key_sound::stamp`，带 inode）；戳变了就整份重读，计划换掉。会话第一次需要投递时如果还没读过（宿主在聚焦之后才选择加入）也读一次。Windows 没有 inode，靠原子替换带来的新修改时间；授权的 `revision` 另外驱动熔断的恢复。
 
@@ -76,7 +76,7 @@ Mac Studio（arm64，同时跑着 CI runner，数字有抖动，同一份测量�
 
 ## Testing
 
-`cargo test -p msime-host-api`（`tests/script_plugins.rs` 22 例，外加默认忽略的测量）：普通字段收到全部观察类事件，按键不投递；SECURE、PRIVATE、ELEVATED、没有 KNOWN 位时一个事件都没有，换回普通字段照常运行；聚焦进新字段后属性确认之前什么都不运行（聚焦前报告过属性时 `focus_in` 照常投递，否则从第一个键开始）；字段变成 SECURE 时实例当场丢弃，回来后重建；没有授权时文本类 import 返回 `DENIED`，授权后读到上屏文本；`SELECTED` 只在 `candidate_selected` 里有，body 不带结束组字的标点；`read_composition` 下 `input` 带打的字符、`composition_update` 带预编辑串；每次 focus（含只有 `focus(true)` 的换字段）都重建实例；一个插件烧满 fuel 不影响下一个；同一轮里连发会用完轮配额，每个新键补满；同一轮里换字段重建的实例接着用这一轮剩下的配额，trap 过的插件这次聚焦里不再重建；三次聚焦各失败一次就停用，没停用之前失焦什么都不写，停用后 `script-health.json` 只有 id、哈希和类别，`revision` 变化后恢复；初始化失败立即停用；慢投递按墙钟熔断；没选择加入的会话什么都不运行；产品里的进程开关（不经测试覆盖）关着不投递，开发构建打开就投递，release 构建打开了也不投递；旁路调用的视图事件不投递；宿主一侧 panic 关掉全部脚本而上屏照常；后台编译时 panic 的模块被停用而不是一直等；磁盘上的包经后台编译线程编译后运行；哈希对不上的授权从不运行。`lifecycle_alloc.rs` 的零分配断言不变（没有脚本时投递路径在第一项检查就返回）。`scripts/test-script-plugin-hosts.py` 守住入口。
+`cargo test -p msime-host-api`（`tests/script_plugins.rs` 24 例，外加默认忽略的测量）：普通字段收到全部观察类事件，按键不投递；SECURE、PRIVATE、ELEVATED、没有 KNOWN 位时一个事件都没有，换回普通字段照常运行；聚焦进新字段后属性确认之前什么都不运行（聚焦前报告过属性时 `focus_in` 照常投递，否则从第一个键开始）；字段变成 SECURE 时实例当场丢弃，回来后重建；没有授权时文本类 import 返回 `DENIED`，授权后读到上屏文本；`SELECTED` 只在 `candidate_selected` 里有，body 不带结束组字的标点；`read_composition` 下 `input` 带打的字符、`composition_update` 带预编辑串；每次 focus（含只有 `focus(true)` 的换字段）都重建实例；一个插件烧满 fuel 不影响下一个；同一轮里连发会用完轮配额，用完后跳过而不算失败，每个新键补满；不先调 `msime_client_key` 的派发花光本轮配额，连着四次聚焦也不熔断；交给应用的键不确认新字段的属性；同一轮里换字段重建的实例接着用这一轮剩下的配额，trap 过的插件这次聚焦里不再重建；三次聚焦各失败一次就停用，没停用之前失焦什么都不写，停用后 `script-health.json` 只有 id、哈希和类别，`revision` 变化后恢复；初始化失败立即停用；慢投递按墙钟熔断；没选择加入的会话什么都不运行；产品里的进程开关（不经测试覆盖）关着不投递，开发构建打开就投递，release 构建打开了也不投递；旁路调用的视图事件不投递；宿主一侧 panic 关掉全部脚本而上屏照常；后台编译时 panic 的模块被停用而不是一直等；磁盘上的包经后台编译线程编译后运行；哈希对不上的授权从不运行。`lifecycle_alloc.rs` 的零分配断言不变（没有脚本时投递路径在第一项检查就返回）。`scripts/test-script-plugin-hosts.py` 守住入口。
 
 ## Alternatives considered
 
@@ -98,6 +98,6 @@ Mac Studio（arm64，同时跑着 CI runner，数字有抖动，同一份测量�
 - 在第 2 阶段各宿主接入生命周期（`msime_client_set_lifecycle`、`set_field_traits`、`key`）之前，没有任何会话满足运行条件，脚本实际上不会在产品里运行；开发构建里自测要等那些分支合入。
 - release 构建打开开关是第 5 阶段的事，前提是 [脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md) 写的三条对策（macOS 钥匙串 MAC、Windows 提权窗口不跑脚本、Linux 与 Windows 把残余风险写进授权页）都已落地。
 - 同一用户下伪造了授权的进程（U11）也能改 `revision` 让熔断复位，每复位一次就能再触发一次停用、读一次健康文件。macOS 的钥匙串 MAC（第 5 阶段）把 `revision` 也签进去；Linux 和 Windows 上这是 U11 已接受的残余风险的一部分。
-- 已知缺口：x64 DLL 和 macOS 输入法可执行文件的体积增量没量；wasmi 2.0 与 1.1.0 的差分 fuzz 没做（见 [沙箱运行时](2026-10-12-script-runtime-sandbox.md)）；pack-tool 还没有直接依赖运行时，`msime-pack run` 在第 6 阶段。
+- 已知缺口：x64 DLL 和 macOS 输入法可执行文件的体积增量没量；wasmi 2.0 与 1.1.0 的差分 fuzz 没做（见 [沙箱运行时](2026-10-12-script-runtime-sandbox.md)）。`msime-pack run` 按本篇的实例规则（延迟实例化、聚焦丢弃、trap 后不重建、同轮续用配额、初始化失败停用）复刻了单个插件的生命周期，改这些规则时同步改 `crates/pack-tool/src/run.rs`，见 [脚本插件的作者工具](../feature/2026-10-12-script-plugin-author-tools.md)。
 
 相关：[桌面端生命周期核心](../../proposed/architecture/2026-10-11-desktop-lifecycle-core.md) 推导出这里投递的事件；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 提供 `ScriptInstance`、ABI 和配额；数据类插件的门控与诊断见 [插件门控如实显示](../bug-fix/2026-10-09-plugin-gates-and-wubi-table-modes.md)。

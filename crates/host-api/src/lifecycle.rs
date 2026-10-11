@@ -25,7 +25,7 @@ use std::time::Instant;
 pub const FEEDBACK: u32 = 0x1;
 /// 之后的上屏只能观察，不能改写；设着它时候选变换也停下（`crate::scripts::observe_only`）。可随时经 `msime_client_set_lifecycle` 切换。
 pub const COMMIT_OBSERVE_ONLY: u32 = 0x4;
-/// 宿主自己暂存部分选词（Windows）：部分选词的上屏只是一段，宿主把各段拼好、补齐整个词时才写进文档，所以这个词的各段上屏都不可改写（见 `rewritable`）。
+/// 宿主自己暂存部分选词（Windows）：部分选词的上屏只是一段，宿主把各段拼好、补齐整个词时才写进文档，所以这个词的各段上屏都不可改写（见 `rewritable`）。部分选词（`candidate_selected` 的 outcome 是 Partial）上屏的那一段还在宿主的前缀里，没进文档，内置消费者不为它出上屏音、不画上屏特效，等整段送出的那次上屏再出。生命周期事件照常发。
 pub const HOST_HOLDS_PIECES: u32 = 0x8;
 /// `msime_client_set_lifecycle` 接受的全部位，其余位被忽略。
 pub const SUPPORTED_FLAGS: u32 = FEEDBACK | COMMIT_OBSERVE_ONLY | HOST_HOLDS_PIECES;
@@ -552,6 +552,8 @@ pub(crate) struct LifecycleState {
     scripts: Rc<RefCell<ScriptSet>>,
     /// 见 [`Context::pieces_held`]：设着 `HOST_HOLDS_PIECES` 时，这次组字里有部分选词上屏过，组字结束时清掉。
     pieces_held: bool,
+    /// 本次调用的上屏是宿主暂存的一段部分选词（HOST_HOLDS_PIECES 下 outcome 为 Partial），每次调用结束推导事件前重算。
+    held_piece: bool,
     /// 测试用的消费者：记录事件或故意 panic。
     #[cfg(test)]
     pub(crate) probe: Option<Probe>,
@@ -571,6 +573,7 @@ impl LifecycleState {
             effect: 0,
             scripts: Rc::default(),
             pieces_held: false,
+            held_piece: false,
             #[cfg(test)]
             probe: None,
         }
@@ -669,14 +672,13 @@ impl LifecycleState {
             return 0;
         }
         self.effect = 0;
-        // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给。
-        let new_turn = key & KEY_PASSTHROUGH == 0;
-        self.with_scripts(|scripts| {
-            scripts.key_reported();
-            if new_turn {
+        // 交给应用的键不开新的一轮，脚本的 fuel 也按轮给；它也不确认字段属性：Windows 上这类键走 Aux 管道，和 Main 管道上的属性帧没有先后保证，可能先于新字段的属性到达。
+        if key & KEY_PASSTHROUGH == 0 {
+            self.with_scripts(|scripts| {
+                scripts.key_reported();
                 scripts.next_turn();
-            }
-        });
+            });
+        }
         self.emit(
             sound,
             LifecycleEvent::KeyDown(KeyDown {
@@ -744,6 +746,14 @@ impl LifecycleState {
         if !matches!(call, Call::Dispatch(_)) {
             self.effect = 0;
         }
+        self.held_piece = self.flags & HOST_HOLDS_PIECES != 0
+            && matches!(
+                facts.selection,
+                Some(SelectionFact {
+                    outcome: SelectionOutcome::Partial,
+                    ..
+                })
+            );
         let context = self.context();
         let to_scripts = call != Call::SideChannel;
         derive(call, context, pre, post, facts, commit, page, |event| {
@@ -912,9 +922,9 @@ impl LifecycleState {
                     Instant::now(),
                 );
             }
-            // 失焦上屏不出声：IBus 根本不插入这段运行时副本，macOS 失焦时出提交音也是错的。
+            // 失焦上屏不出声：IBus 根本不插入这段运行时副本，macOS 失焦时出提交音也是错的。宿主暂存的一段部分选词还没进文档，同样不出声、不画，等整段送出的那次上屏。
             LifecycleEvent::Commit { origin, .. }
-                if origin != CommitOrigin::FocusLoss && !secure =>
+                if origin != CommitOrigin::FocusLoss && !secure && !self.held_piece =>
             {
                 if !muted {
                     play(sound, Cue::Commit);
