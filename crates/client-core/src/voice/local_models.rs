@@ -659,7 +659,9 @@ fn check_root(root: &Path) -> Result<(), LocalModelError> {
 /// host processes. The lock lives in the root and is deliberately kept after the operation so a
 /// later process cannot create a different inode while an earlier process still owns the lock.
 fn acquire_model_lock(root: &Path) -> Result<File, LocalModelError> {
-    fs::create_dir_all(root)?;
+    // `create_dir_all` follows an existing symlink in a missing path component.
+    // Use the storage helper that checks the nearest existing ancestor first.
+    crate::storage::create_directory_and_check(root)?;
     check_root(root)?;
     let lock = crate::file_lock::open_private_lock_file(root.join(MODEL_LOCK_FILE))?;
     crate::file_lock::exclusive(&lock)?;
