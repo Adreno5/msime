@@ -34,6 +34,7 @@
 #include "GameProcessList.h"
 #include "PluginPageModel.h"
 #include "PreferencePath.h"
+#include "AiSettings.h"
 #include "AppInputModeRuleList.h"
 #include "FeedbackReport.h"
 #include "CandidateFontPresets.h"
@@ -95,6 +96,7 @@ using A11y = Microsoft::UI::Xaml::Automation::AutomationProperties;
 namespace nav = msime::settings;
 namespace pg = msime::settings::plugins;
 namespace vs = msime::settings::voice;
+namespace ais = msime::settings::ai;
 
 struct Response {
   std::string text;
@@ -965,8 +967,6 @@ const PageLabel &page_label(std::string_view id) {
 const wchar_t *shell_page_description(std::string_view id) {
   if (id == "account")
     return L"登录水杉输入法账号，管理设置和词库在设备之间的同步。";
-  if (id == "ai")
-    return L"开启 AI 辅助，设置联想、回复与润色使用的模型服务。";
   return L"";
 }
 
@@ -3868,6 +3868,8 @@ private:
       build_stats_page(page);
     else if (id == "plugins")
       build_plugins_page(page);
+    else if (id == "ai")
+      build_ai_page(page);
     else if (id == "dev")
       build_dev_page(page);
     else if (id == "feedback")
@@ -3876,7 +3878,7 @@ private:
       build_about_page(page);
   }
 
-  // AI 辅助、账号与同步都由各平台共用的共享应用提供，这个窗口只负责在那里打开它们。
+  // 账号与同步由各平台共用的共享应用提供，这个窗口只负责在那里打开它。
   void build_shell_page(nav::Page const &model, StackPanel const &page) {
     const auto &label = page_label(model.id);
     auto group = add_group(page, L"");
@@ -10832,17 +10834,33 @@ private:
     return input;
   }
 
-  // 预置模型和接入说明（ProviderPresetSection）：服务商已知支持的模型可以直接选（「自定义模型…」表示模型框里是自己填的），文档按钮用默认浏览器打开。两样都没有时不画。
+  void add_voice_preset(StackPanel const &group, std::wstring const &label,
+                        vs::ProviderDefaults const *preset, std::wstring model_key) {
+    if (!preset)
+      return;
+    add_provider_preset(group, label, preset->models, preset->documentation, model_key, voice_sync_,
+                        [this] { resync_voice(); },
+                        [this, model_key](std::wstring const &value) {
+                          change([&](PreferencesDocument &doc) {
+                            doc.SetString(model_key, value);
+                          }, true);
+                        });
+  }
+
+  // 预置模型和接入说明（ProviderPresetSection）：服务商已知支持的模型可以直接选（「自定义模型…」表示模型框里是自己填的），文档按钮用默认浏览器打开。两样都没有时不画。选了一个模型时交给 select 写进设置；下拉框的选中项随模型框变化，由 sync 里的一项就地更新，resync 在事件处理完后做这件事。语音页和 AI 页共用。
   void add_provider_preset(StackPanel const &group, std::wstring const &label,
-                           vs::ProviderDefaults const *preset, std::wstring model_key) {
-    if (!preset || (preset->models.empty() && preset->documentation.empty()))
+                           std::vector<std::wstring_view> const &preset_models,
+                           std::wstring_view documentation, std::wstring model_key,
+                           std::vector<std::function<void()>> &sync, std::function<void()> resync,
+                           std::function<void(std::wstring const &)> select) {
+    if (preset_models.empty() && documentation.empty())
       return;
     FrameworkElement link{nullptr};
-    if (!preset->documentation.empty()) {
-      const std::wstring url(preset->documentation);
+    if (!documentation.empty()) {
+      const std::wstring url(documentation);
       link = button_control(label + L"接入说明与 API Key", [this, url] { open_url(url.c_str()); });
     }
-    if (preset->models.empty()) {
+    if (preset_models.empty()) {
       StackPanel content;
       content.Padding(Thickness{25, 12, 25, 12});
       content.Children().Append(link);
@@ -10852,21 +10870,19 @@ private:
       return;
     }
     std::vector<Option> options{{L"", L"自定义模型…"}};
-    for (auto const &model : preset->models)
+    for (auto const &model : preset_models)
       options.push_back({std::wstring(model), std::wstring(model)});
     const auto model = document_.String(model_key, L"");
-    const bool known = std::find(preset->models.begin(), preset->models.end(), model) !=
-                       preset->models.end();
+    const bool known = std::find(preset_models.begin(), preset_models.end(), model) !=
+                       preset_models.end();
     auto combo = select_control(label + L"预置模型", std::move(options), known ? model : L"",
-                                [this, model_key](std::wstring const &value) {
+                                [this, model_key, resync, select](std::wstring const &value) {
                                   if (value.empty() || value == document_.String(model_key, L"")) {
                                     // 共享页的下拉框受控：选「自定义模型…」不改模型，选中项回到模型框里的值。
-                                    resync_voice();
+                                    resync();
                                     return;
                                   }
-                                  change([&](PreferencesDocument &doc) {
-                                    doc.SetString(model_key, value);
-                                  }, true);
+                                  select(value);
                                 });
     combo.Width(240);
     FrameworkElement below{nullptr};
@@ -10880,8 +10896,8 @@ private:
             below);
     if (indexing_)
       return;
-    voice_sync_.push_back([this, weak = make_weak(combo.as<ComboBox>()), models = preset->models,
-                           model_key] {
+    sync.push_back([this, weak = make_weak(combo.as<ComboBox>()), models = preset_models,
+                    model_key] {
       auto shown = weak.get();
       if (!shown)
         return;
@@ -10898,8 +10914,8 @@ private:
   // 云服务的几行（VoiceAsrProviderSettingsSection 的 Windows 分支和 DoubaoOptionsRows）：豆包多出鉴权方式、流式接口、资源 ID 和识别选项，旧版鉴权多出 App Key。
   void build_asr_service_rows(StackPanel const &group, std::wstring const &provider, bool doubao,
                               std::wstring const &auth_mode) {
-    add_provider_preset(group, L"识别服务", vs::find_defaults(vs::asr_provider_defaults(), provider),
-                        L"voice_input.asr_model");
+    add_voice_preset(group, L"识别服务", vs::find_defaults(vs::asr_provider_defaults(), provider),
+                     L"voice_input.asr_model");
     voice_text_row(group, 0xE950, L"识别模型", L"由语音服务选择对应模型", L"识别模型",
                    L"voice_input.asr_model");
     if (doubao || indexing_) {
@@ -11088,9 +11104,8 @@ private:
                                apply_provider_update(doc, L"polish", update);
                              }, true);
                            }));
-    add_provider_preset(group, L"文本润色",
-                        vs::find_defaults(vs::polish_provider_defaults(), provider),
-                        L"voice_input.polish_model");
+    add_voice_preset(group, L"文本润色", vs::find_defaults(vs::polish_provider_defaults(), provider),
+                     L"voice_input.polish_model");
     voice_text_row(group, 0xE950, L"模型", L"", L"文本润色模型", L"voice_input.polish_model");
     voice_text_row(group, 0xE71B, L"润色接口地址", L"留空使用当前服务的默认地址", L"润色接口地址",
                    L"voice_input.polish_endpoint");
@@ -11135,20 +11150,7 @@ private:
     A11y::SetName(prompt, L"润色提示词");
     if (custom)
       prompt.TextChanged([this, prompt_key](Inspectable const &sender, TextChangedEventArgs const &) {
-        // TextBox 把换行存成 \r；提示词按共享页的 textarea 一样以 \n 分行保存。
-        std::wstring value(sender.as<TextBox>().Text().c_str());
-        std::wstring normalized;
-        normalized.reserve(value.size());
-        for (size_t i = 0; i < value.size(); ++i) {
-          if (value[i] == L'\r') {
-            normalized.push_back(L'\n');
-            if (i + 1 < value.size() && value[i + 1] == L'\n')
-              ++i;
-          } else {
-            normalized.push_back(value[i]);
-          }
-        }
-        write_credential(prompt_key, normalized);
+        write_credential(prompt_key, textarea_value(sender.as<TextBox>()));
       });
     block.Children().Append(prompt);
     auto card = make_card();
@@ -11175,6 +11177,23 @@ private:
                         [this] {
                           return vs::polish_test_disabled(document_.String(L"voice_input.polish_token", L""));
                         });
+  }
+
+  // 多行输入框里的文字。TextBox 把换行存成 \r；按共享页的 textarea 一样以 \n 分行。
+  static std::wstring textarea_value(TextBox const &box) {
+    std::wstring value(box.Text().c_str());
+    std::wstring normalized;
+    normalized.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+      if (value[i] == L'\r') {
+        normalized.push_back(L'\n');
+        if (i + 1 < value.size() && value[i + 1] == L'\n')
+          ++i;
+      } else {
+        normalized.push_back(value[i]);
+      }
+    }
+    return normalized;
   }
 
   // 「录音设备」（VoiceCaptureDevicesSection 的 Windows 分支）：录音后端、读取并选择麦克风，以及手填的设备标识。
@@ -11848,6 +11867,586 @@ private:
               L"打开", nav::shell_links::handwriting_panel);
   }
 
+  // ---- AI 辅助 ----
+
+  // 接口地址的来源键和说明（msime_client_ai_endpoint_check，不做 I/O，规则与 ai-endpoint-policy.ts 一致）。来源键是 ai_assistant.tokens 里存 Token 的键，地址不能用时为空；说明只在地址不能用时非空。
+  struct AiEndpoint {
+    std::optional<std::wstring> origin;
+    std::wstring hint;
+  };
+
+  static AiEndpoint ai_endpoint(std::wstring const &endpoint) {
+    const auto bytes = utf8(hstring(endpoint));
+    const auto response = take_response(msime_client_ai_endpoint_check(
+        reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size()));
+    AiEndpoint result;
+    // 调用失败只会是地址超过 64 KiB，按 aiEndpointHint 对超长地址的说法处理。
+    result.hint = L"请填写完整的接口地址：https://，或本机、局域网的 http://，且不能包含用户名、密码或 # 片段。";
+    if (!response.ok)
+      return result;
+    try {
+      const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+      const auto origin = value.GetNamedValue(L"origin");
+      if (origin.ValueType() == JsonValueType::String)
+        result.origin = std::wstring(origin.GetString().c_str());
+      result.hint = value.GetNamedString(L"hint", L"").c_str();
+    } catch (...) {
+    }
+    return result;
+  }
+
+  AiEndpoint ai_endpoint() const {
+    return ai_endpoint(document_.String(L"ai_assistant.endpoint", L""));
+  }
+
+  // 当前接口地址对应的 API Token（ai_assistant.tokens[来源键]）；地址不能用时为空。
+  std::wstring ai_token(AiEndpoint const &endpoint) const {
+    return endpoint.origin ? document_.Entry(L"ai_assistant.tokens", *endpoint.origin, L"")
+                           : std::wstring();
+  }
+
+  // 共享页 updateAi 除写设置以外做的事：作废进行中的获取模型和润色测试，清掉测试结果；改了服务商或接口地址时，已获取的模型列表和它的提示也清掉。
+  void ai_edited(bool models) {
+    ++ai_generation_;
+    ai_models_busy_ = false;
+    ai_test_busy_ = false;
+    ai_test_output_.clear();
+    ai_test_status_.clear();
+    if (models) {
+      ai_models_.reset();
+      ai_models_status_.clear();
+    }
+  }
+
+  // 下拉框和开关的改动：保存后重画整页。
+  void ai_change(std::function<void(PreferencesDocument &)> const &edit, bool models) {
+    ai_edited(models);
+    change(edit, true);
+  }
+
+  // 输入框的改动不重画整页，跟着变的控件就地更新：Token 行、地址说明、预置模型和已获取模型的选中项、「获取模型列表」、「测试 AI 辅助配置」和测试工具。
+  void sync_ai() {
+    for (auto const &update : ai_sync_)
+      update();
+    refresh_credential_test(L"ai.assistant");
+    refresh_ai_test();
+    refresh_ai_models();
+  }
+
+  void resync_ai() {
+    DispatcherQueue().TryEnqueue([weak = get_weak()] {
+      if (auto self = weak.get(); self && !self->closed_)
+        self->sync_ai();
+    });
+  }
+
+  // add_row 画出的卡片标题下的那行说明；没有说明时补一个收起的，供就地更新。
+  TextBlock row_subtitle(Border const &card) {
+    auto texts = card.Child()
+                     .as<StackPanel>()
+                     .Children()
+                     .GetAt(0)
+                     .as<Grid>()
+                     .Children()
+                     .GetAt(1)
+                     .as<StackPanel>();
+    if (texts.Children().Size() < 2) {
+      auto line = make_text(L"", 12, palette_.sub);
+      line.Visibility(Visibility::Collapsed);
+      texts.Children().Append(line);
+    }
+    return texts.Children().GetAt(1).as<TextBlock>();
+  }
+
+  static void set_subtitle(TextBlock const &line, std::wstring const &value) {
+    if (std::wstring_view(line.Text()) != value)
+      line.Text(hstring(value));
+    line.Visibility(value.empty() ? Visibility::Collapsed : Visibility::Visible);
+  }
+
+  // 共享 AI 页（`ai-settings-content.tsx`、`ai-settings-page-section.tsx`）在 Windows 上的内容，顺序也相同：「服务」（开关、服务提供商、API Token、预置模型和接入说明、模型、获取模型列表和已获取模型、「更多选项」里的接口地址，末尾是「测试 AI 辅助配置」），「联想」（候选数量），「提示词」（方案和所选槽位的提示词），「测试工具」（AI 润色测试）。Windows 的设置应用没有 AI 对话（宿主不提供 chat），所以最后没有「AI 对话」一组。Token 存在偏好文件里，按接口地址的来源键分开存（ai_assistant.tokens）。服务商表和规则在 AiSettings.h。
+  void build_ai_page(StackPanel const &page) {
+    if (!indexing_) {
+      credential_test_views_.clear();
+      ai_sync_.clear();
+      ai_models_host_ = nullptr;
+      ai_test_view_ = nullptr;
+    }
+    const auto provider = document_.String(L"ai_assistant.provider", L"deepseek");
+    const auto endpoint = ai_endpoint();
+    if (!indexing_ && !ai_more_open_)
+      // MoreOptions 的 defaultOpen：第一次显示时地址不能用就展开，之后由用户自己展开收起。
+      ai_more_open_ = !endpoint.origin;
+
+    auto service = add_group(page, L"服务");
+    add_row(service, 0xE99A, L"启用 AI 辅助", L"为拼音联想提供共享配置",
+            toggle_control(L"启用 AI 辅助", document_.Boolean(L"ai_assistant.enabled", false),
+                           [this](bool on) {
+                             ai_change([&](PreferencesDocument &doc) {
+                               doc.SetBoolean(L"ai_assistant.enabled", on);
+                             }, false);
+                           }));
+    std::vector<Option> providers;
+    for (auto const &entry : ais::providers())
+      providers.push_back({std::wstring(entry.id), std::wstring(entry.title)});
+    auto provider_combo = select_control(
+        L"AI 服务提供商", std::move(providers), provider, [this](std::wstring const &value) {
+          const ais::ProviderFields current{
+              document_.String(L"ai_assistant.provider", L"deepseek"),
+              document_.String(L"ai_assistant.endpoint", L""),
+              document_.String(L"ai_assistant.model", L"")};
+          if (value == current.provider)
+            return;
+          const auto update = ais::provider_update(value, current);
+          ai_change([&](PreferencesDocument &doc) {
+            doc.SetString(L"ai_assistant.provider", update.provider);
+            doc.SetString(L"ai_assistant.endpoint", update.endpoint);
+            doc.SetString(L"ai_assistant.model", update.model);
+          }, true);
+        });
+    provider_combo.Width(200);
+    add_row(service, 0xE753, L"服务提供商", L"", provider_combo);
+    build_ai_token_row(service, endpoint);
+
+    const auto *preset = ais::find_provider(provider);
+    if (preset)
+      add_provider_preset(service, L"AI ", preset->models, preset->documentation,
+                          L"ai_assistant.model", ai_sync_, [this] { resync_ai(); },
+                          [this](std::wstring const &value) {
+                            ai_change([&](PreferencesDocument &doc) {
+                              doc.SetString(L"ai_assistant.model", value);
+                            }, false);
+                          });
+    add_row(service, 0xE950, L"模型", L"",
+            credential_input(L"AI 模型", document_.String(L"ai_assistant.model", L""), false, L"",
+                             true, [this](std::wstring const &value) {
+                               write_credential(L"ai_assistant.model", value);
+                               ai_edited(false);
+                               sync_ai();
+                               return true;
+                             }));
+    StackPanel models;
+    models.Spacing(4);
+    service.Children().Append(models);
+    if (!indexing_)
+      ai_models_host_ = models;
+    fill_ai_models(models);
+
+    Expander more;
+    more.Header(box_value(L"更多选项"));
+    more.HorizontalAlignment(HorizontalAlignment::Stretch);
+    more.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+    more.IsExpanded(ai_more_open_.value_or(false) || focus_row_ == L"接口地址");
+    more.Expanding([this](Expander const &, ExpanderExpandingEventArgs const &) {
+      ai_more_open_ = true;
+    });
+    more.Collapsed([this](Expander const &, ExpanderCollapsedEventArgs const &) {
+      ai_more_open_ = false;
+    });
+    StackPanel rows;
+    rows.Spacing(4);
+    const auto endpoint_text = document_.String(L"ai_assistant.endpoint", L"");
+    auto endpoint_input = credential_input(
+        L"AI 接口地址", endpoint_text, false, L"", true, [this](std::wstring const &value) {
+          write_credential(L"ai_assistant.endpoint", value);
+          ai_edited(true);
+          sync_ai();
+          return true;
+        });
+    endpoint_input.Width(320);
+    auto endpoint_card = add_row(rows, 0xE71B, L"接口地址",
+                                 endpoint_text.empty() ? std::wstring() : endpoint.hint,
+                                 endpoint_input);
+    if (!indexing_)
+      ai_sync_.push_back([this, weak = make_weak(row_subtitle(endpoint_card))] {
+        if (auto line = weak.get()) {
+          const auto value = document_.String(L"ai_assistant.endpoint", L"");
+          set_subtitle(line, value.empty() ? std::wstring() : ai_endpoint(value).hint);
+        }
+      });
+    more.Content(rows);
+    service.Children().Append(more);
+    add_credential_test(
+        service, L"ai.assistant", L"测试 AI 辅助配置",
+        [this] {
+          // aiServiceCredentialTestConfig。
+          auto string = [](std::wstring const &value) {
+            return JsonValue::CreateStringValue(hstring(value));
+          };
+          JsonObject config;
+          config.SetNamedValue(L"provider", string(document_.String(L"ai_assistant.provider", L"deepseek")));
+          config.SetNamedValue(L"endpoint", string(document_.String(L"ai_assistant.endpoint", L"")));
+          config.SetNamedValue(L"model", string(document_.String(L"ai_assistant.model", L"")));
+          config.SetNamedValue(L"token", string(ai_token(ai_endpoint())));
+          return config;
+        },
+        [this] {
+          const auto current = ai_endpoint();
+          return ais::credential_test_disabled(document_.Boolean(L"ai_assistant.enabled", false),
+                                               current.origin.has_value(),
+                                               document_.String(L"ai_assistant.model", L""),
+                                               ai_token(current));
+        });
+
+    // 「联想」：候选数量是 type=number 的输入框，取值规则见 ais::candidate_limit。
+    auto suggestion = add_group(page, L"联想");
+    NumberBox limit;
+    limit.Width(120);
+    limit.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+    limit.SmallChange(1);
+    limit.Value(document_.Number(L"ai_assistant.candidate_limit", 3));
+    limit.IsEnabled(loaded_);
+    A11y::SetName(limit, L"AI 候选数量");
+    limit.ValueChanged([this](NumberBox const &sender, NumberBoxValueChangedEventArgs const &args) {
+      const int value = ais::candidate_limit(args.NewValue());
+      if (value != static_cast<int>(document_.Number(L"ai_assistant.candidate_limit", 3))) {
+        document_.SetNumber(L"ai_assistant.candidate_limit", value);
+        schedule_save();
+        ai_edited(false);
+        sync_ai();
+      }
+      // 输入框受控：清空、0、小数或超出范围时显示存下的值。不在自己的 ValueChanged 里改值。
+      if (args.NewValue() != static_cast<double>(value))
+        DispatcherQueue().TryEnqueue([weak = make_weak(sender), value] {
+          if (auto box = weak.get(); box && box.Value() != static_cast<double>(value))
+            box.Value(value);
+        });
+    });
+    add_row(suggestion, 0xE8EF, L"候选数量", L"每次 AI 联想给出的候选个数，1 到 10", limit);
+
+    // 「提示词」：只显示所选槽位的提示词；槽位留空时使用内置的联想提示词。
+    auto prompts = add_group(page, L"提示词");
+    auto const &slot = ais::prompt_slot(document_.String(L"ai_assistant.prompt_id", L""));
+    std::vector<Option> slots;
+    for (auto const &entry : ais::prompt_slots)
+      slots.push_back({std::wstring(entry.id), std::wstring(entry.option)});
+    add_row(prompts, 0xE8BD, L"提示词方案", L"使用选中的独立槽位；槽位留空时使用内置的联想提示词",
+            select_control(L"AI 联想提示词方案", std::move(slots), std::wstring(slot.id),
+                           [this](std::wstring const &value) {
+                             ai_change([&](PreferencesDocument &doc) {
+                               doc.SetString(L"ai_assistant.prompt_id", value);
+                             }, false);
+                           }));
+    const std::wstring label(slot.label);
+    const std::wstring description = L"发送给 AI 联想服务的额外提示词";
+    record(label, description);
+    StackPanel block;
+    block.Spacing(6);
+    block.Padding(Thickness{25, 16, 25, 16});
+    block.Children().Append(make_text(label, 14, palette_.text));
+    block.Children().Append(make_text(description, 12, palette_.sub));
+    TextBox prompt;
+    prompt.AcceptsReturn(true);
+    prompt.TextWrapping(TextWrapping::Wrap);
+    prompt.MinHeight(120);
+    prompt.MaxHeight(360);
+    prompt.IsSpellCheckEnabled(false);
+    const std::wstring prompt_key = L"ai_assistant.prompt_" + std::wstring(slot.id);
+    prompt.Text(hstring(document_.String(prompt_key, L"")));
+    prompt.IsEnabled(loaded_);
+    A11y::SetName(prompt, hstring(label));
+    prompt.TextChanged([this, prompt_key](Inspectable const &sender, TextChangedEventArgs const &) {
+      const auto value = textarea_value(sender.as<TextBox>());
+      if (value == document_.String(prompt_key, L""))
+        return;
+      write_credential(prompt_key, value);
+      ai_edited(false);
+      sync_ai();
+    });
+    block.Children().Append(prompt);
+    auto prompt_card = make_card();
+    prompt_card.Child(block);
+    prompts.Children().Append(prompt_card);
+    mark_search_target(label, prompt_card);
+
+    build_ai_test_tools(page);
+    refresh_ai_test();
+  }
+
+  // API Token（AiApiTokenSection）：带「显示」「隐藏」的密钥框，接口地址能用时才可填，说明写着 Token 只用于哪个来源；地址不能用时是地址的说明，或请先填写接口地址。改接口地址时就地换成新来源下存的 Token。
+  void build_ai_token_row(StackPanel const &group, AiEndpoint const &endpoint) {
+    auto description = [](AiEndpoint const &current) {
+      if (current.origin)
+        return L"只用于 " + *current.origin;
+      return current.hint.empty() ? std::wstring(L"请先在「更多选项」中填写有效的接口地址")
+                                  : current.hint;
+    };
+    auto input = credential_input(
+        L"AI API Token", ai_token(endpoint), true, L"", endpoint.origin.has_value(),
+        [this](std::wstring const &value) {
+          // 共享页的 updateToken：只写当前来源下的那一项，并清掉旧版的单个 token。换地址时框里换上的值与存的相同，不算编辑。
+          const auto current = ai_endpoint();
+          if (!current.origin || ai_token(current) == value)
+            return true;
+          document_.SetEntry(L"ai_assistant.tokens", *current.origin, value);
+          document_.SetString(L"ai_assistant.token", L"");
+          schedule_save();
+          ai_edited(false);
+          sync_ai();
+          return true;
+        });
+    auto card = add_row(group, 0xE72E, L"API Token", description(endpoint), input);
+    if (indexing_)
+      return;
+    ai_sync_.push_back([this, description, weak_line = make_weak(row_subtitle(card)),
+                        weak_box = make_weak(input.as<StackPanel>())] {
+      const auto current = ai_endpoint();
+      if (auto line = weak_line.get())
+        set_subtitle(line, description(current));
+      auto box = weak_box.get();
+      if (!box)
+        return;
+      const bool usable = loaded_ && current.origin.has_value();
+      auto field = box.Children().GetAt(0).as<PasswordBox>();
+      const auto token = ai_token(current);
+      if (std::wstring_view(field.Password()) != token)
+        field.Password(hstring(token));
+      field.IsEnabled(usable);
+      box.Children().GetAt(1).as<Button>().IsEnabled(usable);
+    });
+  }
+
+  // 「服务模型」一行（获取模型列表）、拿到模型后的「已获取模型」下拉框和获取的结果。按钮在接口地址能用时可按，获取中显示「获取中…」。整块随状态重画，见 refresh_ai_models。
+  void fill_ai_models(StackPanel const &host) {
+    host.Children().Clear();
+    const auto endpoint = ai_endpoint();
+    add_row(host, 0xE895, L"服务模型", L"从当前服务的模型目录读取；服务不支持时可继续手动填写模型。",
+            button_control(ai_models_busy_ ? L"获取中…" : L"获取模型列表",
+                           [this] { fetch_ai_models(); },
+                           loaded_ && !ai_models_busy_ && endpoint.origin.has_value()));
+    if ((ai_models_ && !ai_models_->empty()) || indexing_) {
+      const auto model = document_.String(L"ai_assistant.model", L"");
+      std::vector<Option> options{{L"", L"选择模型…"}};
+      bool known = false;
+      if (ai_models_)
+        for (auto const &entry : *ai_models_) {
+          options.push_back({entry, entry});
+          known = known || entry == model;
+        }
+      auto combo = select_control(L"已获取的 AI 模型", std::move(options), known ? model : L"",
+                                  [this](std::wstring const &value) {
+                                    if (value.empty() ||
+                                        value == document_.String(L"ai_assistant.model", L"")) {
+                                      // ModelSelect 受控：选「选择模型…」不改模型，选中项回到当前模型。
+                                      resync_ai();
+                                      return;
+                                    }
+                                    ai_change([&](PreferencesDocument &doc) {
+                                      doc.SetString(L"ai_assistant.model", value);
+                                    }, false);
+                                  });
+      combo.Width(240);
+      add_row(host, 0xE8FD, L"已获取模型", L"", combo);
+    }
+    if (!ai_models_status_.empty()) {
+      auto status = group_note(ai_models_status_);
+      A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+      host.Children().Append(status);
+    }
+  }
+
+  // 在当前事件处理完后重画这一块：按钮不在自己的 Click 里被拆掉。
+  void refresh_ai_models() {
+    DispatcherQueue().TryEnqueue([weak = get_weak()] {
+      if (auto self = weak.get(); self && !self->closed_ && self->ai_models_host_ &&
+                                  self->current_page_ == "ai")
+        self->fill_ai_models(self->ai_models_host_);
+    });
+  }
+
+  // 共享页的 fetchModels：在 UI 线程之外调用 msime_client_ai_models（会联网，最长约 15 秒）。期间改了服务商、地址、模型或 Token，结果作废。宿主给的是错误码，共享页只显示它自己的兜底文字，这里照做。
+  void fetch_ai_models() {
+    const auto endpoint = ai_endpoint();
+    if (!endpoint.origin) {
+      ai_models_status_ = endpoint.hint;
+      refresh_ai_models();
+      return;
+    }
+    const auto token = ai_token(endpoint);
+    if (nav::js_trim(token).empty()) {
+      ai_models_status_ = L"请先填写 API Token，或使用已保存的密钥。";
+      refresh_ai_models();
+      return;
+    }
+    if (ai_models_busy_)
+      return;
+    const auto generation = ai_generation_;
+    const auto owner = ++ai_models_request_;
+    ai_models_busy_ = true;
+    ai_models_status_.clear();
+    refresh_ai_models();
+    JsonObject request;
+    request.SetNamedValue(L"endpoint", JsonValue::CreateStringValue(
+                                           hstring(document_.String(L"ai_assistant.endpoint", L""))));
+    request.SetNamedValue(L"token", JsonValue::CreateStringValue(hstring(token)));
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_ai_models(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this, generation, owner](Response const &response) {
+          if (generation != ai_generation_ || owner != ai_models_request_)
+            return;
+          ai_models_busy_ = false;
+          std::optional<std::vector<std::wstring>> models;
+          if (response.ok) {
+            try {
+              std::vector<std::wstring> list;
+              for (auto const &item : JsonObject::Parse(text(response.text)).GetNamedArray(L"value"))
+                list.emplace_back(item.GetString().c_str());
+              models = std::move(list);
+            } catch (...) {
+            }
+          }
+          if (!models) {
+            ai_models_status_ = std::wstring(ais::models_failure);
+            refresh_ai_models();
+            return;
+          }
+          ai_models_status_ = ais::models_status(models->size());
+          const auto next = ais::fetched_model(*models, document_.String(L"ai_assistant.model", L""));
+          ai_models_ = std::move(models);
+          if (next.empty()) {
+            refresh_ai_models();
+            return;
+          }
+          // 当前模型不在列表里时换成第一个（共享页的 updateAi({model})），整页重画。
+          ai_change([&](PreferencesDocument &doc) {
+            doc.SetString(L"ai_assistant.model", next);
+          }, false);
+        });
+  }
+
+  // 「测试工具」（AiTestToolsSection）：待润色文字、「发送并润色」、状态和结果，结果旁边是「复制结果」。测试文字跨页面重建保留，不写进设置。按钮、状态和结果由 ai_test_view_ 就地更新。
+  void build_ai_test_tools(StackPanel const &page) {
+    auto group = add_group(page, L"测试工具");
+    const std::wstring title = L"AI 润色测试";
+    const std::wstring description = L"仅在点击发送时请求当前配置；测试文字不会写入日志。";
+    record(title, description);
+    StackPanel block;
+    block.Spacing(8);
+    block.Padding(Thickness{25, 16, 25, 16});
+    block.Children().Append(make_text(title, 14, palette_.text));
+    block.Children().Append(make_text(description, 12, palette_.sub));
+    TextBox input;
+    input.AcceptsReturn(true);
+    input.TextWrapping(TextWrapping::Wrap);
+    input.MinHeight(96);
+    input.MaxHeight(240);
+    input.IsSpellCheckEnabled(false);
+    input.PlaceholderText(L"输入一段待润色文字");
+    input.Text(hstring(ai_test_input_));
+    A11y::SetName(input, L"AI 测试输入");
+    input.TextChanged([this](Inspectable const &sender, TextChangedEventArgs const &) {
+      ai_test_input_ = textarea_value(sender.as<TextBox>());
+      refresh_ai_test();
+    });
+    block.Children().Append(input);
+    Button send;
+    send.Height(32);
+    send.Padding(Thickness{16, 0, 16, 0});
+    send.Click([this](Inspectable const &, RoutedEventArgs const &) { run_ai_test(); });
+    block.Children().Append(send);
+    auto status = make_text(L"", 13, palette_.sub);
+    A11y::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+    block.Children().Append(status);
+    StackPanel result;
+    result.Spacing(8);
+    auto output = make_text(L"", 14, palette_.text);
+    output.IsTextSelectionEnabled(true);
+    result.Children().Append(output);
+    result.Children().Append(button_control(L"复制结果", [this] {
+      // 共享页的 copyText（Tauri 的 copy_text）：放进系统剪贴板，剪贴板历史开着时也记进历史；失败时不提示。copy_text 不收空文字、含 NUL 或超过 12000 字节（clipboard::MAX_TEXT_BYTES）的文字，什么也不复制。
+      const auto bytes = utf8(hstring(ai_test_output_));
+      if (bytes.empty() || bytes.size() > 12000 || ai_test_output_.find(L'\0') != std::wstring::npos)
+        return;
+      recopy_clipboard_entry(ai_test_output_);
+    }));
+    block.Children().Append(result);
+    auto card = make_card();
+    card.Child(block);
+    group.Children().Append(card);
+    mark_search_target(title, card);
+    if (indexing_)
+      return;
+    ai_test_view_ = [this, weak_send = make_weak(send), weak_status = make_weak(status),
+                     weak_result = make_weak(result), weak_output = make_weak(output)] {
+      if (auto button = weak_send.get()) {
+        button.Content(box_value(ai_test_busy_ ? L"发送中…" : L"发送并润色"));
+        button.IsEnabled(!ai_test_busy_ && !nav::js_trim(ai_test_input_).empty());
+      }
+      if (auto line = weak_status.get())
+        set_subtitle(line, ai_test_status_);
+      if (auto line = weak_output.get())
+        line.Text(hstring(ai_test_output_));
+      if (auto panel = weak_result.get())
+        panel.Visibility(ai_test_output_.empty() ? Visibility::Collapsed : Visibility::Visible);
+    };
+  }
+
+  void refresh_ai_test() {
+    if (ai_test_view_)
+      ai_test_view_();
+  }
+
+  // 共享页的 test：用固定的润色指令把待润色文字发给当前配置（msime_client_ai_test，会联网，最长约 15 秒，在 UI 线程之外调用）。期间改了任何一项 AI 设置，结果作废。
+  void run_ai_test() {
+    if (nav::js_trim(ai_test_input_).empty()) {
+      ai_test_status_ = L"请先输入待润色文字。";
+      refresh_ai_test();
+      return;
+    }
+    const auto endpoint = ai_endpoint();
+    if (!endpoint.origin) {
+      ai_test_status_ = endpoint.hint;
+      refresh_ai_test();
+      return;
+    }
+    const auto token = ai_token(endpoint);
+    if (nav::js_trim(token).empty()) {
+      ai_test_status_ = L"请先填写 API Token。";
+      refresh_ai_test();
+      return;
+    }
+    if (ai_test_busy_)
+      return;
+    const auto generation = ai_generation_;
+    const auto owner = ++ai_test_request_;
+    ai_test_output_.clear();
+    ai_test_status_.clear();
+    ai_test_busy_ = true;
+    refresh_ai_test();
+    auto string = [](std::wstring const &value) {
+      return JsonValue::CreateStringValue(hstring(value));
+    };
+    JsonObject request;
+    request.SetNamedValue(L"endpoint", string(document_.String(L"ai_assistant.endpoint", L"")));
+    request.SetNamedValue(L"model", string(document_.String(L"ai_assistant.model", L"")));
+    request.SetNamedValue(L"prompt", string(std::wstring(ais::polish_test_prompt)));
+    request.SetNamedValue(L"token", string(token));
+    request.SetNamedValue(L"text", string(ai_test_input_));
+    run_host(
+        [body = utf8(request.Stringify())] {
+          return take_response(msime_client_ai_test(
+              reinterpret_cast<const uint8_t *>(body.data()), body.size()));
+        },
+        [this, generation, owner](Response const &response) {
+          if (generation != ai_generation_ || owner != ai_test_request_)
+            return;
+          ai_test_busy_ = false;
+          ai_test_status_ = std::wstring(ais::test_failure);
+          if (response.ok) {
+            try {
+              ai_test_output_ =
+                  JsonObject::Parse(text(response.text)).GetNamedString(L"value").c_str();
+              ai_test_status_ = L"已完成";
+            } catch (...) {
+            }
+          }
+          refresh_ai_test();
+        });
+  }
+
   // ---- 维护与诊断 ----
 
   void build_dev_page(StackPanel const &page) {
@@ -12444,6 +13043,22 @@ private:
   uint64_t local_models_generation_ = 0;
   bool local_models_stale_ = true;
   bool local_more_open_ = false;
+
+  // 「AI 辅助」页（共享页 useAiAssistant 的状态，跨页面重建保留）：已获取的模型和获取的提示，待润色文字、测试结果和状态，两个请求是否在进行。ai_generation_ 在每次改 AI 设置时递增，作废进行中的请求；两个请求各自的序号作废同一种的更早请求。「更多选项」是否展开在第一次画这一页时按接口地址能不能用决定。随输入就地更新的控件每次绘制时重建。
+  std::optional<std::vector<std::wstring>> ai_models_;
+  std::wstring ai_models_status_;
+  bool ai_models_busy_ = false;
+  std::wstring ai_test_input_;
+  std::wstring ai_test_output_;
+  std::wstring ai_test_status_;
+  bool ai_test_busy_ = false;
+  uint64_t ai_generation_ = 0;
+  uint64_t ai_models_request_ = 0;
+  uint64_t ai_test_request_ = 0;
+  std::optional<bool> ai_more_open_;
+  std::vector<std::function<void()>> ai_sync_;
+  StackPanel ai_models_host_{nullptr};
+  std::function<void()> ai_test_view_;
 
   // 检查更新：状态跨页面重建保留；控件是「关于」页当前的那一组。
   bool update_checking_ = false;

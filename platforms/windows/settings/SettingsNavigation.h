@@ -39,8 +39,7 @@ inline constexpr std::array<Page, 18> pages{{
     {"clip", 3, PageHost::Native, {}},
     {"stats", 3, PageHost::Native, {}},
     {"plugins", 3, PageHost::Native, {}},
-    // AI 辅助 holds the 启用 switch, the providers, models and keys; all of it is set in the shared app.
-    {"ai", 3, PageHost::Shell, {"", "ai"}},
+    {"ai", 3, PageHost::Native, {}},
     {"account", 4, PageHost::Shell, {"", "account"}},
     {"dev", 5, PageHost::Native, {}},
     {"feedback", 5, PageHost::Native, {}},
@@ -69,7 +68,7 @@ struct RouteAlias {
   std::string_view page;
 };
 
-// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。桌面端没有社区页，社区皮肤在共享应用的主题页上，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页，`chat` 打开 AI 辅助。
+// 共享路由词汇表（`client-core` 的 `host_surface::SettingsCategory`）认识的每个设置类别，映射到现在承载它的页面。每个 id 保持它在其他所有宿主上的含义：`appearance` 是候选窗口页，`skin` 是主题页。托盘会打开 `skin`、`dictionary` 和 `about`，其他桌面启动入口也用同样的名字。桌面端没有社区页，社区皮肤在共享应用的主题页上，所以 `community` 打开主题页；AI 对话是 AI 辅助的子页（Windows 不提供，见 README），`chat` 打开 AI 辅助。
 inline constexpr std::array<RouteAlias, 22> route_aliases{{
     {"account", "account"},
     {"chat", "ai"},

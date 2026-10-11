@@ -71,19 +71,21 @@ int main() {
         require(page.shell.panel.empty() && page.shell.page.empty());
     }
     require(find_page("account")->shell.page == "account");
-    // AI 辅助打开共享应用的对应页面，和打字统计、插件同在「工具」组；打字统计和插件在本窗口里原生绘制。
+    // AI 辅助和剪贴板、打字统计、插件同在「工具」组，都在本窗口里原生绘制；共享应用只剩账号与同步一页。
     require(find_page("plugins")->host == PageHost::Native &&
             find_page("plugins")->group == find_page("clip")->group &&
             find_page("plugins")->group == find_page("stats")->group);
-    require(find_page("ai")->shell.page == "ai" &&
+    require(find_page("ai")->host == PageHost::Native &&
             find_page("ai")->group == find_page("plugins")->group);
+    for (const auto &page : pages)
+      require((page.host == PageHost::Shell) == (page.id == "account"));
     // 桌面端没有社区页：社区皮肤在共享应用的主题页上，从本窗口的主题页打开。
     require(find_page("community") == nullptr);
     // 下载链接已移到关于页，所以不再有下载页。
     require(find_page("download") == nullptr);
     // MCP stays in this window's developer page and the core pages stay native.
     for (auto id : {"themes", "candidate", "typing", "expression", "shortcuts",
-                    "lexicon", "clip", "stats", "plugins", "dev", "feedback", "about"})
+                    "lexicon", "clip", "stats", "plugins", "ai", "dev", "feedback", "about"})
       require(find_page(id)->host == PageHost::Native);
     for (const auto &target : shell_links::all)
       require(launchable(target));
@@ -99,7 +101,7 @@ int main() {
     // 语音页的识别服务与润色在本窗口里原生绘制，只有语音面板仍由共享应用打开，路由与托盘的「语音输入」相同。
     require(msime::windows::shell_route_argument(request_for(shell_links::voice_panel)) == L"voice");
     require(msime::windows::shell_route_argument(request_for(
-                find_page("ai")->shell)) == L"settings:ai");
+                find_page("account")->shell)) == L"settings:account");
 
     // Every settings category the shared routes know still opens a page here, and the ids the tray sends land where the features moved.
     const std::set<std::string_view> categories{
