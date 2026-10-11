@@ -940,10 +940,8 @@ public final class BackendAccount {
 
     static boolean validClipboardItem(ClipboardItem item) {
         return item != null && TextPolicy.isLowerHex(item.id(), HEX_ID_LENGTH)
-            && CloudClipboardTextPolicy.valid(item.text()) && item.updatedAt() != null
-            && !item.updatedAt().isEmpty() && TextPolicy.utf8Length(item.updatedAt()) <= 128
-            && !TextPolicy.hasControl(item.updatedAt())
-            && TextPolicy.validUnicode(item.updatedAt());
+            && CloudClipboardTextPolicy.valid(item.text())
+            && TextPolicy.boundedNonEmpty(item.updatedAt(), 128);
     }
 
     public void deleteClipboard(String id) throws Exception {
