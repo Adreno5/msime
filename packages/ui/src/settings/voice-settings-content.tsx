@@ -8,7 +8,6 @@ import * as settings from "./settings-style";
 import { SettingsGroupBlock } from "./settings-group-block";
 import type {
   Preferences,
-  ProviderCredentialClient,
   ProviderCredentialStatus,
   SettingsClient,
   VoiceInputPreferences,
@@ -41,7 +40,7 @@ import {
   polishServiceCredentialTestDisabled,
 } from "./voice-credential-test-config";
 import type { ProviderPresetControlFactory } from "./provider-preset-control";
-import type { useProviderCredentials } from "./use-provider-credentials";
+import type { useProviderCredentials, VoiceCredentialBindings } from "./use-provider-credentials";
 import { GroupList, LinkRow, MoreOptions } from "../core/platform-controls";
 import { SettingsPageFieldset } from "./settings-page-fieldset";
 
@@ -60,7 +59,7 @@ export function doubaoServiceStatus(voiceInput: VoiceInputPreferences): string {
   return "已填写";
 }
 
-export interface VoiceSettingsContentProps {
+export interface VoiceSettingsContentProps extends VoiceCredentialBindings {
   disabled: boolean;
   hidden: boolean;
   client: SettingsClient;
@@ -84,19 +83,6 @@ export interface VoiceSettingsContentProps {
   doubaoAuthMode: "api_key" | "legacy";
   updateVoice: (patch: Partial<VoiceInputPreferences>) => void;
   providerCredentials: ProviderCredentialStatus | undefined;
-  voiceCredentialInput: ReturnType<typeof useProviderCredentials>["voiceCredentialInput"];
-  setVoiceCredentialInput: ReturnType<typeof useProviderCredentials>["setVoiceCredentialInput"];
-  providerCredentialBusy: ReturnType<typeof useProviderCredentials>["providerCredentialBusy"];
-  providerCredentialMessages: ReturnType<
-    typeof useProviderCredentials
-  >["providerCredentialMessages"];
-  runVoiceCredential: (
-    kind: VoiceCredentialKind,
-    operation: (
-      credentials: ProviderCredentialClient,
-    ) => ReturnType<ProviderCredentialClient["saveVoice"]>,
-    success: string,
-  ) => Promise<void>;
   credentialTestControl: ReturnType<typeof useProviderCredentials>["credentialTestControl"];
   providerPresetControls: ProviderPresetControlFactory;
   androidPlatform: boolean;
