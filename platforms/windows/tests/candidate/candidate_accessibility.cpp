@@ -96,6 +96,15 @@ int main() {
     require(first.invokable && first.automation_id == "candidate-1");
     require(first.bounds.top == (20.0 + 40.0) * 1.5 && first.bounds.right == (8.0 + 234.0) * 1.5);
     require(element(tree, 2).name == "2  拟好* rv");
+    // 脚本插件的注释跟在引擎注释后面读，和卡片上画的次序一样；只有插件注释时直接跟在候选后面。
+    value.candidates[1].script_annotation = "常用";
+    value.candidates[0].script_annotation = "问候";
+    const auto annotated = candidate_accessible_tree(value, rows, pager, metrics, true, frame,
+                                                     true, true, "水杉输入法");
+    require(element(annotated, 2).name == "2  拟好* rv 常用");
+    require(element(annotated, 1).name == "1  你好 问候");
+    value.candidates[0].script_annotation.clear();
+    value.candidates[1].script_annotation.clear();
 
     // 第一页上的上一页箭头和画出来的一样不可用；下一页总是可用，因为页数会随翻页增长。
     value.page = 0;
