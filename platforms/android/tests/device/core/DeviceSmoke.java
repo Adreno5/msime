@@ -10,16 +10,33 @@ import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.util.AtomicFile;
 import android.view.MotionEvent;
 import android.view.InputDevice;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.function.Predicate;
 
 /** Device-only synthetic acceptance; reads both editor and IME accessibility windows. */
 public class DeviceSmoke extends Instrumentation {
     protected UiAutomation automation;
     protected String stage = "launch";
+
+    /** 用原子写入发布测试偏好；失败时保留原文件。 */
+    protected final void publish(File file, byte[] contents) throws Exception {
+        AtomicFile target = new AtomicFile(file);
+        FileOutputStream output = target.startWrite();
+        try {
+            output.write(contents);
+            target.finishWrite(output);
+        } catch (Exception error) {
+            target.failWrite(output);
+            throw error;
+        }
+    }
+
     @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();

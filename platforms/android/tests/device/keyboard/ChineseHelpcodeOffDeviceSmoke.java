@@ -2,9 +2,7 @@ package app.msime.android.test;
 
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
-import android.util.AtomicFile;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import org.json.JSONObject;
@@ -74,15 +72,4 @@ public final class ChineseHelpcodeOffDeviceSmoke extends DeviceSmoke {
         }
     }
 
-    private void publish(File file, byte[] contents) throws Exception {
-        AtomicFile target = new AtomicFile(file);
-        FileOutputStream output = target.startWrite();
-        try {
-            output.write(contents);
-            target.finishWrite(output);
-        } catch (Exception error) {
-            target.failWrite(output);
-            throw error;
-        }
-    }
 }

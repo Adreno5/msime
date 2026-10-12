@@ -2,12 +2,10 @@ package app.msime.android.test;
 
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
-import android.util.AtomicFile;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -232,12 +230,6 @@ public final class AiPlaceholderDeviceSmoke extends DeviceSmoke {
         }
     }
 
-    private void publish(File file, byte[] contents) throws Exception {
-        AtomicFile target = new AtomicFile(file);
-        FileOutputStream output = target.startWrite();
-        try { output.write(contents); target.finishWrite(output); }
-        catch (Exception error) { target.failWrite(output); throw error; }
-    }
 
     /**
      * 只监听回环地址的 OpenAI 兼容桩服务，每个连接一个线程。

@@ -5,7 +5,6 @@ import android.graphics.Rect;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
-import android.util.AtomicFile;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -290,15 +289,4 @@ public final class CaretCandidatesDeviceSmoke extends DeviceSmoke {
         }
     }
 
-    private void publish(File file, byte[] contents) throws Exception {
-        AtomicFile target = new AtomicFile(file);
-        FileOutputStream output = target.startWrite();
-        try {
-            output.write(contents);
-            target.finishWrite(output);
-        } catch (Exception error) {
-            target.failWrite(output);
-            throw error;
-        }
-    }
 }

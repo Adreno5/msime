@@ -4,13 +4,11 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
-import android.util.AtomicFile;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.CountDownLatch;
@@ -393,11 +391,5 @@ public final class SettingsDeviceSmoke extends DeviceSmoke {
             byte[] buffer = new byte[1024];
             while (input.read(buffer) != -1) { }
         }
-    }
-    private void publish(File file, byte[] contents) throws Exception {
-        AtomicFile target = new AtomicFile(file);
-        FileOutputStream output = target.startWrite();
-        try { output.write(contents); target.finishWrite(output); }
-        catch (Exception error) { target.failWrite(output); throw error; }
     }
 }
