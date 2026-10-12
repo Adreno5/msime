@@ -1,7 +1,6 @@
 package app.msime.android.test;
 
 import android.content.Intent;
-import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.util.function.Predicate;
@@ -109,9 +108,9 @@ public final class EmojiPickerDeviceSmoke extends DeviceSmoke {
     }
 
     private void rebindInputMethod() throws Exception {
-        shell("ime disable app.msime.android/.MSIMEInputService");
-        shell("ime enable app.msime.android/.MSIMEInputService");
-        shell("ime set app.msime.android/.MSIMEInputService");
+        shellDiscard("ime disable app.msime.android/.MSIMEInputService");
+        shellDiscard("ime enable app.msime.android/.MSIMEInputService");
+        shellDiscard("ime set app.msime.android/.MSIMEInputService");
         SystemClock.sleep(1000);
     }
 
@@ -141,11 +140,4 @@ public final class EmojiPickerDeviceSmoke extends DeviceSmoke {
         catch (NumberFormatException ignored) { return -1; }
     }
 
-    private void shell(String command) throws Exception {
-        try (var input = new ParcelFileDescriptor.AutoCloseInputStream(
-                automation.executeShellCommand(command))) {
-            byte[] buffer = new byte[1024];
-            while (input.read(buffer) != -1) { }
-        }
-    }
 }
