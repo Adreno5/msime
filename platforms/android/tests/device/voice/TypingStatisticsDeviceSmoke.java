@@ -4,14 +4,12 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
-import android.util.AtomicFile;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebView;
 import app.msime.android.TypingStatisticsDocument;
 import app.msime.android.TypingStatisticsModel;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.CountDownLatch;
@@ -234,17 +232,6 @@ public final class TypingStatisticsDeviceSmoke extends DeviceSmoke {
         }
     }
 
-    private void publish(File file, byte[] contents) throws Exception {
-        AtomicFile target = new AtomicFile(file);
-        FileOutputStream output = target.startWrite();
-        try {
-            output.write(contents);
-            target.finishWrite(output);
-        } catch (Exception error) {
-            target.failWrite(output);
-            throw error;
-        }
-    }
 
     private void restore(File file, byte[] contents) throws Exception {
         if (contents == null) Files.deleteIfExists(file.toPath());
