@@ -43,6 +43,7 @@
 #include "../candidates/CandidateActionPolicy.h"
 #include "../candidates/CandidateLocalModeLabels.h"
 #include "../candidates/CandidatePanelStatus.h"
+#include "../candidates/CandidateScriptAnnotation.h"
 #include "../candidates/CandidateTranslationPolicy.h"
 #include "../candidates/PairedPunctuation.h"
 #include "../candidates/ShuangpinProfileNames.h"
@@ -3897,6 +3898,11 @@ void render(IBusEngine *engine, const Json &view) {
     const auto gloss_end = static_cast<guint>(g_utf8_strlen(value.c_str(), -1));
     if (!tail.empty())
       value += traditional_display(state(engine), view, std::move(tail));
+    // 脚本插件的注释排在整行最后，不受辅助码开关和本地模式影响，也不做繁体转换：那是插件自己写的文字。它的区间记下来，下面用序号的颜色画。
+    const auto script_annotation = msime::linux_host::candidate_script_annotation(candidate);
+    const auto script_start = static_cast<guint>(g_utf8_strlen(value.c_str(), -1));
+    value += msime::linux_host::candidate_script_annotation_suffix(script_annotation);
+    const auto script_end = static_cast<guint>(g_utf8_strlen(value.c_str(), -1));
     auto text = ibus_text_new_from_string(value.c_str());
     const bool highlighted = candidate.at("highlighted").get<bool>();
     const auto row_text_color =
@@ -3925,6 +3931,14 @@ void render(IBusEngine *engine, const Json &view) {
       ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND,
                                  *state(engine).candidate_translation_color,
                                  gloss_start, gloss_end);
+    const auto row_number_color =
+        highlighted && state(engine).candidate_selected_number_color
+            ? state(engine).candidate_selected_number_color
+            : state(engine).candidate_number_color;
+    // 插件注释用这一行序号的颜色（次要色），追加在行颜色之后所以盖过它；皮肤没给序号颜色时不加，靠括号区分。
+    if (script_end > script_start && row_number_color)
+      ibus_text_append_attribute(text, IBUS_ATTR_TYPE_FOREGROUND, *row_number_color,
+                                 script_start, script_end);
     const auto row_background =
         highlighted && state(engine).candidate_selected_color
             ? state(engine).candidate_selected_color
@@ -3936,10 +3950,6 @@ void render(IBusEngine *engine, const Json &view) {
     // 序号与选它的数字键一致：第十个由 0 键选，标 0。
     auto label = index == 9 ? std::string("0") : std::to_string(index + 1);
     auto label_text = ibus_text_new_from_string(label.c_str());
-    const auto row_number_color =
-        highlighted && state(engine).candidate_selected_number_color
-            ? state(engine).candidate_selected_number_color
-            : state(engine).candidate_number_color;
     if (row_number_color)
       ibus_text_append_attribute(label_text, IBUS_ATTR_TYPE_FOREGROUND,
                                  *row_number_color, 0, G_MAXUINT);
