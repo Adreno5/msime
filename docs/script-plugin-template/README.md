@@ -69,4 +69,4 @@ target/debug/msime-pack run docs/script-plugin-template/pack \
 
 ## 安装
 
-在设置的「插件」页用「导入文件夹」选 `pack` 文件夹。设置页目前还不显示脚本插件，也没有授权页；导入后插件默认停用，要等授权页（`script-grants.json` 的写入方）上线才能在界面里启用。
+在设置的「插件」页用「导入文件夹」选 `pack` 文件夹（macOS、Linux 和 Windows）。导入后插件默认停用：在「脚本插件（实验）」分组里打开它，在授权对话框里勾选清单申请的能力后才会运行。
