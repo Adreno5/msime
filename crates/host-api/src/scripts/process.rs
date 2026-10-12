@@ -29,8 +29,8 @@ const SLOW_LIMIT: u32 = 3;
 /// 一次投递超过这么久算慢。远低于 Windows TIP 等 Server 回复的 50 ms。
 #[cfg_attr(test, allow(dead_code))]
 const SLOW_AFTER: Duration = Duration::from_millis(4);
-/// 健康文件名，放在 `user_data` 下。
-pub(super) const HEALTH_FILE: &str = "script-health.json";
+/// 健康文件名，放在 `user_data` 下；授权页按同一个名字读它。
+pub(super) const HEALTH_FILE: &str = msime_client_core::plugins::script_grants::HEALTH_FILE;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // 持锁时不跑脚本代码，也不调用会 panic 的东西；真被毒化了，里面的计数仍然可用。

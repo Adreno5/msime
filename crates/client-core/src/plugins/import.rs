@@ -62,25 +62,18 @@ pub fn import(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> 
     import_inner(source, root, true)
 }
 
-/// 桌面外壳设置页「插件」的导入命令用的 `import`。macOS 和 Linux 的设置页有脚本插件的授权页，release 构建也运行脚本，所以接受脚本包；Windows 的 release 构建不运行脚本（原生设置应用没有授权页），在那里装进去的脚本包既用不上也不该留着，安装之前就拒绝，用的是移动端遇到 `script` 时同一条"kind 不是已知的插件类型"。开发构建在所有桌面平台上都接受，开发者自测时从设置页安装。
+/// 有脚本插件授权页的设置宿主用的 `import`：桌面外壳的设置页（macOS、Linux），以及经 `msime_client_plugins` 声明了 `script_page` 的 Windows 原生设置应用。三个桌面平台的 release 构建都运行脚本（与 host-api 的 `msime_client_scripts_enable` 一致），所以接受脚本包，导入后要在授权页上授权才会运行。移动端没有 `script` 这个类型，清单解析时就拒绝。
 pub fn import_from_settings(source: &Path, root: &Path) -> Result<PluginSummary, PluginError> {
-    import_inner(source, root, SETTINGS_PAGE_ACCEPTS_SCRIPTS)
+    import_inner(source, root, true)
 }
 
-/// 没有授权页的设置宿主（`msime_client_plugins`：Windows 的原生设置应用、Android、HarmonyOS）用的 `import`。它们的目录命令不列出脚本插件，所以 release 构建在安装之前拒绝脚本包；开发构建照旧接受。
+/// 没有授权页的设置宿主（`msime_client_plugins` 不带 `script_page`：Android、HarmonyOS）用的 `import`。它们的目录命令不列出脚本插件，所以 release 构建在安装之前拒绝脚本包，用的是移动端遇到 `script` 时同一条"kind 不是已知的插件类型"；开发构建照旧接受。
 pub fn import_without_script_page(
     source: &Path,
     root: &Path,
 ) -> Result<PluginSummary, PluginError> {
     import_inner(source, root, cfg!(debug_assertions))
 }
-
-/// 桌面外壳的设置页能授权并运行脚本插件的构建：开发构建，以及 macOS 和 Linux 的 release 构建（与 host-api 的 `msime_client_scripts_enable` 一致）。
-const SETTINGS_PAGE_ACCEPTS_SCRIPTS: bool = cfg!(any(
-    debug_assertions,
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos"))
-));
 
 /// `import`, refusing a script pack before anything is installed or any grant is written when `allow_scripts` is false.
 pub(super) fn import_inner(

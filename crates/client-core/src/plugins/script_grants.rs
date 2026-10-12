@@ -9,7 +9,8 @@
 //! - **哈希绑定**：条目的 `hash` 必须等于已安装包当前的内容哈希（`script_pack::content_hash`）才生效，包的清单或模块一变，授权全部作废。实际生效的能力是 `granted` 和清单 `permissions` 的交集。
 //! - **只有一个写入方**，就是这里。写入时持有 `import::lock_plugin_root`（和导入、删包同一把锁），整份文件原子替换，每次写入 `revision` 都变大（[`next_revision`]：上一份加 1 和当前时间的微秒数取大的那个）；读取方因此不加锁，看到的要么是旧文件，要么是新文件。删包、重新导入时在同一把锁里更新条目。宿主只在 `revision` 比以前看到过的都大时恢复被熔断的插件。
 //! - **读取方容忍未知字段**（不用 `deny_unknown_fields`），给以后的版本加字段留余地；但 `format_version` 不认识、文件读不出或不是合法 JSON 时，一律按"没有任何脚本启用"处理。单个条目不合规（id 或哈希格式不对、授权违反依赖或互斥规则）只跳过这一条。早期开发构建在条目里写过的 `mac` 字段同样当作未知字段忽略，下一次写入时不再写出。
-//! - **授权不签名，所有桌面平台一样**：同一用户下的任何进程都能手写一条带正确哈希的授权，这是设计接受的残余风险，由授权页在 macOS 和 Linux 上写明。曾经考虑过在 macOS 上用钥匙串里的密钥给条目签 MAC，用户决定授权不使用钥匙串，取舍见 `.agents/notes/implemented/architecture/` 下本阶段的授权笔记。Windows 的 release 构建不运行脚本（host-api 的 `scripts`），提权窗口里永远不运行脚本。
+//! - **授权不签名，所有桌面平台一样**：同一用户下的任何进程都能手写一条带正确哈希的授权，这是设计接受的残余风险，由授权页在三个桌面平台上写明（macOS 和 Linux 是共享设置页，Windows 是原生设置应用）。曾经考虑过在 macOS 上用钥匙串里的密钥给条目签 MAC，用户决定授权不使用钥匙串，取舍见 `.agents/notes/implemented/architecture/` 下本阶段的授权笔记。Windows 的提权窗口里永远不运行脚本。
+//! - 授权页读到的形状（[`ScriptGrantsView`]，带 `script-health.json` 里的停用记录）也在这里，桌面外壳的授权命令和 host-api 的 `msime_client_plugins` 共用。
 
 use std::fs;
 use std::io;
@@ -239,6 +240,107 @@ pub fn reorder(root: &Path, ids: &[String]) -> Result<ScriptGrants, ScriptGrantE
     grants.revision = next_revision(grants.revision);
     write(root, &writes, &grants)?;
     Ok(grants)
+}
+
+/// 输入法记下停用的文件名，放在宿主选项的 `user_data` 下。host-api 的输入法进程写它，授权页读它。
+pub const HEALTH_FILE: &str = "script-health.json";
+/// 健康文件的字节上限：最多 256 个条目，每条一个 id、一个哈希和一个类别。
+const MAX_HEALTH_BYTES: u64 = 64 * 1024;
+
+/// 授权页上的一个条目：`script-grants.json` 里的一条。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptGrantView {
+    pub id: String,
+    /// 授权时包的内容哈希；和目录里这个包现在的 `content_hash` 不同时，页面显示"已更新，需要重新授权"。
+    pub hash: String,
+    pub enabled: bool,
+    pub granted: Vec<&'static str>,
+}
+
+/// 输入法进程停用了的一个插件：`<user_data>/script-health.json` 的一条。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptHealthView {
+    pub id: String,
+    pub hash: String,
+    /// `invalid`、`init`、`failed` 或 `slow`。
+    pub disabled: String,
+}
+
+/// 授权页读到的全部：授权（按执行顺序）和输入法记下的停用。桌面外壳的授权命令和 host-api 的 `msime_client_plugins`（Windows 的原生设置应用）回答的都是它。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptGrantsView {
+    pub revision: u64,
+    pub plugins: Vec<ScriptGrantView>,
+    pub health: Vec<ScriptHealthView>,
+}
+
+/// 输入法写下的停用记录。`user_data` 没有、不是绝对路径，文件不在、读不出、格式不认识时为空：那只是说没有停用记录。
+pub fn health(user_data: Option<&Path>) -> Vec<ScriptHealthView> {
+    #[derive(Deserialize)]
+    struct Document {
+        format_version: u64,
+        #[serde(default)]
+        plugins: Vec<serde_json::Value>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        id: String,
+        hash: String,
+        disabled: String,
+    }
+    let Some(path) = user_data
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(HEALTH_FILE))
+    else {
+        return Vec::new();
+    };
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Vec::new();
+    };
+    if !metadata.is_file() || metadata.len() > MAX_HEALTH_BYTES {
+        return Vec::new();
+    }
+    let Some(document) = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Document>(&bytes).ok())
+        .filter(|document| document.format_version == 1)
+    else {
+        return Vec::new();
+    };
+    document
+        .plugins
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<Entry>(value).ok())
+        .filter(|entry| {
+            matches!(
+                entry.disabled.as_str(),
+                "invalid" | "init" | "failed" | "slow"
+            )
+        })
+        .map(|entry| ScriptHealthView {
+            id: entry.id,
+            hash: entry.hash,
+            disabled: entry.disabled,
+        })
+        .collect()
+}
+
+/// 交给授权页的整份授权：条目原样按执行顺序、能力名原样，加上 `user_data` 下的停用记录。
+pub fn view(grants: ScriptGrants, user_data: Option<&Path>) -> ScriptGrantsView {
+    ScriptGrantsView {
+        revision: grants.revision,
+        plugins: grants
+            .plugins
+            .into_iter()
+            .map(|grant| ScriptGrantView {
+                granted: grant.granted.iter().map(Capability::as_str).collect(),
+                id: grant.id,
+                hash: grant.hash,
+                enabled: grant.enabled,
+            })
+            .collect(),
+        health: health(user_data),
+    }
 }
 
 /// 启用 `installed` 之前的准入检查：同时启用的个数，和进程内存总账。个数按输入法占位置的方式算：其他启用的条目，不管包载不载得了、哈希对不对得上，它们都占着输入法运行的前 `limits::MAX_ENABLED_SCRIPTS` 个位置（输入法取前几个之后才核对哈希），少算一个就会让新启用的插件排到位置之外、永远不运行。内存只算其中真会占内存的：包还在、哈希对得上的。
