@@ -221,6 +221,14 @@ public final class MSIMEInputService extends InputMethodService {
     private long candidateTranslationBindingEpoch;
     private long candidateTranslationVerifiedGeneration = -1L;
     private long candidateTranslationAppliedGeneration = -1L;
+    // 候选翻译这一次走哪个服务（含凭据），由 CandidateTranslationPolicy.route 从偏好算出；选的是用户自己的服务（小牛、自定义、腾讯）时，译文由 userTranslationStore 取，它与账号的 candidateTranslationStore 并行、互不复用。路由不可变，变了就整个换掉 userTranslationStore。
+    private CandidateTranslationRoute candidateTranslationRoute = CandidateTranslationRoute.NONE;
+    /** 用户自己的服务一次最多翻译的候选数，与共享层的每页候选上限（`MAX_CANDIDATE_PAGE_SIZE`）相同。 */
+    private static final int USER_TRANSLATION_PAGE = 10;
+    private CandidateTranslationStore userTranslationStore;
+    // 用户服务的客户端连同它记下的回答和退避（UserTranslationMemory），只在偏好算出另一条路由时才换掉；输入会话结束时 stop() 只把路由暂置为 NONE，下一次会话算出同一路由就接着用它，换输入框、收起再弹出键盘都不会把问过的词重新发一遍。
+    private UserTranslationClient userTranslationClient;
+    private long userTranslationAppliedGeneration = -1L;
     private boolean wubiCodeHint = true;
     private boolean wubiMixedPinyin;
     // 五笔版本只决定方案卡片和工具栏上的「86」「98」字样；选表由引擎按同一份偏好里的 `wubi_profile` 决定。
@@ -1693,6 +1701,7 @@ public final class MSIMEInputService extends InputMethodService {
         candidateTranslationBindingEpoch++;
         candidateTranslationVerifiedGeneration = -1L;
         candidateTranslationAppliedGeneration = -1L;
+        userTranslationAppliedGeneration = -1L;
         imeLetterRows.cancelBackspaceRepeat();
         imeDebugOverlay.clearDiagnostic();
         clearSmartPunctuationSnapshots();
@@ -1711,6 +1720,7 @@ public final class MSIMEInputService extends InputMethodService {
         candidateTranslationTargets = java.util.List.of("en");
         clearEnglishSuggestions();
         if (candidateTranslationStore != null) candidateTranslationStore.clear();
+        suspendCandidateTranslationRoute();
         wubiCodeHint = true;
         wubiMixedPinyin = false;
         wubiProfile = KeyboardScheme.WUBI_86;
@@ -2099,31 +2109,72 @@ public final class MSIMEInputService extends InputMethodService {
         boolean nextEnabled = preferences == null
             || preferences.optBoolean("candidate_translations", true);
         boolean nextAccount = candidateTranslationAccountFrom(preferences);
+        CandidateTranslationRoute nextRoute = candidateTranslationRouteFrom(preferences);
         java.util.List<String> nextTargets = translationTargetsFrom(preferences);
         if (candidateTranslationsEnabled != nextEnabled
                 || candidateTranslationAccount != nextAccount
                 || !candidateTranslationTargets.equals(nextTargets)) {
             if (candidateTranslationStore != null) candidateTranslationStore.clear();
+            if (userTranslationStore != null) userTranslationStore.clear();
             invalidateCandidateGlosses();
         }
         candidateTranslationsEnabled = nextEnabled;
         candidateTranslationAccount = nextAccount;
         candidateTranslationTargets = nextTargets;
+        useCandidateTranslationRoute(nextRoute);
     }
 
     /** Whether the user explicitly chose the MSIME account for candidate translations; absent preferences never choose it. */
     private static boolean candidateTranslationAccountFrom(JSONObject preferences) {
-        if (preferences == null) return false;
-        return CandidateTranslationPolicy.accountSelected(
-            preferences.optBoolean("candidate_translations", true),
-            preferences.optBoolean("translation_account", false),
-            translationProviderEnabled(preferences, "niutrans"),
-            translationProviderEnabled(preferences, "custom_translation"));
+        return candidateTranslationRouteFrom(preferences).provider() == CandidateTranslationRoute.Provider.ACCOUNT;
     }
 
-    private static boolean translationProviderEnabled(JSONObject preferences, String key) {
-        JSONObject provider = preferences.optJSONObject(key);
-        return provider != null && provider.optBoolean("enabled", false);
+    /** 候选翻译的路由，规则在 {@link CandidateTranslationPolicy#route}；没有偏好时什么都不发。腾讯缺 `enabled` 时按共享层的默认值算开着，但没有凭据照样选不中。 */
+    private static CandidateTranslationRoute candidateTranslationRouteFrom(JSONObject preferences) {
+        if (preferences == null) return CandidateTranslationRoute.NONE;
+        JSONObject niutrans = preferences.optJSONObject("niutrans");
+        JSONObject custom = preferences.optJSONObject("custom_translation");
+        JSONObject tencent = preferences.optJSONObject("tencent_tmt");
+        return CandidateTranslationPolicy.route(
+            preferences.optBoolean("candidate_translations", true),
+            preferences.optBoolean("translation_account", false),
+            translationProviderEnabled(niutrans, false), translationProviderText(niutrans, "app_id"),
+            translationProviderText(niutrans, "apikey"),
+            translationProviderEnabled(custom, false), translationProviderText(custom, "endpoint"),
+            translationProviderText(custom, "api_key"),
+            translationProviderEnabled(tencent, true), translationProviderText(tencent, "secret_id"),
+            translationProviderText(tencent, "secret_key"), translationProviderText(tencent, "region"));
+    }
+
+    private static boolean translationProviderEnabled(JSONObject provider, boolean fallback) {
+        return provider == null ? fallback : JsonPolicy.strictBoolean(provider.opt("enabled"), fallback);
+    }
+
+    private static String translationProviderText(JSONObject provider, String key) {
+        return provider == null ? "" : JsonPolicy.strictStringOrEmpty(provider.opt(key));
+    }
+
+    /** 换到偏好算出的路由：路由变了就丢掉用户服务的 store 按新路由重建，旧 store 清空后 epoch 前进，正在逐词请求的旧客户端随即停下。客户端和它记下的回答只在路由（服务或凭据）真的换了时才丢掉，stop() 暂置的 NONE 之后回到同一路由时沿用原来的客户端。 */
+    private void useCandidateTranslationRoute(CandidateTranslationRoute next) {
+        if (next.equals(candidateTranslationRoute)) return;
+        candidateTranslationRoute = next;
+        if (userTranslationStore != null) userTranslationStore.clear();
+        if (userTranslationClient == null || !userTranslationClient.route().equals(next))
+            userTranslationClient = next.userService() ? new UserTranslationClient(next) : null;
+        userTranslationStore = userTranslationClient != null
+            ? new CandidateTranslationStore(userTranslationClient, candidateTranslationWorker, main,
+                generation -> applyUserCandidateTranslations(generation))
+            : null;
+        userTranslationAppliedGeneration = -1L;
+        invalidateCandidateGlosses();
+    }
+
+    /** 输入会话结束：路由暂置为 NONE，清掉已显示的译文并停下正在进行的请求，但留着用户服务的客户端，下一次会话由偏好算出同一路由时接着用它记下的回答和退避。 */
+    private void suspendCandidateTranslationRoute() {
+        candidateTranslationRoute = CandidateTranslationRoute.NONE;
+        if (userTranslationStore != null) userTranslationStore.clear();
+        userTranslationStore = null;
+        userTranslationAppliedGeneration = -1L;
     }
 
     private java.util.List<String> translationTargetsFrom(JSONObject preferences) {
@@ -2253,6 +2304,7 @@ public final class MSIMEInputService extends InputMethodService {
         boolean previousCandidateGloss = candidateEnglishGloss;
         boolean previousCandidateTranslations = candidateTranslationsEnabled;
         boolean previousCandidateTranslationAccount = candidateTranslationAccount;
+        CandidateTranslationRoute previousCandidateTranslationRoute = candidateTranslationRoute;
         java.util.List<String> previousTranslationTargets = candidateTranslationTargets;
         boolean previousEnglishSuggestions = englishSuggestionsEnabled;
         boolean previousWubiCodeHint = wubiCodeHint;
@@ -2281,6 +2333,7 @@ public final class MSIMEInputService extends InputMethodService {
                 || previousCandidateGloss != candidateEnglishGloss
                 || previousCandidateTranslations != candidateTranslationsEnabled
                 || previousCandidateTranslationAccount != candidateTranslationAccount
+                || !previousCandidateTranslationRoute.equals(candidateTranslationRoute)
                 || previousEnglishSuggestions != englishSuggestionsEnabled
                 || !previousTranslationTargets.equals(candidateTranslationTargets)
                 || previousWubiCodeHint != wubiCodeHint
@@ -2342,6 +2395,7 @@ public final class MSIMEInputService extends InputMethodService {
         boolean nextCandidateGloss = preferences.optBoolean("candidate_english_gloss", true);
         boolean nextCandidateTranslations = preferences.optBoolean("candidate_translations", true);
         boolean nextCandidateTranslationAccount = candidateTranslationAccountFrom(preferences);
+        CandidateTranslationRoute nextCandidateTranslationRoute = candidateTranslationRouteFrom(preferences);
         boolean nextEnglishSuggestions = preferences.optBoolean("english_suggestions", true);
         java.util.List<String> nextTranslationTargets = translationTargetsFrom(preferences);
         boolean nextWubiCodeHint = preferences.optBoolean("wubi_code_hint", true);
@@ -2406,6 +2460,12 @@ public final class MSIMEInputService extends InputMethodService {
         applyToolbarPreferences(preferences);
         boolean japaneseEmojiKeyChanged = previousJapaneseEmojiKey != japaneseSideEmojiKey();
         traditionalChineseOutput = nextTraditional;
+        // 要在下面改掉当前值之前比较：放在赋值之后时前后两份永远相同，换服务、关翻译后候选下的旧译文要等下一次按键才消失。
+        boolean translationDisplayChanged = CandidateTranslationPolicy.displayInvalidated(
+            candidateEnglishGloss, nextCandidateGloss, candidateTranslationsEnabled,
+            nextCandidateTranslations, candidateTranslationAccount,
+            nextCandidateTranslationAccount, candidateTranslationTargets,
+            nextTranslationTargets, candidateTranslationRoute, nextCandidateTranslationRoute);
         if (candidateEnglishGloss != nextCandidateGloss) invalidateCandidateGlosses();
         candidateEnglishGloss = nextCandidateGloss;
         if (englishSuggestionsEnabled != nextEnglishSuggestions) clearEnglishSuggestions();
@@ -2414,11 +2474,13 @@ public final class MSIMEInputService extends InputMethodService {
                 || candidateTranslationAccount != nextCandidateTranslationAccount
                 || !candidateTranslationTargets.equals(nextTranslationTargets)) {
             if (candidateTranslationStore != null) candidateTranslationStore.clear();
+            if (userTranslationStore != null) userTranslationStore.clear();
             invalidateCandidateGlosses();
         }
         candidateTranslationsEnabled = nextCandidateTranslations;
         candidateTranslationAccount = nextCandidateTranslationAccount;
         candidateTranslationTargets = nextTranslationTargets;
+        useCandidateTranslationRoute(nextCandidateTranslationRoute);
         wubiCodeHint = nextWubiCodeHint;
         wubiMixedPinyin = nextWubiMixedPinyin;
         wubiProfile = nextWubiProfile;
@@ -2445,11 +2507,6 @@ public final class MSIMEInputService extends InputMethodService {
         defaultImeMode = nextDefaultImeMode;
         imeModeScope = nextImeModeScope;
         JSONObject nextView = result.getJSONObject("view");
-        boolean translationDisplayChanged = CandidateTranslationPolicy.displayInvalidated(
-            candidateEnglishGloss, nextCandidateGloss, candidateTranslationsEnabled,
-            nextCandidateTranslations, candidateTranslationAccount,
-            nextCandidateTranslationAccount, candidateTranslationTargets,
-            nextTranslationTargets);
         boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(nextView)
             || japaneseEmojiKeyChanged;
         enabledSchemes = nextSchemeConfiguration.enabled();
@@ -2719,6 +2776,8 @@ public final class MSIMEInputService extends InputMethodService {
         final String targetResources = candidateGlossResources;
         final String targetStateRoot = candidateGlossStateRoot.isEmpty() ? null : candidateGlossStateRoot;
         final java.util.List<String> offlineTargets = candidateOfflineTargets();
+        // 目标语言含英语时，随包的英文释义也要记进 candidateOfflineGlosses：合并在线译文时靠它让离线释义优先。只在装了非英文离线词典时才记，没装的用户（默认配置）在线译文会把「你好 hello」这类离线英文释义盖掉。
+        final boolean englishTarget = candidateTranslationTargets.contains("en");
         final String request;
         final java.util.Map<String, String> targetRequests =
             new java.util.LinkedHashMap<>(offlineTargets.size());
@@ -2750,7 +2809,7 @@ public final class MSIMEInputService extends InputMethodService {
                     CandidateGlossModel.Result result = CandidateGlossModel.decode(
                         NativeClient.candidateGlosses(request, targetResources));
                     java.util.Map<String, java.util.Map<String, String>> offline = null;
-                    if (!targetRequests.isEmpty()) {
+                    if (!targetRequests.isEmpty() || englishTarget) {
                         offline = new java.util.HashMap<>(targetRequests.size() + 1);
                         offline.put("en", glossMap(result));
                         for (java.util.Map.Entry<String, String> target : targetRequests.entrySet()) {
@@ -2798,7 +2857,10 @@ public final class MSIMEInputService extends InputMethodService {
             if (CandidateGlossPolicy.strictOr(next.opt("session"), Long.MIN_VALUE) != token.session()
                     || CandidateGlossPolicy.strictOr(next.opt("generation"), -1) != token.generation()) return;
             view = next;
-            if (offline != null) candidateTranslationAppliedGeneration = -1L;
+            if (offline != null) {
+                candidateTranslationAppliedGeneration = -1L;
+                userTranslationAppliedGeneration = -1L;
+            }
             if (candidatePanelOpen) {
                 JSONObject snapshot = value(NativeClient.allCandidates(token.session()));
                 if (CandidateGlossPolicy.strictOr(snapshot.opt("session"), Long.MIN_VALUE) == token.session()
@@ -2858,29 +2920,73 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     private void applyVerifiedCandidateTranslations(long generation, boolean allowEmpty) {
+        JSONObject next = appliedOnlineTranslations(generation, allowEmpty);
+        if (next == null) return;
+        view = next;
+        candidateTranslationAppliedGeneration = generation;
+        render();
+    }
+
+    /** 把这一代的离线释义和在线译文合并后交给共享层，返回应用后的 view；没有可应用的、共享层没接受或 view 已不是这一代时为 null。调用方先记下已应用的代次再 render()，否则 render() 里的调度会把同一代再应用一遍。 */
+    private JSONObject appliedOnlineTranslations(long generation, boolean allowEmpty) {
         JSONArray entries = view.optJSONArray("candidates");
-        if (entries == null || entries.length() == 0) return;
+        if (entries == null || entries.length() == 0) return null;
         JSONArray translations = mergedCandidateGlosses(generation, true);
-        if (translations.length() == 0 && !allowEmpty) return;
+        if (translations.length() == 0 && !allowEmpty) return null;
         try {
             JSONObject applied = value(NativeClient.applyTranslations(session, generation,
                 translations.toString()));
-            if (!CandidateGlossPolicy.isApplied(applied.opt("applied"))) return;
+            if (!CandidateGlossPolicy.isApplied(applied.opt("applied"))) return null;
             JSONObject next = applied.getJSONObject("view");
             if (CandidateGlossPolicy.strictOr(next.opt("session"), Long.MIN_VALUE) != session
-                    || CandidateGlossPolicy.strictOr(next.opt("generation"), -1) != generation) return;
-            view = next;
-            candidateTranslationAppliedGeneration = generation;
-            render();
+                    || CandidateGlossPolicy.strictOr(next.opt("generation"), -1) != generation) return null;
+            return next;
         } catch (JSONException | RuntimeException | LinkageError ignored) {
             // Online translations are optional display state.
+            return null;
         }
     }
 
     /**
-     * The apply_translations payload for one generation: per candidate, each target's offline gloss, else its account translation, in target order.
+     * 用户自己的翻译服务（小牛、自定义、腾讯）给当前一页候选取译文。门槛与账号路径相同：没有本地模式、不是日文方案、方案显示释义；另外按共享层的规则跳过表情和颜文字候选（source 6、7，见 providers.rs 的 `is_emoji_or_kaomoji_source`），只取前 {@link #USER_TRANSLATION_PAGE} 个。不经过账号绑定校验：这条路不碰水杉账号。
+     */
+    private void scheduleUserCandidateTranslations() {
+        if (!candidateTranslationRoute.userService() || userTranslationStore == null || session == 0
+                || view == null || !"none".equals(InputViewValuePolicy.textOr(view, "local_mode", "none"))) return;
+        int scheme = InputViewValuePolicy.scheme(view, -1);
+        if (scheme == 3 || !schemeShowsGlosses(scheme)) return;
+        JSONArray entries = view.optJSONArray("candidates");
+        long generation = CandidateGlossPolicy.strictOr(view.opt("generation"), -1);
+        if (entries == null || entries.length() == 0 || generation < 0) return;
+        int candidateCount = BoundsPolicy.atMost(entries.length(), USER_TRANSLATION_PAGE);
+        java.util.ArrayList<String> words = new java.util.ArrayList<>(candidateCount);
+        for (int index = 0; index < candidateCount; index++) {
+            JSONObject candidate = entries.optJSONObject(index);
+            if (candidate == null) continue;
+            int source = InputViewValuePolicy.integer(candidate, "source", -1);
+            if (source == 6 || source == 7) continue;
+            words.add(InputViewValuePolicy.textOr(candidate, "text", ""));
+        }
+        userTranslationStore.refresh(words, candidateTranslationTargets, generation);
+        if (userTranslationStore.hasEntries() && userTranslationAppliedGeneration != generation)
+            applyUserCandidateTranslations(generation);
+    }
+
+    private void applyUserCandidateTranslations(long generation) {
+        if (!candidateTranslationRoute.userService() || userTranslationStore == null || session == 0 || view == null
+                || CandidateGlossPolicy.strictOr(view.opt("generation"), -1) != generation) return;
+        JSONObject next = appliedOnlineTranslations(generation, false);
+        // 没有可应用的也记下这一代，免得每次 render() 都把同一代重新合并一遍；新译文到达时由 store 的回调再进来。
+        userTranslationAppliedGeneration = generation;
+        if (next == null) return;
+        view = next;
+        render();
+    }
+
+    /**
+     * 一代候选的 apply_translations 载荷：逐个候选、按目标语言顺序，每种语言先取离线释义，没有时取在线译文（账号的，或用户自己服务的）。`includeAccount` 同时管这两种在线来源。
      *
-     * <p>Without an installed non-English dictionary this is the account translations of the first 32 candidates, as before; with one it also covers every candidate the offline dictionaries answered, since the payload replaces the one applied before it.
+     * <p>The offline rows are the bundled English glosses when English is a target, plus every installed non-English dictionary; without either this is the online translations of the first 32 candidates. It also covers every candidate the offline dictionaries answered, since the payload replaces the one applied before it.
      */
     private JSONArray mergedCandidateGlosses(long generation, boolean includeAccount) {
         java.util.Map<String, java.util.Map<String, String>> offline =
@@ -2897,22 +3003,28 @@ public final class MSIMEInputService extends InputMethodService {
         for (java.util.Map<String, String> glosses : offline.values()) texts.addAll(glosses.keySet());
         boolean account = includeAccount && candidateTranslationAccount && candidateTranslationStore != null
             && candidateTranslationVerifiedGeneration == generation;
+        // 用户自己的服务没有账号绑定要校验，调用方已保证 generation 是当前 view 的这一代。
+        CandidateTranslationStore user = includeAccount && !account && candidateTranslationRoute.userService()
+            ? userTranslationStore : null;
         JSONArray translations = new JSONArray();
         for (String text : texts) {
             java.util.HashMap<String, String> offlineRows =
                 new java.util.HashMap<>(candidateTranslationTargets.size());
-            java.util.HashMap<String, String> accountRows =
+            java.util.HashMap<String, String> onlineRows =
                 new java.util.HashMap<>(candidateTranslationTargets.size());
             for (String target : candidateTranslationTargets) {
                 java.util.Map<String, String> glosses = offline.get(target);
                 if (glosses != null && glosses.containsKey(text)) offlineRows.put(target, glosses.get(text));
                 if (account) {
                     String translation = candidateTranslationStore.gloss(text, target);
-                    if (translation != null) accountRows.put(target, translation);
+                    if (translation != null) onlineRows.put(target, translation);
+                } else if (user != null) {
+                    String translation = user.gloss(text, target);
+                    if (translation != null) onlineRows.put(target, translation);
                 }
             }
             String translation = CandidateTranslationPolicy.mergeGlosses(
-                candidateTranslationTargets, offlineRows, accountRows);
+                candidateTranslationTargets, offlineRows, onlineRows);
             if (text.isEmpty() || translation.isEmpty()) continue;
             try { translations.put(new JSONObject().put("text", text).put("translation", translation)); }
             catch (JSONException ignored) { return new JSONArray(); }
@@ -3238,7 +3350,8 @@ public final class MSIMEInputService extends InputMethodService {
 
     private int candidateGlossLineCount() {
         return CandidateTranslationPolicy.glossLines(
-            candidateTranslationTargets, candidateEnglishGloss, candidateTranslationAccount,
+            candidateTranslationTargets, candidateEnglishGloss,
+            candidateTranslationAccount || candidateTranslationRoute.userService(),
             candidateOfflineTargets());
     }
 
@@ -8665,6 +8778,7 @@ public final class MSIMEInputService extends InputMethodService {
         imeLayoutRows.renderNineKeySpellings(hasDiagnostic);
         scheduleCandidateGlosses();
         scheduleCandidateTranslations();
+        scheduleUserCandidateTranslations();
         scheduleOnlineProviders();
         if (candidates == null) {
             imeStyler.applySkin();
