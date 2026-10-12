@@ -51,6 +51,7 @@ import { CommunityActionNotice } from "./community-action-notice";
 import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { useCommunityInstallState } from "./community-install-state";
+import { communityInstallPreflight } from "./community-install-preflight";
 
 /** The kinds a pack can be shared as, which is every kind, effect packs included. Mirrors `client-core::plugins::community::PUBLISHABLE_KINDS`. */
 export type CommunityPluginKind = PluginKind;
@@ -253,13 +254,16 @@ export function CommunityPluginsPage({
       async (currentClient) => {
         // An install replaces a pack of the same kind and id whole, so ask first. The scan is only a courtesy: when it fails the install goes ahead as the import from a local `.zip` would.
         if (!replace && localPlugins) {
-          const catalog = await localPlugins().catch(() => null);
-          if (!gallery.isCurrent(currentClient)) return;
-          if (
-            catalog?.packages.some(
-              (item) => item.kind === target.kind && item.id === target.plugin_id,
-            )
-          ) {
+          const preflight = await communityInstallPreflight(
+            localPlugins,
+            () => gallery.isCurrent(currentClient),
+            (catalog) =>
+              catalog.packages.some(
+                (item) => item.kind === target.kind && item.id === target.plugin_id,
+              ),
+          );
+          if (preflight === "stale") return;
+          if (preflight === "conflict") {
             setConfirmReplace(true);
             return;
           }

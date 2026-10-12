@@ -35,6 +35,7 @@ import { CommunityGalleryGrid } from "./community-gallery-grid";
 import { CommunityPageShell } from "./community-page-shell";
 import { CommunityNotice } from "./community-notice";
 import { useCommunityInstallState } from "./community-install-state";
+import { communityInstallPreflight } from "./community-install-preflight";
 import { useAsyncGeneration } from "../settings/use-async-generation";
 import { ActionButton } from "../core/action-button";
 import {
@@ -351,9 +352,13 @@ export function CommunityCandidateSkinsPage({
       async (currentClient) => {
         // Asking before the download spares a ~3 MB transfer the user may be about to refuse. The scan is only a courtesy: when it fails the install's own `candidate_skin_exists` still stops an overwrite.
         if (!replace && localSkins) {
-          const catalog = await localSkins().catch(() => null);
-          if (!gallery.isCurrent(currentClient)) return;
-          if (catalog?.packages.some((item) => item.id === target.package_id)) {
+          const preflight = await communityInstallPreflight(
+            localSkins,
+            () => gallery.isCurrent(currentClient),
+            (catalog) => catalog.packages.some((item) => item.id === target.package_id),
+          );
+          if (preflight === "stale") return;
+          if (preflight === "conflict") {
             setConfirmReplace(true);
             return;
           }
