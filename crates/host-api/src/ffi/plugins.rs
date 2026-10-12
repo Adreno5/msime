@@ -208,7 +208,10 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
                 if !absolute_path(&source) {
                     return Err(invalid());
                 }
-                serde_json::to_value(plugins::import_from_settings(Path::new(&source), &root)?)
+                serde_json::to_value(plugins::import_without_script_page(
+                    Path::new(&source),
+                    &root,
+                )?)
             }
             // 移动端选到的是 content URI 或 security-scoped URL，没有能交给 `import` 的路径：宿主严格按 UTF-8 解码后把码表正文放进请求。
             PluginAction::ImportHelpcodeTable { file_name, text } => serde_json::to_value(

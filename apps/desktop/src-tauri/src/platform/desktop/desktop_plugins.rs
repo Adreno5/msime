@@ -4,7 +4,9 @@
 
 use crate::DictionaryHostOptions;
 use msime_client_core::plugins::mentions::{MentionEntry, MentionStore};
+use msime_client_core::plugins::script_grants::{self, ScriptGrants};
 use msime_client_core::plugins::{self, PluginCatalog, PluginFailure, PluginSummary};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -101,7 +103,7 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| PluginFailure::code("storage"))?
 }
 
-/// 已安装的包和内置包，以及每个不是包的文件夹出了什么问题。脚本插件不列出：授权页（第 5 阶段）落地之前，设置页不展示它们。
+/// 已安装的包和内置包，以及每个不是包的文件夹出了什么问题。脚本插件也列出（带声明的钩子、申请的能力和内容哈希），页面只在宿主声明了 `script_plugins` 时展示它们。
 #[tauri::command]
 pub async fn plugin_catalog(
     app: tauri::AppHandle,
@@ -111,7 +113,10 @@ pub async fn plugin_catalog(
     let root = state.0.clone();
     let options = options.inner().clone();
     blocking(move || {
-        Ok(plugins::scan(&root, builtin_sound_packs(&app, &options).as_deref()).without_scripts())
+        Ok(plugins::scan(
+            &root,
+            builtin_sound_packs(&app, &options).as_deref(),
+        ))
     })
     .await
 }
@@ -159,6 +164,178 @@ pub async fn remove_plugin_pack(
 ) -> Result<(), PluginFailure> {
     let root = state.0.clone();
     blocking(move || plugins::remove_named(&root, &kind, &id)).await
+}
+
+/// 授权页上的一个条目：`script-grants.json` 里的一条。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptGrantView {
+    pub id: String,
+    /// 授权时包的内容哈希；和目录里这个包现在的 `content_hash` 不同时，页面显示"已更新，需要重新授权"。
+    pub hash: String,
+    pub enabled: bool,
+    pub granted: Vec<&'static str>,
+}
+
+/// 输入法进程停用了的一个插件：`<user_data>/script-health.json` 的一条。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptHealthView {
+    pub id: String,
+    pub hash: String,
+    /// `invalid`、`init`、`failed` 或 `slow`。
+    pub disabled: String,
+}
+
+/// 授权页读到的全部：授权（按执行顺序）和输入法记下的停用。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ScriptGrantsView {
+    pub revision: u64,
+    pub plugins: Vec<ScriptGrantView>,
+    pub health: Vec<ScriptHealthView>,
+}
+
+/// 健康文件名，与 host-api 的 `scripts::process::HEALTH_FILE` 一致。
+const SCRIPT_HEALTH_FILE: &str = "script-health.json";
+/// 健康文件的字节上限：最多 256 个条目，每条一个 id、一个哈希和一个类别。
+const MAX_SCRIPT_HEALTH_BYTES: u64 = 64 * 1024;
+
+/// 输入法写下的停用记录。文件不在、读不出、格式不认识时为空：那只是说没有停用记录。
+fn script_health(user_data: Option<&Path>) -> Vec<ScriptHealthView> {
+    #[derive(serde::Deserialize)]
+    struct Document {
+        format_version: u64,
+        #[serde(default)]
+        plugins: Vec<serde_json::Value>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        id: String,
+        hash: String,
+        disabled: String,
+    }
+    let Some(path) = user_data
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(SCRIPT_HEALTH_FILE))
+    else {
+        return Vec::new();
+    };
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return Vec::new();
+    };
+    if !metadata.is_file() || metadata.len() > MAX_SCRIPT_HEALTH_BYTES {
+        return Vec::new();
+    }
+    let Some(document) = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Document>(&bytes).ok())
+        .filter(|document| document.format_version == 1)
+    else {
+        return Vec::new();
+    };
+    document
+        .plugins
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<Entry>(value).ok())
+        .filter(|entry| {
+            matches!(
+                entry.disabled.as_str(),
+                "invalid" | "init" | "failed" | "slow"
+            )
+        })
+        .map(|entry| ScriptHealthView {
+            id: entry.id,
+            hash: entry.hash,
+            disabled: entry.disabled,
+        })
+        .collect()
+}
+
+fn grants_view(grants: ScriptGrants, user_data: Option<&Path>) -> ScriptGrantsView {
+    ScriptGrantsView {
+        revision: grants.revision,
+        plugins: grants
+            .plugins
+            .into_iter()
+            .map(|grant| ScriptGrantView {
+                granted: grant
+                    .granted
+                    .iter()
+                    .map(|capability| capability.as_str())
+                    .collect(),
+                id: grant.id,
+                hash: grant.hash,
+                enabled: grant.enabled,
+            })
+            .collect(),
+        health: script_health(user_data),
+    }
+}
+
+/// 宿主选项里的 `user_data`：输入法写健康文件的目录。
+fn user_data(options: &DictionaryHostOptions) -> Option<PathBuf> {
+    options
+        .snapshot()
+        .ok()?
+        .get("user_data")?
+        .as_str()
+        .map(PathBuf::from)
+}
+
+/// 脚本插件的授权、执行顺序和输入法记下的停用。
+#[tauri::command]
+pub async fn script_grants(
+    state: State<'_, PluginsState>,
+    options: State<'_, DictionaryHostOptions>,
+) -> Result<ScriptGrantsView, PluginFailure> {
+    let root = state.0.clone();
+    let options = options.inner().clone();
+    blocking(move || {
+        let user_data = user_data(&options);
+        Ok(grants_view(
+            script_grants::read(&root),
+            user_data.as_deref(),
+        ))
+    })
+    .await
+}
+
+/// 授予、调整或撤销一个脚本插件的授权。`hash` 是页面展示给用户的那个内容哈希，包在这之后被换过时返回 `plugin_script_changed`；启用时超出同时启用的个数或内存总账分别返回 `plugin_script_limit`、`plugin_script_memory`。
+#[tauri::command]
+pub async fn set_script_grant(
+    state: State<'_, PluginsState>,
+    options: State<'_, DictionaryHostOptions>,
+    id: String,
+    hash: String,
+    enabled: bool,
+    granted: Vec<String>,
+) -> Result<ScriptGrantsView, PluginFailure> {
+    let root = state.0.clone();
+    let options = options.inner().clone();
+    blocking(move || {
+        let user_data = user_data(&options);
+        let granted = script_grants::capabilities(&granted)?;
+        let grants = script_grants::set(&root, &id, &hash, enabled, granted)?;
+        Ok(grants_view(grants, user_data.as_deref()))
+    })
+    .await
+}
+
+/// 调整执行顺序：`ids` 按给出的顺序排在最前。
+#[tauri::command]
+pub async fn reorder_scripts(
+    state: State<'_, PluginsState>,
+    options: State<'_, DictionaryHostOptions>,
+    ids: Vec<String>,
+) -> Result<ScriptGrantsView, PluginFailure> {
+    let root = state.0.clone();
+    let options = options.inner().clone();
+    blocking(move || {
+        let user_data = user_data(&options);
+        Ok(grants_view(
+            script_grants::reorder(&root, &ids)?,
+            user_data.as_deref(),
+        ))
+    })
+    .await
 }
 
 /// The @ mode's name list, empty before one was saved.
@@ -258,6 +435,94 @@ mod tests {
             Some(PathBuf::from("/opt/msime/share/msime-client/sound-packs"))
         );
         assert_eq!(linux_installed_sound_packs(Path::new("/")), None);
+    }
+
+    #[test]
+    fn script_health_lists_only_the_four_disabled_categories() {
+        let user_data = tempfile::tempdir().unwrap();
+        assert!(script_health(Some(user_data.path())).is_empty());
+        assert!(script_health(Some(Path::new("relative"))).is_empty());
+        assert!(script_health(None).is_empty());
+        let file = user_data.path().join(SCRIPT_HEALTH_FILE);
+        fs::write(
+            &file,
+            r#"{"format_version":1,"plugins":[{"id":"a","hash":"h1","disabled":"failed"},{"id":"b","hash":"h2","disabled":"unreachable"},{"id":"c"},{"id":"d","hash":"h4","disabled":"slow"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            script_health(Some(user_data.path())),
+            [
+                ScriptHealthView {
+                    id: "a".into(),
+                    hash: "h1".into(),
+                    disabled: "failed".into(),
+                },
+                ScriptHealthView {
+                    id: "d".into(),
+                    hash: "h4".into(),
+                    disabled: "slow".into(),
+                },
+            ]
+        );
+        // 不认识的格式或读不懂的文件当作没有停用记录。
+        fs::write(
+            &file,
+            r#"{"format_version":2,"plugins":[{"id":"a","hash":"h1","disabled":"failed"}]}"#,
+        )
+        .unwrap();
+        assert!(script_health(Some(user_data.path())).is_empty());
+        fs::write(&file, "not json").unwrap();
+        assert!(script_health(Some(user_data.path())).is_empty());
+    }
+
+    #[test]
+    fn the_grants_view_keeps_the_order_and_the_capability_names() {
+        let capabilities = |names: &[&str]| {
+            script_grants::capabilities(
+                &names
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let grant = |id: &str, enabled: bool, granted| script_grants::ScriptGrant {
+            id: id.into(),
+            hash: id.repeat(64 / id.len()),
+            enabled,
+            granted,
+        };
+        let rewriting = capabilities(&["rewrite_commit", "read_commit"]);
+        let view = grants_view(
+            ScriptGrants {
+                revision: 4,
+                plugins: vec![
+                    grant("b", true, rewriting),
+                    grant("a", false, capabilities(&[])),
+                ],
+            },
+            None,
+        );
+        assert_eq!(view.revision, 4);
+        // 文件里的顺序就是执行顺序，原样交给页面；能力名也原样带过去。
+        assert_eq!(
+            view.plugins,
+            [
+                ScriptGrantView {
+                    id: "b".into(),
+                    hash: "b".repeat(64),
+                    enabled: true,
+                    granted: vec!["read_commit", "rewrite_commit"],
+                },
+                ScriptGrantView {
+                    id: "a".into(),
+                    hash: "a".repeat(64),
+                    enabled: false,
+                    granted: Vec::new(),
+                },
+            ]
+        );
+        assert!(view.health.is_empty());
     }
 
     #[test]

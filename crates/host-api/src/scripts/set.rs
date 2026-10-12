@@ -161,6 +161,7 @@ impl ScriptSet {
             return;
         }
         let grants = script_grants::read(&root);
+        process::adopt_health(&root, self.health_file.as_deref());
         process::observe_revision(&root, grants.revision);
         self.plan = grants
             .enabled()

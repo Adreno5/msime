@@ -13,6 +13,7 @@ export const kindLabels: Record<PluginKind, string> = {
   helpcode: "辅助码表",
   wordbook: "单词本",
   symbol_set: "符号集",
+  script: "脚本插件",
 };
 
 /** 按键旋律（`mode = "sequence"` 的音效包）的类型显示名。 */
@@ -25,7 +26,7 @@ export function packKindLabel(pack: Pick<PluginPackage, "kind" | "mode">): strin
     : (kindLabels[pack.kind] ?? "插件");
 }
 
-/** The order the 我的插件 list groups the installed packs in. */
+/** 我的插件列表给已安装插件分组的顺序。脚本插件不在其中：它们有自己的「脚本插件（实验）」分组，只在宿主运行脚本插件时显示。 */
 export const kindOrder: readonly PluginKind[] = [
   "sound",
   "effect",
@@ -48,12 +49,16 @@ export function effectStyleLabel(style: EffectStyle): string {
   return effectStyleOptions.find((option) => option.value === style)?.label ?? style;
 }
 
+/** 宿主调用失败时 `{code, detail}` 里的 `code`；不是这个形状时为空串。 */
+export function pluginErrorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "";
+}
+
 /** The sentence for a failed host call. The desktop shell's commands and the HarmonyOS bridge both reject with `{code, detail}`, the codes being client-core's `PluginFailure`; `detail`, when present, is the rule client-core reports. */
 export function pluginErrorMessage(error: unknown, fallback: string): string {
-  const code =
-    typeof error === "object" && error !== null && "code" in error
-      ? String((error as { code: unknown }).code)
-      : "";
+  const code = pluginErrorCode(error);
   const detail =
     typeof error === "object" && error !== null && "detail" in error
       ? (error as { detail: unknown }).detail
@@ -70,6 +75,18 @@ export function pluginErrorMessage(error: unknown, fallback: string): string {
       return "这个 id 属于内置插件，不能覆盖或删除。";
     case "plugin_storage":
       return "插件目录不可用，请检查数据目录的权限。";
+    case "plugin_script_memory":
+      return "启用后会超出输入法留给脚本插件的内存（64 MiB），先停用别的脚本插件再试。";
+    case "plugin_script_limit":
+      return "最多同时启用 8 个脚本插件，先停用一个再试。";
+    case "plugin_script_changed":
+      return "这个插件的内容在你打开之后变了，页面已经重新读取，请看过现在的内容再试。";
+    case "plugin_script_grants_format":
+      return "授权文件是更新版本的水杉输入法写的，这个版本不能修改它。";
+    case "plugin_script_grant_invalid":
+      return `授权不符合要求${reason}。`;
+    case "plugin_script_missing":
+      return `找不到这个脚本插件${reason}。`;
     case "mention_invalid":
       return `名单有误${reason}。`;
     case "mention_format":
@@ -188,6 +205,9 @@ export function packMarker(
     // 单词本没有偏好：选中哪本书在背单词里；符号集装上就显示。
     case "wordbook":
     case "symbol_set":
+      return null;
+    // 脚本插件的标记由「脚本插件（实验）」分组按授权状态给出。
+    case "script":
       return null;
   }
 }

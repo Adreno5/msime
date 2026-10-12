@@ -319,7 +319,7 @@ fn kinds(log: &[(i32, String)]) -> Vec<i32> {
 }
 
 #[test]
-fn the_real_process_switch_gates_delivery_and_stays_off_in_release_builds() {
+fn the_real_process_switch_gates_delivery_in_debug_and_release_builds_without_any_key() {
     // 这个测试线程不覆盖开关，投递走产品里的全局开关。别的测试都在自己的线程上覆盖它，这里改全局开关不影响它们；没覆盖开关、也没写授权的会话计划是空的，同样不受影响。
     let fixture = fixture();
     TEST_SWITCH.with(|switch| switch.set(None));
@@ -328,13 +328,44 @@ fn the_real_process_switch_gates_delivery_and_stays_off_in_release_builds() {
     opt_in(&fixture, TRAIT_KNOWN);
     commit_nihao(fixture.handle);
     assert!(take_log().is_empty());
-    // 开发构建里打开就投递；release 构建（`cargo test --release`）里恒为 false，打开了也什么都不投递，这一条就是第 3 阶段的验收。
-    assert_eq!(msime_client_scripts_enable(true), cfg!(debug_assertions));
+    // 开发构建和 release 构建（`cargo test --release`）一样：macOS 和 Linux 上打开就投递，授权文件不签名，本进程也没有任何密钥。Windows 的原生设置应用还没有授权页，那里只有开发构建打开。
+    let runs = !cfg!(all(target_os = "windows", not(debug_assertions)));
+    assert_eq!(msime_client_scripts_enable(true), runs);
     commit_nihao(fixture.handle);
-    assert_eq!(!take_log().is_empty(), cfg!(debug_assertions));
+    assert_eq!(!take_log().is_empty(), runs);
     assert!(!msime_client_scripts_enable(false));
     commit_nihao(fixture.handle);
     assert!(take_log().is_empty());
+}
+
+#[test]
+fn a_grant_with_a_leftover_mac_field_still_runs() {
+    let fixture = fixture();
+    let hash = unique_hash(&fixture, "legacy");
+    insert_ready(
+        &fixture.plugins,
+        &hash,
+        compile_text(
+            &logger(),
+            Declaration {
+                capabilities: CapabilitySet::EMPTY,
+                hooks: OBSERVE.iter().copied().collect::<HookSet>(),
+                memory_pages: 1,
+            },
+        )
+        .unwrap(),
+    );
+    // 早期开发构建在 macOS 上给条目写过 `mac`。授权不再签名，读取方把它当作未知字段忽略：不管它对不对，条目照常运行，所有平台一样。
+    write_grants(
+        &fixture,
+        1,
+        vec![
+            json!({"id": "legacy", "hash": hash, "enabled": true, "granted": [], "mac": "0".repeat(64)}),
+        ],
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert!(!take_log().is_empty());
 }
 
 #[test]
@@ -824,6 +855,107 @@ fn repeated_failures_trip_the_breaker_until_the_revision_changes() {
     read(msime_client_focus(fixture.handle, true));
     commit_nihao(fixture.handle);
     assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
+}
+
+/// 失焦，等后台线程把这之前交过去的健康文件写完。
+fn flush(fixture: &Fixture) {
+    read(msime_client_focus(fixture.handle, false));
+    let barrier = fixture.user_data.join("barrier.json");
+    let _ = std::fs::remove_file(&barrier);
+    crate::scripts::health_barrier(&barrier);
+    wait_for(|| barrier.exists().then_some(()));
+}
+
+#[test]
+fn putting_back_an_older_grant_file_never_resets_the_breaker() {
+    let fixture = fixture();
+    let scripts = || [Script::new("trapper", trapper(), &[Hook::Commit])];
+    let hashes = install(&fixture, &scripts(), 5);
+    opt_in(&fixture, TRAIT_KNOWN);
+    for focus in 0..3 {
+        if focus > 0 {
+            read(msime_client_focus(fixture.handle, true));
+        }
+        commit_nihao(fixture.handle);
+    }
+    assert_eq!(take_log().len(), 3);
+    assert_eq!(
+        process_health(&fixture, "trapper", &hashes[0]),
+        (3, Some("unreachable"))
+    );
+    let document = script_grants::document_path(&fixture.plugins);
+    let original = std::fs::read(&document).unwrap();
+    let mut older: Value = serde_json::from_slice(&original).unwrap();
+    older["revision"] = 4.into();
+    // 来回换文件：一份 revision 相同但没有条目的、一份更旧的、删掉文件，然后放回原来那份。每换一次就重新聚焦，让会话重读授权。
+    let swaps: [Option<Vec<u8>>; 3] = [
+        Some(br#"{"format_version":1,"revision":5,"plugins":[]}"#.to_vec()),
+        Some(serde_json::to_vec(&older).unwrap()),
+        None,
+    ];
+    for swap in swaps {
+        match swap {
+            Some(bytes) => std::fs::write(&document, bytes).unwrap(),
+            None => std::fs::remove_file(&document).unwrap(),
+        }
+        read(msime_client_focus(fixture.handle, false));
+        read(msime_client_focus(fixture.handle, true));
+        // 放回原来那份（字节和原来的一样），模块也重新放进缓存：中间那次重读可能淘汰了它。
+        install(&fixture, &scripts(), 5);
+        assert_eq!(std::fs::read(&document).unwrap(), original);
+        read(msime_client_focus(fixture.handle, false));
+        read(msime_client_focus(fixture.handle, true));
+        commit_nihao(fixture.handle);
+        // 仍然停用：中间那份和放回来的那份，revision 都没有比以前看到过的大。
+        assert!(take_log().is_empty());
+        assert_eq!(
+            process_health(&fixture, "trapper", &hashes[0]).1,
+            Some("unreachable")
+        );
+    }
+    // 设置应用写入一次（revision 变大）才恢复。授权文件不签名，同一用户下的程序直接写一份 revision 更大的文件同样能让它恢复，这是授权页写明的残余风险的一部分。
+    install(&fixture, &scripts(), 7);
+    read(msime_client_focus(fixture.handle, false));
+    read(msime_client_focus(fixture.handle, true));
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
+}
+
+#[test]
+fn a_restarted_process_clears_the_stopped_plugins_its_predecessor_recorded() {
+    let fixture = fixture();
+    // 上一个输入法进程停用过 logger；停用只持续到进程重启。本进程第一次读授权时接管这份文件，下一次失焦按本进程的状态重写它。
+    let file = fixture.user_data.join("script-health.json");
+    let hashes = install(
+        &fixture,
+        &[Script::new("logger", logger(), &[Hook::Commit])],
+        1,
+    );
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({"format_version": 1, "plugins": [{"id": "logger", "hash": hashes[0], "disabled": "failed"}]})).unwrap(),
+    )
+    .unwrap();
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    assert_eq!(kinds(&take_log()), [Hook::Commit.code()]);
+    flush(&fixture);
+    let health: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(health, json!({"format_version": 1, "plugins": []}));
+}
+
+#[test]
+fn a_new_process_without_a_health_file_writes_none() {
+    let fixture = fixture();
+    install(
+        &fixture,
+        &[Script::new("logger", logger(), &[Hook::Commit])],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    commit_nihao(fixture.handle);
+    flush(&fixture);
+    assert!(!fixture.user_data.join("script-health.json").exists());
 }
 
 #[test]

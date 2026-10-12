@@ -40,7 +40,7 @@ pub use failure::{remove_named, PluginFailure};
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 pub use import::load_script_source;
-pub use import::{import, import_from_settings, validate};
+pub use import::{import, import_from_settings, import_without_script_page, validate};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -311,7 +311,7 @@ pub enum PluginContent {
 }
 
 impl PluginCatalog {
-    /// 去掉脚本插件的包和问题行。设置页在授权页（第 5 阶段）落地之前不展示脚本插件，桌面外壳和 `msime_client_plugins` 的目录命令都经过这里；移动端没有脚本插件，原样返回。
+    /// 去掉脚本插件的包和问题行。host-api 的 `msime_client_plugins` 目录命令经过这里：用它的宿主（Windows 的原生设置应用、Android、HarmonyOS）没有授权页。桌面外壳的目录命令列出脚本插件，由设置页按 `script_plugins` 决定展示与否；移动端没有脚本插件，原样返回。
     pub fn without_scripts(mut self) -> Self {
         self.packages.retain(|package| !package.kind().is_script());
         self.issues.retain(|issue| !issue.kind.is_script());
@@ -354,7 +354,7 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
 }
 
-/// A manifest's `kind` that is not one of `PluginKind::ALL`, and a script pack the settings page's import refuses in a release build (`import_from_settings`).
+/// 清单的 `kind` 不在 `PluginKind::ALL` 里时的拒绝原因；不接受脚本包的设置导入（`import_without_script_page` 的 release 构建、`import_from_settings` 在 Windows 的 release 构建）拒绝脚本包时也用它。
 pub(crate) const UNKNOWN_KIND: &str = "kind 不是已知的插件类型";
 
 /// `<root>/<kind>`.

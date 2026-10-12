@@ -1,11 +1,13 @@
 # 插件作者指南
 
-插件是只含数据的文件夹：一份 `plugin.toml` 清单，加上清单用到的音频或数据文件和可选的说明文字。插件不能带任何可执行内容，也不能申请权限；输入法按固定规则校验每个包，不符合规则的包整包拒绝，不会只装一半。唯一的例外是桌面上的[脚本插件](#脚本插件kind--script)，它带一个在沙箱里运行的 wasm 模块，按用户授予的能力工作，目前只在开发构建里运行。
+插件是只含数据的文件夹：一份 `plugin.toml` 清单，加上清单用到的音频或数据文件和可选的说明文字。这份指南里的插件不能带任何可执行内容，也不能申请权限；输入法按固定规则校验每个包，不符合规则的包整包拒绝，不会只装一半。
 
-这份指南覆盖八种数据类型：音效包（`sound`）、音乐包（`music`）、指令表（`command_table`）、特效包（`effect`）、短语表（`phrase_table`）、辅助码表（`helpcode`）、单词本（`wordbook`）和符号集（`symbol_set`），以及桌面上的脚本插件（`script`）。下面的限制都取自 `crates/client-core/src/plugins/` 里的代码，两者不一致时以代码为准。`crates/client-core/tests/fixtures/plugin-packs/` 里有每种新类型能通过和会被拒绝的示例包，社区后端用同一批包校验。
+例外是 macOS 和 Linux 上实验中的脚本插件（`script`）：它带一个 WebAssembly 模块、在清单里申请能力，导入后不运行，要在设置的「插件 → 脚本插件（实验）」里逐项授权才启用，也不能发布到社区。Windows 的设置应用还没有这一页，正式版不运行也不导入脚本插件。这份指南不覆盖它。
+
+这份指南覆盖八种类型：音效包（`sound`）、音乐包（`music`）、指令表（`command_table`）、特效包（`effect`）、短语表（`phrase_table`）、辅助码表（`helpcode`）、单词本（`wordbook`）和符号集（`symbol_set`）。下面的限制都取自 `crates/client-core/src/plugins/` 里的代码，两者不一致时以代码为准。`crates/client-core/tests/fixtures/plugin-packs/` 里有每种新类型能通过和会被拒绝的示例包，社区后端用同一批包校验。
 
 - 想直接开始：复制 [plugin-template](plugin-template/)，这是一个能通过校验的最小按键音效包。
-- 想分享自己的包：在 Windows、macOS 或 Linux 上登录账号，打开设置里的「插件 → 社区插件」，点「发布我的插件」，选一个自己导入的包即可。八种数据类型都能发布，特效包也一样；内置包和脚本插件不能发布。压缩后的包不超过 8 MB，每个账号最多发布 20 个、合计 32 MB，每小时最多发布 10 次。别人发布的包也在这一页浏览、安装和评分。
+- 想分享自己的包：在 Windows、macOS 或 Linux 上登录账号，打开设置里的「插件 → 社区插件」，点「发布我的插件」，选一个自己导入的包即可。八种类型都能发布，特效包也一样；内置包不能发布。压缩后的包不超过 8 MB，每个账号最多发布 20 个、合计 32 MB，每小时最多发布 10 次。别人发布的包也在这一页浏览、安装和评分。
 
 ## 平台支持
 
@@ -41,7 +43,7 @@ my-keys/            文件夹名随意；安装后的文件夹按 id 命名
 
 ```toml
 schema_version = 1
-kind = "sound"          # sound | music | command_table | effect | phrase_table | helpcode | wordbook | symbol_set | script（桌面专用）
+kind = "sound"          # sound | music | command_table | effect | phrase_table | helpcode | wordbook | symbol_set
 id = "my-keys"
 name = "我的按键音"
 version = "1.0.0"
@@ -53,15 +55,15 @@ permissions = []        # 可选，只能是空数组
 
 | 字段             | 规则                                                                                                                                          |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schema_version` | 必须是整数 `1`（脚本插件写 `2`）                                                                                                              |
-| `kind`           | `sound`、`music`、`command_table`、`effect`、`phrase_table`、`helpcode`、`wordbook` 或 `symbol_set` 之一；桌面上的脚本插件写 `script`         |
+| `schema_version` | 必须是整数 `1`                                                                                                                                |
+| `kind`           | `sound`、`music`、`command_table`、`effect`、`phrase_table`、`helpcode`、`wordbook` 或 `symbol_set` 之一                                      |
 | `id`             | 1 到 64 字节，只含小写字母、数字、`.`、`-`、`_`，以字母或数字开头；安装后的文件夹按 id 命名，源文件夹或压缩包里外层文件夹的名字不要求与它相同 |
 | `name`           | 必填，不超过 80 字节，不能全是空白，不能含控制字符                                                                                            |
 | `version`        | 必填，不超过 32 字节，同上                                                                                                                    |
 | `license`        | 必填，不超过 64 字节，SPDX 许可证表达式（只含字母、数字、`.`、`-`、`+`、`(`、`)` 和空格），例如 `CC0-1.0`、`CC-BY-4.0`、`MIT OR Apache-2.0`   |
 | `author`         | 可选，不超过 120 字节                                                                                                                         |
 | `description`    | 可选，不超过 500 字节                                                                                                                         |
-| `permissions`    | 可选，只能是 `[]`：插件不能申请任何权限（脚本插件除外）                                                                                       |
+| `permissions`    | 可选，只能是 `[]`：插件不能申请任何权限                                                                                                       |
 
 - 清单里出现上表和该类型专属键以外的任何键，都会拒绝整个包。专属键之内的未知键同样会被拒绝。
 - 以下 id 属于内置包，安装的包不能使用：
@@ -340,14 +342,15 @@ items = ["→", "←", "⇒"]
 
 ## 脚本插件（`kind = "script"`）
 
-脚本插件是唯一带可执行内容的类型：包里有一个 core wasm 模块，在桌面输入法进程里由沙箱解释器运行，按用户逐项授予的能力读组字、上屏文本和候选。它还是实验功能，只在开发构建里运行。想直接开始：复制 [script-plugin-template](script-plugin-template/)，那是一个用 Rust 写的完整例子（中英文之间加空格），附带 C 头文件和 Rust 绑定。
+脚本插件是唯一带可执行内容的类型：包里有一个 core wasm 模块，在桌面输入法进程里由沙箱解释器运行，按用户逐项授予的能力读组字、上屏文本和候选。它还是实验功能。想直接开始：复制 [script-plugin-template](script-plugin-template/)，那是一个用 Rust 写的完整例子（中英文之间加空格），附带 C 头文件和 Rust 绑定。
 
 ### 在哪里运行
 
 - 只在桌面：macOS 的输入法进程、Windows 的 `MetasequoiaImeServer`、Linux 的 IBus 引擎进程和 Fcitx5 addon。Windows 上被注入各个应用的 TSF 模块里从不运行脚本。iOS、Android 和鸿蒙（包括鸿蒙电脑）不认这个类型，导入时报「不支持这个 schema_version」。
-- 只在开发构建里运行。授权文件在用户可写的目录下，同一用户下的其他程序能伪造授权；在加固（macOS 用钥匙串签名授权，Windows 不在提权窗口里运行脚本，Linux 和 Windows 在授权页写明残余风险）落地之前，发布构建一个脚本都不运行。
+- macOS 和 Linux 的发布构建运行脚本，Windows 只在开发构建里运行：Windows 的原生设置应用还没有授权页。Windows 上以管理员身份运行的窗口里从不运行脚本。
+- 授权文件 `<数据目录>/plugins/script-grants.json` 在用户可写的目录下，不签名：同一用户下的其他程序能伪造一条授权，让脚本在输入法里运行。授权页上写明了这一点；只装你信得过的脚本包。
 - 输入法要接入生命周期事件之后才会把事件交给脚本，各平台陆续接入。
-- 设置页目前不显示脚本插件，也还没有授权页。导入后插件默认停用；开发构建里自测要手写 `<数据目录>/plugins/script-grants.json`，格式和内容哈希的算法见 `crates/client-core/src/plugins/script_grants.rs` 和 `script_pack.rs`。授权绑定在包的内容哈希上，清单或模块改了一个字节，授权就作废。
+- 在设置的「插件 → 我的插件」里导入（macOS 和 Linux；Windows 只有开发构建能导入）。导入后插件默认停用：在「脚本插件（实验）」里打开它，在授权对话框里逐项勾选清单申请的能力才会运行，几个脚本插件的执行顺序也在那里调整。授权绑定在包的内容哈希上，清单或模块改了一个字节，授权就作废，页面显示「已更新，需要重新授权」。
 - 不能发布到社区库：「发布我的插件」不列出脚本包，社区后端也只收 `schema_version = 1` 的包。只能本地导入。
 
 ### 清单
@@ -540,7 +543,6 @@ target/debug/msime-pack validate path/to/my-keys path/to/other-pack.zip
   - `plugin_reserved`：用了内置包的 id
 - 退出码：全部通过为 0；有任何一个不通过为 1；命令行写错为 2。
 - 只检查，不安装，不会改动本机的插件目录。
-- 脚本插件同样一行（`ok pangu-spacing script 1.0.0`），模块按 ABI v1 校验，只编译、不执行；要按事件运行它，见[用 msime-pack run 试运行](#用-msime-pack-run-试运行)。
 
 ## 导入
 
