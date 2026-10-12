@@ -156,7 +156,7 @@ pub enum Outcome {
     Delivered { status: i32, fuel: u64 },
     /// 计为插件自己的一次失败。它这次暂存的动作全部丢弃，不影响后面的插件。
     Failed { failure: Failure, fuel: u64 },
-    /// 本轮的配额用完了，不算插件的失败：宿主并不在每次派发之前都开一轮（修饰键组合、快捷键和失焦命令不经过 `msime_client_key`），这样的派发和上一次按键共用一轮，把它花光的可能是之前那几次正常的投递。`fuel` 为 0 时这次没有运行；不为 0 时运行到一半被本轮剩下的配额截断，像 trap 一样暂存的动作全部丢弃，持久实例随之不可用（[`ScriptInstance::is_usable`]；`before_commit` 跑在用完即弃的快照实例上，持久实例不受影响）。超出单个钩子自己的上限仍是 [`Outcome::Failed`]。
+    /// 本轮的配额用完了，不算插件的失败：宿主并不在每次派发之前都开一轮（修饰键组合、快捷键和失焦命令不经过 `msime_client_key`），这样的派发和上一次按键共用一轮，把它花光的可能是之前那几次正常的投递。`fuel` 为 0 时这次没有运行；不为 0 时运行到一半被本轮剩下的配额截断，而且这一次用掉的不到本钩子上限（[`limits::hook_fuel`]）的一半，像 trap 一样暂存的动作全部丢弃，持久实例随之不可用（[`ScriptInstance::is_usable`]；`before_commit` 跑在用完即弃的快照实例上，持久实例不受影响）。被本轮配额截断时已经用掉一半或更多，和超出单个钩子自己的上限一样，是 fuel 耗尽的 [`Outcome::Failed`]。
     TurnExhausted { fuel: u64 },
 }
 
@@ -744,7 +744,7 @@ impl ScriptInstance {
         self.store.data_mut().log_sink = sink;
     }
 
-    /// 投递一个事件。`turn` 是宿主的轮次计数（每个非 PASSTHROUGH 的 `msime_client_key` 加一），换了轮次就重新给满本轮配额；本次能用的 fuel 是本轮剩余和本钩子上限中较小的那个。本轮已经用完时不运行，被本轮剩下的配额截断时不算失败，两者都是 [`Outcome::TurnExhausted`]。`before_commit` 在 `msime_init` 之后的快照上运行，看不到之前任何事件留下的状态。
+    /// 投递一个事件。`turn` 是宿主的轮次计数（每个非 PASSTHROUGH 的 `msime_client_key` 加一），换了轮次就重新给满本轮配额；本次能用的 fuel 是本轮剩余和本钩子上限中较小的那个。本轮已经用完时不运行，是 [`Outcome::TurnExhausted`]；被本轮剩下的配额截断时，这一次用掉的不到本钩子上限的一半也是 [`Outcome::TurnExhausted`]，达到一半就和超出本钩子上限一样是 fuel 耗尽的 [`Outcome::Failed`]。`before_commit` 在 `msime_init` 之后的快照上运行，看不到之前任何事件留下的状态。
     ///
     /// `before_commit` 用自己的一份按轮配额（[`limits::BEFORE_COMMIT_FUEL`]），不从其余钩子的轮配额里扣，也不让它们扣：要是共用一份，持久实例在同一轮里先烧掉多少 fuel 就能决定快照上的改写会不会因为 fuel 耗尽被丢掉，之前事件攒下的状态借此影响上屏。它只被同一轮里之前的 `before_commit` 用掉，那些同样只看得到各自的上屏文本。
     pub fn deliver(&mut self, turn: u64, event: &Event<'_>) -> Outcome {
@@ -796,14 +796,23 @@ impl ScriptInstance {
         }
         match result {
             Ok(status) => Outcome::Delivered { status, fuel },
-            // 截断它的是本轮剩下的配额，不是本钩子的上限：插件没有超出任何一项自己的限制。wasmi 在剩下的 fuel 不够下一段指令时就停，留下的零头本轮也用不上，记为用完，宿主据此在本轮里不再为它重建实例。用完的是这个钩子所用的那一份：`before_commit` 的配额截断不影响其余钩子的，反过来也一样。
+            // 截断它的是本轮剩下的配额，不是本钩子的上限。wasmi 在剩下的 fuel 不够下一段指令时就停，留下的零头本轮也用不上，记为用完，宿主据此在本轮里不再为它重建实例。用完的是这个钩子所用的那一份：`before_commit` 的配额截断不影响其余钩子的，反过来也一样。
+            //
+            // 这一次自己用掉的不到本钩子上限的一半时不算失败：没经过 `msime_client_key` 的派发只拿到上一次按键剩下的零头，被截断怪不到插件。用掉的达到一半就和超出自己上限一样算失败，否则轮配额和单次上限相等（`candidates`）或相近时，一个死循环只要同一轮里之前的钩子花过一点 fuel，就总是先撞上轮配额，熔断永远落不到它身上。
             Err(Failure::OutOfFuel) if allowed < hook_limit => {
                 if before_commit {
                     self.before_commit_fuel_left = 0;
                 } else {
                     self.turn_fuel_left = 0;
                 }
-                Outcome::TurnExhausted { fuel }
+                if fuel >= hook_limit / 2 {
+                    Outcome::Failed {
+                        failure: Failure::OutOfFuel,
+                        fuel,
+                    }
+                } else {
+                    Outcome::TurnExhausted { fuel }
+                }
             }
             Err(failure) => Outcome::Failed { failure, fuel },
         }

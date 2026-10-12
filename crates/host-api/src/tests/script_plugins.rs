@@ -135,7 +135,7 @@ fn init_failure() -> String {
     )
 }
 
-/// 空转 `rounds` 圈再写出事件类型。
+/// 空转 `rounds` 圈再写出事件类型。一千圈约七千 fuel，不到观察类钩子上限的一半：被本轮配额截断时不算失败。
 fn burner(rounds: u32) -> String {
     format!(
         r#"(module
@@ -641,11 +641,11 @@ fn fuel_is_given_per_turn_and_a_new_key_refills_it() {
     let fixture = fixture();
     let hashes = install(
         &fixture,
-        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        &[Script::new("burner", burner(1000), &[Hook::Input])],
         1,
     );
     opt_in(&fixture, TRAIT_KNOWN);
-    // 每次 input 花几千 fuel，单次远低于观察类钩子的 25 000 上限。
+    // 每次 input 花几千 fuel，不到观察类钩子 25 000 上限的一半。
     for _ in 0..50 {
         msime_client_key(fixture.handle, 0);
         read(msime_client_reset_cache(fixture.handle));
@@ -665,7 +665,7 @@ fn the_turn_quota_belongs_to_the_plugin_not_to_one_instance() {
     let fixture = fixture();
     let hashes = install(
         &fixture,
-        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        &[Script::new("burner", burner(1000), &[Hook::Input])],
         1,
     );
     opt_in(&fixture, TRAIT_KNOWN);
@@ -703,11 +703,11 @@ fn an_exhausted_turn_skips_the_plugin_and_never_trips_the_breaker() {
     let fixture = fixture();
     let hashes = install(
         &fixture,
-        &[Script::new("burner", burner(2000), &[Hook::Input])],
+        &[Script::new("burner", burner(1000), &[Hook::Input])],
         1,
     );
     opt_in(&fixture, TRAIT_KNOWN);
-    // 修饰键组合、快捷键和失焦命令不经过 msime_client_key，这些派发和上一次按键共用一轮。每次聚焦都把这一轮花光：插件只是被跳过，连着四次也不熔断（按失败计时第三次就停用了）。
+    // 修饰键组合、快捷键和失焦命令不经过 msime_client_key，这些派发和上一次按键共用一轮。每次聚焦都把这一轮花光：每次投递都不到自己上限的一半，被截断的那一次用掉的只会更少，插件只是被跳过，连着四次也不熔断（按失败计时第三次就停用了）。
     for _ in 0..4 {
         msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
         read(msime_client_focus(fixture.handle, true));
@@ -723,6 +723,58 @@ fn an_exhausted_turn_skips_the_plugin_and_never_trips_the_breaker() {
     read(msime_client_focus(fixture.handle, true));
     letter(fixture.handle, b'n');
     assert_eq!(kinds(&take_log()), [Hook::Input.code()]);
+}
+
+/// 每个事件先写出事件类型；`candidates` 接着死循环，其余钩子空转一千圈（几千 fuel）后返回。
+fn candidates_spinner() -> String {
+    format!(
+        r#"(module
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (func (export "msime_on_event") (param $kind i32) (result i32) (local $i i32)
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    (if (i32.eq (local.get $kind) (i32.const {candidates}))
+      (then (loop $forever (br $forever))))
+    (loop $spin
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $spin (i32.lt_u (local.get $i) (i32.const 1000))))
+    (i32.const 0)))"#,
+        candidates = Hook::Candidates.code(),
+    )
+}
+
+#[test]
+fn a_loop_in_candidates_after_input_trips_the_breaker() {
+    let fixture = fixture();
+    let hashes = install(
+        &fixture,
+        &[Script::new(
+            "candidates-spinner",
+            candidates_spinner(),
+            &[Hook::Input, Hook::Candidates],
+        )],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 同一轮里 `input` 先花掉几千 fuel，`candidates` 的死循环于是先撞上轮配额（它的单次上限和轮配额相等）。这一次用掉的远超自己上限的一半，算一次失败：每次聚焦失败一次，第 3 次停用。
+    for focus in 0..4 {
+        if focus > 0 {
+            read(msime_client_focus(fixture.handle, true));
+        }
+        // 死循环不影响打字；trap 之后这次聚焦里不再重建实例，第二个字母什么都不投递。
+        letter(fixture.handle, b'n');
+        letter(fixture.handle, b'i');
+        let expected: &[i32] = if focus < 3 {
+            &[Hook::Input.code(), Hook::Candidates.code()]
+        } else {
+            &[]
+        };
+        assert_eq!(kinds(&take_log()), expected, "focus {focus}");
+    }
+    assert_eq!(
+        process_health(&fixture, "candidates-spinner", &hashes[0]),
+        (3, Some("out_of_fuel"))
+    );
 }
 
 #[test]

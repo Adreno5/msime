@@ -562,7 +562,7 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     match outcome {
         Outcome::NotSubscribed => {}
         Outcome::Delivered { .. } => entry.health.record(None, slow),
-        // 本轮配额用完不算失败（宿主不在每次派发前都开一轮）；运行过的照样按墙钟记一次。
+        // 本轮配额用完不算失败（宿主不在每次派发前都开一轮）；运行过的照样按墙钟记一次。被截断时已经用掉本钩子上限一半的，runtime 报的是 `Failed`，走下面的失败分支。
         Outcome::TurnExhausted { fuel } => {
             if fuel > 0 {
                 entry.health.record(None, slow);

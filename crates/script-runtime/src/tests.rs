@@ -518,19 +518,20 @@ fn burner(iterations: u32) -> String {
 
 #[test]
 fn the_turn_quota_spans_deliveries_and_refills_on_the_next_turn() {
-    let mut script = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
+    // 每次投递约七千 fuel，不到观察类钩子上限的一半，被截断的那一次用掉的只会更少。
+    let mut script = instance(&burner(1_000), declaration(&[], &[Hook::Input]));
     let mut spent = 0;
     let mut deliveries = 0;
     loop {
         match script.deliver(7, &input_event()) {
             Outcome::Delivered { fuel, .. } => {
-                assert!(fuel <= limits::OBSERVE_FUEL);
+                assert!(fuel < limits::OBSERVE_FUEL / 2);
                 spent += fuel;
                 deliveries += 1;
             }
-            // 截断它的是本轮剩下的配额，不是钩子自己的上限：不算失败。
+            // 截断它的是本轮剩下的配额，不是钩子自己的上限，这一次用掉的也不到上限的一半：不算失败。
             Outcome::TurnExhausted { fuel } => {
-                assert!(fuel < limits::OBSERVE_FUEL);
+                assert!(fuel < limits::OBSERVE_FUEL / 2);
                 spent += fuel;
                 break;
             }
@@ -542,7 +543,7 @@ fn the_turn_quota_spans_deliveries_and_refills_on_the_next_turn() {
     assert!(spent <= limits::TURN_FUEL);
     assert_eq!(script.turn_fuel_left(), 0);
     // 撞上本轮配额的那一次运行到一半被截断，实例要换新的；新实例在新一轮里重新拿到完整配额。
-    let mut fresh = instance(&burner(2_000), declaration(&[], &[Hook::Input]));
+    let mut fresh = instance(&burner(1_000), declaration(&[], &[Hook::Input]));
     assert!(matches!(
         fresh.deliver(8, &input_event()),
         Outcome::Delivered { .. }
@@ -604,6 +605,109 @@ fn an_exhausted_turn_is_skipped_rather_than_failed() {
         snapshot.deliver(6, &input_event()),
         Outcome::Delivered { .. }
     ));
+}
+
+/// 所有钩子都是死循环的模块。
+fn spinner() -> String {
+    module_wat("", "", "(loop $spin (br $spin)) i32.const 0")
+}
+
+/// `hook` 这一次的事件：`before_commit` 带上屏文本，其余只有标量。
+fn event_for(hook: Hook) -> Event<'static> {
+    if hook == Hook::BeforeCommit {
+        return before_commit_event("abc", "abc");
+    }
+    let mut event = input_event();
+    event.hook = hook;
+    event
+}
+
+#[test]
+fn a_loop_in_candidates_after_input_spent_fuel_is_a_failure() {
+    // `input` 先花掉几千 fuel，同一轮里 `candidates` 死循环：它能用的只剩本轮的余额，比自己的上限（与轮配额相等）少一点，于是先被轮配额截断。这一次用掉的远超自己上限的一半，按失败算，否则熔断永远不会落到这样的插件上。
+    let wat = module_wat(
+        "",
+        "",
+        &format!(
+            "(local $i i32)
+             (if (i32.eq (local.get $kind) (i32.const {candidates}))
+                (then (loop $spin (br $spin))))
+             (local.set $i (i32.const 1000))
+             (loop $again
+                (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+                (br_if $again (local.get $i)))
+             i32.const 0",
+            candidates = Hook::Candidates.code(),
+        ),
+    );
+    let mut script = instance(&wat, declaration(&[], &[Hook::Input, Hook::Candidates]));
+    let spent = match script.deliver(1, &input_event()) {
+        Outcome::Delivered { fuel, .. } => fuel,
+        other => panic!("{other:?}"),
+    };
+    assert!(spent > 0 && spent < limits::CANDIDATES_FUEL / 2);
+    // wasmi 在剩下的 fuel 不够下一段指令时就停，用掉的可能比本轮余额少一点零头。
+    let outcome = script.deliver(1, &event_for(Hook::Candidates));
+    assert!(
+        matches!(outcome, Outcome::Failed { failure: Failure::OutOfFuel, fuel }
+            if fuel > limits::TURN_FUEL - spent - 10 && fuel <= limits::TURN_FUEL - spent),
+        "{outcome:?}"
+    );
+    // 和超出自己上限的那种失败一样：实例不可用，本轮记为用完，宿主这次聚焦里不再重建。
+    assert!(!script.is_usable());
+    assert_eq!(script.turn_fuel_left(), 0);
+}
+
+#[test]
+fn a_cut_run_counts_as_a_failure_from_half_of_its_own_limit() {
+    for hook in [Hook::Input, Hook::Candidates, Hook::BeforeCommit] {
+        let half = limits::hook_fuel(hook) / 2;
+        let resume = |script: &mut ScriptInstance, left: u64| {
+            if hook == Hook::BeforeCommit {
+                script.resume_turn(1, limits::TURN_FUEL, left);
+            } else {
+                script.resume_turn(1, left, limits::BEFORE_COMMIT_FUEL);
+            }
+        };
+        let declared = declaration(&[], &[hook]);
+        // 开头只剩一点（远不到自己上限的一半）：这是没经过 `msime_client_key` 的派发接着上一轮的零头，被截断不算失败。
+        let mut small = instance(&spinner(), declared);
+        resume(&mut small, 1_000);
+        assert_eq!(
+            small.deliver(1, &event_for(hook)),
+            Outcome::TurnExhausted { fuel: 1_000 },
+            "{hook:?}"
+        );
+        // 差一点到一半：仍然不算。
+        let mut below = instance(&spinner(), declared);
+        resume(&mut below, half - 1);
+        let outcome = below.deliver(1, &event_for(hook));
+        assert!(
+            matches!(outcome, Outcome::TurnExhausted { fuel } if fuel > half - 10 && fuel < half),
+            "{hook:?}: {outcome:?}"
+        );
+        // 正好用掉一半（死循环每圈的 fuel 是偶数，余额是偶数时恰好用完）：算一次 fuel 耗尽的失败，和超出自己上限的那种一样。
+        let mut at = instance(&spinner(), declared);
+        resume(&mut at, half);
+        assert_eq!(
+            at.deliver(1, &event_for(hook)),
+            Outcome::Failed {
+                failure: Failure::OutOfFuel,
+                fuel: half,
+            },
+            "{hook:?}"
+        );
+        // 两种情形里本轮这一份都记为用完；`before_commit` 跑在快照上，持久实例照样可用。
+        for script in [&below, &at] {
+            assert_eq!(script.is_usable(), hook == Hook::BeforeCommit, "{hook:?}");
+            let left = if hook == Hook::BeforeCommit {
+                script.before_commit_fuel_left()
+            } else {
+                script.turn_fuel_left()
+            };
+            assert_eq!(left, 0, "{hook:?}");
+        }
+    }
 }
 
 #[test]

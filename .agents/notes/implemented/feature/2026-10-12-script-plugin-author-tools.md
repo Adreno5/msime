@@ -13,7 +13,7 @@ Status: implemented
 **`msime-pack run <pack> --events <fixture.jsonl> [--grant all|cap,...]`**，只在桌面编译（`crates/pack-tool/src/run.rs`，cfg 同运行时；移动端上 `run` 报用法错误）。
 
 - 读包走 client-core 新增的 `plugins::load_script_source`：和 `validate` 同样暂存（文件夹或 `.zip`）、同样检查，再从同一份暂存里按 `DataFiles::Module` 读出模块字节。不是脚本包时报 `plugin_invalid`。编译走 `msime_script_runtime::compile`，执行走 `ScriptInstance`：授权与清单取交集、按授权和 U6 本地模式白名单复制文本、`before_commit` 在 `msime_init` 之后的快照上运行、每轮和每个钩子的 fuel 配额、import 计 fuel、修改类 import 的返回码，全部是产品代码，`run` 不重写任何一条。
-- `run` 只复刻 host-api `scripts::set` 对一个条目做的几件事：第一次需要投递一个声明过的钩子时实例化（受本轮初始化预算约束，被预算卡住时是 `deferred`）；`focus_in` 之前、`focus_out` 之后丢弃实例；trap 之后这次聚焦里不再重建（`suspended`）；本轮配额用完时跳过、运行到一半被本轮配额截断时同样不再重建，都是 `turn_exhausted`，不算失败；同一轮里重建的实例经 `resume_turn` 接着用这一轮剩下的配额（其余钩子和 `before_commit` 各一份）；初始化失败之后停用（`disabled`）。
+- `run` 只复刻 host-api `scripts::set` 对一个条目做的几件事：第一次需要投递一个声明过的钩子时实例化（受本轮初始化预算约束，被预算卡住时是 `deferred`）；`focus_in` 之前、`focus_out` 之后丢弃实例；trap 之后这次聚焦里不再重建（`suspended`）；本轮配额用完时跳过、运行到一半被本轮配额截断时同样不再重建，都是 `turn_exhausted`，不算失败，只有被截断时这一次用掉的达到本钩子上限的一半是 `out_of_fuel`（runtime 判定，见 [沙箱运行时](../architecture/2026-10-12-script-runtime-sandbox.md)）；同一轮里重建的实例经 `resume_turn` 接着用这一轮剩下的配额（其余钩子和 `before_commit` 各一份）；初始化失败之后停用（`disabled`）。
 - 与输入法有意不同的三处，写进作者文档：字段永远是普通字段；不做按次数和按墙钟的熔断，每次失败都报告；不检查进程内存总账，单个插件总放得下。（第 4 阶段接通之前还有一处：`run` 照样投递 `before_commit` 和 `candidates`，输入法当时还不投递；合并第 4 阶段后两边一致，这条差异删掉了。）
 - `--grant` 按授权页的规则（同 `script_grants::set`）：必须是清单 `permissions` 的子集，满足依赖和互斥，错误文案共用 client-core 的 `script_pack::rule_message`（由 `pub(crate)` 改为 `pub`）。不写 `--grant` 什么都不授予，和刚导入、还没授权的包一样。
 - 退出码：没有失败为 0；有任何失败（trap、fuel 耗尽、栈溢出、内存越界、返回负数、初始化失败）或包不合规为 1；命令行、`--grant`、夹具写错或读不出为 2。包和夹具的错误写到标准错误，标准输出只有 JSONL。
