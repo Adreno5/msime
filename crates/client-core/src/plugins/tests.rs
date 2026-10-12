@@ -2169,7 +2169,28 @@ fn phrase_tables_hold_bounded_rows_and_merge_in_priority_order() {
     let enabled = vec!["office".to_owned()];
     assert_eq!(
         phrase_table::enabled_phrases(root.path(), &enabled).capacity(),
-        phrase_table::MAX_ENABLED_PHRASES
+        2
+    );
+    let merged = phrase_table::enabled_phrases(
+        root.path(),
+        &[
+            "office".into(),
+            "missing".into(),
+            "over".into(),
+            "home".into(),
+        ],
+    );
+    assert_eq!(merged.len(), 4);
+    assert_eq!(merged.capacity(), 4);
+    assert_eq!(merged[0].text, "电话");
+    assert_eq!(merged[3].text, "地址");
+    let saturated = phrase_table::enabled_phrases(root.path(), &vec!["full".into(); 5]);
+    assert_eq!(saturated.len(), phrase_table::MAX_ENABLED_PHRASES);
+    assert_eq!(saturated.capacity(), phrase_table::MAX_ENABLED_PHRASES);
+    assert_eq!(saturated.last().unwrap().text, "191");
+    assert_eq!(
+        phrase_table::enabled_phrases(root.path(), &["missing".into(), "over".into()]).capacity(),
+        0
     );
     assert_eq!(
         phrase_table::enabled_phrases(root.path(), &[]).capacity(),
