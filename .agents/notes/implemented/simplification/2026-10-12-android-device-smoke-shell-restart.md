@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-18 个 Android 设备验收类重复实现不读取命令结果的 shell 调用，8 个类还重复执行相同的输入法禁用、启用、选中和等待步骤。改动设备准备顺序时，这些副本容易分叉。
+18 个 Android 设备验收类重复实现不读取命令结果的 shell 调用，另有 12 个类分别以 `restartIme` 或 `rebindInputMethod` 重复执行相同的输入法禁用、启用、选中和等待步骤。改动设备准备顺序时，这些副本容易分叉。
 
 ## Decision
 

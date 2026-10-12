@@ -46,7 +46,7 @@ public final class KeyboardHeightDeviceSmoke extends DeviceSmoke {
             if (!localSettings.getParentFile().isDirectory() && !localSettings.getParentFile().mkdirs())
                 throw new AssertionError("Local settings directory unavailable");
             publish(localSettings, localBaseline.toString().getBytes(StandardCharsets.UTF_8));
-            rebindInputMethod();
+            restartIme();
             openEditor();
             stage = "baseline keyboard height";
             int standard = keyHeight("n");
@@ -109,7 +109,7 @@ public final class KeyboardHeightDeviceSmoke extends DeviceSmoke {
 
             stage = "height survives input method restart";
             shellDiscard("am start -W -n app.msime.android/app.msime.android.home.HomeActivity");
-            rebindInputMethod();
+            restartIme();
             openEditor();
             int restarted = keyHeight("n");
             if (Math.abs(restarted - resetHeight) > 2)
@@ -159,7 +159,7 @@ public final class KeyboardHeightDeviceSmoke extends DeviceSmoke {
                     .put("selected", "fourteen_key"));
             publish(preferences, new JSONObject().put("format_version", 1).put("revision", revision + 2)
                 .put("preferences", fourteen).toString().getBytes(StandardCharsets.UTF_8));
-            rebindInputMethod();
+            restartIme();
             openEditor();
             Rect pair = new Rect();
             awaitStableBounds(description("按键 Q W")).getBoundsInScreen(pair);
@@ -184,18 +184,12 @@ public final class KeyboardHeightDeviceSmoke extends DeviceSmoke {
         tap(field("msime-test-plain"));
     }
 
-    private void rebindInputMethod() throws Exception {
-        shellDiscard("ime disable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime enable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime set app.msime.android/.MSIMEInputService");
-        SystemClock.sleep(1000);
-    }
 
     /** 写入这份本地设置、重新绑定输入法后，等键盘停稳再量「n」键在屏幕上的位置：键盘弹出有动画，动画中量到的位置是过渡值。 */
     private Rect settledKeyBounds(File localSettings, JSONObject settings) throws Exception {
         publish(localSettings, new JSONObject().put("version", 1).put("settings", settings).toString()
             .getBytes(StandardCharsets.UTF_8));
-        rebindInputMethod();
+        restartIme();
         openEditor();
         Rect bounds = new Rect();
         awaitStableBounds(key("n")).getBoundsInScreen(bounds);

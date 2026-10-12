@@ -35,7 +35,7 @@ public final class NumberRowDeviceSmoke extends DeviceSmoke {
             publish(localSettings, new JSONObject().put("version", 1)
                 .put("settings", new JSONObject().put(NUMBER_ROW_SETTING, true))
                 .toString().getBytes(StandardCharsets.UTF_8));
-            rebindInputMethod();
+            restartIme();
             openEditor();
 
             stage = "number row above the letters";
@@ -83,7 +83,7 @@ public final class NumberRowDeviceSmoke extends DeviceSmoke {
             shellDiscard("am start -W -n app.msime.android/app.msime.android.home.HomeActivity");
             if (originalLocal == null) Files.deleteIfExists(localSettings.toPath());
             else publish(localSettings, originalLocal);
-            rebindInputMethod();
+            restartIme();
         }
     }
 
@@ -136,12 +136,6 @@ public final class NumberRowDeviceSmoke extends DeviceSmoke {
         tap(field("msime-test-plain"));
     }
 
-    private void rebindInputMethod() throws Exception {
-        shellDiscard("ime disable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime enable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime set app.msime.android/.MSIMEInputService");
-        SystemClock.sleep(1000);
-    }
 
     private String shellOutput(String command) throws Exception {
         try (var input = new ParcelFileDescriptor.AutoCloseInputStream(

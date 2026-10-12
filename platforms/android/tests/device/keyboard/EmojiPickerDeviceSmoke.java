@@ -80,7 +80,7 @@ public final class EmojiPickerDeviceSmoke extends DeviceSmoke {
         await(field("msime-test-plain").and(node -> equalsText(committedWithEmoji, node.getText())));
 
         stage = "emoji recents survive restart";
-        rebindInputMethod();
+        restartIme();
         openEditor();
         tap(description("表情"));
         await(description("表情分类 最近").and(AccessibilityNodeInfo::isSelected));
@@ -107,12 +107,6 @@ public final class EmojiPickerDeviceSmoke extends DeviceSmoke {
         await(key("n").and(AccessibilityNodeInfo::isClickable));
     }
 
-    private void rebindInputMethod() throws Exception {
-        shellDiscard("ime disable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime enable app.msime.android/.MSIMEInputService");
-        shellDiscard("ime set app.msime.android/.MSIMEInputService");
-        SystemClock.sleep(1000);
-    }
 
     private Predicate<AccessibilityNodeInfo> description(String value) {
         return node -> equalsText("app.msime.android", node.getPackageName())
