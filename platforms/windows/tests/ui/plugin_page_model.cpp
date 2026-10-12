@@ -177,6 +177,145 @@ int main() {
             mentions_description(true, 3, true, true) == L"有未保存的修改",
         "mentions description");
 
+  // 脚本插件：类型名、出错说明。
+  check(kind_label(L"script") == L"脚本插件", "the script kind label");
+  check(error_message(L"plugin_script_changed", L"", L"x") ==
+                L"这个插件的内容在你打开之后变了，页面已经重新读取，请看过现在的内容再试。" &&
+            error_message(L"plugin_script_limit", L"", L"x") == L"最多同时启用 8 个脚本插件，先停用一个再试。" &&
+            error_message(L"plugin_script_memory", L"", L"x") ==
+                L"启用后会超出输入法留给脚本插件的内存（64 MiB），先停用别的脚本插件再试。" &&
+            error_message(L"plugin_script_grant_invalid", L"清单没有申请 read_commit", L"x") ==
+                L"授权不符合要求（清单没有申请 read_commit）。" &&
+            error_message(L"plugin_script_grants_format", L"", L"x") ==
+                L"授权文件是更新版本的水杉输入法写的，这个版本不能修改它。" &&
+            error_message(L"plugin_script_missing", L"", L"x") == L"找不到这个脚本插件。",
+        "script error messages");
+
+  // 删除脚本包不碰任何偏好：哪怕它和当前音效包同名。
+  Preferences named;
+  named.key_sound_pack = L"pangu";
+  check(without_removed_pack(named, L"script", L"pangu") == named, "removing a script pack keeps the preferences");
+
+  // 依赖联动：勾选一项把它依赖的一起勾上，取消一项把依赖它的一起取消。
+  using Caps = std::vector<std::wstring>;
+  const Caps all(script_capabilities.begin(), script_capabilities.end());
+  check((toggle_capability({}, L"rerank_candidates", true, all) == Caps{L"read_candidates", L"rerank_candidates"}),
+        "checking a capability checks what it needs");
+  check((toggle_capability({L"read_candidates", L"rerank_candidates", L"filter_candidates"},
+                           L"read_candidates", false, all) == Caps{}),
+        "unchecking a capability unchecks what needs it");
+  check((toggle_capability({L"read_candidates", L"rerank_candidates"}, L"rerank_candidates", false, all) ==
+         Caps{L"read_candidates"}),
+        "unchecking a dependent keeps what it needed");
+  // 互斥：rewrite_commit 和 read_composition 一项勾着时另一项让开，结果按 Capability::ALL 排序。
+  check((toggle_capability({L"read_composition"}, L"rewrite_commit", true, all) ==
+         Caps{L"read_commit", L"rewrite_commit"}),
+        "rewriting the commit gives up reading the composition");
+  check((toggle_capability({L"read_commit", L"rewrite_commit"}, L"read_composition", true, all) ==
+         Caps{L"read_composition", L"read_commit"}),
+        "reading the composition gives up rewriting the commit but keeps reading it");
+  // 只在清单申请过的能力里变动。
+  check((toggle_capability({L"read_commit"}, L"read_candidates", true, {L"read_commit"}) == Caps{L"read_commit"}),
+        "an unrequested capability cannot be checked");
+  check((toggle_capability({}, L"rewrite_commit", true, {L"rewrite_commit"}) == Caps{L"rewrite_commit"}),
+        "a dependency the manifest did not request is not added");
+  check((sort_capabilities({L"filter_candidates", L"x", L"read_composition", L"read_composition"}) ==
+         Caps{L"read_composition", L"filter_candidates"}),
+        "capabilities sort in the runtime's order");
+
+  // 对话框：依赖和互斥的说明，互斥的那一项勾着时禁用；新版本不再申请的一项不算勾着。
+  auto items = grant_items({L"rewrite_commit", L"read_commit", L"read_composition"},
+                           {L"read_commit", L"rewrite_commit"}, false);
+  check(items.size() == 3 && items[0].capability == L"read_composition" &&
+            items[1].capability == L"read_commit" && items[2].capability == L"rewrite_commit",
+        "the dialog lists the requested capabilities in order");
+  check(items[0].disabled && !items[0].checked &&
+            items[0].description ==
+                L"能看到你正在打的拼音或编码、组字时显示的文字，以及每次按下的字符。 不能和「修改输入的文字」同时授予。",
+        "the exclusive partner is disabled and says why");
+  check(items[2].checked && !items[2].disabled && items[2].title == L"修改输入的文字" &&
+            items[2].description ==
+                L"能在文字输入到应用之前改写它，例如在中英文之间加空格。 需要同时授予「读取输入的文字」。",
+        "a dependent names what it needs");
+  check(grant_items({L"read_composition"}, {L"rewrite_commit"}, false)[0].disabled == false,
+        "a capability the new version no longer requests blocks nothing");
+  check(grant_items({L"read_commit"}, {}, true)[0].disabled, "busy disables every box");
+  check((selected_capabilities({L"rewrite_commit", L"read_commit"}, {L"read_commit"}) == Caps{L"read_commit"}),
+        "only what the dialog lists is handed over");
+
+  // 授权状态、列表标记和执行顺序。
+  auto script = [](std::wstring id, std::wstring hash) {
+    Package value;
+    value.kind = L"script";
+    value.id = id;
+    value.name = L"名" + id;
+    value.version = L"1.0.0";
+    value.content_hash = std::move(hash);
+    value.permissions = {L"read_commit", L"rewrite_commit"};
+    return value;
+  };
+  const std::wstring h1(64, L'1'), h2(64, L'2');
+  std::vector<Package> scripts;
+  for (int i = 0; i < 10; ++i)
+    scripts.push_back(script(L"s" + std::to_wstring(i), h1));
+  ScriptGrants grants;
+  for (int i = 9; i >= 0; --i)
+    grants.plugins.push_back({L"s" + std::to_wstring(i), h1, true, {L"read_commit"}});
+  // s9 的条目哈希对不上（包更新过），仍占着输入法运行的前 8 个位置之一。
+  grants.plugins.front().hash = h2;
+  const auto running = running_script_ids(&grants, scripts);
+  check((running == Caps{L"s8", L"s7", L"s6", L"s5", L"s4", L"s3", L"s2"}),
+        "the input method runs the first 8 enabled entries whose hash matches");
+  check(running_script_ids(nullptr, scripts).empty(), "nothing runs before the grants are read");
+  check(script_marker(scripts[9], &grants, running) == L"已更新，需要重新授权", "a stale grant");
+  check(script_marker(scripts[8], &grants, running) == L"已启用 · 第 1 位", "the first running script");
+  check(script_marker(scripts[1], &grants, running) == L"已启用 · 超过 8 个，不运行", "past the eighth");
+  grants.health.push_back({L"s7", h1, L"slow"});
+  grants.health.push_back({L"s6", h2, L"failed"});
+  check(script_marker(scripts[7], &grants, running) == L"已被输入法停用", "stopped by the input method");
+  check(script_marker(scripts[6], &grants, running) == L"已启用 · 第 3 位",
+        "a stop recorded against another version does not count");
+  grants.plugins[2].enabled = false;
+  check(script_marker(scripts[7], &grants, running_script_ids(&grants, scripts)) == L"未启用", "disabled");
+  ScriptGrants empty;
+  check(script_marker(scripts[0], &empty, {}) == L"未授权", "ungranted");
+  check(script_status(ScriptGrantState::enabled, script_health(&grants, scripts[7])) ==
+            L"已启用。运行太慢，输入法已停用它，重新授权或重启输入法后恢复。" &&
+            script_status(ScriptGrantState::stale, nullptr) ==
+                L"已更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。",
+        "status lines");
+  check(script_order_note(-1, 8) == L"同时启用的脚本插件超过 8 个，这个插件排在第 8 个之后，不会运行。" &&
+            script_order_note(0, 3) == L"第 1 位，共 3 个。多个插件按这个顺序依次处理同一件事。",
+        "order notes");
+  // 每个列表一次 check，理由同下面名单那几条（GCC 的 -Wdangling-pointer）。
+  const Caps three{L"a", L"b", L"c"};
+  check((moved_order(three, L"b", -1) == std::optional<Caps>{Caps{L"b", L"a", L"c"}}), "moving up");
+  check((moved_order(three, L"b", 1) == std::optional<Caps>{Caps{L"a", L"c", L"b"}}), "moving down");
+  check(!moved_order(three, L"a", -1) && !moved_order(three, L"c", 1) && !moved_order(three, L"x", 1),
+        "moving only among the running scripts");
+
+  // 重新授权：内容变了之后不预先勾选，调整授权时勾着现在授予、清单还申请的那几项。
+  ScriptGrant stale{L"s0", h2, true, {L"read_commit"}};
+  check(grant_dialog_initial(scripts[0], &stale).empty(), "a re-grant starts with nothing checked");
+  ScriptGrant current{L"s0", h1, true, {L"rewrite_commit", L"read_commit", L"filter_candidates"}};
+  check((grant_dialog_initial(scripts[0], &current) == Caps{L"read_commit", L"rewrite_commit"}),
+        "adjusting starts from what is granted");
+  check(grant_dialog_initial(scripts[0], nullptr).empty(), "a new grant starts with nothing checked");
+
+  // 文案：钩子、停用原因、指纹、残余风险。
+  check(hook_label(L"before_commit") == L"文字输入到应用之前（可以改写）" && hook_label(L"x") == L"x",
+        "hook labels");
+  check(health_label(L"init") == L"初始化失败，输入法已停用它", "health labels");
+  check(short_hash(L"0123456789abcdef") == L"0123456789ab" && short_hash(L"ab") == L"ab", "short hash");
+  check(std::wstring(script_residual_risk).find(L"以管理员身份运行的窗口里不会运行脚本插件") !=
+                std::wstring::npos &&
+            script_group_note().find(script_residual_risk) != std::wstring::npos,
+        "the residual risk is written where the user decides");
+  auto authored = script(L"a", h1);
+  authored.author = L"甲";
+  check(script_row_description(authored) == L"1.0.0 · 作者 甲", "script row description");
+  check(grant_dialog_title(authored) == L"授权「名a」", "dialog title");
+
   if (failures == 0)
     std::puts("plugin page model: ok");
   return failures == 0 ? 0 : 1;

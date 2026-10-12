@@ -72,7 +72,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 | dev，wasmi 关掉 debug-assertions | 256 KiB 能跑完 | 256 KiB 能跑完 |
 | release | 256 KiB 能跑完 | 256 KiB 能跑完 |
 
-脚本现在只在开发构建里运行，而 Windows Server 的工作线程默认只有 1 MiB 栈。`tests::a_hook_running_out_of_fuel_fits_a_small_native_stack` 在 256 KiB 的线程上跑满三类钩子的配额，守住这一条。
+脚本在三个桌面平台的 release 构建里也运行（Windows 见 [Windows 授权页](2026-10-12-windows-script-grants-page.md)），而 Windows Server 的工作线程默认只有 1 MiB 栈。`tests::a_hook_running_out_of_fuel_fits_a_small_native_stack` 在 256 KiB 的线程上跑满三类钩子的配额，守住这一条。
 
 ## Testing
 

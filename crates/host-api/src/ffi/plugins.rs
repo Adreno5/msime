@@ -5,6 +5,12 @@
 use crate::*;
 use key_sound::{KeyClass, PluginRoots, SessionSound};
 use msime_client_core::plugins::mentions::{MentionEntry, MentionStore};
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+use msime_client_core::plugins::script_grants;
 use msime_client_core::plugins::{self, PluginFailure};
 
 /// 拿会话的声音设置执行 `action`。未知会话、错线程、重入调用和 panic（不能越过 C 边界）都返回 false。会话开了生命周期的 FEEDBACK 时同样返回 false、什么都不做：声音由核心驱动，宿主再调一次会响两遍。
@@ -156,7 +162,9 @@ pub unsafe extern "C" fn msime_client_music_pack(request: *const u8, length: usi
 /// Largest `msime_client_plugins` request: a full name list at its document bound, with room for JSON escaping and the two paths.
 const MAX_PLUGINS_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 
-/// 插件页的包仓库和 @ 名单，给桌面外壳以外的设置宿主：鸿蒙的插件页，以及 Android、iOS 设置里导入辅助码表。所有规则和失败码都来自 client-core，与桌面外壳回答设置页的相同。
+/// 插件页的包仓库和 @ 名单，给桌面外壳以外的设置宿主：Windows 的原生设置应用、鸿蒙的插件页，以及 Android、iOS 设置里导入辅助码表。所有规则和失败码都来自 client-core，与桌面外壳回答设置页的相同。
+///
+/// 脚本插件只给有授权页的宿主：请求带 `script_page: true` 时目录列出脚本包、导入接受脚本包（`import_from_settings`），桌面上还能读写授权（`script_grants`、`set_script_grant`、`reorder_scripts`，回答和桌面外壳的同名命令一样是 `ScriptGrantsView`）。不带它时（Android、HarmonyOS 和各处的辅助码表导入）照旧：目录经 `without_scripts`，导入走 `import_without_script_page`。
 /// # Safety
 /// `request` points to `length` readable UTF-8 JSON bytes. Null is rejected.
 /// The returned response must be released with `msime_client_string_free`.
@@ -167,17 +175,60 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
     struct Request {
         state_root: String,
         sound_packs: Option<String>,
+        /// 宿主有脚本插件的授权页（列出、授权、排序、写明残余风险）。没有时为假。
+        #[serde(default)]
+        script_page: bool,
+        /// 输入法的 `user_data` 目录（宿主选项里的同名项）：授权的回答带上它下面 `script-health.json` 里的停用记录。没有时不带停用记录。
+        user_data: Option<String>,
         action: PluginAction,
     }
     #[derive(Deserialize)]
     #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
     enum PluginAction {
         Catalog,
-        Import { source: String },
-        Remove { kind: String, id: String },
-        ImportHelpcodeTable { file_name: String, text: String },
+        Import {
+            source: String,
+        },
+        Remove {
+            kind: String,
+            id: String,
+        },
+        ImportHelpcodeTable {
+            file_name: String,
+            text: String,
+        },
         LoadMentions,
-        SaveMentions { entries: Vec<MentionEntry> },
+        SaveMentions {
+            entries: Vec<MentionEntry>,
+        },
+        /// 脚本插件的授权、执行顺序和输入法记下的停用。
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
+        ScriptGrants,
+        /// 授予、调整或撤销一个脚本插件的授权；`hash` 是页面展示给用户的内容哈希。
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
+        SetScriptGrant {
+            id: String,
+            hash: String,
+            enabled: bool,
+            granted: Vec<String>,
+        },
+        /// 调整执行顺序：`ids` 按给出的顺序排在最前。
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
+        ReorderScripts {
+            ids: Vec<String>,
+        },
     }
     plugin_response(|| {
         let invalid = || PluginFailure::code("invalid");
@@ -190,6 +241,7 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
         .map_err(|_| invalid())?;
         if !absolute_path(&request.state_root)
             || !request.sound_packs.as_deref().is_none_or(absolute_path)
+            || !request.user_data.as_deref().is_none_or(absolute_path)
         {
             return Err(invalid());
         }
@@ -199,19 +251,35 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
             "",
         );
         let root = roots.installed.ok_or_else(invalid)?;
+        #[cfg_attr(
+            not(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            )),
+            allow(unused_variables)
+        )]
+        let user_data = request.user_data.as_deref().map(Path::new);
         let value = match request.action {
-            // 脚本插件不列出：授权页落地之前，设置页不展示它们。
-            PluginAction::Catalog => serde_json::to_value(
-                plugins::scan(&root, roots.builtin_sounds.as_deref()).without_scripts(),
-            ),
+            // 没有授权页的宿主看不到脚本插件。
+            PluginAction::Catalog => {
+                let catalog = plugins::scan(&root, roots.builtin_sounds.as_deref());
+                serde_json::to_value(if request.script_page {
+                    catalog
+                } else {
+                    catalog.without_scripts()
+                })
+            }
             PluginAction::Import { source } => {
                 if !absolute_path(&source) {
                     return Err(invalid());
                 }
-                serde_json::to_value(plugins::import_without_script_page(
-                    Path::new(&source),
-                    &root,
-                )?)
+                let source = Path::new(&source);
+                serde_json::to_value(if request.script_page {
+                    plugins::import_from_settings(source, &root)?
+                } else {
+                    plugins::import_without_script_page(source, &root)?
+                })
             }
             // 移动端选到的是 content URI 或 security-scoped URL，没有能交给 `import` 的路径：宿主严格按 UTF-8 解码后把码表正文放进请求。
             PluginAction::ImportHelpcodeTable { file_name, text } => serde_json::to_value(
@@ -226,6 +294,38 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
                 MentionStore::new(root).save(&entries)?;
                 Ok(Value::Null)
             }
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            PluginAction::ScriptGrants => {
+                serde_json::to_value(script_grants::view(script_grants::read(&root), user_data))
+            }
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            PluginAction::SetScriptGrant {
+                id,
+                hash,
+                enabled,
+                granted,
+            } => {
+                let granted = script_grants::capabilities(&granted)?;
+                let grants = script_grants::set(&root, &id, &hash, enabled, granted)?;
+                serde_json::to_value(script_grants::view(grants, user_data))
+            }
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            PluginAction::ReorderScripts { ids } => serde_json::to_value(script_grants::view(
+                script_grants::reorder(&root, &ids)?,
+                user_data,
+            )),
         };
         value.map_err(|_| PluginFailure::code("storage"))
     })

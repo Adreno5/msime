@@ -28,7 +28,7 @@ Status: implemented
 
 **威胁模型与发布构建。** 授权文件和插件目录都在用户可写的宿主状态根下，同一用户下任何没有特权的进程都能放进一个 script 包、再手写一条带正确哈希的授权。在加固落地之前，发布构建里 `msime_client_scripts_enable` 恒返回 false（见 [脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md)），这个文件只在开发构建里起作用。授权不签名：设计原本要在 macOS 上用钥匙串密钥给条目签 MAC，实现之后又去掉了，用户决定授权不使用钥匙串；读取方容忍未知字段，早期开发构建写过的 `mac` 字段照常忽略。三个桌面平台的残余风险相同，macOS 和 Linux 写在授权页上，发布构建打开开关见 [授权页](2026-10-12-script-grants-settings-page-without-keychain.md)。输入法进程在聚焦时按带 inode 的戳重读它，后台编译线程用 `script_pack::load` 读包并核对哈希。
 
-**设置页在第 5 阶段之前看不到脚本插件。** `PluginCatalog::without_scripts()` 去掉脚本包和脚本文件夹的问题行。授权页落地之后只有 host-api 的 `msime_client_plugins` 目录命令（Android、HarmonyOS 用）还经过它，桌面外壳的 `plugin_catalog` 列出脚本插件，`host_surface.script_plugins` 在 macOS 和 Linux 为真（Windows 的设置是原生应用，没有授权页），见 [授权页](2026-10-12-script-grants-settings-page-without-keychain.md)。导入命令不拦脚本包，开发构建里自测时还要靠它（或手工拷进 `script/<id>/`）装包，再手写授权。`PUBLISHABLE_KINDS` 和 `KINDS_DECLARATION` 不变，`script` 不能发布到社区。
+**设置页在第 5 阶段之前看不到脚本插件。** `PluginCatalog::without_scripts()` 去掉脚本包和脚本文件夹的问题行。授权页落地之后只有 host-api 的 `msime_client_plugins` 不带 `script_page` 的目录命令（Android、HarmonyOS 用）还经过它，桌面外壳的 `plugin_catalog` 和 Windows 原生设置应用（带 `script_page`）列出脚本插件，`host_surface.script_plugins` 在三个桌面平台为真，见 [授权页](2026-10-12-script-grants-settings-page-without-keychain.md) 和 [Windows 授权页](2026-10-12-windows-script-grants-page.md)。导入命令不拦脚本包，开发构建里自测时还要靠它（或手工拷进 `script/<id>/`）装包，再手写授权。`PUBLISHABLE_KINDS` 和 `KINDS_DECLARATION` 不变，`script` 不能发布到社区。
 
 ## Testing
 
@@ -49,7 +49,7 @@ Status: implemented
 ## Consequences
 - 收益：移动端的类型集合、报错原文和依赖图逐字节不变；导入、`msime-pack validate` 和输入法加载走同一份模块校验；授权绑定在用户看过的那份内容上，换内容就作废。
 - 代价：`plugins.rs` 里多了一批按 cfg 分开的分支；授权文件有了第二种写入时机（导入和删包时在同一把锁里改条目）。
-- 授权文件可以被同一用户下的任何进程伪造。第 5 阶段之前只有发布构建里 `scripts_enable` 恒为 false 挡着；设计原本要求打开发布构建之前落地三条对策（macOS 钥匙串 MAC、Windows 提权窗口不跑脚本、Linux 与 Windows 把残余风险写进授权页）。钥匙串 MAC 实现之后被用户否决，现在 macOS 和 Linux 一样把残余风险写进授权页、发布构建打开开关，Windows 的发布构建仍不运行脚本，见 [授权页](2026-10-12-script-grants-settings-page-without-keychain.md)。
+- 授权文件可以被同一用户下的任何进程伪造。第 5 阶段之前只有发布构建里 `scripts_enable` 恒为 false 挡着；设计原本要求打开发布构建之前落地三条对策（macOS 钥匙串 MAC、Windows 提权窗口不跑脚本、Linux 与 Windows 把残余风险写进授权页）。钥匙串 MAC 实现之后被用户否决，现在 macOS 和 Linux 一样把残余风险写进授权页、发布构建打开开关，见 [授权页](2026-10-12-script-grants-settings-page-without-keychain.md)；Windows 的原生设置应用有了同样的授权页之后发布构建也打开，见 [Windows 授权页](2026-10-12-windows-script-grants-page.md)。
 - 准入检查按编译膨胀的上界估算（每字节 128 倍加 256 KiB 固定开销，再加一份值栈），不是按普通代码的约 3.3 倍：产品里量不到真实值，没有"加载时按实际编译结果再查一次"的那一层。所以普通插件在总账里也记得偏多：几十 KiB 的插件每个约 5 MiB；256 KiB、64 页的模块约 36 MiB，同时只能启用一个。
 - `set` 每次启用都要读出其他已启用的包算总账，最多 8 个、每个至多 256 KiB，只在设置页操作时发生。
 - `scan` 现在会完整编译每个已安装的脚本包（dev 构建里 512 KiB 约 20 ms），设置页的目录命令在后台线程上跑，输入法进程的按键和 focus 路径不调用 `scan`。每次校验用一个随结果释放的 Engine，反复刷新目录不会越攒越多。

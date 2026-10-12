@@ -311,7 +311,7 @@ pub enum PluginContent {
 }
 
 impl PluginCatalog {
-    /// 去掉脚本插件的包和问题行。host-api 的 `msime_client_plugins` 目录命令经过这里：用它的宿主（Windows 的原生设置应用、Android、HarmonyOS）没有授权页。桌面外壳的目录命令列出脚本插件，由设置页按 `script_plugins` 决定展示与否；移动端没有脚本插件，原样返回。
+    /// 去掉脚本插件的包和问题行。host-api 的 `msime_client_plugins` 目录命令在请求不带 `script_page` 时经过这里：这样调用的宿主（Android、HarmonyOS）没有授权页。桌面外壳的目录命令和带 `script_page` 的 Windows 原生设置应用列出脚本插件，由页面按 `script_plugins` 决定展示与否；移动端没有脚本插件，原样返回。
     pub fn without_scripts(mut self) -> Self {
         self.packages.retain(|package| !package.kind().is_script());
         self.issues.retain(|issue| !issue.kind.is_script());
@@ -354,7 +354,7 @@ pub enum PluginError {
     Io(#[from] std::io::Error),
 }
 
-/// 清单的 `kind` 不在 `PluginKind::ALL` 里时的拒绝原因；不接受脚本包的设置导入（`import_without_script_page` 的 release 构建、`import_from_settings` 在 Windows 的 release 构建）拒绝脚本包时也用它。
+/// 清单的 `kind` 不在 `PluginKind::ALL` 里时的拒绝原因；不接受脚本包的设置导入（`import_without_script_page` 的 release 构建）拒绝脚本包时也用它。
 pub(crate) const UNKNOWN_KIND: &str = "kind 不是已知的插件类型";
 
 /// `<root>/<kind>`.

@@ -1261,8 +1261,21 @@ std::filesystem::path builtin_sound_packs() {
   return std::filesystem::is_directory(directory, error) ? directory : std::filesystem::path();
 }
 
-// 一次 msime_client_plugins 请求：插件目录是数据目录下的 plugins，与 Tauri 的 PluginsState 相同；sounds 为真时带上内置声音包的目录。读写文件，只在 UI 线程之外调用。
-Response plugins_call(JsonObject const &action, bool sounds) {
+// 输入法宿主选项（runtime-options.json）里的 user_data：输入法把停用了的脚本插件记在它下面的 script-health.json 里，与 Tauri 的 user_data 取的是同一项。还没有宿主选项或不是绝对路径时为空，授权页就不显示停用记录。读文件，只在 UI 线程之外调用。
+std::wstring runtime_user_data() {
+  const auto options = runtime_options_document();
+  if (!options)
+    return {};
+  try {
+    std::wstring value = JsonObject::Parse(text(*options)).GetNamedString(L"user_data", L"").c_str();
+    return !value.empty() && std::filesystem::path(value).is_absolute() ? value : std::wstring();
+  } catch (...) {
+    return {};
+  }
+}
+
+// 一次 msime_client_plugins 请求：插件目录是数据目录下的 plugins，与 Tauri 的 PluginsState 相同；sounds 为真时带上内置声音包的目录。script_page 为真时这是「插件」页自己的请求：本窗口有脚本插件的授权页，目录列出脚本包、导入接受脚本包，并带上输入法的 user_data 读停用记录；社区发布、辅助码方案这些别处的请求不带它，看不到脚本包。读写文件，只在 UI 线程之外调用。
+Response plugins_call(JsonObject const &action, bool sounds, bool script_page = false) {
   const auto root = state_directory();
   if (root.empty() || !root.is_absolute())
     return {"{\"ok\":false,\"error\":\"plugin_storage\"}", false};
@@ -1272,6 +1285,11 @@ Response plugins_call(JsonObject const &action, bool sounds) {
   request.SetNamedValue(L"sound_packs", packs.empty()
                                             ? JsonValue::CreateNullValue()
                                             : JsonValue::CreateStringValue(hstring(packs.wstring())));
+  if (script_page) {
+    request.SetNamedValue(L"script_page", JsonValue::CreateBooleanValue(true));
+    if (const auto user_data = runtime_user_data(); !user_data.empty())
+      request.SetNamedValue(L"user_data", JsonValue::CreateStringValue(hstring(user_data)));
+  }
   request.SetNamedValue(L"action", JsonValue::Parse(action.Stringify()));
   const auto body = utf8(request.Stringify());
   return take_response(
@@ -1361,6 +1379,9 @@ msime::settings::plugins::Package plugin_package(JsonObject const &object) {
   pack.colors = named_strings(object, L"colors");
   pack.duration_ms = named_number(object, L"duration_ms");
   pack.particles = named_number(object, L"particles");
+  pack.hooks = named_strings(object, L"hooks");
+  pack.permissions = named_strings(object, L"permissions");
+  pack.content_hash = named_string(object, L"content_hash");
   return pack;
 }
 
@@ -1377,6 +1398,26 @@ std::optional<msime::settings::plugins::Catalog> plugin_catalog(Response const &
       catalog.issues.push_back({named_string(item, L"kind"), named_string(item, L"folder"),
                                 named_string(item, L"reason")});
     return catalog;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+// script_grants、set_script_grant 和 reorder_scripts 的回答（client-core 的 ScriptGrantsView）；读不懂时为空。
+std::optional<msime::settings::plugins::ScriptGrants> plugin_script_grants(Response const &response) {
+  if (!response.ok)
+    return std::nullopt;
+  try {
+    const auto value = JsonObject::Parse(text(response.text)).GetNamedObject(L"value");
+    msime::settings::plugins::ScriptGrants grants;
+    for (auto const &item : named_objects(value, L"plugins"))
+      grants.plugins.push_back({named_string(item, L"id"), named_string(item, L"hash"),
+                                item.GetNamedBoolean(L"enabled", false),
+                                named_strings(item, L"granted")});
+    for (auto const &item : named_objects(value, L"health"))
+      grants.health.push_back(
+          {named_string(item, L"id"), named_string(item, L"hash"), named_string(item, L"disabled")});
+    return grants;
   } catch (...) {
     return std::nullopt;
   }
@@ -13973,10 +14014,28 @@ private:
 
   // ---- 插件 ----
 
-  // 共享的「插件」页（packages/ui/src/settings/pages/plugins-page.tsx 和 plugins-section.tsx）在 Windows 上的「我的插件」：列表（plugin-list-view.tsx）先是「声音与效果」和「@ 名单」两个入口，再是按八类分组的已安装插件和缺失的选择，然后是「导入插件」和「无法载入的插件」；点一行在原处打开它的视图（plugin-sound-effects-view.tsx、plugin-mentions-view.tsx、plugin-detail-view.tsx），视图头上的「我的插件」回到列表。Windows 宿主的能力全为真（播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集），辅助码表随版本（与「输入」页的辅助码组同一个条件）。插件目录、导入、删除和名单都经 msime_client_plugins，与 Tauri 的 desktop_plugins.rs 同一份 client-core 规则；内置声音包取 Server 状态目录下的 sound-packs。规则和文案在 PluginPageModel.h。所有读写都在工作线程上。页首的「社区插件」标签见「社区皮肤与社区插件」一节。
+  // 共享的「插件」页（packages/ui/src/settings/pages/plugins-page.tsx 和 plugins-section.tsx）在 Windows 上的「我的插件」：列表（plugin-list-view.tsx）先是「声音与效果」和「@ 名单」两个入口，再是按八类分组的已安装插件和缺失的选择、「脚本插件（实验）」，然后是「导入插件」和「无法载入的插件」；点一行在原处打开它的视图（plugin-sound-effects-view.tsx、plugin-mentions-view.tsx、plugin-detail-view.tsx、plugin-script-view.tsx），视图头上的「我的插件」回到列表。Windows 宿主的能力全为真（播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集），辅助码表随版本（与「输入」页的辅助码组同一个条件）。插件目录、导入、删除和名单都经 msime_client_plugins，与 Tauri 的 desktop_plugins.rs 同一份 client-core 规则；内置声音包取 Server 状态目录下的 sound-packs。规则和文案在 PluginPageModel.h。所有读写都在工作线程上。页首的「社区插件」标签见「社区皮肤与社区插件」一节。
 
   enum class PluginView { list, pack, missing, sound_effects, mentions };
   enum class PluginCatalogState { loading, loaded, failed };
+
+  // 授权对话框（共享页的 ScriptGrantDialog）的状态。generation 在打开和关上时递增，作废在途的回答；id 是对话框授权的那个包，每次绘制时到目录里找，包被换过、页面重读之后对话框跟着换成新版本；granted 是勾着的能力；opener 是关上后焦点要回到的控件（启用开关或「调整授权」）；boxes 是现在画着的复选框，勾选时就地更新，不重建对话框，焦点留在刚点的那一项上。
+  struct ScriptGrantDialog {
+    struct Box {
+      std::wstring capability;
+      weak_ref<CheckBox> box;
+      weak_ref<TextBlock> description;
+    };
+    uint64_t generation = 0;
+    std::wstring id;
+    std::vector<std::wstring> granted;
+    bool busy = false;
+    std::wstring error;
+    std::wstring opener;
+    std::vector<Box> boxes;
+    std::function<void()> refresh;
+    weak_ref<ContentDialog> dialog;
+  };
 
   void redraw_plugins() {
     if (!closed_ && current_page_ == "plugins")
@@ -14096,7 +14155,7 @@ private:
     const auto generation = plugins_generation_;
     if (plugin_catalog_state_ != PluginCatalogState::loaded)
       plugin_catalog_state_ = PluginCatalogState::loading;
-    run_host([] { return plugins_call(plugin_action(L"catalog"), true); },
+    run_host([] { return plugins_call(plugin_action(L"catalog"), true, true); },
              [this, generation](Response const &response) {
                if (generation != plugins_generation_)
                  return;
@@ -14110,6 +14169,7 @@ private:
                  plugin_catalog_state_ = PluginCatalogState::failed;
                show_notice(plugin_failure(response, L"无法读取插件列表，请重试。"));
              });
+    load_script_grants(generation);
     run_host([] { return plugins_call(plugin_action(L"load_mentions"), false); },
              [this, generation](Response const &response) {
                if (generation != plugins_generation_)
@@ -14127,10 +14187,10 @@ private:
              });
   }
 
-  // 导入或删除已经成功之后重读目录：重读失败按重读失败报，不说导入或删除失败。
+  // 导入或删除已经成功之后重读目录：重读失败按重读失败报，不说导入或删除失败。导入或删除脚本包时宿主在同一把锁里改了授权条目，授权也一起重读。
   void refresh_plugin_catalog(uint64_t generation, std::function<void()> then) {
-    run_host([] { return plugins_call(plugin_action(L"catalog"), true); },
-             [this, generation, then = std::move(then)](Response const &response) {
+    run_host([] { return plugins_call(plugin_action(L"catalog"), true, true); },
+             [this, generation, then = std::move(then)](Response const &response) mutable {
                if (generation != plugins_generation_)
                  return;
                if (auto catalog = plugin_catalog(response)) {
@@ -14139,7 +14199,24 @@ private:
                } else {
                  show_notice(plugin_failure(response, L"无法读取插件列表，请重试。"));
                }
-               then();
+               load_script_grants(generation, std::move(then));
+             });
+  }
+
+  // 读一次脚本插件的授权（共享页的 scriptGrants）。读不到时留着上一次读到的，并说没读成功。then 在之后调用，没有时重画页面。
+  void load_script_grants(uint64_t generation, std::function<void()> then = {}) {
+    run_host([] { return plugins_call(plugin_action(L"script_grants"), false, true); },
+             [this, generation, then = std::move(then)](Response const &response) {
+               if (generation != plugins_generation_)
+                 return;
+               if (auto grants = plugin_script_grants(response))
+                 plugin_scripts_ = std::move(*grants);
+               else
+                 show_notice(plugin_failure(response, L"无法读取脚本插件的授权，请重试。"));
+               if (then)
+                 then();
+               else
+                 redraw_plugins();
              });
   }
 
@@ -14204,7 +14281,7 @@ private:
         [source = source->wstring()] {
           auto action = plugin_action(L"import");
           action.SetNamedValue(L"source", JsonValue::CreateStringValue(hstring(source)));
-          return plugins_call(action, false);
+          return plugins_call(action, false, true);
         },
         [this, generation](Response const &response) {
           if (generation != plugins_generation_)
@@ -14563,7 +14640,10 @@ private:
     if (plugin_view_ == PluginView::pack) {
       for (auto const &pack : plugin_catalog_.packages)
         if (pack.kind == plugin_view_kind_ && pack.id == plugin_view_id_) {
-          build_plugin_detail(page, pack);
+          if (pack.kind == L"script")
+            build_script_detail(page, pack);
+          else
+            build_plugin_detail(page, pack);
           return;
         }
     }
@@ -14638,7 +14718,11 @@ private:
     if (plugin_catalog_state_ == PluginCatalogState::failed)
       page.Children().Append(
           plugin_empty_message(L"插件列表没有读取成功，重新打开这个页面会再试一次。"));
-    if (loaded && groups.empty())
+    std::vector<pg::Package const *> scripts;
+    for (auto const &pack : plugin_catalog_.packages)
+      if (pack.kind == L"script")
+        scripts.push_back(&pack);
+    if (loaded && groups.empty() && scripts.empty())
       page.Children().Append(plugin_empty_message(L"没有插件"));
     for (auto const &[kind, packs, gone] : groups) {
       auto group = add_group(page, pg::kind_label(kind));
@@ -14668,6 +14752,21 @@ private:
       }
     }
 
+    // 脚本插件（共享页的「脚本插件（实验）」分组）：说明和同一用户下的程序能伪造授权的残余风险写在分组开头，行尾是授权状态和执行顺序。
+    if (!scripts.empty()) {
+      const auto running = plugin_running_scripts();
+      auto group = add_group(page, L"脚本插件（实验）");
+      group.Children().Append(group_note(pg::script_group_note()));
+      for (auto const *pack : scripts) {
+        const auto key = L"pack/script/" + pack->id;
+        rows.emplace_back(key, plugin_nav_row(group, 0xE943, pack->name, pg::script_row_description(*pack),
+                                              pg::script_marker(*pack, plugin_grants(), running),
+                                              [this, id = pack->id, key] {
+                                                open_plugin_view(PluginView::pack, L"script", id, key);
+                                              }));
+      }
+    }
+
     auto import = add_group(page, L"导入插件");
     StackPanel buttons;
     buttons.Orientation(Orientation::Horizontal);
@@ -14676,8 +14775,7 @@ private:
         button_control(L"导入文件夹", [this] { import_plugin_pack(true); }, !plugins_busy_));
     buttons.Children().Append(
         button_control(L"导入 .zip", [this] { import_plugin_pack(false); }, !plugins_busy_));
-    add_row(import, 0xE8B5, L"从文件导入", L"只含音频、指令模板等数据，不含可执行内容，每个包须声明许可证",
-            buttons);
+    add_row(import, 0xE8B5, L"从文件导入", std::wstring(pg::import_description), buttons);
     if (!plugins_notice_.empty()) {
       auto notice = group_note(plugins_notice_);
       notice.Margin(Thickness{4, 4, 4, 4});
@@ -15202,6 +15300,356 @@ private:
                                           back_to_plugin_list();
                                         },
                                         loaded_)});
+  }
+
+  // ---- 脚本插件（实验） ----
+
+  // 共享页 plugin-script-view.tsx 在 Windows 上的样子：列表里的「脚本插件（实验）」分组见 build_plugin_list，这里是详情和授权对话框。授权、撤销和排序都经 msime_client_plugins 的 set_script_grant 和 reorder_scripts，规则在 client-core 的 script_grants，与 Tauri 的同名命令相同；页面的勾选联动、标记和文案在 PluginPageModel.h。
+
+  pg::ScriptGrants const *plugin_grants() const { return plugin_scripts_ ? &*plugin_scripts_ : nullptr; }
+
+  // 输入法会运行的插件，按执行顺序。
+  std::vector<std::wstring> plugin_running_scripts() const {
+    return pg::running_script_ids(plugin_grants(), plugin_catalog_.packages);
+  }
+
+  pg::Package const *plugin_script_pack(std::wstring const &id) const {
+    for (auto const &pack : plugin_catalog_.packages)
+      if (pack.kind == L"script" && pack.id == id)
+        return &pack;
+    return nullptr;
+  }
+
+  // 写一个包的授权（共享页的 writeScriptGrant）：成功时换上宿主回答的整份授权。包在页面读到之后被换过（plugin_script_changed）时先重读目录和授权，页面换成现在的内容哈希，再交给 done 说明。
+  void write_script_grant(pg::Package const &pack, bool enabled, std::vector<std::wstring> granted,
+                          std::function<void(Response const &)> done) {
+    const auto generation = plugins_generation_;
+    run_host(
+        [id = pack.id, hash = pack.content_hash, enabled, granted = std::move(granted)] {
+          JsonArray capabilities;
+          for (auto const &capability : granted)
+            capabilities.Append(JsonValue::CreateStringValue(hstring(capability)));
+          auto action = plugin_action(L"set_script_grant");
+          action.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
+          action.SetNamedValue(L"hash", JsonValue::CreateStringValue(hstring(hash)));
+          action.SetNamedValue(L"enabled", JsonValue::CreateBooleanValue(enabled));
+          action.SetNamedValue(L"granted", capabilities);
+          return plugins_call(action, false, true);
+        },
+        [this, generation, done = std::move(done)](Response const &response) {
+          if (generation != plugins_generation_)
+            return;
+          if (auto grants = plugin_script_grants(response)) {
+            plugin_scripts_ = std::move(*grants);
+            done(response);
+            return;
+          }
+          if (response_error(response) == L"plugin_script_changed") {
+            refresh_plugin_catalog(generation, [done, response] { done(response); });
+            return;
+          }
+          done(response);
+        });
+  }
+
+  // 详情的启用开关关掉：停用并撤销全部授权（set(enabled = false, granted = [])），输入法在下一次聚焦时停止运行它。
+  void revoke_script(pg::Package const &pack) {
+    if (!begin_plugin_action()) {
+      redraw_plugins();
+      return;
+    }
+    const auto generation = plugins_generation_;
+    write_script_grant(pack, false, {}, [this, generation](Response const &response) {
+      if (!response.ok)
+        show_notice(plugin_failure(response, L"停用失败，请重试。"));
+      plugin_pending_focus_ = L"script-switch";
+      end_plugin_action(generation);
+    });
+    redraw_plugins();
+  }
+
+  // 「提前」「推后」：只在输入法会运行的插件之间换位（共享页的 moveScript）。
+  void move_script(std::wstring const &id, int offset) {
+    auto order = pg::moved_order(plugin_running_scripts(), id, offset);
+    if (!order || !begin_plugin_action())
+      return;
+    const auto generation = plugins_generation_;
+    run_host(
+        [order = std::move(*order)] {
+          JsonArray ids;
+          for (auto const &item : order)
+            ids.Append(JsonValue::CreateStringValue(hstring(item)));
+          auto action = plugin_action(L"reorder_scripts");
+          action.SetNamedValue(L"ids", ids);
+          return plugins_call(action, false, true);
+        },
+        [this, generation, offset](Response const &response) {
+          if (generation != plugins_generation_)
+            return;
+          if (auto grants = plugin_script_grants(response))
+            plugin_scripts_ = std::move(*grants);
+          else
+            show_notice(plugin_failure(response, L"执行顺序没有保存，请重试。"));
+          plugin_pending_focus_ = offset < 0 ? L"script-up" : L"script-down";
+          end_plugin_action(generation);
+        });
+    redraw_plugins();
+  }
+
+  // 打开授权对话框：启用开关打开时（opener 是 script-switch），或已启用时的「调整授权」（script-adjust）。对话框从「取消」开始：它是从开关打开的，按住不放的空格或回车不该直接把读写文字的权限授出去。关上之后焦点回到打开它的控件，页面重画一次，取消时开关回到「关」。
+  fire_and_forget open_script_grant(pg::Package pack, std::wstring opener) {
+    if (dialog_open_ || plugin_grant_.refresh) {
+      redraw_plugins();
+      co_return;
+    }
+    auto strong = get_strong();
+    const auto generation = plugin_grant_.generation + 1;
+    plugin_grant_ = ScriptGrantDialog{};
+    plugin_grant_.generation = generation;
+    plugin_grant_.id = pack.id;
+    plugin_grant_.granted = pg::grant_dialog_initial(pack, pg::script_grant(plugin_grants(), pack.id));
+    plugin_grant_.opener = std::move(opener);
+
+    ScrollViewer scroller;
+    scroller.MaxHeight(560);
+    StackPanel form;
+    form.Spacing(12);
+    form.MinWidth(440);
+    form.Padding(Thickness{0, 0, 12, 0});
+    scroller.Content(form);
+    auto dialog = publish_dialog(pg::grant_dialog_title(pack), [this] { return plugin_grant_.busy; },
+                                 [this] { submit_script_grant(); });
+    dialog.Content(scroller);
+    dialog.DefaultButton(ContentDialogButton::Close);
+    A11y::SetName(dialog, hstring(pg::grant_dialog_title(pack)));
+    const auto weak_dialog = make_weak(dialog);
+    const auto weak_form = make_weak(form);
+    plugin_grant_.dialog = weak_dialog;
+    plugin_grant_.refresh = [this, weak_dialog, weak_form] {
+      DispatcherQueue().TryEnqueue([this, weak_dialog, weak_form] {
+        auto shown = weak_dialog.get();
+        auto content = weak_form.get();
+        if (shown && content && plugin_grant_.refresh)
+          build_script_grant(content, shown);
+      });
+    };
+    build_script_grant(form, dialog);
+    co_await show_dialog(dialog);
+    ++plugin_grant_.generation;
+    plugin_grant_.refresh = nullptr;
+    plugin_grant_.busy = false;
+    plugin_grant_.boxes.clear();
+    plugin_pending_focus_ = plugin_grant_.opener;
+    redraw_plugins();
+  }
+
+  // 对话框的内容：「已更新，需要重新授权」、说明、清单申请的每项能力一个复选框（或没有申请任何权限的说明）、残余风险，以及被宿主拒绝时的原因。对话框留着，用户看过原因可以改了再试。
+  void build_script_grant(StackPanel const &form, ContentDialog const &dialog) {
+    auto &state = plugin_grant_;
+    form.Children().Clear();
+    state.boxes.clear();
+    const auto *pack = plugin_script_pack(state.id);
+    if (!pack) {
+      // 包在对话框开着时被删掉了：没有东西可授权。
+      dialog.Hide();
+      return;
+    }
+    dialog.Title(box_value(hstring(pg::grant_dialog_title(*pack))));
+    if (pg::script_grant_state(*pack, pg::script_grant(plugin_grants(), pack->id)) ==
+        pg::ScriptGrantState::stale)
+      form.Children().Append(account_message(std::wstring(pg::grant_dialog_stale), InfoBarSeverity::Warning));
+    form.Children().Append(make_text(pg::grant_dialog_intro, 14, palette_.sub));
+    const auto requested = pg::sort_capabilities(pack->permissions);
+    if (requested.empty()) {
+      form.Children().Append(make_text(pg::grant_dialog_no_permissions, 14, palette_.sub));
+    } else {
+      StackPanel list;
+      list.Spacing(6);
+      A11y::SetName(list, hstring(pg::grant_dialog_legend));
+      auto legend = make_text(pg::grant_dialog_legend, 14, palette_.text);
+      legend.FontWeight(Windows::UI::Text::FontWeight{600});
+      list.Children().Append(legend);
+      for (auto const &item : pg::grant_items(requested, state.granted, state.busy)) {
+        StackPanel texts;
+        texts.Spacing(1);
+        texts.Children().Append(make_text(item.title, 14, palette_.text));
+        auto description = make_text(item.description, 12, palette_.sub);
+        texts.Children().Append(description);
+        CheckBox box;
+        box.Content(texts);
+        box.IsChecked(item.checked);
+        box.IsEnabled(!item.disabled);
+        A11y::SetName(box, hstring(item.title));
+        A11y::SetHelpText(box, hstring(item.description));
+        box.Click([this, capability = item.capability](Inspectable const &sender, RoutedEventArgs const &) {
+          const auto checked = sender.as<CheckBox>().IsChecked();
+          toggle_script_capability(capability, checked && checked.Value());
+        });
+        state.boxes.push_back({item.capability, make_weak(box), make_weak(description)});
+        list.Children().Append(box);
+      }
+      form.Children().Append(list);
+    }
+    form.Children().Append(account_message(std::wstring(pg::script_residual_risk), InfoBarSeverity::Warning));
+    if (!state.error.empty()) {
+      auto error = account_message(state.error, InfoBarSeverity::Error);
+      A11y::SetLiveSetting(error, Automation::Peers::AutomationLiveSetting::Assertive);
+      form.Children().Append(error);
+    }
+    dialog.PrimaryButtonText(hstring(pg::grant_dialog_confirm));
+    dialog.IsPrimaryButtonEnabled(!state.busy);
+  }
+
+  // 勾选或取消一项（共享页的 toggleCapability）：依赖的一起勾上、依赖它的一起取消、互斥的那一项禁用并写明原因。复选框就地更新，焦点留在刚点的那一项上。
+  void toggle_script_capability(std::wstring const &capability, bool checked) {
+    auto &state = plugin_grant_;
+    const auto *pack = plugin_script_pack(state.id);
+    if (!pack || state.busy)
+      return;
+    state.granted = pg::toggle_capability(state.granted, capability, checked, pack->permissions);
+    for (auto const &item : pg::grant_items(pg::sort_capabilities(pack->permissions), state.granted, state.busy))
+      for (auto const &entry : state.boxes) {
+        if (entry.capability != item.capability)
+          continue;
+        if (auto box = entry.box.get()) {
+          box.IsChecked(item.checked);
+          box.IsEnabled(!item.disabled);
+          A11y::SetHelpText(box, hstring(item.description));
+        }
+        if (auto description = entry.description.get())
+          description.Text(hstring(item.description));
+      }
+  }
+
+  // 「授权并启用」：只交出对话框现在列着、勾着的那几项。被宿主拒绝时（超出内存总账、同时启用超过 8 个、包被换过）对话框留着并说明原因；包被换过时页面已经重读，对话框换成新版本申请的那几项。
+  void submit_script_grant() {
+    auto &state = plugin_grant_;
+    const auto *pack = plugin_script_pack(state.id);
+    if (state.busy || !pack)
+      return;
+    state.busy = true;
+    state.error.clear();
+    const auto generation = state.generation;
+    write_script_grant(*pack, true, pg::selected_capabilities(state.granted, pack->permissions),
+                       [this, generation](Response const &response) {
+                         auto &current = plugin_grant_;
+                         if (generation != current.generation)
+                           return;
+                         current.busy = false;
+                         if (response.ok) {
+                           if (auto shown = current.dialog.get())
+                             shown.Hide();
+                           return;
+                         }
+                         current.error = plugin_failure(response, std::wstring(pg::grant_dialog_failed));
+                         if (current.refresh)
+                           current.refresh();
+                       });
+    if (state.refresh)
+      state.refresh();
+  }
+
+  // 一个脚本插件（共享页的 ScriptPluginDetailView）：它在什么时候运行、申请了什么、授予了什么、输入法有没有停用它、排第几个执行，以及启用（经授权对话框）、调整授权和删除。
+  void build_script_detail(StackPanel const &page, pg::Package const &pack) {
+    plugin_view_header(page, pack.name);
+    const auto *grants = plugin_grants();
+    const auto *grant = pg::script_grant(grants, pack.id);
+    const auto state = pg::script_grant_state(pack, grant);
+    const bool active = state == pg::ScriptGrantState::enabled;
+    const auto requested = pg::sort_capabilities(pack.permissions);
+    const auto granted = active ? pg::sort_capabilities(grant->granted) : std::vector<std::wstring>{};
+    const auto running = plugin_running_scripts();
+    const auto position = pg::running_position(running, pack.id);
+
+    auto info = add_group(page, L"信息");
+    plugin_summary_row(info, 0xE8EC, L"类型", L"", L"脚本插件（实验）");
+    plugin_summary_row(info, 0xE946, L"版本", L"", pack.version);
+    if (!pack.author.empty())
+      plugin_summary_row(info, 0xE77B, L"作者", L"", pack.author);
+    plugin_summary_row(info, 0xE8D7, L"许可证", L"", pack.license);
+    plugin_summary_row(info, 0xE928, L"内容指纹",
+                       L"插件内容的哈希前 12 位；内容一变，指纹就变，之前的授权随之作废。",
+                       pg::short_hash(pack.content_hash));
+    if (!pack.description.empty())
+      info.Children().Append(group_note(pack.description));
+
+    auto hooks = add_group(page, L"在这些时候运行");
+    std::vector<std::pair<std::wstring, std::wstring>> lines;
+    for (auto const &hook : pack.hooks)
+      lines.emplace_back(pg::hook_label(hook), L"");
+    if (!lines.empty())
+      plugin_line_card(hooks, lines);
+
+    auto permissions = add_group(page, L"申请的权限");
+    if (requested.empty())
+      permissions.Children().Append(
+          group_note(L"没有申请任何权限：只能知道发生了什么事件，读不到也改不了文字。"));
+    for (auto const &capability : requested) {
+      const auto label = pg::capability_label(capability);
+      plugin_summary_row(permissions, 0xE72E, label.title, label.description,
+                         pg::contains(granted, capability) ? L"已授予" : L"未授予");
+    }
+
+    auto status = add_group(page, L"状态");
+    auto note = group_note(pg::script_status(state, active ? pg::script_health(grants, pack) : nullptr));
+    A11y::SetLiveSetting(note, Automation::Peers::AutomationLiveSetting::Polite);
+    status.Children().Append(note);
+    auto control = toggle_control(L"启用", active,
+                                  [this, pack](bool on) {
+                                    if (on)
+                                      open_script_grant(pack, L"script-switch");
+                                    else
+                                      revoke_script(pack);
+                                  },
+                                  !plugins_busy_, false);
+    add_row(status, 0xE7E8, L"启用",
+            L"打开时先确认要授予的权限。关闭会撤销全部授权，输入法在下一次切换输入框时停止运行它。", control);
+    FrameworkElement adjust{nullptr};
+    if (active && !requested.empty()) {
+      adjust = button_control(L"调整授权", [this, pack] { open_script_grant(pack, L"script-adjust"); },
+                              !plugins_busy_);
+      plugin_action_block(status, L"", {adjust});
+    }
+
+    FrameworkElement up{nullptr}, down{nullptr};
+    if (active) {
+      const bool can_up = position > 0;
+      const bool can_down = position >= 0 && static_cast<std::size_t>(position) + 1 < running.size();
+      up = button_control(L"提前", [this, id = pack.id] { move_script(id, -1); }, !plugins_busy_ && can_up);
+      down = button_control(L"推后", [this, id = pack.id] { move_script(id, 1); }, !plugins_busy_ && can_down);
+      plugin_action_block(add_group(page, L"执行顺序"), pg::script_order_note(position, running.size()),
+                          {up, down});
+      // 挪到头或尾之后那个按钮不能按了，焦点落到另一个上。
+      if (plugin_pending_focus_ == L"script-up" && !can_up)
+        plugin_pending_focus_ = L"script-down";
+      if (plugin_pending_focus_ == L"script-down" && !can_down)
+        plugin_pending_focus_ = can_up ? L"script-up" : L"script-switch";
+    }
+
+    auto safety = add_group(page, L"安全");
+    safety.Children().Append(group_note(
+        L"脚本插件在输入法里的沙箱中运行，只能做你授予的事，读不到文件和网络，也不会在密码框里运行。"));
+    safety.Children().Append(group_note(pg::script_residual_risk));
+
+    auto remove = button_control(L"删除", [this, pack] { remove_plugin_pack(pack); }, !plugins_busy_);
+    A11y::SetName(remove, hstring(L"删除" + pack.name));
+    plugin_action_block(add_group(page, L""), L"删除后插件的文件会从本机移除，它的授权也一起去掉。", {remove});
+
+    // 授权对话框关上、撤销或换位之后，焦点回到刚才那个控件；它不在了（调整授权在停用后消失）就落到启用开关上。
+    if (!indexing_ && plugin_pending_focus_.starts_with(L"script-")) {
+      const auto target = plugin_pending_focus_;
+      plugin_pending_focus_.clear();
+      FrameworkElement chosen{nullptr};
+      if (target == L"script-adjust")
+        chosen = adjust;
+      else if (target == L"script-up")
+        chosen = up;
+      else if (target == L"script-down")
+        chosen = down;
+      if (!chosen)
+        chosen = control.as<StackPanel>().Children().GetAt(1).as<FrameworkElement>();
+      focus_target_ = chosen;
+    }
   }
 
   // ---- 屏幕键盘、语音、手写 ----
@@ -18384,6 +18832,9 @@ private:
   std::set<std::wstring> plugin_sound_titles_;
   TextBlock plugin_mentions_warning_{nullptr};
   Button plugin_mentions_save_{nullptr};
+  // 脚本插件的授权和输入法记下的停用（`script_grants` 的回答），还没读到时为空，跨页面重建保留。plugin_grant_ 是开着的授权对话框。
+  std::optional<pg::ScriptGrants> plugin_scripts_;
+  ScriptGrantDialog plugin_grant_;
 
   // 「主题」页的皮肤目录：上次扫描到的包、被忽略的目录和皮肤目录，跨页面重建保留。skins_pending_ 是在途的扫描，skins_busy_ 是显示「正在读取」的那种（第一次和「刷新皮肤」）；skins_signature_ 是上次落地的目录回答，自动重扫据此判断有没有变化。skins_revision_ 在每次落地时递增，作废还在解码的旧图片。skin_preview_overrides_ 是卡片上选的预览明暗，连同选它时的当前明暗。color_picker_open_ 是有取色器开着，这时不重画页面。
   std::vector<SkinPackage> skin_packages_;

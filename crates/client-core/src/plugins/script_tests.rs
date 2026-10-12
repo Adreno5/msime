@@ -569,16 +569,11 @@ fn the_settings_import_refuses_script_packs_in_release_builds_before_installing_
     );
     assert_eq!(root.join("script/pangu").is_dir(), cfg!(debug_assertions));
 
-    // 桌面外壳的设置页在开发构建，以及 macOS 和 Linux 的 release 构建里接受脚本包；Windows 的 release 构建拒绝。
-    let accepts = cfg!(any(
-        debug_assertions,
-        target_os = "macos",
-        all(target_os = "linux", not(target_env = "ohos"))
-    ));
+    // 有授权页的设置宿主（桌面外壳的设置页、Windows 的原生设置应用）在三个桌面平台的开发构建和 release 构建里都接受脚本包。
     let other = tempdir().unwrap();
     let other_root = other.path().join("plugins");
-    assert_eq!(import_from_settings(&source, &other_root).is_ok(), accepts);
-    assert_eq!(other_root.join("script/pangu").is_dir(), accepts);
+    assert!(import_from_settings(&source, &other_root).is_ok());
+    assert!(other_root.join("script/pangu").is_dir());
 }
 
 fn read_commit() -> CapabilitySet {
@@ -1068,4 +1063,92 @@ fn admission_counts_every_place_the_input_method_fills() {
     assert!(grants.get(stale).is_some());
     assert!(grants.enabled().any(|grant| grant.id == last.0));
     assert_eq!(grants.enabled().count(), limits::MAX_ENABLED_SCRIPTS);
+}
+
+#[test]
+fn the_health_file_lists_only_the_four_disabled_categories() {
+    let user_data = tempdir().unwrap();
+    assert!(script_grants::health(Some(user_data.path())).is_empty());
+    assert!(script_grants::health(Some(Path::new("relative"))).is_empty());
+    assert!(script_grants::health(None).is_empty());
+    let file = user_data.path().join(script_grants::HEALTH_FILE);
+    std::fs::write(
+        &file,
+        r#"{"format_version":1,"plugins":[{"id":"a","hash":"h1","disabled":"failed"},{"id":"b","hash":"h2","disabled":"unreachable"},{"id":"c"},{"id":"d","hash":"h4","disabled":"slow"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        script_grants::health(Some(user_data.path())),
+        [
+            script_grants::ScriptHealthView {
+                id: "a".into(),
+                hash: "h1".into(),
+                disabled: "failed".into(),
+            },
+            script_grants::ScriptHealthView {
+                id: "d".into(),
+                hash: "h4".into(),
+                disabled: "slow".into(),
+            },
+        ]
+    );
+    // 不认识的格式或读不懂的文件当作没有停用记录。
+    std::fs::write(
+        &file,
+        r#"{"format_version":2,"plugins":[{"id":"a","hash":"h1","disabled":"failed"}]}"#,
+    )
+    .unwrap();
+    assert!(script_grants::health(Some(user_data.path())).is_empty());
+    std::fs::write(&file, "not json").unwrap();
+    assert!(script_grants::health(Some(user_data.path())).is_empty());
+}
+
+#[test]
+fn the_grants_view_keeps_the_order_and_the_capability_names() {
+    let capabilities = |names: &[&str]| {
+        script_grants::capabilities(
+            &names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let grant = |id: &str, enabled: bool, granted| script_grants::ScriptGrant {
+        id: id.into(),
+        hash: id.repeat(64 / id.len()),
+        enabled,
+        granted,
+    };
+    let rewriting = capabilities(&["rewrite_commit", "read_commit"]);
+    let view = script_grants::view(
+        ScriptGrants {
+            revision: 4,
+            plugins: vec![
+                grant("b", true, rewriting),
+                grant("a", false, capabilities(&[])),
+            ],
+        },
+        None,
+    );
+    assert_eq!(view.revision, 4);
+    // 文件里的顺序就是执行顺序，原样交给页面；能力名按 `Capability::ALL` 的顺序。
+    assert_eq!(
+        view.plugins,
+        [
+            script_grants::ScriptGrantView {
+                id: "b".into(),
+                hash: "b".repeat(64),
+                enabled: true,
+                granted: vec!["read_commit", "rewrite_commit"],
+            },
+            script_grants::ScriptGrantView {
+                id: "a".into(),
+                hash: "a".repeat(64),
+                enabled: false,
+                granted: Vec::new(),
+            },
+        ]
+    );
+    assert!(view.health.is_empty());
 }

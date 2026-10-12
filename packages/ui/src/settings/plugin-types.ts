@@ -83,7 +83,7 @@ export type PluginPackage = {
   content_hash?: string;
 };
 
-/** `script-grants.json` 的一条：桌面外壳的 `ScriptGrantView`。 */
+/** `script-grants.json` 的一条：client-core 的 `script_grants::ScriptGrantView`。 */
 export type ScriptGrant = {
   id: string;
   /** 授权时包的内容哈希；与包现在的 `content_hash` 不同时授权已经作废。 */
@@ -99,7 +99,7 @@ export type ScriptHealth = {
   disabled: "invalid" | "init" | "failed" | "slow";
 };
 
-/** 授权页读到的全部：桌面外壳的 `ScriptGrantsView`。`plugins` 的顺序就是执行顺序。 */
+/** 授权页读到的全部：client-core 的 `script_grants::ScriptGrantsView`。`plugins` 的顺序就是执行顺序。 */
 export type ScriptGrantsResult = {
   revision: number;
   plugins: ScriptGrant[];

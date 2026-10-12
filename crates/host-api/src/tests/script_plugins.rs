@@ -328,11 +328,10 @@ fn the_real_process_switch_gates_delivery_in_debug_and_release_builds_without_an
     opt_in(&fixture, TRAIT_KNOWN);
     commit_nihao(fixture.handle);
     assert!(take_log().is_empty());
-    // 开发构建和 release 构建（`cargo test --release`）一样：macOS 和 Linux 上打开就投递，授权文件不签名，本进程也没有任何密钥。Windows 的原生设置应用还没有授权页，那里只有开发构建打开。
-    let runs = !cfg!(all(target_os = "windows", not(debug_assertions)));
-    assert_eq!(msime_client_scripts_enable(true), runs);
+    // 开发构建和 release 构建（`cargo test --release`）一样：三个桌面平台上打开就投递，授权文件不签名，本进程也没有任何密钥。
+    assert!(msime_client_scripts_enable(true));
     commit_nihao(fixture.handle);
-    assert_eq!(!take_log().is_empty(), runs);
+    assert!(!take_log().is_empty());
     assert!(!msime_client_scripts_enable(false));
     commit_nihao(fixture.handle);
     assert!(take_log().is_empty());
@@ -1061,6 +1060,11 @@ fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
 
 /// 最小的 ABI v1 模块，按字节手写：导入 `msime.log`，一页内存，`msime_on_event` 写出事件类型并返回 0。走后台线程那一例要一个真的 `.wasm` 文件，而 WAT 只能在测试里直接编译成模块。
 fn logger_binary() -> Vec<u8> {
+    logger_binary_with(false)
+}
+
+/// 同 [`logger_binary`]，`reads_commit` 时另外导入 `msime.commit_scalar`（不调用），清单要申请 `read_commit`：申请了却没导入的能力会被拒绝。
+fn logger_binary_with(reads_commit: bool) -> Vec<u8> {
     fn section(id: u8, content: &[u8], out: &mut Vec<u8>) {
         out.push(id);
         out.push(u8::try_from(content.len()).unwrap());
@@ -1071,26 +1075,34 @@ fn logger_binary() -> Vec<u8> {
         out.extend_from_slice(text.as_bytes());
     }
     let mut out = b"\0asm\x01\0\0\0".to_vec();
-    // 类型：(i32 i32 i32) -> ()、() -> i32、(i32) -> i32。
-    section(
-        1,
-        &[
-            3, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 0, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f,
-        ],
-        &mut out,
-    );
-    let mut imports = vec![1];
+    // 类型：(i32 i32 i32) -> ()、() -> i32、(i32) -> i32，读上屏时再加 (i32) -> i64。
+    let mut types = vec![
+        3, 0x60, 3, 0x7f, 0x7f, 0x7f, 0, 0x60, 0, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f,
+    ];
+    if reads_commit {
+        types[0] = 4;
+        types.extend_from_slice(&[0x60, 1, 0x7f, 1, 0x7e]);
+    }
+    section(1, &types, &mut out);
+    let imported = if reads_commit { 2 } else { 1 };
+    let mut imports = vec![imported];
     name("msime", &mut imports);
     name("log", &mut imports);
     imports.extend_from_slice(&[0x00, 0]);
+    if reads_commit {
+        name("msime", &mut imports);
+        name("commit_scalar", &mut imports);
+        imports.extend_from_slice(&[0x00, 3]);
+    }
     section(2, &imports, &mut out);
     section(3, &[2, 1, 2], &mut out);
     section(5, &[1, 0x00, 1], &mut out);
     let mut exports = vec![3];
+    // 导入的函数排在前面，自己定义的两个函数紧随其后。
     for (export, kind, index) in [
         ("memory", 2, 0),
-        ("msime_abi", 0, 1),
-        ("msime_on_event", 0, 2),
+        ("msime_abi", 0, imported),
+        ("msime_on_event", 0, imported + 1),
     ] {
         name(export, &mut exports);
         exports.extend_from_slice(&[kind, index]);
@@ -2074,5 +2086,227 @@ fn the_abi_scalar_tables_are_the_lifecycle_discriminants() {
         values::RETRACTION,
         &[SelectionRetraction::Restore, SelectionRetraction::Drop]
             .map(|value| (retraction(value), value as u8)),
+    );
+}
+
+/// 像 Windows 的原生设置应用那样调 `msime_client_plugins`：带 `script_page` 和输入法的 `user_data`。`script_page` 为假时就是 Android、HarmonyOS 的调用，两项都不带。
+fn plugins_request(fixture: &Fixture, script_page: bool, action: Value) -> Value {
+    let mut request = json!({
+        "state_root": fixture.plugins.parent().unwrap(),
+        "sound_packs": null,
+        "action": action,
+    });
+    if script_page {
+        request["script_page"] = json!(true);
+        request["user_data"] = json!(fixture.user_data);
+    }
+    let bytes = serde_json::to_vec(&request).unwrap();
+    read(unsafe { msime_client_plugins(bytes.as_ptr(), bytes.len()) })
+}
+
+/// 在插件根目录旁边写一个脚本包的源文件夹，`reads_commit` 时申请 `read_commit`。
+fn script_source(fixture: &Fixture, id: &str, reads_commit: bool) -> PathBuf {
+    let source = fixture.plugins.parent().unwrap().join("source").join(id);
+    std::fs::create_dir_all(&source).unwrap();
+    let permissions = if reads_commit { "'read_commit'" } else { "" };
+    let manifest = format!("schema_version = 2\nkind = 'script'\nid = '{id}'\nname = '记录'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = [{permissions}]\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['commit']\nmemory_pages = 1\n");
+    std::fs::write(source.join(MANIFEST_FILE), manifest).unwrap();
+    std::fs::write(source.join("main.wasm"), logger_binary_with(reads_commit)).unwrap();
+    source
+}
+
+/// 目录里脚本插件的 id 和问题行的文件夹。
+fn listed_scripts(catalog: &Value) -> (Vec<String>, Vec<String>) {
+    assert_eq!(catalog["ok"], true, "{catalog}");
+    let named = |key: &str, field: &str| -> Vec<String> {
+        catalog["value"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "script")
+            .map(|item| item[field].as_str().unwrap().to_owned())
+            .collect()
+    };
+    (named("packages", "id"), named("issues", "folder"))
+}
+
+#[test]
+fn only_a_host_with_the_grant_page_sees_or_installs_script_packs() {
+    let fixture = fixture();
+    let source = script_source(&fixture, "reader", true);
+    // 没有授权页的宿主（Android、HarmonyOS 的调用）：release 构建在安装之前拒绝，开发构建装得上。
+    let refused = plugins_request(
+        &fixture,
+        false,
+        json!({"operation": "import", "source": source}),
+    );
+    if cfg!(debug_assertions) {
+        assert_eq!(refused["ok"], true, "{refused}");
+    } else {
+        assert_eq!(refused["error"], "plugin_invalid", "{refused}");
+        assert!(!fixture.plugins.join("script/reader").exists());
+    }
+    // 有授权页的宿主（Windows 的原生设置应用）：开发构建和 release 构建都接受，带着钩子、申请的能力和内容哈希。
+    let imported = plugins_request(
+        &fixture,
+        true,
+        json!({"operation": "import", "source": source}),
+    );
+    assert_eq!(imported["ok"], true, "{imported}");
+    assert_eq!(imported["value"]["kind"], "script");
+    assert_eq!(imported["value"]["hooks"], json!(["commit"]));
+    assert_eq!(imported["value"]["permissions"], json!(["read_commit"]));
+    assert_eq!(
+        imported["value"]["content_hash"].as_str().map(str::len),
+        Some(64)
+    );
+    // 一个载入不了的脚本文件夹，问题行同样只给有授权页的宿主。
+    let broken = fixture.plugins.join("script/broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join(MANIFEST_FILE), "schema_version = 2\n").unwrap();
+
+    let catalog = json!({"operation": "catalog"});
+    assert_eq!(
+        listed_scripts(&plugins_request(&fixture, true, catalog.clone())),
+        (vec!["reader".to_owned()], vec!["broken".to_owned()])
+    );
+    assert_eq!(
+        listed_scripts(&plugins_request(&fixture, false, catalog)),
+        (Vec::new(), Vec::new())
+    );
+}
+
+#[test]
+fn the_grant_page_actions_grant_reorder_and_revoke_and_the_input_method_honours_them() {
+    let fixture = fixture();
+    let mut hashes = Vec::new();
+    for (id, reads_commit) in [("reader", true), ("watcher", false)] {
+        let imported = plugins_request(
+            &fixture,
+            true,
+            json!({"operation": "import", "source": script_source(&fixture, id, reads_commit)}),
+        );
+        assert_eq!(imported["ok"], true, "{imported}");
+        hashes.push(
+            imported["value"]["content_hash"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let (reader, watcher) = (&hashes[0], &hashes[1]);
+    let grants =
+        |fixture: &Fixture| plugins_request(fixture, true, json!({"operation": "script_grants"}));
+    let empty = grants(&fixture);
+    assert_eq!(empty["ok"], true, "{empty}");
+    assert_eq!(empty["value"]["plugins"], json!([]));
+    assert_eq!(empty["value"]["health"], json!([]));
+
+    let set = |id: &str, hash: &str, enabled: bool, granted: Value| {
+        plugins_request(
+            &fixture,
+            true,
+            json!({"operation": "set_script_grant", "id": id, "hash": hash, "enabled": enabled, "granted": granted}),
+        )
+    };
+    let first = set("reader", reader, true, json!(["read_commit"]));
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(
+        first["value"]["plugins"],
+        json!([{"id": "reader", "hash": reader, "enabled": true, "granted": ["read_commit"]}])
+    );
+    let mut revision = first["value"]["revision"].as_u64().unwrap();
+    let second = set("watcher", watcher, true, json!([]));
+    assert_eq!(second["ok"], true, "{second}");
+    assert!(second["value"]["revision"].as_u64().unwrap() > revision);
+    revision = second["value"]["revision"].as_u64().unwrap();
+
+    // 宿主的拒绝原样带着桌面外壳的失败码：不认识的能力、清单没申请的能力、页面展示之后被换过的包。
+    assert_eq!(
+        set("reader", reader, true, json!(["read_everything"]))["error"],
+        "plugin_script_grant_invalid"
+    );
+    assert_eq!(
+        set("watcher", watcher, true, json!(["read_commit"]))["error"],
+        "plugin_script_grant_invalid"
+    );
+    assert_eq!(
+        set("reader", watcher, true, json!(["read_commit"]))["error"],
+        "plugin_script_changed"
+    );
+    assert_eq!(
+        set("nobody", reader, true, json!([]))["error"],
+        "plugin_script_missing"
+    );
+
+    // 执行顺序：给出的 id 排到最前；重复或没有条目的 id 整个拒绝。
+    let reorder = |ids: Value| {
+        plugins_request(
+            &fixture,
+            true,
+            json!({"operation": "reorder_scripts", "ids": ids}),
+        )
+    };
+    let reordered = reorder(json!(["watcher"]));
+    assert_eq!(reordered["ok"], true, "{reordered}");
+    let order = |view: &Value| -> Vec<String> {
+        view["value"]["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|grant| grant["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(order(&reordered), ["watcher", "reader"]);
+    assert!(reordered["value"]["revision"].as_u64().unwrap() > revision);
+    assert_eq!(
+        reorder(json!(["reader", "reader"]))["error"],
+        "plugin_script_grant_invalid"
+    );
+    assert_eq!(
+        reorder(json!(["nobody"]))["error"],
+        "plugin_script_grant_invalid"
+    );
+    assert_eq!(order(&grants(&fixture)), ["watcher", "reader"]);
+
+    // 回答带上 `user_data` 下输入法记下的停用；不带 `user_data` 时没有。
+    let health = fixture.user_data.join(script_grants::HEALTH_FILE);
+    std::fs::write(
+        &health,
+        format!(r#"{{"format_version":1,"plugins":[{{"id":"reader","hash":"{reader}","disabled":"slow"}}]}}"#),
+    )
+    .unwrap();
+    assert_eq!(
+        grants(&fixture)["value"]["health"],
+        json!([{"id": "reader", "hash": reader, "disabled": "slow"}])
+    );
+    let raw = |user_data: Value| {
+        let request = serde_json::to_vec(&json!({
+            "state_root": fixture.plugins.parent().unwrap(),
+            "sound_packs": null,
+            "script_page": true,
+            "user_data": user_data,
+            "action": {"operation": "script_grants"},
+        }))
+        .unwrap();
+        read(unsafe { msime_client_plugins(request.as_ptr(), request.len()) })
+    };
+    assert_eq!(raw(Value::Null)["value"]["health"], json!([]));
+    assert_eq!(raw(json!("relative"))["error"], "invalid");
+    std::fs::remove_file(&health).unwrap();
+
+    // 输入法按页面写下的授权运行：两个插件都在上屏时收到事件。
+    opt_in(&fixture, TRAIT_KNOWN);
+    wait_for(|| {
+        assert_eq!(commit_nihao(fixture.handle), "你好");
+        (take_log().len() >= 2).then_some(())
+    });
+
+    // 撤销：停用并清空授予项，条目留着，位置不变。
+    let revoked = set("reader", reader, false, json!([]));
+    assert_eq!(revoked["ok"], true, "{revoked}");
+    assert_eq!(
+        revoked["value"]["plugins"][1],
+        json!({"id": "reader", "hash": reader, "enabled": false, "granted": []})
     );
 }

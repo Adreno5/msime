@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-// 「插件」页「我的插件」的规则和文案，照共享设置在 Windows 上的样子逐条移植：`plugin-preferences.ts`（选用和删除后的偏好）、`plugin-catalog-helpers.ts`（类型名、标记、缺失的选择、出错说明）、`plugin-list-view.tsx` 的行说明、`plugin-sound-effects-view.tsx` 的包名、`plugin-detail-view.tsx` 的按钮与说明，以及 `plugin-mentions-view.tsx` 的名单校验。Windows 宿主的能力（`host_surface.rs`）全部为真：播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集；特效不是只闪光的那种（那是 HarmonyOS）。只有辅助码随版本：调用方传入。不依赖 Windows 和 WinRT 头文件，方便单独测试。
+// 「插件」页「我的插件」的规则和文案，照共享设置在 Windows 上的样子逐条移植：`plugin-preferences.ts`（选用和删除后的偏好）、`plugin-catalog-helpers.ts`（类型名、标记、缺失的选择、出错说明）、`plugin-list-view.tsx` 的行说明、`plugin-sound-effects-view.tsx` 的包名、`plugin-detail-view.tsx` 的按钮与说明，`plugin-mentions-view.tsx` 的名单校验，以及 `plugin-script-view.tsx` 的脚本插件授权页。Windows 宿主的能力（`host_surface.rs`）全部为真：播放音效和音乐、路由 / 与 @、画特效样式和特效包、背单词列单词本、符号面板列符号集；特效不是只闪光的那种（那是 HarmonyOS）。只有辅助码随版本：调用方传入。不依赖 Windows 和 WinRT 头文件，方便单独测试。
 namespace msime::settings::plugins {
 
 // ---- 包 ----
@@ -38,6 +38,8 @@ inline std::wstring kind_label(std::wstring_view kind) {
     return L"单词本";
   if (kind == L"symbol_set")
     return L"符号集";
+  if (kind == L"script")
+    return L"脚本插件";
   return std::wstring(kind);
 }
 
@@ -80,6 +82,10 @@ struct Package {
   std::vector<std::wstring> colors;
   std::optional<double> duration_ms;
   std::optional<double> particles;
+  // 脚本插件（`script_pack::ScriptPack`）：声明的钩子、申请的能力和内容哈希。授权绑定在内容哈希上。
+  std::vector<std::wstring> hooks;
+  std::vector<std::wstring> permissions;
+  std::wstring content_hash;
 };
 
 // 插件目录下不能载入的文件夹和原因（`PluginIssue`）。
@@ -170,8 +176,8 @@ inline Preferences without_removed_pack(Preferences preferences, std::wstring_vi
     preferences.phrase_tables = without(preferences.phrase_tables, id);
     return preferences;
   }
-  // 单词本和符号集没有偏好键；单词本的复习进度留在背单词里。
-  if (kind == L"wordbook" || kind == L"symbol_set")
+  // 单词本、符号集和脚本插件没有偏好键；单词本的复习进度留在背单词里，脚本插件的授权条目由宿主在删包时一起去掉。
+  if (kind == L"wordbook" || kind == L"symbol_set" || kind == L"script")
     return preferences;
   if (kind == L"helpcode") {
     if (preferences.helpcode_pack_quanpin == id)
@@ -662,6 +668,18 @@ inline std::wstring error_message(std::wstring_view code, std::wstring const &de
     return L"这个 id 属于内置插件，不能覆盖或删除。";
   if (code == L"plugin_storage")
     return L"插件目录不可用，请检查数据目录的权限。";
+  if (code == L"plugin_script_memory")
+    return L"启用后会超出输入法留给脚本插件的内存（64 MiB），先停用别的脚本插件再试。";
+  if (code == L"plugin_script_limit")
+    return L"最多同时启用 8 个脚本插件，先停用一个再试。";
+  if (code == L"plugin_script_changed")
+    return L"这个插件的内容在你打开之后变了，页面已经重新读取，请看过现在的内容再试。";
+  if (code == L"plugin_script_grants_format")
+    return L"授权文件是更新版本的水杉输入法写的，这个版本不能修改它。";
+  if (code == L"plugin_script_grant_invalid")
+    return L"授权不符合要求" + reason + L"。";
+  if (code == L"plugin_script_missing")
+    return L"找不到这个脚本插件" + reason + L"。";
   if (code == L"mention_invalid")
     return L"名单有误" + reason + L"。";
   if (code == L"mention_format")
@@ -675,6 +693,364 @@ inline std::wstring error_message(std::wstring_view code, std::wstring const &de
 inline std::wstring imported_notice(Package const &pack) {
   return L"已导入" + pack_kind_label(pack) + L"「" + pack.name + L"」" + pack.version + L"。";
 }
+
+// ---- 脚本插件（实验） ----
+
+// 「脚本插件（实验）」分组、详情和授权对话框，照 `plugin-script-view.tsx` 和 `plugin-list-view.tsx` 的脚本分组移植。规则（依赖、互斥、哈希绑定、准入）的权威在 client-core 的 `script_grants`，这里只是让页面先按同样的规则勾选和说明，宿主还会再查一遍。
+
+// 脚本插件的能力，按 `msime_script_runtime::Capability::ALL` 的顺序（`SCRIPT_CAPABILITIES`）。
+inline constexpr std::array<std::wstring_view, 7> script_capabilities{
+    L"read_composition",  L"read_commit",         L"read_candidates",  L"rewrite_commit",
+    L"rerank_candidates", L"annotate_candidates", L"filter_candidates"};
+
+// 输入法同时运行的脚本插件个数上限（`limits::MAX_ENABLED_SCRIPTS`）。
+inline constexpr std::size_t max_enabled_scripts = 8;
+
+// 授予一项之前必须一起授予的能力（`CAPABILITY_REQUIRES`，即 `Capability::requires`）；没有时为空。
+inline std::wstring_view capability_requires(std::wstring_view capability) {
+  if (capability == L"rewrite_commit")
+    return L"read_commit";
+  if (capability == L"rerank_candidates" || capability == L"annotate_candidates" ||
+      capability == L"filter_candidates")
+    return L"read_candidates";
+  return {};
+}
+
+// 和这一项互斥的那一项（`exclusivePartner`）：改写上屏的插件读不到组字过程，免得它把放弃的组字夹带进后面的上屏。不互斥时为空。
+inline std::wstring_view exclusive_partner(std::wstring_view capability) {
+  if (capability == L"rewrite_commit")
+    return L"read_composition";
+  if (capability == L"read_composition")
+    return L"rewrite_commit";
+  return {};
+}
+
+// 一项能力的白话说明（`capabilityLabels`）：标题说能做什么，说明说这意味着插件能看到或改动什么。不认识的能力原样作标题。
+struct CapabilityLabel {
+  std::wstring title, description;
+};
+
+inline CapabilityLabel capability_label(std::wstring_view capability) {
+  if (capability == L"read_composition")
+    return {L"读取正在输入的内容", L"能看到你正在打的拼音或编码、组字时显示的文字，以及每次按下的字符。"};
+  if (capability == L"read_commit")
+    return {L"读取输入的文字", L"能看到你选中的候选和最终输入到应用里的文字。"};
+  if (capability == L"read_candidates")
+    return {L"读取候选词", L"能看到候选窗口里当前一页的候选，最多 20 个。"};
+  if (capability == L"rewrite_commit")
+    return {L"修改输入的文字", L"能在文字输入到应用之前改写它，例如在中英文之间加空格。"};
+  if (capability == L"rerank_candidates")
+    return {L"调整候选顺序", L"能把候选词往前或往后排。"};
+  if (capability == L"annotate_candidates")
+    return {L"给候选加注释", L"能在候选旁边显示一小段说明。"};
+  if (capability == L"filter_candidates")
+    return {L"隐藏候选", L"能把某些候选移到末尾并隐藏起来。"};
+  return {std::wstring(capability), {}};
+}
+
+// 清单里钩子的白话名字：插件在什么时候运行（`hookLabels`）。不认识的名字原样显示。
+inline std::wstring hook_label(std::wstring_view hook) {
+  if (hook == L"focus_in")
+    return L"进入输入框时";
+  if (hook == L"focus_out")
+    return L"离开输入框时";
+  if (hook == L"input")
+    return L"每次打字时";
+  if (hook == L"selection_retracted")
+    return L"撤回选词时";
+  if (hook == L"candidate_selected")
+    return L"选中候选时";
+  if (hook == L"before_commit")
+    return L"文字输入到应用之前（可以改写）";
+  if (hook == L"commit")
+    return L"文字输入到应用之后";
+  if (hook == L"composition_start")
+    return L"开始组字时";
+  if (hook == L"composition_update")
+    return L"组字变化时";
+  if (hook == L"composition_end")
+    return L"组字结束时";
+  if (hook == L"candidates_shown")
+    return L"候选窗口出现时";
+  if (hook == L"candidates_hidden")
+    return L"候选窗口消失时";
+  if (hook == L"candidates")
+    return L"生成候选时（可以调整候选）";
+  return std::wstring(hook);
+}
+
+// 输入法停用一个插件的原因：`script-health.json` 的四个类别（`healthLabels`）。
+inline std::wstring health_label(std::wstring_view disabled) {
+  if (disabled == L"invalid")
+    return L"模块不符合要求，输入法已停用它";
+  if (disabled == L"init")
+    return L"初始化失败，输入法已停用它";
+  if (disabled == L"failed")
+    return L"运行时出错太多次，输入法已停用它";
+  if (disabled == L"slow")
+    return L"运行太慢，输入法已停用它";
+  return std::wstring(disabled);
+}
+
+// 内容哈希的前 12 位，授权页用它让人分辨两个版本（`shortHash`）。
+inline std::wstring short_hash(std::wstring_view hash) { return std::wstring(hash.substr(0, 12)); }
+
+// 认识的能力，去重并按 `script_capabilities` 排序（`sortCapabilities`）。
+inline std::vector<std::wstring> sort_capabilities(std::vector<std::wstring> const &capabilities) {
+  std::vector<std::wstring> sorted;
+  for (auto const capability : script_capabilities)
+    if (contains(capabilities, capability))
+      sorted.emplace_back(capability);
+  return sorted;
+}
+
+// 勾选或取消一项之后的授权，只在清单申请过的能力（`requested`）里变动：勾选时把它依赖的那一项一起勾上，并去掉和它互斥的那一项（以及依赖那一项的）；取消时把依赖它的各项一起取消。结果按 `script_capabilities` 排序，所以总能通过宿主的依赖和互斥检查（`toggleCapability`）。
+inline std::vector<std::wstring> toggle_capability(std::vector<std::wstring> const &current,
+                                                   std::wstring_view capability, bool checked,
+                                                   std::vector<std::wstring> const &requested) {
+  std::set<std::wstring> next;
+  for (auto const &item : current)
+    if (contains(requested, item))
+      next.insert(item);
+  auto remove_with_dependents = [&next](std::wstring_view target) {
+    next.erase(std::wstring(target));
+    for (auto const item : script_capabilities)
+      if (capability_requires(item) == target)
+        next.erase(std::wstring(item));
+  };
+  auto sorted = [&next] {
+    return sort_capabilities(std::vector<std::wstring>(next.begin(), next.end()));
+  };
+  if (!checked) {
+    remove_with_dependents(capability);
+    return sorted();
+  }
+  if (!contains(requested, capability))
+    return sorted();
+  next.insert(std::wstring(capability));
+  const auto required = capability_requires(capability);
+  if (!required.empty() && contains(requested, required))
+    next.insert(std::wstring(required));
+  if (const auto partner = exclusive_partner(capability); !partner.empty())
+    remove_with_dependents(partner);
+  // 勾上依赖项之后，它的互斥项也要让开（例如勾选「修改输入的文字」带上「读取输入的文字」）。
+  if (!required.empty())
+    if (const auto partner = exclusive_partner(required); !partner.empty())
+      remove_with_dependents(partner);
+  return sorted();
+}
+
+// `script-grants.json` 的一条（client-core 的 `ScriptGrantView`）。
+struct ScriptGrant {
+  std::wstring id;
+  // 授权时包的内容哈希；与包现在的 `content_hash` 不同时授权已经作废。
+  std::wstring hash;
+  bool enabled = false;
+  std::vector<std::wstring> granted;
+};
+
+// 输入法停用了的一个脚本插件（`<user_data>/script-health.json`）。
+struct ScriptHealth {
+  std::wstring id, hash, disabled;
+};
+
+// 授权页读到的全部（`ScriptGrantsView`）。`plugins` 的顺序就是执行顺序。
+struct ScriptGrants {
+  std::vector<ScriptGrant> plugins;
+  std::vector<ScriptHealth> health;
+};
+
+inline ScriptGrant const *script_grant(ScriptGrants const *grants, std::wstring_view id) {
+  if (!grants)
+    return nullptr;
+  for (auto const &grant : grants->plugins)
+    if (grant.id == id)
+      return &grant;
+  return nullptr;
+}
+
+// 一个脚本插件的授权状态，按页面要说的先后：没授权过、内容变了要重新授权、启用、停用（`scriptGrantState`）。
+enum class ScriptGrantState { ungranted, stale, enabled, disabled };
+
+inline ScriptGrantState script_grant_state(Package const &pack, ScriptGrant const *grant) {
+  if (!grant)
+    return ScriptGrantState::ungranted;
+  if (grant->hash != pack.content_hash)
+    return ScriptGrantState::stale;
+  return grant->enabled ? ScriptGrantState::enabled : ScriptGrantState::disabled;
+}
+
+// 输入法会运行的插件 id，按执行顺序：启用的前 8 个条目里内容哈希和已安装的包对得上的（`runningScriptIds`，即 `ScriptGrants::enabled` 之后再核对哈希）。授权还没读到（`grants` 为空）时为空。
+inline std::vector<std::wstring> running_script_ids(ScriptGrants const *grants,
+                                                    std::vector<Package> const &packages) {
+  std::vector<std::wstring> running;
+  if (!grants)
+    return running;
+  std::size_t enabled = 0;
+  for (auto const &grant : grants->plugins) {
+    if (!grant.enabled)
+      continue;
+    if (enabled++ >= max_enabled_scripts)
+      break;
+    const bool installed = std::any_of(packages.begin(), packages.end(), [&](Package const &pack) {
+      return pack.kind == L"script" && pack.id == grant.id && pack.content_hash == grant.hash;
+    });
+    if (installed)
+      running.push_back(grant.id);
+  }
+  return running;
+}
+
+// 输入法记下的停用，只算这个版本（哈希相同）的（`scriptHealth`）。
+inline ScriptHealth const *script_health(ScriptGrants const *grants, Package const &pack) {
+  if (!grants)
+    return nullptr;
+  for (auto const &entry : grants->health)
+    if (entry.id == pack.id && entry.hash == pack.content_hash)
+      return &entry;
+  return nullptr;
+}
+
+inline std::ptrdiff_t running_position(std::vector<std::wstring> const &running, std::wstring_view id) {
+  const auto found = std::find(running.begin(), running.end(), id);
+  return found == running.end() ? -1 : found - running.begin();
+}
+
+// 列表里这一行的标记（`scriptMarker`）。
+inline std::wstring script_marker(Package const &pack, ScriptGrants const *grants,
+                                  std::vector<std::wstring> const &running) {
+  switch (script_grant_state(pack, script_grant(grants, pack.id))) {
+  case ScriptGrantState::ungranted:
+    return L"未授权";
+  case ScriptGrantState::stale:
+    return L"已更新，需要重新授权";
+  case ScriptGrantState::disabled:
+    return L"未启用";
+  case ScriptGrantState::enabled:
+    break;
+  }
+  if (script_health(grants, pack))
+    return L"已被输入法停用";
+  const auto position = running_position(running, pack.id);
+  return position < 0 ? std::wstring(L"已启用 · 超过 8 个，不运行")
+                      : L"已启用 · 第 " + std::to_wstring(position + 1) + L" 位";
+}
+
+// 列表里一个脚本插件的说明：版本和作者，用「 · 」连起来。
+inline std::wstring script_row_description(Package const &pack) {
+  std::vector<std::wstring> parts;
+  if (!pack.version.empty())
+    parts.push_back(pack.version);
+  if (!pack.author.empty())
+    parts.push_back(L"作者 " + pack.author);
+  return joined(parts, L" · ");
+}
+
+// 授权页上的平台说明（`scriptResidualRisk` 的 Windows 分支）。授权文件不签名，以同一用户身份运行的程序都能绕过授权页自己写授权，这是设计接受的残余风险，要写在用户做决定的地方：列表分组、详情和授权对话框。
+inline constexpr std::wstring_view script_residual_risk =
+    L"在 Windows 上，以你的身份运行的其他程序可以不经过这个页面，直接写入授权，让脚本插件读取或改写你输入的文字。只安装你信任的脚本插件。以管理员身份运行的窗口里不会运行脚本插件。";
+
+// 「脚本插件（实验）」分组的说明，后面接着残余风险。
+inline std::wstring script_group_note() {
+  return L"脚本插件会在输入法里运行第三方代码，只做你在授权时允许的事；导入后默认不运行，打开它的详情授权后才启用。 " +
+         std::wstring(script_residual_risk);
+}
+
+// 「导入插件」一行的说明：有脚本插件分组时说清两种插件的区别。
+inline constexpr std::wstring_view import_description =
+    L"数据插件只含音频、指令模板等数据；脚本插件（实验）带可执行代码，导入后要经授权才会运行。每个包须声明许可证";
+
+// 详情「状态」里的一句：授权状态，启用时再接输入法停用它的原因（停用原因只在启用时显示）。
+inline std::wstring script_status(ScriptGrantState state, ScriptHealth const *health) {
+  switch (state) {
+  case ScriptGrantState::ungranted:
+    return L"还没有授权，不会运行。";
+  case ScriptGrantState::stale:
+    return L"已更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。";
+  case ScriptGrantState::disabled:
+    return L"已停用，不会运行。";
+  case ScriptGrantState::enabled:
+    break;
+  }
+  return health ? L"已启用。" + health_label(health->disabled) + L"，重新授权或重启输入法后恢复。"
+                : std::wstring(L"已启用。");
+}
+
+// 详情「执行顺序」的说明（只在启用时显示）。`position` 为 -1 时排在第 8 个之后。
+inline std::wstring script_order_note(std::ptrdiff_t position, std::size_t count) {
+  if (position < 0)
+    return L"同时启用的脚本插件超过 8 个，这个插件排在第 8 个之后，不会运行。";
+  return L"第 " + std::to_wstring(position + 1) + L" 位，共 " + std::to_wstring(count) +
+         L" 个。多个插件按这个顺序依次处理同一件事。";
+}
+
+// 在会运行的插件里把 `id` 往前（-1）或往后（1）挪一位之后交给宿主的顺序（`moveScript`）；挪不动时为空。
+inline std::optional<std::vector<std::wstring>> moved_order(std::vector<std::wstring> running,
+                                                            std::wstring_view id, int offset) {
+  const auto position = running_position(running, id);
+  const auto target = position + offset;
+  if (position < 0 || target < 0 || target >= static_cast<std::ptrdiff_t>(running.size()))
+    return std::nullopt;
+  std::swap(running[static_cast<std::size_t>(position)], running[static_cast<std::size_t>(target)]);
+  return running;
+}
+
+// 授权对话框里的一个复选框（`ScriptGrantDialog` 的 items）：说明后面接着依赖和互斥的提示；互斥的那一项勾着时禁用。
+struct GrantItem {
+  std::wstring capability, title, description;
+  bool checked = false;
+  bool disabled = false;
+};
+
+// 对话框现在列着、勾着的那几项。包在对话框打开之后被换过（`plugin_script_changed`，页面重读后换成新版本）时，`granted` 里可能还留着新版本不再申请的一项：它不显示，不能算作勾着去禁用互斥的另一项，也不能被交出去、被宿主以「清单没有申请」拒绝。
+inline std::vector<std::wstring> selected_capabilities(std::vector<std::wstring> const &granted,
+                                                       std::vector<std::wstring> const &requested) {
+  std::vector<std::wstring> selected;
+  for (auto const &item : granted)
+    if (contains(requested, item))
+      selected.push_back(item);
+  return selected;
+}
+
+inline std::vector<GrantItem> grant_items(std::vector<std::wstring> const &requested,
+                                          std::vector<std::wstring> const &granted, bool busy) {
+  const auto selected = selected_capabilities(granted, requested);
+  std::vector<GrantItem> items;
+  for (auto const &capability : sort_capabilities(requested)) {
+    const auto partner = exclusive_partner(capability);
+    const bool blocked = !partner.empty() && contains(selected, partner);
+    const auto required = capability_requires(capability);
+    std::wstring notes;
+    if (!required.empty())
+      notes += L"需要同时授予「" + capability_label(required).title + L"」。";
+    if (blocked)
+      notes += L"不能和「" + capability_label(partner).title + L"」同时授予。";
+    const auto label = capability_label(capability);
+    items.push_back({capability, label.title,
+                     notes.empty() ? label.description : label.description + L" " + notes,
+                     contains(selected, capability), busy || blocked});
+  }
+  return items;
+}
+
+// 打开授权对话框时勾着的能力：调整授权时是现在授予的（只算清单还申请的），新授权和重新授权时一项都不预先勾选。
+inline std::vector<std::wstring> grant_dialog_initial(Package const &pack, ScriptGrant const *grant) {
+  if (script_grant_state(pack, grant) != ScriptGrantState::enabled)
+    return {};
+  return sort_capabilities(selected_capabilities(grant->granted, pack.permissions));
+}
+
+inline std::wstring grant_dialog_title(Package const &pack) { return L"授权「" + pack.name + L"」"; }
+
+inline constexpr std::wstring_view grant_dialog_stale =
+    L"已更新，需要重新授权：这个插件的内容和你上次授权时不同，之前的授权已经作废。";
+inline constexpr std::wstring_view grant_dialog_intro =
+    L"脚本插件是第三方代码，会在输入法里运行。只勾选你愿意让它做的事；没有勾选的，它一律做不到。在密码框和隐私输入框里它不会运行。";
+inline constexpr std::wstring_view grant_dialog_no_permissions =
+    L"这个插件没有申请任何权限：它只能知道发生了什么事件，读不到也改不了任何文字。";
+inline constexpr std::wstring_view grant_dialog_legend = L"允许这个插件";
+inline constexpr std::wstring_view grant_dialog_confirm = L"授权并启用";
+inline constexpr std::wstring_view grant_dialog_failed = L"授权没有写入，请重试。";
 
 // ---- @ 名单 ----
 
