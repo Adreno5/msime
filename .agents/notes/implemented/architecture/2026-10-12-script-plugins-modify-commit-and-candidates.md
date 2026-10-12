@@ -53,6 +53,15 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 
 **`before_commit` 的 fuel 单独记。** 每个插件每轮给 `before_commit` 另一份 100 000 的配额，不从其余钩子每轮 125 000 的配额里扣，也不让它们扣；宿主在同一轮里重建实例时两份剩余都交回去（`resume_turn`）。共用一份时，持久实例在同一轮里先收到 `input`、`candidate_selected`、`candidates`，它按之前攒下的状态烧掉多少 fuel，就决定了快照上的改写会不会因为 fuel 耗尽被丢掉，改写结果不再只是本次 body 的函数。分开之后 `before_commit` 能用多少只取决于同一轮里之前的 `before_commit`，它们同样只看得到各自的上屏文本。被这一份截断时和其余钩子同一条规则：这一次用掉不少于 50 000（单次上限的一半）算 fuel 耗尽的失败，计入熔断，持久实例照用；不到一半是 `TurnExhausted`。
 
+### Linux 宿主怎么画插件注释（IBus、Fcitx5）
+
+两个宿主经同一个头文件 `platforms/linux/src/candidates/CandidateScriptAnnotation.h` 读 `script_annotation`，不碰引擎 `annotation` 的那条路：引擎注释照旧按辅助码开关、五笔编码提示和本地模式决定画不画，韩文汉字列表照旧把它当训音画；插件注释只要有就画，排在整行最后（候选、纠错标记、云和 AI 标记、固定位置、引擎注释、训音、译文之后），写成两个空格加六角括号 `  〔注释〕`。括号让它在不认颜色和字形属性的面板上也能把它和引擎注释（两个空格后直接跟文本）分开。插件注释不做繁体转换，那是插件自己写的文字。AI 座位的占位行（来源 12）不画。
+
+- **IBus**：追加在 `render` 拼好的行文本末尾，皮肤给了序号颜色时用这一行序号的颜色（高亮行用高亮序号色）给它自己的区间加一条前景属性，追加在行颜色之后所以盖过它；没给时不加颜色，只靠括号。
+- **Fcitx5**：`candidateRowText` 在译文之后 `append` 一段，只标 `DontCommit`（和训音一样只供显示，斜体留给训音和 AI 占位行）。选中用的 `FcitxCandidate::text()` 仍是引擎文本。
+
+宿主在画之前再查一遍：合法 UTF-8、不超过 32 个 UTF-16 码元、不含 Cc、行和段分隔符、双向控制符（U+061C、U+200E、U+200F、U+202A–U+202E、U+2066–U+2069）、零宽字符和 BOM，不合规就整条不画、不截断。runtime 已经按完整的 Cf 表拦过（`abi::is_forbidden_plugin_char`），这一道只防契约走样时插件文本把候选行折断或把整行的方向翻过来；它只拦影响排版的那几类，不复制 Cf 表。
+
 ### dev 构建里 wasmi 关掉 debug-assertions
 
 根 `Cargo.toml` 的 `[profile.dev.package.wasmi]` 在 `opt-level = 3` 之外加 `debug-assertions = false`。wasmi 的构建脚本在 opt-level 2、3 时选尾调用分派：每条指令的处理函数尾调用下一条，靠 LLVM 优化成跳转。打开 debug-assertions 时这一步失效，每执行一条指令原生栈就深一层。实测（Mac Studio，`(loop (br 0))` 跑满单个钩子的配额，线程栈逐档缩小）：
@@ -70,6 +79,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 - `crates/input-runtime/src/tests/candidate_transform.rs`（桌面 cfg）用记下引擎下标的测试引擎和按预设交回操作的变换：重排、隐藏后 7 个平行数组和 `engine_order` 一起动，视图、分页和 `all_candidates` 只有可见行；用 `Select` 和数字选第 k 行，上屏和引擎收到的下标都是显示的第 k 行，被隐藏的座位的 ID 报 `StaleCandidate`；只剩引擎下标 0 可见时，结束组字、空格、两条标点路由、数字、移动高亮或翻页之后再选、以词定字都只交给引擎下标 0；引擎下标 0 隐藏不了但能挪动；固定位置的词、云和 AI 行不动；五笔唯一码的 0 号座位锁住、第四键自动上屏的是引擎首位；五笔顶字取显示的首行；多插件按授权顺序合成、第二次派发看到的仍是原始窗口和引擎注释；整句改字、打开的候选列表、平行数组不等长时不调用变换；`rerank_settled`（带一个偏向某字的测试模型）、`refresh_online_candidates`（所有 `apply_online_*` 的刷新）、`all_candidates` 的展开、`set_caret`、`apply_translations` 都不调用变换，只重放；派发里的展开会再调用一次，展开时插件多藏了几行、翻页又让高亮原地不动时，空格、结束组字和标点仍只交给可见的行；只改注释也推进 epoch；组字结束后记录清空；暂停时派发不调用变换、旁路调用不重放，恢复后下一次派发重新调用。
 - `crates/script-runtime/src/tests.rs`：改写只在可改写的 `before_commit` 里、授予了能力时可用；换行、U+202E、U+200B、U+2028、U+2029、空串、非 UTF-8 被拒，256 个码元的上限和 4096 字节的上限，前一个插件缩短或放大了 body 时上限仍按原文算；持久实例把这一轮的配额烧到连一次 `input` 都放不下之后，`before_commit` 仍能用掉比剩余更多的 fuel、不扣其余钩子的配额，新一轮两份都补满；返回负数、trap、越界之后不交出动作，下一次观察类投递清掉上一次的动作；三种候选修改的暂存结果、坏行号、重复、超长和带 Cf 或 U+2028 的注释、错的钩子、没授权、本地模式屏蔽；Cc、Cf 和行、段分隔符的判定；同一轮里 `input` 先花过 fuel 之后 `candidates` 死循环被轮配额截断，算 fuel 耗尽的失败；原生栈。
 - `crates/host-api/src/tests/script_plugins.rs`：`input` 之后 `candidates` 死循环的插件每次聚焦失败一次，第 3 次被熔断停用（`out_of_fuel`）；两个插件依次改写、tail 原样接回、`commit` 观察者读到改写后的文本；第一个插件把 2 个码元的原文放大到 256 个，第二个插件的 600 个字母拿到 `LIMIT`，上屏停在第一个插件的结果；trap、返回负数、fuel 耗尽、改写成 `\n` 或 U+202E 都上屏原文；Windows 式在派发前后切换 `COMMIT_OBSERVE_ONLY` 时空格选词和回车原样上屏都只能看（`REWRITABLE == 0`，改写 `DENIED`），清掉后同样两条路径能改写，以词定字永远不能；设着 `HOST_HOLDS_PIECES` 时部分选词的那一段和补齐它的那一段都只能看，组字结束后的下一个整词照样能改写，不设时部分选词能改写；`tests/lifecycle_traces.rs` 的 `a_piece_the_host_holds_sounds_only_when_the_whole_phrase_goes_out` 经 C ABI（`FEEDBACK | HOST_HOLDS_PIECES`）选部分词：这一段没有上屏音、`feedback.typing_effect` 为 0，补齐整个词的那次出一次上屏音；Windows 式每次派发前后切换 `COMMIT_OBSERVE_ONLY` 时插件一次都不运行、数字选的是引擎顺序的首行，设着它时云候选到达也不重放之前的对调；SECURE、PRIVATE、ELEVATED 和未知字段不改写也不投递；经 C ABI 重排之后空格上屏显示的首行，`script_annotation` 跟着行走，读窗口的插件读不到别的插件的注释和顺序；隐藏的行不出现在视图里、数字选不到、引擎下标 0 隐藏不了；`apply_online_candidates` 和 `rerank_settled` 不运行脚本、重排按身份重放；本地模式不在白名单里时一个插件都不运行。
+- Linux 宿主：`platforms/linux/tests/candidate/candidate_script_annotation.cpp`（`linux-candidate-script-annotation`）测共用的读取和检查：只读 `script_annotation`、占位行不画、32 个 UTF-16 码元的上限（含辅助平面字符）、折行和改方向的字符、坏 UTF-8 都整条不画、行尾那一段的格式；`platforms/linux/fcitx5/tests/native.cpp` 的 `scriptAnnotationRow` 用真实的 `FcitxCandidate` 查 Fcitx5 的行：辅助码设置关着也画、是单独一段 `DontCommit`、引擎注释和译文都在、韩文汉字行训音之后再画、选中的文本不变，它和纠错标记、训音两个行用例一起以 `fcitx5-native-test --rows`（`fcitx5-candidate-rows`）注册在构建门禁里，之前它们只在有已验证词库的验收运行里跑；IBus 的 `render` 离不开 IBus 对象，由 `tests/core/fcitx5_contract.py` 按源码检查它经同一个头文件读、追加在引擎注释之后、不经 `traditional_display`、用序号颜色只画自己的区间。
 
 ## Alternatives considered
 
@@ -82,12 +92,17 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 - **`before_commit` 和其余钩子共用每轮 125 000 的配额。** 最强的理由是每个插件每轮的总量守在设计 §4.4 的 125 000，8 个插件合计不超过 1 000 000。不用：共用时快照上的改写能用多少取决于持久实例这一轮用掉了多少，持久状态借此决定改写留不留得下，大约每次上屏 1 bit；给 `before_commit` 固定 100 000、事后再从共用配额里扣，同一轮里有几次上屏就能拿几份，没有上限。
 - **`candidates_shown` 也给插件变换之前的行。** 最强的理由是"读不到别的插件的改动"连顺序和隐藏都守住。不用：`page` 和 `highlighted` 指的是显示的列表，给变换前的行就对不上；顺序和隐藏是用户看得到的结果，插件注释这类文本仍然读不到。
 - **wasmi 开 `portable-dispatch` 特性，不靠 LLVM 的尾调用优化。** 最强的理由是任何构建配置下原生栈都不随指令增长。不用：它改的是批准过的特性组合，release 也换成更慢的循环分派；关掉 dev 构建里 wasmi 的 debug-assertions 只影响开发构建，release 本来就没有这些断言。
+- **Linux 宿主把插件注释接在引擎注释那一段里画。** 最强的理由是不用另算一段区间，代码最少。不用：那一段受辅助码开关和本地模式控制，韩文汉字列表还跳过它改画训音，插件注释接进去就会跟着这些开关消失或被当成训音；两段也就分不出谁是谁。
+- **Fcitx5 用 `CandidateWord::setComment`。** 最强的理由是经典界面把 comment 画成次要样式，语义上就是注释。不用：插件声明依赖 `core:5.0.20`，Debian 12 构建镜像里的 5.0.21 没有这个 API（Ubuntu 22.04 的 5.0.14 也没有）。
+- **IBus 放进辅助行（auxiliary text）。** 最强的理由是不占候选行的宽度。不用：辅助行只有一行，属于整页而不是某一行，现在还放着页码、拼音、本地模式和连击标签，看不出注释属于哪个候选。
+- **宿主用 FSI…PDI 把插件文本包起来做双向隔离。** 最强的理由是从排版上彻底隔开阿拉伯文、希伯来文这类从右到左的文字。不用：面板对隔离符的支持不一（Qt 面板和缺字形的字体可能画成方框）；runtime 已经拦掉全部 Cf，宿主再拦一遍双向控制符，注释又在行尾，从右到左的字母最多影响它自己那一段。
+- **超长或含禁用字符时截断后再画。** 最强的理由是用户至少还能看到一部分。不用：runtime 从不交出这样的文本，出现了就说明契约走样，截出来的前缀可能意思相反；整条不画更容易发现。
 
 ## Consequences
 
 - 收益：脚本能改写上屏和重排、注释、过滤候选，选中的永远是显示的那一行，隐藏的行任何路径都选不到；旁路调用不运行脚本；插件之间不能经候选窗口读到彼此的改动；没有插件时 transition JSON 不变；dev 构建里一个钩子跑满配额只要几百 KiB 的原生栈。
 - 代价：声明了 `before_commit` 的插件每次派发类上屏都要重新实例化一次，不可改写时也一样；候选变换每次派发多一次窗口构造和按身份的线性查找（最多 20 行）；dev 构建里 wasmi 自己的 debug 断言不再运行。
-- `script_annotation` 由各宿主自己画：macOS 把它画在释义行的最后一行（斜体，见 [macOS 候选窗把脚本插件的注释画在释义行的最后一行](../feature/2026-10-12-macos-script-annotations.md)）；还没接上的宿主上插件的注释看不见。
+- `script_annotation` 由各宿主自己画：macOS 把它画在释义行的最后一行（斜体，见 [macOS 候选窗把脚本插件的注释画在释义行的最后一行](../feature/2026-10-12-macos-script-annotations.md)）；Linux 的 IBus 和 Fcitx5 在行尾画（见上面的 Linux 一节）；还没接上的宿主上插件的注释看不见。Linux 上插件注释让候选行变宽，横排时一页更容易超出屏幕；从右到左的注释没有做双向隔离；IBus 面板是否认区间前景属性由面板决定，没在真实的 GNOME Shell、KDE 和 ibus-ui-gtk3 面板上看过。
 - `candidates_shown` 能看到别的插件造成的顺序和隐藏，构成插件之间约 1 bit 量级的顺序通道；文本（注释）不经这里传递。
 - Cf 表按 Unicode 15.1 写死，之后版本新增的格式字符不在表里；ZWJ（U+200D）和标签字符是 Cf，含它们的 emoji 组合序列和旗帜不能出现在改写结果和注释里。
 - 改写不回灌引擎学习和 AI 上文，这一点由调用顺序保证（runtime 在 `dispatch` 里按原文记下，host-api 之后才改写），没有单独的测试；宿主之后照常做繁体转换和统计，作者文档要写明。
