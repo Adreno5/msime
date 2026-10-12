@@ -111,6 +111,39 @@ static inline NSString *MSIMECandidateGlossRun(NSString *reading, NSString *tran
     return translation.length ? [NSString stringWithFormat:@"%@\n%@", reading, translation] : reading;
 }
 
+// 脚本插件给候选加的注释（候选的 `script_annotation`）最多画这么多 UTF-16 码元。runtime 已经按同一个上限拒收过长的注释，这里不依赖它，超出的在完整字符处截断并补「…」。
+static const NSUInteger MSIMECandidateScriptAnnotationLimit = 32;
+// 插件注释是第三方插件写的文字，画成斜体，和同在释义行里的译文、读音区分开；颜色仍是释义色，跟着皮肤和明暗走。
+static const CGFloat MSIMECandidateScriptAnnotationObliqueness = 0.2;
+
+// 把候选的 `script_annotation` 收拾成能安全画成一行的文本：不是字符串时为空；控制字符、格式字符（双向控制符、零宽字符）和各种换行（含 U+2028、U+2029，释义行正是按 "\n" 分行的）连成的一段换成一个空格，再去掉首尾空白；超过上限时在完整字符处截断并补「…」。
+static inline NSString *MSIMECandidateScriptAnnotationRun(id value)
+{
+    if (![value isKindOfClass:NSString.class]) return @"";
+    NSMutableCharacterSet *breaking = [NSMutableCharacterSet controlCharacterSet];
+    [breaking formUnionWithCharacterSet:NSCharacterSet.newlineCharacterSet];
+    NSMutableArray<NSString *> *pieces = [NSMutableArray array];
+    for (NSString *piece in [(NSString *)value componentsSeparatedByCharactersInSet:breaking])
+        if (piece.length) [pieces addObject:piece];
+    NSString *line = [[pieces componentsJoinedByString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (line.length <= MSIMECandidateScriptAnnotationLimit) return line;
+    NSUInteger end = 0;
+    while (end < line.length)
+    {
+        const NSRange character = [line rangeOfComposedCharacterSequenceAtIndex:end];
+        if (NSMaxRange(character) > MSIMECandidateScriptAnnotationLimit - 1) break;
+        end = NSMaxRange(character);
+    }
+    return [[line substringToIndex:end] stringByAppendingString:@"…"];
+}
+
+// 释义行加上插件注释：插件注释单独占最后一行，排在输入法自己的读音、译文和逐词英文之后，不挪动它们在释义行里的位置。
+static inline NSString *MSIMECandidateGlossWithScriptAnnotation(NSString *gloss, NSString *scriptAnnotation)
+{
+    if (scriptAnnotation.length == 0) return gloss ?: @"";
+    return gloss.length ? [NSString stringWithFormat:@"%@\n%@", gloss, scriptAnnotation] : scriptAnnotation;
+}
+
 @interface MSIMECandidateButton : NSButton
 @property(nonatomic, copy) NSDictionary *candidateID;
 @property(nonatomic, strong) NSFont *numberFont;
@@ -130,6 +163,8 @@ static inline NSString *MSIMECandidateGlossRun(NSString *reading, NSString *tran
 @property(nonatomic, copy) NSString *annotation;
 // A reading drawn on the gloss run above the translation, in the gloss style, and never committed: a Korean Hanja's 훈음. Empty for every other row.
 @property(nonatomic, copy) NSString *glossReading;
+// 脚本插件给这一行加的注释，已经过 MSIMECandidateScriptAnnotationRun 收拾；画在释义行的最后一行，斜体，从不上屏，也不替换引擎的 annotation。没有时为空。
+@property(nonatomic, copy) NSString *scriptAnnotation;
 // Geometry from the panel's page layout; frames, drawing and hit testing all come from it. Without one the button lays itself out in its bounds.
 @property(nonatomic) msime::mac::CandidateItemLayout itemLayout;
 @property(nonatomic) BOOL hasItemLayout;
@@ -253,7 +288,8 @@ static inline NSString *MSIMECandidateGlossRun(NSString *reading, NSString *tran
     NSString *glossDisplay = self.translation.length || self.breakdown.length
         ? MSIMECandidateGlossDisplay(self.translation, self.pronunciation, self.breakdown, readingRanges, glossLineStarts)
         : @"";
-    NSString *translation = MSIMECandidateGlossRun(glossReading, glossDisplay);
+    NSString *scriptAnnotation = self.scriptAnnotation ?: @"";
+    NSString *translation = MSIMECandidateGlossWithScriptAnnotation(MSIMECandidateGlossRun(glossReading, glossDisplay), scriptAnnotation);
     // The 훈음 lines come first in the run, so every range measured in the gloss moves past them.
     const NSUInteger glossOffset = glossReading.length && glossDisplay.length ? glossReading.length + 1 : 0;
     const NSSize numberSize = [number sizeWithAttributes:numberAttributes];
@@ -308,6 +344,9 @@ static inline NSString *MSIMECandidateGlossRun(NSString *reading, NSString *tran
         for (NSValue *range in readingRanges)
             [glossText addAttribute:NSForegroundColorAttributeName value:readingColor
                               range:NSMakeRange(glossOffset + range.rangeValue.location, range.rangeValue.length)];
+        if (scriptAnnotation.length)
+            [glossText addAttribute:NSObliquenessAttributeName value:@(MSIMECandidateScriptAnnotationObliqueness)
+                              range:NSMakeRange(translation.length - scriptAnnotation.length, scriptAnnotation.length)];
         if (self.armedGlossColumn > 0) {
             // The underline marks what the column commits: the gloss line, not the reading drawn after it nor the 훈음 lines before it.
             NSArray<NSString *> *parts = [self.translation componentsSeparatedByString:@"\n"];
