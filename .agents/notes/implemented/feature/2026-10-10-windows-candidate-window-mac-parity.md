@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-对照 macOS，Windows 候选窗有两处缺陷和一串缺失。缺陷：首行 ‹ › 翻页箭头和滚轮共用 `InputState::page_candidate` 里的 `navigation.mouse_wheel` 闸，这个开关默认关，于是默认安装上箭头画着、鼠标变手形，点了却被 Server 拒掉；滚轮开关只在 Server 启动时读一次，改了设置要重启才生效。缺失：`show_app_logo` 不起作用，logo 一直画，`HostCapabilities::app_logo` 对 Windows 为 false；设了第二种释义语言时两种释义拼成一行「a / b」，而且没有任何设置入口能设它；横排候选在释义到达后才变高，打字几秒后卡片突然长高；释义后面没有 IPA 读音，整句候选没有逐词拆解，打包也不带这两张表；悬停候选没有提示；原生设置窗口的「候选词翻译」组找不到翻译服务的凭据在哪里。
+对照 macOS，Windows 候选窗有两处缺陷和一串缺失。缺陷：首行 ‹ › 翻页箭头和滚轮共用 `InputState::page_candidate` 里的 `navigation.mouse_wheel` 闸，这个开关默认关，于是默认安装上箭头画着、鼠标变手形，点了却被 Server 拒掉；滚轮开关只在 Server 启动时读一次，改了设置要重启才生效。缺失：`show_app_logo` 不起作用，logo 一直画，`HostCapabilities::app_logo` 对 Windows 为 false；设了第二种释义语言时两种释义拼成一行「a / b」，而且没有任何设置入口能设它；横排候选在释义到达后才变高，打字几秒后卡片突然长高；释义后面没有 IPA 读音，整句候选没有逐词拆解，打包也不带这两张表；悬停候选没有提示；原生设置窗口的「候选词翻译」组找不到翻译服务的凭据在哪里。后来脚本插件能给候选加注释（`script_annotation`），候选窗也要把它画出来，而且要和引擎的注释分得开、不能替换它。
 
 ## Decision
 
@@ -24,6 +24,10 @@ N 只算有释义来源的目标语言（`candidate_reserved_gloss_lines`），�
 
 **悬停提示。** 候选窗用 comctl32 的 tooltip 控件，每行候选登记一个区域（`sync_tooltips`，行和快照都没变时不重登记），文字是 `candidate_tooltip_text`：候选全文，下一行起是释义，和 macOS 候选按钮的 toolTip 相同。
 
+**脚本插件的注释。** host-api 把插件给候选加的注释放在 view 候选的 `script_annotation` 里（见 [脚本插件改写上屏与重排、注释、过滤候选](../architecture/2026-10-12-script-plugins-modify-commit-and-candidates.md)），不并进引擎的 `annotation`。两条投影（`candidate_presentation` 和 `candidate_presentation_from_view`，后者也是云候选、释义到达后重画走的路）把它读进 `PresentationCandidate::script_annotation`，超过 4096 字节和别的字段一样让整个投影作废；繁体输出不转换它，五笔剩余编码（`with_wubi_code_hints`）和韩文汉字的 훈음 只动引擎的注释，不碰它。候选窗把它画在注释那一段里：`candidate_annotation_run` 给出引擎的注释在前、插件的注释隔一个空格在后的整段文字和插件注释的起点，`measure_items`、`wrap_measure` 和 `paint` 用同一段文字，所以布局（同一行放得下就跟在候选文字后面，放不下就整段挪到下面折行）不用改。画的时候插件那一截用 `IDWriteTextLayout::SetDrawingEffect` 换成释义的颜色（`candidate_row_translation_color`，选中行上是 `selected_number`），引擎的注释仍是正文色，同一个字号；建不出 text layout 时整段按注释色画。两段加起来超过 4096 字节时只留引擎的注释。读屏的名字（`candidate_accessible_display`）在引擎注释和 훈음 之间读出插件的注释，次序和卡片上一样；悬停提示和释义不带它。
+
+候选行不经过 Server 到 TIP 的 IPC 去画：候选窗在 Server 进程里，就从 Server 手上的 transition JSON 投影，管道帧和能力协商都不动。唯一把候选文字交给 TIP 的是 UI-less 回执（`uiless_composition`，游戏等宿主自己画候选），按 `windows_ipc.h` 的约定只带纯候选文字、不带辅助码，插件的注释同样不进去。TIP 自己会话里的列表（`scheme::AlwaysInlinePreedit` 的方案）派发时设着 `COMMIT_OBSERVE_ONLY`，从不运行候选变换，本来就没有插件注释。
+
 ## Alternatives considered
 
 - **把滚轮闸整个挪进 `CandidateWindow`，Server 不再检查** — 一行改动，窗口本来就在 `WM_MOUSEWHEEL` 里看 `mouse_wheel_`。但 Server 是唯一能拒绝过期请求的地方，窗口里的开关值又可能比已发布的偏好晚一轮；请求带上来源、由 Server 按当前偏好裁决，两边各管各的。
@@ -33,11 +37,16 @@ N 只算有释义来源的目标语言（`candidate_reserved_gloss_lines`），�
 - **用操作系统的本机翻译模型补齐离线词典没覆盖的候选释义** — macOS 用 Apple 的 Translation 框架（`BackendOnDeviceGloss.swift`），只用用户已下载的语言对，设置页还提示哪些语言可下载。Windows 没有可与之相比的公开本机机器翻译接口，没有系统服务可接，所以不移植：那条下载提示只在 macOS 上出现。桌面应用在每个平台都给 `SettingsClient.onDeviceTranslation`，是共享设置页按平台只在 macOS 上用它：`use-macos-settings.ts` 只在 macOS 上查可下载的语言，`use-translation-settings.ts` 只在 macOS 上列出缺的语言。离线释义靠随包的单字与词释义表，在线释义靠翻译服务和「水杉账号」。
 - **候选窗自己实现 UIA 提供者给每行加读屏名称** — macOS 每个候选都有 accessibilityLabel。Windows 的读屏已经能通过 TSF 的 `ITfCandidateListUIElement` 读到候选，缺的只是翻页箭头和页码；一套 `IRawElementProviderFragment` 树在没有 Windows 真机的情况下验证不了，这次不做；后来在 [自绘窗口的 UI Automation 读屏](2026-10-10-windows-server-window-ui-automation.md) 里做了。
 
+- **插件的注释单独占一段，在候选卡片的布局里加第四段** — 最强的理由是插件注释能有自己的字号、位置和折行规则，和引擎注释完全分开。不用：`candidate_item_layout`、单行最小宽度、横排列宽和点击区域都要跟着改，三段布局的测试要重写；插件注释最多 32 个 UTF-16 码元，接在注释那一段后面换个颜色就分得开，折行和挪到下面的规则沿用注释的。
+- **插件的注释画在释义那一行（`candidate_secondary_text`）** — 最强的理由是释义行本来就是次要色、小字号，加一行就能和引擎注释分开。不用：释义行的第 N 行是第 N 种目标语言，Tab 预选、Alt/Ctrl+数字上屏和下划线都按行号找列，横排还按预留的释义行数定高，插一行插件文字会把这些对应关系打乱；它也不是释义，悬停提示和读屏会把它当释义念。
+- **把候选行连同插件注释发给 TIP 去画** — TIP 的 UI-less 路径是唯一在 Server 之外显示候选的地方。不用：那条路径按约定只给宿主纯候选文字（和微软输入法的 `ITfCandidateListUIElement::GetString` 一样），候选窗本身在 Server 里，改管道帧要多一个能力位、照顾新旧组合，换不来任何能画出来的东西。
+
 ## Consequences
 
 - **收益**：默认安装上翻页箭头能用；滚轮、logo、第二种语言和读音开关改了即时生效；两种目标语言各占一行，为按列上屏留好了列；横排卡片在释义到达时不再长高；打开读音后英文释义带音标，整句候选多一行逐词释义；长候选可以悬停看全文。
 - **代价**：Windows 宿主和会话之间多了一条与 macOS 相同的私有约定，读会话释义的新路径必须按 U+2028 分行，否则会看到这个字符。读音和拆解跟着翻译查询走，候选翻译和离线英文释义都关掉、或目标语言里没有英文时不会有拆解（macOS 也是）。日文释义的罗马字依赖系统的微软日语输入法，没有它时含汉字的日文行不标（[遗留项](2026-10-10-windows-mac-parity-leftovers.md)）；共享设置页「显示读音」的说明不再按宿主区分。读音和拆解加上去超过候选窗能画的 4096 字节时，`candidate_secondary_text` 只画释义，不让一条很长的释义把整个候选窗弄失败。三张读音和释义表要构建机上已经有 `target/pronunciations` 等目录才会进包，发版流程用 `scripts/fetch_gloss_tables.py` 下载它们，见 [英文释义三张表随发布包下载](../process/2026-10-11-ship-english-gloss-tables.md)。`show_app_logo` 的取值规则沿用共享偏好：新装为关，所以新装的 Windows 候选窗不画 logo；文档里没有这个字段的老用户读成开，外观不变，和 macOS 一致。
+- **脚本插件的注释**：授权的插件给候选加的注释在 Windows 候选窗里看得见，次要色、跟在引擎注释后面，不替换它，也读得到。代价是插件注释的颜色借用释义色，皮肤里释义色和正文色一样时只靠位置和空格分开；Windows 的发布构建现在不运行脚本（见 [脚本插件在输入法进程里](../architecture/2026-10-12-script-plugins-in-the-input-method-process.md)），这段只在开发构建里画得出来。
 
 ## Verification
 
-主机上能跑的纯策略测试：`tests/ui/candidate_wheel.cpp`（箭头不受滚轮开关管）、`tests/ui/candidate_card_size.cpp`（logo 隐藏后的宽度与首行高度、横排预留高度）、`tests/ui/candidate_layout_reload.cpp`（`show_app_logo`、预留行数及其编码）、`tests/core/translation_display.cpp`（U+2028 拼接、折叠、4096 字节上限、Ctrl+Enter 取首行）、`tests/candidate/candidate_gloss_readings.cpp`（读音与拆解的显示规则）。依赖 Engine 的：`tests/candidate/korean_hanja_presentation.cpp`（多行释义、读音、拆解和提示的拼法）、`tests/ui/candidate_mailbox.cpp`（读音单独到达时重画、释义变了不挂旧读音、偏好变化摘掉）。`crates/host-api/src/tests.rs` 的 `translation_query_carries_the_pronunciation_switch_only_when_on` 钉住只开在线翻译时查询也带 `resources`，`translation_queries_use_latest_preferences_without_resetting_composition` 钉住只开候选翻译、英文目标时带 `gloss_breakdown`，没有英文目标时不带；`tests/ui/candidate_layout_reload.cpp` 钉住新装默认偏好不预留、各种来源的预留行数和离线词典的检测，`tests/ui/candidate_card_size.cpp` 钉住两行释义按量出的高度预留，`tests/candidate/candidate_pointer_input.cpp` 钉住哪些方案的页请求释义，`host_surface/tests.rs` 钉住 Windows 的 `app_logo`。Windows 真机上要确认的：箭头点击翻页、logo 开关、两种语言的卡片、悬停提示在不抢焦点的候选窗上的表现。
+主机上能跑的纯策略测试：`tests/ui/candidate_wheel.cpp`（箭头不受滚轮开关管）、`tests/ui/candidate_card_size.cpp`（logo 隐藏后的宽度与首行高度、横排预留高度）、`tests/ui/candidate_layout_reload.cpp`（`show_app_logo`、预留行数及其编码）、`tests/core/translation_display.cpp`（U+2028 拼接、折叠、4096 字节上限、Ctrl+Enter 取首行）、`tests/candidate/candidate_gloss_readings.cpp`（读音与拆解的显示规则）。依赖 Engine 的：`tests/candidate/korean_hanja_presentation.cpp`（多行释义、读音、拆解和提示的拼法）、`tests/ui/candidate_mailbox.cpp`（读音单独到达时重画、释义变了不挂旧读音、偏好变化摘掉）。`crates/host-api/src/tests.rs` 的 `translation_query_carries_the_pronunciation_switch_only_when_on` 钉住只开在线翻译时查询也带 `resources`，`translation_queries_use_latest_preferences_without_resetting_composition` 钉住只开候选翻译、英文目标时带 `gloss_breakdown`，没有英文目标时不带；`tests/ui/candidate_layout_reload.cpp` 钉住新装默认偏好不预留、各种来源的预留行数和离线词典的检测，`tests/ui/candidate_card_size.cpp` 钉住两行释义按量出的高度预留，`tests/candidate/candidate_pointer_input.cpp` 钉住哪些方案的页请求释义，`host_surface/tests.rs` 钉住 Windows 的 `app_logo`。`tests/candidate/script_annotation_presentation.cpp` 钉住两条投影读 `script_annotation`、引擎注释原样保留、五笔剩余编码和 훈음 不碰它、注释那一段的拼法和 4096 字节上限，`tests/candidate/candidate_accessibility.cpp` 钉住读屏名字里的次序。Windows 真机上要确认的：箭头点击翻页、logo 开关、两种语言的卡片、悬停提示在不抢焦点的候选窗上的表现，以及插件注释那一截换色、跟着注释段挪到下一行折行的画法（`SetDrawingEffect` 只在 Windows 上跑得到，本机交叉构建只证明它能编译）。

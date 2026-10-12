@@ -106,6 +106,38 @@ void koreanHanjaGlossRow() {
               shown(word(Json{{"text", "你"}, {"annotation", "ab"}}, false, std::string())).toString() == "你",
           "annotations off still hide a helpcode");
 }
+// 脚本插件的注释（`script_annotation`）在行尾单独一段，括在六角括号里、标 DontCommit：辅助码设置关着也画，不替换引擎注释，也不进训音；选中用的文本不变，占位行和不合规的文本不画。和上面两个一样不需要资源 fixture。
+void scriptAnnotationRow() {
+  const auto word = [](Json candidate, bool annotations, const std::string &gloss = std::string()) {
+    candidate["id"] = Json{{"session", 1}, {"generation", 1}, {"index", 0}};
+    return FcitxCandidate(nullptr, candidate, false, annotations, gloss);
+  };
+  const auto shown = [](const FcitxCandidate &candidate) -> const fcitx::Text & {
+    return static_cast<const fcitx::CandidateWord &>(candidate).text();
+  };
+  const fcitx::TextFormatFlags displayOnly{fcitx::TextFormatFlag::DontCommit};
+  const auto off = word(Json{{"text", "你"}, {"annotation", "ab"}, {"script_annotation", "常用"}}, false);
+  require(shown(off).toString() == "你  〔常用〕" && shown(off).size() == 2 &&
+              shown(off).stringAt(1) == "  〔常用〕" && shown(off).formatAt(1) == displayOnly,
+          "a script annotation shows with annotations off, as its own display-only segment");
+  require(off.text() == "你", "the script annotation stays out of the selected text");
+  const auto both = word(Json{{"text", "你"}, {"annotation", "ab"}, {"script_annotation", "常用"},
+                              {"translation", "you"}}, true);
+  require(shown(both).toString() == "你  ab  you  〔常用〕",
+          "the engine annotation and the translation stay, the script annotation comes last");
+  const auto hanja = word(Json{{"text", "韓"}, {"annotation", "나라 이름 한"}, {"script_annotation", "注"}},
+                          false, "나라 이름 한");
+  require(shown(hanja).toString() == "韓  나라 이름 한  〔注〕",
+          "a Hanja row keeps its 훈음 and draws the script annotation after it");
+  require(shown(word(Json{{"text", "…"}, {"source", 12}, {"script_annotation", "注"}}, true)).toString() == "…",
+          "the AI placeholder draws no script annotation");
+  require(shown(word(Json{{"text", "你"}, {"script_annotation", "a\nb"}}, true)).toString() == "你",
+          "a script annotation that would break the row is not drawn");
+  require(shown(word(Json{{"text", "你"}, {"script_annotation", std::string(33, 'a')}}, true)).toString() == "你",
+          "an over-long script annotation is not drawn");
+  require(shown(word(Json{{"text", "你"}, {"annotation", "ab"}}, true)).toString() == "你  ab",
+          "a row without a script annotation is unchanged");
+}
 // An installed skin's decoration reaches the classic UI as the msime theme's overlay, with the image copied beside theme.conf; a built-in skin, or a switch back to one, leaves no image behind. This composes the theme exactly as applyCandidatePanelTheme does, against the shared layer's built-in catalogue, but writes it without the classic UI addon, which the fixture instance does not load. Runs before the resource fixture.
 void candidateThemeDecoration() {
   namespace host = msime::linux_host;
@@ -992,8 +1024,17 @@ int main(int argc, char **argv) {
 #ifdef MSIME_FCITX5_HINT_FONT
     if (argc == 2 && std::string(argv[1]) == "--theme-hint") return candidateThemeHint();
 #endif
+    // 只跑不需要资源的候选行用例，门禁里没有已验证词库时也能跑到。
+    if (argc == 2 && std::string(argv[1]) == "--rows") {
+      autocorrectMarker();
+      koreanHanjaGlossRow();
+      scriptAnnotationRow();
+      std::cout << "Fcitx5 candidate rows passed\n";
+      return 0;
+    }
     autocorrectMarker();
     koreanHanjaGlossRow();
+    scriptAnnotationRow();
     candidateThemeDecoration();
     modeBadgeTheme();
     classicuiTakeoverRecord();

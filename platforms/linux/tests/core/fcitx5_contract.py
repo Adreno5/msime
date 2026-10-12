@@ -763,4 +763,29 @@ ibus_list_arrows = body(ibus, "    if (opened_list && modifiers == 0 &&\n", "\n 
 assert "backwards ? MSIME_PREVIOUS_CANDIDATE : MSIME_NEXT_CANDIDATE" in ibus_list_arrows
 assert "key == IBUS_Up || key == IBUS_KP_Up;" in ibus_list_arrows
 
+# 脚本插件的注释：两个宿主都经 candidates/CandidateScriptAnnotation.h 读 `script_annotation`，画在整行最后。它不走引擎注释那条按辅助码开关、本地模式和训音决定画不画的路，也不做繁体转换；IBus 用序号的颜色只画它自己的区间。
+for host in (source, ibus_source):
+    assert "msime::linux_host::candidate_script_annotation(candidate)" in host
+    assert "msime::linux_host::candidate_script_annotation_suffix(" in host
+    assert '"script_annotation"' not in host
+fcitx_row = body(source, "fcitx::Text candidateRowText(", "\n}\n")
+assert fcitx_row.index('candidate.at("translation")') < fcitx_row.index(
+    "candidate_script_annotation(candidate)"
+) < fcitx_row.index("fcitx::TextFormatFlag::DontCommit});\n  return row;")
+ibus_row = body(
+    ibus_source,
+    "  for (size_t index = 0; index < candidates.size(); ++index) {\n    const auto &candidate = candidates.at(index);\n    auto value = candidate.at(\"text\").get<std::string>();",
+    "    ibus_lookup_table_append_candidate(table, text);",
+)
+ibus_script = ibus_row[
+    ibus_row.index("candidate_script_annotation(candidate)") : ibus_row.index(
+        "auto text = ibus_text_new_from_string(value.c_str());"
+    )
+]
+assert "traditional_display" not in ibus_script
+assert ibus_row.index(
+    "value += traditional_display(state(engine), view, std::move(tail));"
+) < ibus_row.index("candidate_script_annotation(candidate)")
+assert "*row_number_color,\n                                 script_start, script_end);" in ibus_row
+
 print("Fcitx5 addon metadata passed")

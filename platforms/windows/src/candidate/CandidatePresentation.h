@@ -41,6 +41,8 @@ struct PresentationCandidate {
   std::string breakdown{};
   // AI 座位上的占位行（Engine 候选来源 12）：等回答时是「…」，回答为空或失败后是「—」。画成次要色，选它什么都不上屏（#6888）。
   bool pending = false;
+  // 授权的脚本插件给这一行加的注释（view 候选的 script_annotation，没有插件注释时为空）。和引擎的 annotation 分开放、分开画：跟在注释那一段后面，换成次要色，从不替换引擎的注释，见 candidate_annotation_run。
+  std::string script_annotation{};
 };
 // Whether this view's candidates are a Korean Hanja list: the Korean scheme under its own rules, outside the dedicated English mode and every local mode, where the Engine lists candidates only after MSIME_CONVERT_HANJA. ReplyComposer::korean_hanja reads the same three fields.
 inline bool korean_hanja_view(const nlohmann::json &view) {
@@ -110,6 +112,19 @@ inline void attach_candidate_readings(std::vector<PresentationCandidate> &candid
 // selection, dictionary actions and candidate identity.
 inline std::string candidate_primary_text(const PresentationCandidate &candidate) {
   return candidate.text + (candidate.corrected ? "*" : "") + candidate.badge;
+}
+// 一行候选的注释那一段：引擎的注释（或五笔的剩余编码）在前，脚本插件的注释隔一个空格跟在后面。script_start 是插件注释在 text 里的 UTF-8 字节起点，候选窗从这里起换成次要色画；没有插件注释时为 npos。两段连起来超过候选窗能画的 4096 字节（CandidateWindow 的 wide()）时只留引擎的注释，插件的注释不让这一段画不出来。
+struct CandidateAnnotationRun {
+  std::string text;
+  size_t script_start = std::string::npos;
+};
+inline CandidateAnnotationRun candidate_annotation_run(const PresentationCandidate &candidate) {
+  const auto &engine = candidate.annotation;
+  const auto &script = candidate.script_annotation;
+  const size_t start = engine.empty() ? 0 : engine.size() + 1;
+  if (script.empty() || start + script.size() > 4096)
+    return {engine, std::string::npos};
+  return {engine.empty() ? script : engine + " " + script, start};
 }
 // 鼠标停在一行候选上时的提示：候选全文，有释义时下一行是释义，和 macOS 候选按钮的 toolTip 一样。长候选和长释义在卡片里会折行，提示里是完整的一段。
 inline std::string candidate_tooltip_text(const PresentationCandidate &candidate) {
@@ -253,13 +268,14 @@ candidate_presentation_from_view(const FocusLease &lease,
         candidate.value("translation", std::string{}),
         candidate_actions_available(view.value("scheme", 0u), candidate_source)};
     item.pending = candidate_source == candidate_source_ai_pending;
+    item.script_annotation = candidate.value("script_annotation", std::string{});
     if (hanja)
       move_korean_hanja_gloss(item);
     if (item.session != output.session ||
         item.generation != output.generation || item.text.size() > 4096 ||
         item.annotation.size() > 4096 || item.gloss.size() > 4096 ||
         item.badge.size() > 4096 ||
-        item.translation.size() > 4096)
+        item.translation.size() > 4096 || item.script_annotation.size() > 4096)
       throw std::invalid_argument("Invalid presented candidate");
     item.wubi_code_hint = wubi_code_hint(view, candidate);
     highlighted += item.highlighted;
@@ -326,13 +342,14 @@ candidate_presentation(const FocusLease &lease, const PendingReply &reply,
         candidate.value("translation", std::string{}),
         candidate_actions_available(view.value("scheme", 0u), candidate_source)};
     item.pending = candidate_source == candidate_source_ai_pending;
+    item.script_annotation = candidate.value("script_annotation", std::string{});
     if (hanja)
       move_korean_hanja_gloss(item);
     if (item.session != output.session ||
         item.generation != output.generation || item.text.size() > 4096 ||
         item.annotation.size() > 4096 || item.gloss.size() > 4096 ||
         item.badge.size() > 4096 ||
-        item.translation.size() > 4096)
+        item.translation.size() > 4096 || item.script_annotation.size() > 4096)
       throw std::invalid_argument("Invalid presented candidate");
     item.wubi_code_hint = wubi_code_hint(view, candidate);
     highlighted += item.highlighted;
