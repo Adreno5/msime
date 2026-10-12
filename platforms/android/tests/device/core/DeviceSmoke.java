@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.AtomicFile;
 import android.view.MotionEvent;
@@ -23,6 +24,23 @@ import java.util.function.Predicate;
 public class DeviceSmoke extends Instrumentation {
     protected UiAutomation automation;
     protected String stage = "launch";
+
+    /** 执行设备测试命令并排空输出，避免未读取的管道阻塞命令。 */
+    protected final void shellDiscard(String command) throws Exception {
+        try (var input = new ParcelFileDescriptor.AutoCloseInputStream(
+                automation.executeShellCommand(command))) {
+            byte[] buffer = new byte[1024];
+            while (input.read(buffer) != -1) { }
+        }
+    }
+
+    /** 重新注册并启用被测输入法，等待系统完成切换。 */
+    protected final void restartIme() throws Exception {
+        shellDiscard("ime disable app.msime.android/.MSIMEInputService");
+        shellDiscard("ime enable app.msime.android/.MSIMEInputService");
+        shellDiscard("ime set app.msime.android/.MSIMEInputService");
+        SystemClock.sleep(1000);
+    }
 
     /** 用原子写入发布测试偏好；失败时保留原文件。 */
     protected final void publish(File file, byte[] contents) throws Exception {
