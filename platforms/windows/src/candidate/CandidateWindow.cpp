@@ -818,7 +818,7 @@ CandidateBounds CandidateWindow::card_bounds(const CandidatePresentation &value,
                                              static_cast<int>(shadow_right),
                                              static_cast<int>(shadow_bottom)});
 }
-// The shipped presenter draws three runs per candidate: the text with its badge, the annotation (辅助码) and the translation, the last at a smaller size. Measuring them apart is what lets a long annotation or translation wrap under the text instead of being clipped off the end of one long label. The translation run is candidate_secondary_text, which puts a Korean Hanja's 훈음 above its translation.
+// 和原来的候选窗一样，每个候选画三段：带徽标的候选文字、注释（辅助码）和释义，释义的字号小一些。三段分开量，长注释、长释义才能折到候选文字下面，而不是接在一整条标签的末尾被截掉。释义那一段是 candidate_secondary_text，韩文汉字的 훈음 在释义上面；注释那一段是 candidate_annotation_run，引擎的注释后面接着脚本插件的注释，量和画用的是同一串文字。
 std::vector<CandidateItemWidths>
 CandidateWindow::measure_items(const CandidatePresentation &value) {
   const auto metrics =
@@ -831,7 +831,7 @@ CandidateWindow::measure_items(const CandidatePresentation &value) {
                             static_cast<float>(size), font_fallback_.Get());
     };
     items.push_back({width(candidate_primary_text(candidate), font_size_),
-                     width(candidate.annotation, font_size_),
+                     width(candidate_annotation_run(candidate).text, font_size_),
                      width(candidate_secondary_text(candidate),
                            metrics.translation_font),
                      candidate_secondary_lines(candidate)});
@@ -872,7 +872,7 @@ CandidateWindow::wrap_measure(const CandidatePresentation &value) {
   runs.reserve(value.candidates.size());
   for (const auto &candidate : value.candidates)
     runs.push_back({wide(candidate_primary_text(candidate)),
-                    wide(candidate.annotation),
+                    wide(candidate_annotation_run(candidate).text),
                     wide(candidate_secondary_text(candidate))});
   return [this, runs = std::move(runs), font = static_cast<float>(font_size_),
           translation_font = static_cast<float>(metrics.translation_font)](
@@ -1301,8 +1301,33 @@ void CandidateWindow::paint() {
                                     top + static_cast<float>(box.height)},
                         brush(color), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     };
-    draw_run(value->candidates[i].annotation, item.annotation, font_size_,
-             annotation_color);
+    // 脚本插件的注释和引擎的注释同在注释那一段、同一个字号，用次要色（和释义同一种颜色，选中行上也看得清）画，和引擎的注释区分开。换色要用 IDWriteTextLayout 给那一段设 drawing effect，建不出来时整段按注释的颜色画，插件的注释仍然看得到。
+    const auto annotation_run = candidate_annotation_run(value->candidates[i]);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> annotated;
+    if (annotation_run.script_start != std::string::npos && item.annotation.width > 0.0) {
+      if (auto *factory = device_.GetDWriteFactory()) {
+        const auto run_text = wide(annotation_run.text);
+        const auto start = wide(annotation_run.text.substr(0, annotation_run.script_start)).size();
+        const float left = rect.left + gutter + static_cast<float>(item.annotation.x);
+        if (SUCCEEDED(factory->CreateTextLayout(
+                run_text.c_str(), static_cast<UINT32>(run_text.size()),
+                format(font_size_, DWRITE_TEXT_ALIGNMENT_LEADING, item.annotation.below),
+                (std::max)(rect.right - left, 0.0f),
+                static_cast<float>(item.annotation.height), annotated.GetAddressOf())) &&
+            annotated &&
+            SUCCEEDED(annotated->SetDrawingEffect(
+                brush(translation_color),
+                DWRITE_TEXT_RANGE{static_cast<UINT32>(start),
+                                  static_cast<UINT32>(run_text.size() - start)})))
+          target->DrawTextLayout(
+              D2D1_POINT_2F{left, rect.top + static_cast<float>(item.annotation.y)},
+              annotated.Get(), brush(annotation_color), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        else
+          annotated.Reset();
+      }
+    }
+    if (!annotated)
+      draw_run(annotation_run.text, item.annotation, font_size_, annotation_color);
     const auto secondary = candidate_secondary_text(value->candidates[i]);
     // Tab 预选的释义列在高亮候选上画下划线，和 macOS 候选按钮的 armedGlossColumn 一样；数字、空格会上屏这一列。
     const auto armed = selected ? candidate_gloss_column_range(value->candidates[i],

@@ -102,7 +102,7 @@ Cc 用 `char::is_control`，Cf 是按 Unicode 15.1 写死的码位表，再加�
 
 - 收益：脚本能改写上屏和重排、注释、过滤候选，选中的永远是显示的那一行，隐藏的行任何路径都选不到；旁路调用不运行脚本；插件之间不能经候选窗口读到彼此的改动；没有插件时 transition JSON 不变；dev 构建里一个钩子跑满配额只要几百 KiB 的原生栈。
 - 代价：声明了 `before_commit` 的插件每次派发类上屏都要重新实例化一次，不可改写时也一样；候选变换每次派发多一次窗口构造和按身份的线性查找（最多 20 行）；dev 构建里 wasmi 自己的 debug 断言不再运行。
-- `script_annotation` 由各宿主自己画：macOS 把它画在释义行的最后一行（斜体，见 [macOS 候选窗把脚本插件的注释画在释义行的最后一行](../feature/2026-10-12-macos-script-annotations.md)）；Linux 的 IBus 和 Fcitx5 在行尾画（见上面的 Linux 一节）；还没接上的宿主上插件的注释看不见。Linux 上插件注释让候选行变宽，横排时一页更容易超出屏幕；从右到左的注释没有做双向隔离；IBus 面板是否认区间前景属性由面板决定，没在真实的 GNOME Shell、KDE 和 ibus-ui-gtk3 面板上看过。
+- `script_annotation` 由各宿主自己画，三个桌面平台都已接上：macOS 把它画在释义行的最后一行（斜体，见 [macOS 候选窗把脚本插件的注释画在释义行的最后一行](../feature/2026-10-12-macos-script-annotations.md)）；Linux 的 IBus 和 Fcitx5 在行尾画（见上面的 Linux 一节）；Windows 的 Server 候选窗接在引擎注释后面、换成次要色，不经 TIP 的管道（见 [Windows 候选窗](../feature/2026-10-10-windows-candidate-window-mac-parity.md)）。Linux 上插件注释让候选行变宽，横排时一页更容易超出屏幕；从右到左的注释没有做双向隔离；IBus 面板是否认区间前景属性由面板决定，没在真实的 GNOME Shell、KDE 和 ibus-ui-gtk3 面板上看过。
 - `candidates_shown` 能看到别的插件造成的顺序和隐藏，构成插件之间约 1 bit 量级的顺序通道；文本（注释）不经这里传递。
 - Cf 表按 Unicode 15.1 写死，之后版本新增的格式字符不在表里；ZWJ（U+200D）和标签字符是 Cf，含它们的 emoji 组合序列和旗帜不能出现在改写结果和注释里。
 - 改写不回灌引擎学习和 AI 上文，这一点由调用顺序保证（runtime 在 `dispatch` 里按原文记下，host-api 之后才改写），没有单独的测试；宿主之后照常做繁体转换和统计，作者文档要写明。
