@@ -409,6 +409,8 @@ struct MSIMECandidatePageGeometry {
     NSArray<NSString *> *displays = @[];
     // The reading each row draws on its gloss run above any translation (a Korean Hanja's 훈음, empty elsewhere), and the tooltip that shows the row's text with everything under it.
     NSArray<NSString *> *readings = @[];
+    // 每一行脚本插件的注释（MSIMECandidateScriptAnnotationRun 收拾过的），没有时为空串；它算进释义行的量高，由按钮画在释义行的最后一行。
+    NSArray<NSString *> *scriptAnnotations = @[];
     NSArray<NSString *> *tooltips = @[];
     // Card width, the width the rows share inside it, the height they stack to, and the x of the candidate text inside a row.
     CGFloat width = 0;
@@ -6534,6 +6536,7 @@ static BOOL MSIMESentenceCandidateText(NSString *text) {
     NSMutableArray<NSString *> *displays = [NSMutableArray arrayWithCapacity:candidates.count];
     NSMutableArray<NSString *> *translations = [NSMutableArray arrayWithCapacity:candidates.count];
     NSMutableArray<NSString *> *readings = [NSMutableArray arrayWithCapacity:candidates.count];
+    NSMutableArray<NSString *> *scriptAnnotations = [NSMutableArray arrayWithCapacity:candidates.count];
     NSMutableArray<NSString *> *tooltips = [NSMutableArray arrayWithCapacity:candidates.count];
     // A Korean Hanja's 훈음 (나라 이름 한) arrives as the row's annotation. Drawn inline at the candidate size it made every row several times as wide as its one character, so it goes on the small gloss line under the Hanja instead, always, with any translation on the lines after it. It stays out of `translation`, which is what the gloss commit chords write.
     const BOOL hanjaReadings = MSIMEKoreanHanjaListOpen(_view);
@@ -6557,13 +6560,17 @@ static BOOL MSIMESentenceCandidateText(NSString *text) {
         [annotations addObject:annotation];
         [displays addObject:display];
         [readings addObject:reading];
-        // Measured as drawn, readings included, so a row is as wide and tall as the gloss the button draws.
+        // 插件注释原样显示，不做繁简转换：那是插件写的文字，不是要上屏的候选。
+        NSString *scriptAnnotation = MSIMECandidateScriptAnnotationRun(candidate[@"script_annotation"]);
+        [scriptAnnotations addObject:scriptAnnotation];
+        // 按画出来的样子量：读音和插件注释都算进释义行，行的宽高才和按钮画的释义行一致。
         NSString *pronunciation = [self pronunciationForCandidate:candidate];
         NSString *breakdown = [self breakdownForCandidate:candidate];
-        [translations addObject:pronunciation.length || breakdown.length
+        [translations addObject:MSIMECandidateGlossWithScriptAnnotation(pronunciation.length || breakdown.length
             ? MSIMECandidateGlossRun(reading, MSIMECandidateGlossDisplay(CandidateTranslation(candidate), pronunciation, breakdown, nil, nil))
-            : gloss];
-        [tooltips addObject:gloss.length ? [NSString stringWithFormat:@"%@\n%@", hanjaReadings ? text : display, gloss] : display];
+            : gloss, scriptAnnotation)];
+        NSString *tip = MSIMECandidateGlossWithScriptAnnotation(gloss, scriptAnnotation);
+        [tooltips addObject:tip.length ? [NSString stringWithFormat:@"%@\n%@", hanjaReadings ? text : display, tip] : display];
         NSString *number = [NSString stringWithFormat:@"%lu", (unsigned long)++index];
         numberWidth = MAX(numberWidth, [number sizeWithAttributes:@{NSFontAttributeName: numberFont}].width);
         // Fallback glyphs can stand taller than the primary font; a one-line row is as tall as its tallest.
@@ -6573,6 +6580,7 @@ static BOOL MSIMESentenceCandidateText(NSString *text) {
     geometry.annotations = annotations;
     geometry.displays = displays;
     geometry.readings = readings;
+    geometry.scriptAnnotations = scriptAnnotations;
     geometry.tooltips = tooltips;
     geometry.contentLeft = MSIMECandidateTextLeft(showSelectedBar, scale) + ceil(numberWidth) + MSIMECandidateNumberGap * scale;
     const msime::mac::CandidateLayoutMetrics metrics =
@@ -6818,6 +6826,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
             NSString *title = [NSString stringWithFormat:@"%lu  %@", (unsigned long)(index + 1), pageGeometry.texts[index]];
             if (![button.candidateID isEqual:candidate[@"id"]] || ![button.title isEqual:title] ||
                 ![button.annotation isEqual:pageGeometry.annotations[index]] ||
+                ![button.scriptAnnotation isEqual:pageGeometry.scriptAnnotations[index]] ||
                 button.candidateHighlighted != MSIMEStrictBoolean(candidate[@"highlighted"]) ||
                 !NSEqualRects(button.frame, NSMakeRect(inset + row.x, headerBottom - row.y - row.height,
                                                        row.width, row.height))) {
@@ -6835,7 +6844,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
             button.itemLayout = row.item;
             button.hasItemLayout = YES;
             button.contentLeft = pageGeometry.contentLeft;
-            button.translationBelow = MSIMECandidateGlossRun(button.glossReading, button.translation).length ? row.item.translation.below : !vertical;
+            button.translationBelow = MSIMECandidateGlossRun(button.glossReading, button.translation).length || button.scriptAnnotation.length ? row.item.translation.below : !vertical;
             button.needsDisplay = YES;
         }
         if (reusable) {
@@ -6871,6 +6880,10 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         // The frame is the laid out row, so a wrapped line is inside the area that takes the click.
         button.frame = NSMakeRect(inset + row.x, rowsTop - row.y - row.height, row.width, row.height);
         button.accessibilityLabel = [NSString stringWithFormat:@"%lu  %@", (unsigned long)(slot + 1), display];
+        // 读屏先读候选本身，再说明后面那段是插件写的，免得把插件的文字当成输入法的释义或辅助码。
+        NSString *scriptAnnotation = pageGeometry.scriptAnnotations[slot];
+        if (scriptAnnotation.length)
+            button.accessibilityLabel = [NSString stringWithFormat:@"%@，插件注释：%@", button.accessibilityLabel, scriptAnnotation];
         ++slot;
         button.font = font;
         button.numberFont = numberFont;
@@ -6879,6 +6892,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.annotation = row.item.annotation.width > 0 ? pageGeometry.annotations[slot - 1] : @"";
         button.translation = CandidateTranslation(candidate);
         button.glossReading = pageGeometry.readings[slot - 1];
+        button.scriptAnnotation = scriptAnnotation;
         button.pronunciation = [self pronunciationForCandidate:candidate];
         button.breakdown = [self breakdownForCandidate:candidate];
         button.armedGlossColumn = _armedGlossColumn;
@@ -6886,7 +6900,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.itemLayout = row.item;
         button.hasItemLayout = YES;
         button.contentLeft = pageGeometry.contentLeft;
-        button.translationBelow = MSIMECandidateGlossRun(button.glossReading, button.translation).length || button.breakdown.length ? row.item.translation.below : !vertical;
+        button.translationBelow = MSIMECandidateGlossRun(button.glossReading, button.translation).length || button.breakdown.length || scriptAnnotation.length ? row.item.translation.below : !vertical;
         button.toolTip = pageGeometry.tooltips[slot - 1];
         button.bordered = NO;
         button.candidateHighlighted = MSIMEStrictBoolean(candidate[@"highlighted"]);

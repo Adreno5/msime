@@ -33,6 +33,7 @@
 #include "../src/candidates/CandidateActionPolicy.h"
 #include "../src/candidates/CandidateLocalModeLabels.h"
 #include "../src/candidates/CandidatePanelStatus.h"
+#include "../src/candidates/CandidateScriptAnnotation.h"
 #include "../src/candidates/CandidatePalette.h"
 #include "../src/candidates/CandidateColors.h"
 #include "../src/candidates/CandidateFcitxTheme.h"
@@ -3889,6 +3890,11 @@ fcitx::Text candidateRowText(const Json &candidate, bool traditional, bool annot
                                                          fcitx::TextFormatFlag::DontCommit});
   if (candidate.contains("translation") && candidate.at("translation").is_string())
     row.append("  " + candidate.at("translation").get<std::string>());
+  // 脚本插件的注释排在整行最后，单独一段：不受辅助码设置影响，不做繁体转换（那是插件自己写的文字），只供显示，所以和训音一样标 DontCommit。
+  const auto scriptAnnotation = msime::linux_host::candidate_script_annotation(candidate);
+  if (!scriptAnnotation.empty())
+    row.append(msime::linux_host::candidate_script_annotation_suffix(scriptAnnotation),
+               fcitx::TextFormatFlags{fcitx::TextFormatFlag::DontCommit});
   return row;
 }
 
