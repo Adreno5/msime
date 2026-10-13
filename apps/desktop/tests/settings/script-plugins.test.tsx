@@ -73,7 +73,7 @@ const catalog: PluginCatalogResult = {
 };
 
 function grants(overrides: Partial<ScriptGrantsResult> = {}): ScriptGrantsResult {
-  return { revision: 1, plugins: [], health: [], ...overrides };
+  return { revision: 1, plugins: [], health: [], commands: [], ...overrides };
 }
 
 function fakeClient(overrides: Partial<PluginClient> = {}): PluginClient {
@@ -90,8 +90,14 @@ function fakeClient(overrides: Partial<PluginClient> = {}): PluginClient {
   };
 }
 
-function renderSection(client: PluginClient, platform = "macos", scriptPlugins = true) {
+function renderSection(
+  client: PluginClient,
+  platform = "macos",
+  scriptPlugins = true,
+  modes: Pick<Parameters<typeof PluginsSection>[0], "commandMode" | "onLocalMode"> = {},
+) {
   const onError = vi.fn();
+  const onChange = vi.fn();
   render(
     <PluginsSection
       client={client}
@@ -102,12 +108,13 @@ function renderSection(client: PluginClient, platform = "macos", scriptPlugins =
       active
       scriptPlugins={scriptPlugins}
       platform={platform}
-      onChange={vi.fn()}
+      {...modes}
+      onChange={onChange}
       onError={onError}
       confirm={vi.fn(async () => true)}
     />,
   );
-  return { onError };
+  return { onError, onChange };
 }
 
 async function openScript(name: string) {
@@ -567,4 +574,125 @@ test("the detail of a pack that provides slash commands names its capability and
   const requested = screen.getByRole("region", { name: "申请的权限" });
   expect(within(requested).getByText("提供 / 指令")).toBeTruthy();
   expect(within(requested).getByText("未授予")).toBeTruthy();
+});
+
+/** `uuid` 启用并授予了「提供 / 指令」的授权，`commands` 是宿主算出的状态。 */
+function uuidGrants(commands: ScriptGrantsResult["commands"]): ScriptGrantsResult {
+  return grants({
+    plugins: [{ id: "uuid", hash: HASH, enabled: true, granted: ["provide_commands"] }],
+    commands,
+  });
+}
+
+const otherUuid = script({
+  id: "other",
+  name: "另一个 UUID",
+  hooks: ["command"],
+  permissions: ["provide_commands"],
+  commands: [{ trigger: "uu", title: "UU" }],
+});
+
+test("the detail lists each slash command with its state and names who shadows it", async () => {
+  renderSection(
+    fakeClient({
+      catalog: vi.fn(async () => ({ packages: [uuidPack, otherUuid], issues: [] })),
+      scriptGrants: vi.fn(async () =>
+        uuidGrants([
+          { id: "other", trigger: "uu", title: "UU", status: "active" },
+          {
+            id: "uuid",
+            trigger: "uuid",
+            title: "UUID",
+            status: "shadowed_by_plugin",
+            conflict_id: "other",
+            conflict: "uu",
+          },
+          {
+            id: "uuid",
+            trigger: "guid",
+            title: "GUID",
+            status: "shadowed_by_user_table",
+            conflict: "gu",
+          },
+        ]),
+      ),
+    }),
+    "macos",
+    true,
+    { commandMode: true, onLocalMode: vi.fn() },
+  );
+  await openScript("UUID 样板");
+  const commands = await screen.findByRole("region", { name: "提供的 / 指令" });
+  await waitFor(() =>
+    expect(within(commands).getByText("与插件 另一个 UUID 的 /uu 冲突，未生效")).toBeTruthy(),
+  );
+  expect(within(commands).getByText("/uuid")).toBeTruthy();
+  expect(within(commands).getByText("UUID")).toBeTruthy();
+  expect(within(commands).getByText("/guid")).toBeTruthy();
+  expect(within(commands).getByText("与你的指令 /gu 冲突，未生效")).toBeTruthy();
+  // / 指令开着：没有提示，也没有按钮。
+  expect(within(commands).queryByRole("button", { name: "打开 / 指令" })).toBeNull();
+});
+
+test("an active slash command says so, and a command of a pack not yet granted says how it takes effect", async () => {
+  renderSection(
+    fakeClient({
+      catalog: vi.fn(async () => ({ packages: [uuidPack], issues: [] })),
+      scriptGrants: vi.fn(async () =>
+        uuidGrants([{ id: "uuid", trigger: "uuid", title: "UUID", status: "active" }]),
+      ),
+    }),
+    "macos",
+    true,
+    { commandMode: true },
+  );
+  await openScript("UUID 样板");
+  const commands = await screen.findByRole("region", { name: "提供的 / 指令" });
+  await waitFor(() => expect(within(commands).getByText("生效")).toBeTruthy());
+  // 宿主没列出 `guid`（例如插件超过 8 个、包载入不了）：照实说没生效。
+  expect(within(commands).getByText("未生效")).toBeTruthy();
+  cleanup();
+
+  renderSection(fakeClient({ catalog: vi.fn(async () => ({ packages: [uuidPack], issues: [] })) }));
+  await openScript("UUID 样板");
+  const pending = await screen.findByRole("region", { name: "提供的 / 指令" });
+  expect(within(pending).getAllByText("授权并启用后生效")).toHaveLength(2);
+});
+
+test("with the slash mode off the detail explains it and only the button turns it on", async () => {
+  const onLocalMode = vi.fn();
+  const setScriptGrant = vi.fn(async () =>
+    uuidGrants([{ id: "uuid", trigger: "uuid", title: "UUID", status: "active" }]),
+  );
+  const { onChange } = renderSection(
+    fakeClient({
+      catalog: vi.fn(async () => ({ packages: [uuidPack], issues: [] })),
+      setScriptGrant,
+    }),
+    "macos",
+    true,
+    { commandMode: false, onLocalMode },
+  );
+  await openScript("UUID 样板");
+  const commands = await screen.findByRole("region", { name: "提供的 / 指令" });
+  expect(
+    within(commands).getByText(
+      "需要先打开 / 指令，并使用中文标点；在全拼、双拼、五笔下没有输入时按 / 再输入触发词。",
+    ),
+  ).toBeTruthy();
+  // 授权不碰偏好：经对话框授权并启用之后，/ 指令仍然是关的。
+  fireEvent.click(screen.getByRole("switch", { name: "启用" }));
+  const dialog = await screen.findByRole("dialog");
+  const listed = within(dialog).getByRole("list", { name: "它提供的 / 指令" });
+  expect(within(listed).getByText("/uuid UUID")).toBeTruthy();
+  expect(within(listed).getByText("/guid GUID")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: /提供 \/ 指令/ }));
+  await act(async () => {
+    fireEvent.click(within(dialog).getByRole("button", { name: "授权并启用" }));
+  });
+  expect(setScriptGrant).toHaveBeenCalledWith("uuid", HASH, true, ["provide_commands"]);
+  expect(onLocalMode).not.toHaveBeenCalled();
+  expect(onChange).not.toHaveBeenCalled();
+  fireEvent.click(within(commands).getByRole("button", { name: "打开 / 指令" }));
+  expect(onLocalMode).toHaveBeenCalledWith("command");
 });

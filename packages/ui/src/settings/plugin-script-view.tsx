@@ -13,7 +13,9 @@ import { ActionButton } from "./action-button";
 import { pluginErrorMessage } from "./plugin-catalog-helpers";
 import type {
   PluginPackage,
+  PluginSettingsPage,
   ScriptCapability,
+  ScriptCommand,
   ScriptGrant,
   ScriptGrantsResult,
   ScriptHealth,
@@ -223,6 +225,43 @@ export function scriptMarker(
   }
 }
 
+/** 脚本插件在 `/` 指令里声明的指令（清单 `[[script.commands]]`），按清单顺序；不提供指令的插件为空。 */
+export function scriptCommands(pack: PluginPackage): ScriptCommand[] {
+  return pack.kind === "script" ? ((pack.commands ?? []) as ScriptCommand[]) : [];
+}
+
+/** / 指令关着时，提供指令的插件详情里的说明，后面跟着「打开 / 指令」按钮。授权本身从不改这个开关。 */
+export const SCRIPT_COMMAND_MODE_NOTE =
+  "需要先打开 / 指令，并使用中文标点；在全拼、双拼、五笔下没有输入时按 / 再输入触发词。";
+
+/**
+ * 一条插件指令现在的状态，白话：没启用或没授予「提供 / 指令」时说要怎样才生效；输入法停用了插件时照实说；否则按宿主算出的状态（`ScriptGrantsResult.commands`）说生效，或者和谁冲突、没生效。`nameOf` 把冲突的插件 id 换成它的名字。
+ */
+export function scriptCommandStatus(
+  pack: PluginPackage,
+  trigger: string,
+  grants: ScriptGrantsResult | null,
+  nameOf: (id: string) => string = (id) => id,
+): string {
+  const grant = grants?.plugins.find((entry) => entry.id === pack.id);
+  if (scriptGrantState(pack, grant) !== "enabled") return "授权并启用后生效";
+  if (!grant?.granted.includes("provide_commands")) return "没有授予「提供 / 指令」，不会生效";
+  if (scriptHealth(grants, pack)) return "插件已被输入法停用，不会给出候选";
+  const resolved = grants?.commands.find(
+    (entry) => entry.id === pack.id && entry.trigger === trigger,
+  );
+  switch (resolved?.status) {
+    case "active":
+      return "生效";
+    case "shadowed_by_user_table":
+      return `与你的指令 /${resolved.conflict} 冲突，未生效`;
+    case "shadowed_by_plugin":
+      return `与插件 ${nameOf(resolved.conflict_id)} 的 /${resolved.conflict} 冲突，未生效`;
+    case undefined:
+      return "未生效";
+  }
+}
+
 /** 授权页上的平台说明。授权文件不签名，桌面上同一用户下的程序都能绕过授权页自己写授权（设计接受的残余风险），要写明。 */
 export function scriptResidualRisk(platform: string | undefined): string | null {
   if (platform === "macos") {
@@ -244,6 +283,8 @@ export interface ScriptGrantDialogProps {
   /** 授权过、但插件的内容已经变了。 */
   stale: boolean;
   platform?: string;
+  /** 插件指令现在的状态（`scriptCommandStatus`）；调整授权时由详情页给，新授权时没有。 */
+  commandStatus?: (trigger: string) => string;
   /** 写入授权并启用；失败时抛出宿主的 `{code, detail}`，对话框留着并说明原因。 */
   onConfirm: (granted: ScriptCapability[]) => Promise<void>;
   onCancel: () => void;
@@ -255,10 +296,12 @@ export function ScriptGrantDialog({
   initial,
   stale,
   platform,
+  commandStatus,
   onConfirm,
   onCancel,
 }: ScriptGrantDialogProps) {
   const requested = sortCapabilities(pack.permissions ?? []);
+  const commands = scriptCommands(pack);
   const [granted, setGranted] = useState<ScriptCapability[]>(() =>
     sortCapabilities(initial.filter((item) => requested.includes(item))),
   );
@@ -336,6 +379,19 @@ export function ScriptGrantDialog({
         <p className="m-0 leading-relaxed text-secondary">
           脚本插件是第三方代码，会在输入法里运行。只勾选你愿意让它做的事；没有勾选的，它一律做不到。在密码框和隐私输入框里它不会运行。
         </p>
+        {commands.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <p className="m-0 leading-relaxed text-secondary">它在 / 指令里提供：</p>
+            <ul className="m-0 pl-5 leading-relaxed text-secondary" aria-label="它提供的 / 指令">
+              {commands.map((command) => (
+                <li key={command.trigger}>
+                  /{command.trigger} {command.title}
+                  {commandStatus ? `：${commandStatus(command.trigger)}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {requested.length > 0 ? (
           <Checks
             legend="允许这个插件"
@@ -387,6 +443,13 @@ export interface ScriptPluginDetailViewProps {
   running: readonly string[];
   platform?: string;
   working: boolean;
+  /** / 指令是否打开（`local_modes.command`）；提供指令的插件在它关着时说明并给出「打开 / 指令」按钮。 */
+  commandMode?: boolean;
+  /** 打开「输入 → 快捷模式」里的 / 指令，留在当前页面；没有时改为「前往输入设置」（`onOpenPage`）。 */
+  onLocalMode?: (mode: "command" | "mention") => void;
+  onOpenPage?: (page: PluginSettingsPage) => void;
+  /** 冲突说明里把另一个插件的 id 换成名字。 */
+  nameOf?: (id: string) => string;
   /** 写入授权并启用；失败时抛出，由授权对话框说明原因。 */
   onGrant: (granted: ScriptCapability[]) => Promise<void>;
   /** 停用并撤销全部授权。 */
@@ -404,12 +467,18 @@ export function ScriptPluginDetailView({
   running,
   platform,
   working,
+  commandMode = false,
+  onLocalMode,
+  onOpenPage,
+  nameOf,
   onGrant,
   onRevoke,
   onMove,
   onRemove,
   onBack,
 }: ScriptPluginDetailViewProps) {
+  const commands = scriptCommands(pack);
+  const commandStatus = (trigger: string) => scriptCommandStatus(pack, trigger, grants, nameOf);
   const [dialog, setDialog] = useState(false);
   // 打开对话框的那个控件（启用开关或「调整授权」），对话框关掉后焦点回到它。
   const opener = useRef<HTMLElement | null>(null);
@@ -470,6 +539,35 @@ export function ScriptPluginDetailView({
           ))
         )}
       </GroupList>
+      {commands.length > 0 && (
+        <GroupList title="提供的 / 指令">
+          {commands.map((command) => (
+            <SummaryRow
+              key={command.trigger}
+              title={`/${command.trigger}`}
+              description={command.title}
+            >
+              {commandStatus(command.trigger)}
+            </SummaryRow>
+          ))}
+          {!commandMode && (
+            <SettingsManagerBlock>
+              <SettingsManagerNote>{SCRIPT_COMMAND_MODE_NOTE}</SettingsManagerNote>
+              {onLocalMode ? (
+                <SettingsManagerActions>
+                  <ActionButton action={() => onLocalMode("command")} label="打开 / 指令" />
+                </SettingsManagerActions>
+              ) : (
+                onOpenPage && (
+                  <SettingsManagerActions>
+                    <ActionButton action={() => onOpenPage("input")} label="前往输入设置" />
+                  </SettingsManagerActions>
+                )
+              )}
+            </SettingsManagerBlock>
+          )}
+        </GroupList>
+      )}
       <GroupList title="状态">
         <SettingsGroupNote role="status">
           {stateText[state]}
@@ -544,6 +642,7 @@ export function ScriptPluginDetailView({
           initial={granted}
           stale={state === "stale"}
           platform={platform}
+          commandStatus={state === "enabled" ? commandStatus : undefined}
           onCancel={closeDialog}
           onConfirm={async (next) => {
             await onGrant(next);

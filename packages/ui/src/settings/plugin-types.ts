@@ -103,11 +103,22 @@ export type ScriptHealth = {
   disabled: "invalid" | "init" | "failed" | "slow";
 };
 
+/** 一条插件 `/` 指令在输入法里的状态：client-core 的 `script_commands::ResolvedCommand`。用户指令表永远赢，插件之间按执行顺序先到先得，相等或互为前缀都算冲突。 */
+export type ScriptCommandState = { id: string; trigger: string; title: string } & (
+  | { status: "active" }
+  /** 和用户指令表里的 `/conflict` 冲突，归用户的指令。 */
+  | { status: "shadowed_by_user_table"; conflict: string }
+  /** 和执行顺序在前的插件 `conflict_id` 的 `/conflict` 冲突，归那个插件。 */
+  | { status: "shadowed_by_plugin"; conflict_id: string; conflict: string }
+);
+
 /** 授权页读到的全部：client-core 的 `script_grants::ScriptGrantsView`。`plugins` 的顺序就是执行顺序。 */
 export type ScriptGrantsResult = {
   revision: number;
   plugins: ScriptGrant[];
   health: ScriptHealth[];
+  /** 启用、授予了「提供 / 指令」、清单能载入的插件声明的指令和各自的状态，按执行顺序。 */
+  commands: ScriptCommandState[];
 };
 
 /** 插件详情可以链接过去的设置页：辅助码和快捷模式都在「输入」页。 */
