@@ -1962,6 +1962,10 @@ export type Preferences = {
   paired_punctuation?: boolean;
   punctuation_lock?: "follow" | "chinese" | "english";
   caps_lock_ascii_punctuation?: boolean;
+  /** 中文标点下引号键的样式；缺省为弯引号，等于缺省时文档里没有这个键。 */
+  quote_style?: "curly" | "corner" | "corner_when_traditional";
+  /** 中文标点下方头括号键的样式；缺省为实心，等于缺省时文档里没有这个键。 */
+  bracket_style?: "solid" | "hollow";
   traditional_chinese_output?: boolean;
   /** 中英文之间加空格：上屏文本里汉字与 ASCII 字母、数字相邻处加一个半角空格。缺省为关，关着时文档里没有这个键。 */
   chinese_english_spacing?: boolean;
