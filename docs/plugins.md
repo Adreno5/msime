@@ -69,6 +69,7 @@ permissions = []        # 可选，只能是空数组
 - 以下 id 属于内置包，安装的包不能使用：
   - 音效包：`default`、`twinkle`、`msime-typewriter`、`msime-bubble`、`msime-8bit`、`msime-woodblock`、`msime-pentatonic`、`msime-canon`、`msime-ode-to-joy`
   - 音乐包：`msime-music-lofi`、`msime-music-ambient`
+  - 短语表：`latex-symbols`；脚本插件：`uuid`（随桌面安装包分发的官方包，见[内置插件](#内置插件)）
 - 导入与已安装的包同类型、同 id 的包，会整包替换旧包。
 
 ## 音效包（`kind = "sound"`）
@@ -243,6 +244,7 @@ text = "电话号码"
 - 设置的「输入 → 快捷模式」里关闭了快捷短语时，短语表不起作用。
 - K 模式只在全拼、双拼和五笔方案下可用，其他方案下按 Shift+K 不会进入 K 模式，短语表也就不起作用。
 - 短语从不写进词库，删除短语表后直接消失。
+- 桌面安装包随带一个官方短语表「LaTeX 符号」（id `latex-symbols`）：按 LaTeX 命令名打符号，`Kalpha` 出 α、`Kgamma` 出 γ 和 Γ、`Kmathbbr` 出 ℝ。它和导入的短语表一样要在插件页打开「启用」，见[内置插件](#内置插件)；编码规则在仓库的 [plugins/phrase_table/latex-symbols](../plugins/phrase_table/latex-symbols/)。
 
 ## 辅助码表（`kind = "helpcode"`）
 
@@ -342,7 +344,7 @@ items = ["→", "←", "⇒"]
 
 ## 脚本插件（`kind = "script"`）
 
-脚本插件是唯一带可执行内容的类型：包里有一个 core wasm 模块，在桌面输入法进程里由沙箱解释器运行，按用户逐项授予的能力读组字、上屏文本和候选，或者在自己声明的 `/` 指令里给出候选（见[`/` 指令](#-指令)）。它还是实验功能。想直接开始：复制 [script-plugin-template](script-plugin-template/)，那是一个用 Rust 写的完整例子（中英文之间加空格），附带 C 头文件和 Rust 绑定。拿来就能用的插件在仓库的 [plugins/script](../plugins/script/)：中英文之间加空格、生僻字靠后、隐藏生僻字、繁体字形注释和 Unicode 码位注释，从源码构建成插件包后导入，构建、测试和每个插件的行为见那里的 README。
+脚本插件是唯一带可执行内容的类型：包里有一个 core wasm 模块，在桌面输入法进程里由沙箱解释器运行，按用户逐项授予的能力读组字、上屏文本和候选，或者在自己声明的 `/` 指令里给出候选（见[`/` 指令](#-指令)）。它还是实验功能。想直接开始：复制 [script-plugin-template](script-plugin-template/)，那是一个用 Rust 写的完整例子（中英文之间加空格），附带 C 头文件和 Rust 绑定。拿来就能用的插件在仓库的 [plugins/script](../plugins/script/)：生僻字靠后、隐藏生僻字，从源码构建成插件包后导入；以及 UUID（`/uuid`），它是插件指令的参考样板，随桌面安装包分发（见[内置插件](#内置插件)）。构建、测试和每个插件的行为见那里的 README。
 
 ### 在哪里运行
 
@@ -562,6 +564,15 @@ target/debug/msime-pack run path/to/pack --events events.jsonl --grant all
 - 不做按次数和按耗时的停用，每次失败都报告，任何失败都让退出码为 1。
 - 不检查进程内存总账，单个插件总放得下。
 
+## 内置插件
+
+macOS、Windows 和 Linux 的桌面安装包随带两个官方插件包，在仓库的 [plugins/official-packs.json](../plugins/official-packs.json) 里登记：脚本插件「UUID」（id `uuid`，[`/` 指令](#-指令)的参考样板，打 `/uuid` 出一个随机 UUID 的四种写法）和短语表「LaTeX 符号」（id `latex-symbols`）。移动端安装包不带它们。
+
+- **位置**：macOS 在输入法 bundle 的 `Contents/Resources/plugin-packs`，Windows 在 Program Files 下 Server 目录的 `plugin-packs`，Linux 在 `share/<client>/plugin-packs`（例如 `/usr/share/msime-client/plugin-packs`），都按 `<kind>/<id>/` 排，布局同数据目录下的 `plugins/`。三处都是只读的：macOS 由 bundle 的签名封住，Windows 只有管理员能写，Linux 在系统前缀下。随输入法更新整体替换。从源码构建的 Linux 发行版定义（Arch `msime`、Gentoo、OBS、nix）不跑 wasm 构建，不带官方包；`msime-bin` 重新打包发布页的 deb，带。
+- **默认停用**：「插件 → 我的插件」里它们标着「（内置）」、没有删除按钮。短语表要打开「启用」才进 K 模式；脚本插件和导入的一样，要在「脚本插件（实验）」里逐项授权才运行，授权写在数据目录下的 `plugins/script-grants.json`，绑定内置那一份的内容哈希。
+- **更新**：新版本的输入法带来内容不同的脚本插件时（改了插件，或者升级了编译器），哈希变了，之前的授权作废，授权页显示「已随输入法更新，需要重新授权」。官方包的哈希锁在 `plugins/official-packs.json` 里，构建时核对，所以这件事只会在改了锁的版本里发生，发版说明会写。
+- **保留 id**：`uuid`（脚本插件）和 `latex-symbols`（短语表）和内置音效包的 id 一样保留，导入同 id 的包会被拒绝（`plugin_reserved`），也不能发布到社区。官方包随输入法分发之前导入过的同 id 包仍在数据目录里时，插件页把它列在「无法载入的插件」里，不会被使用；输入法和设置页永远读内置的那一份。
+
 ## 校验
 
 用 `msime-pack` 检查插件。它调用的就是输入法导入时用的校验代码：它接受的包，设置页一定能导入；它拒绝的包，设置页也会拒绝。
@@ -585,6 +596,8 @@ target/debug/msime-pack validate path/to/my-keys path/to/other-pack.zip
   - `plugin_reserved`：用了内置包的 id
 - 退出码：全部通过为 0；有任何一个不通过为 1；命令行写错为 2。
 - 只检查，不安装，不会改动本机的插件目录。
+- `msime-pack hash <包>` 按同样的规则检查一个脚本包，通过时打印它的内容哈希（授权绑定的那个值）。
+- `--builtin`（`validate --builtin`、`hash --builtin`、`run ... --builtin`）只给仓库自己的构建脚本用：官方包本来就用保留 id，加上它不报 `plugin_reserved`，其余规则一条不少。
 
 ## 导入
 
