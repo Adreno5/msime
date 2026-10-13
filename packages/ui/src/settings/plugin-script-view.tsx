@@ -75,11 +75,11 @@ export const capabilityLabels: Record<ScriptCapability, { title: string; descrip
     title: "隐藏候选",
     description: "能把某些候选移到末尾并隐藏起来。",
   },
-  // 授权文案和 Windows 原生页（`PluginPageModel.h` 的 `capability_label`）、`docs/plugins.md` 一字不差。回车在 `/` 指令里各桌面宿主都发 `MSIME_COMMIT_RAW`，上屏的是原文。
+  // 授权文案和 Windows 原生页（`PluginPageModel.h` 的 `capability_label`）、`docs/plugins.md` 一字不差。回车在 `/` 指令里各桌面宿主都发 `MSIME_COMMIT_RAW`，上屏的是原文；失焦时 macOS 上屏原文，Windows 和 Linux 丢弃组字，都不上屏插件行。快捷键各宿主不一致：macOS 的 Cmd、Ctrl、Option 组合键和候选窗不可见时的 Tab、Fcitx5 没被前面处理的非字符键发 `MSIME_FINISH_COMPOSITION`，上屏高亮行，Windows Server 的 `translate_key` 对组合键发 `MSIME_CANCEL`，所以写「在有的系统上」。
   provide_commands: {
     title: "提供 / 指令",
     description:
-      "你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；按回车或切到别的窗口时只输入你打的原文（例如 /uuid）。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。",
+      "你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；在有的系统上，按快捷键或 Tab 等键、用菜单或工具栏结束输入时也会输入这一行。按回车时只输入你打的原文（例如 /uuid），点到别的窗口时插件给出的行不会输入。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。",
   },
 };
 

@@ -319,7 +319,7 @@ int main() {
   {
     const auto label = capability_label(L"provide_commands");
     check(label.title == L"提供 / 指令" &&
-              label.description.find(L"按回车或切到别的窗口时只输入你打的原文（例如 /uuid）") != std::wstring::npos,
+              label.description.find(L"按回车时只输入你打的原文（例如 /uuid），点到别的窗口时插件给出的行不会输入") != std::wstring::npos,
           "the provide_commands label");
     auto commands = grant_items({L"provide_commands"}, {}, false);
     check(commands.size() == 1 && commands[0].title == L"提供 / 指令" && !commands[0].disabled &&

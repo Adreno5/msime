@@ -546,7 +546,10 @@ test("a pack that provides slash commands can be granted without any dependency 
   expect(box.disabled).toBe(false);
   const label = box.closest("label")?.textContent ?? "";
   expect(label).toContain("给出的候选只取决于这些字母和随机数");
-  expect(label).toContain("按回车或切到别的窗口时只输入你打的原文（例如 /uuid）");
+  expect(label).toContain(
+    "按回车时只输入你打的原文（例如 /uuid），点到别的窗口时插件给出的行不会输入",
+  );
+  expect(label).toContain("按快捷键或 Tab 等键、用菜单或工具栏结束输入时也会输入这一行");
   expect(label).not.toContain("需要同时授予");
   expect(label).not.toContain("不能和");
   fireEvent.click(box);
