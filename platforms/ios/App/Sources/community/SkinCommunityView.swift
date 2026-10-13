@@ -16,13 +16,13 @@ struct SkinCommunityView: View {
   @State private var pending: Task<Void, Never>?
   @State private var request = ViewRequestGeneration()
   @State private var accountTask: Task<Void, Never>?
-  @State private var accountRequestID = UUID()
+  @State private var accountGeneration = OperationGeneration()
   /// 本地皮肤库（12 个槽位），每次画廊显示时重新读取，这样在详情页领取的皮肤在卡片上会显示 使用。
   @State private var library: [SavedKeyboardSkin] = []
   /// 正在下载 获取 的 id。
   @State private var taking: Set<String> = []
   @State private var takeTasks: [String: Task<Void, Never>] = [:]
-  @State private var takeGeneration = UUID()
+  @State private var takeGeneration = OperationGeneration()
   // 两个键都只用来重绘胶囊按钮：主题决定键盘上是否显示自定义设计，设计决定显示哪一个。
   @AppStorage(GlobalThemePreference.key, store: KeyboardFeedbackPreference.defaults) private var globalTheme = GlobalThemeCatalog.systemId
   @AppStorage(CustomKeyboardSkinStore.key, store: KeyboardFeedbackPreference.defaults) private var storedDesign: Data?
@@ -80,10 +80,10 @@ struct SkinCommunityView: View {
     }
     guard !taking.contains(skin.id) else { return }
     taking.insert(skin.id)
-    let generation = takeGeneration
+    let generation = takeGeneration.current()
     let task = Task { @MainActor in
       defer {
-        if takeGeneration == generation {
+        if takeGeneration.isCurrent(generation) {
           taking.remove(skin.id)
           takeTasks[skin.id] = nil
         }
@@ -94,7 +94,7 @@ struct SkinCommunityView: View {
         library = CustomSkinLibrary.designs
         ToastCenter.shared.show("已获取「\(skin.name)」，点「使用」换上")
       } catch is CancellationError { }
-      catch { if request.isVisible, takeGeneration == generation { message = error.localizedDescription } }
+      catch { if request.isVisible, takeGeneration.isCurrent(generation) { message = error.localizedDescription } }
     }
     takeTasks[skin.id] = task
   }
@@ -149,13 +149,12 @@ struct SkinCommunityView: View {
     .onChange(of: signedIn) { _ in startLoad() }
     .sheet(isPresented: $showPublish) { CommunityPublishView { startLoad() } }
     .sheet(isPresented: $showAccount, onDismiss: {
-      let id = UUID()
-      accountRequestID = id
+      let id = accountGeneration.begin()
       accountTask?.cancel()
       accountTask = Task { @MainActor in
-        defer { if accountRequestID == id { accountTask = nil } }
+        defer { if accountGeneration.isCurrent(id) { accountTask = nil } }
         let state = (try? await api.signedIn()) ?? false
-        guard request.isVisible, !Task.isCancelled, accountRequestID == id else { return }
+        guard request.isVisible, !Task.isCancelled, accountGeneration.isCurrent(id) else { return }
         signedIn = state
         if signedIn { showPublish = true }
       }
@@ -166,8 +165,8 @@ struct SkinCommunityView: View {
       pending = nil
       accountTask?.cancel()
       accountTask = nil
-      accountRequestID = UUID()
-      takeGeneration = UUID()
+      accountGeneration.invalidate()
+      takeGeneration.invalidate()
       takeTasks.values.forEach { $0.cancel() }
       takeTasks.removeAll()
       taking.removeAll()
@@ -192,7 +191,7 @@ struct SkinCommunityView: View {
     defer {
       if request.isCurrent(id) {
         busy = false
-        pending = nil
+        if scheduledID == nil { pending = nil }
       }
     }
     do {
@@ -209,10 +208,8 @@ struct SkinCommunityView: View {
   }
 
   @MainActor private func startLoad(append: Bool = false, onFailure: (() -> Void)? = nil) {
-    guard request.isVisible, !busy else { return }
-    let id = request.begin()
-    pending?.cancel()
-    pending = Task {
+    guard !busy else { return }
+    ViewRequestTask.startLoad(request: $request, pending: $pending) { id in
       do { try await load(append: append, id: id) }
       catch is CancellationError { }
       catch { if request.isCurrent(id) { onFailure?() } }
@@ -221,7 +218,7 @@ struct SkinCommunityView: View {
 
   @MainActor private func ensureTakeCurrent(_ generation: UUID) throws {
     try Task.checkCancellation()
-    guard request.isVisible, takeGeneration == generation else { throw CancellationError() }
+    guard request.isVisible, takeGeneration.isCurrent(generation) else { throw CancellationError() }
   }
 }
 
@@ -438,20 +435,7 @@ struct CommunitySkinDetail: View {
       }
   }
   private func run(_ action: @escaping @MainActor (UUID) async throws -> Void) {
-    guard request.isVisible, !busy else { return }
-    let id = request.begin()
-    busy = true; message = nil
-    pending = Task {
-      defer {
-        if request.isCurrent(id) {
-          busy = false
-          pending = nil
-        }
-      }
-      do { try await action(id) }
-      catch is CancellationError { }
-      catch { if request.isCurrent(id) { message = error.localizedDescription } }
-    }
+    ViewRequestTask.run(request: $request, busy: $busy, message: $message, pending: $pending, action: action)
   }
 }
 
@@ -537,21 +521,10 @@ struct CommunityPublishView: View {
 
   @MainActor private func startPublish() {
     guard request.isVisible, !busy, let design else { return }
-    let id = request.begin()
-    busy = true; message = nil
-    pending = Task {
-      defer {
-        if request.isCurrent(id) {
-          busy = false
-          pending = nil
-        }
-      }
-      do {
-        try await SkinCommunityAPI.shared.publish(id: publicationID, name: name, description: description, design: design, category: category)
-        try request.checkCurrent(id)
-        onPublished(); dismiss()
-      } catch is CancellationError { }
-      catch { if request.isCurrent(id) { message = error.localizedDescription } }
+    ViewRequestTask.run(request: $request, busy: $busy, message: $message, pending: $pending) { id in
+      try await SkinCommunityAPI.shared.publish(id: publicationID, name: name, description: description, design: design, category: category)
+      try request.checkCurrent(id)
+      onPublished(); dismiss()
     }
   }
 
@@ -665,17 +638,8 @@ struct CommunityDesignPreview: View {
     let accent = CustomKeyboardSkin.color(design.accent)
     let disc = AppThemePalette.mix(accent, 14, CustomKeyboardSkin.color(design.keyBackground))
     let frame = AppThemePalette.mix(accent, 82, .black)
-    let markSize: CGFloat = 16
-    let scale = MSIMELogo.scale(for: CGRect(x: 0, y: 0, width: markSize, height: markSize))
-    return ZStack {
-      Circle().fill(Color(uiColor: disc))
-      ZStack {
-        MSIMELogoFrame().fill(Color(uiColor: frame))
-        MSIMELogoStroke().stroke(.white, style: StrokeStyle(lineWidth: MSIMELogo.strokeWidth * scale, lineCap: .round, lineJoin: .round))
-      }
-      .frame(width: markSize, height: markSize)
-    }
-    .frame(width: 26, height: 26)
+    return LogoDisc(diameter: 26, markSize: 16,
+                    discFill: Color(uiColor: disc), frameFill: Color(uiColor: frame))
   }
 
   /// 一行按键，宽度按各自权重分配，与 MiniKb 的弹性行一致。

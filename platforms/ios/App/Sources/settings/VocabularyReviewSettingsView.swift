@@ -16,8 +16,7 @@ struct VocabularyReviewSettingsView: View {
   @State private var confirmsReset = false
   @State private var picking = false
   @State private var pending: Task<Void, Never>?
-  @State private var visible = false
-  @State private var generation = UUID()
+  @State private var request = ViewRequestGeneration()
 
   private let store = VocabularyReviewStore()
 
@@ -103,7 +102,7 @@ struct VocabularyReviewSettingsView: View {
     .designPage()
     .navigationTitle("背单词")
     .navigationBarTitleDisplayMode(.inline)
-    .task { visible = true; if !loaded { reload() } }
+    .task { request.appear(); if !loaded { reload() } }
     .alert("清空全部复习进度？", isPresented: $confirmsReset) {
       Button("取消", role: .cancel) {}
       Button("清空", role: .destructive) { act { try store.reset() } }
@@ -119,8 +118,7 @@ struct VocabularyReviewSettingsView: View {
       importWordbook(from: url)
     }
     .onDisappear {
-      visible = false
-      generation = UUID()
+      request.disappear()
       pending?.cancel()
       pending = nil
       busy = false
@@ -196,39 +194,32 @@ struct VocabularyReviewSettingsView: View {
   }
 
   private func importWordbook(from url: URL) {
-    guard visible, !busy else { return }
-    let id = generation
-    busy = true
-    message = ""
+    guard request.isVisible, !busy else { return }
     let name = String(url.deletingPathExtension().lastPathComponent.prefix(64))
     let store = store
-    pending = Task { @MainActor in
-      defer { if visible, generation == id { busy = false; pending = nil } }
-      do {
-        try Task.checkCancellation()
-        let outcome = await Task.detached(priority: .userInitiated) {
-          let scoped = url.startAccessingSecurityScopedResource()
-          defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-          return Result<VocabularyReviewStatus, Error> {
-            guard let data = try? VocabularyReviewStore.readWordbookData(from: url) else {
-              throw VocabularyReviewStore.Failure.unreadableWordbook
-            }
-            // Real word lists arrive from Windows tools as UTF-16 with a BOM and as GB18030, so a bare
-            // UTF-8 decode would reject files that are perfectly good.
-            let text = String(data: data, encoding: .utf8)
-              ?? String(data: data, encoding: .utf16)
-            ?? String(decoding: data, as: UTF8.self)
-            return try store.importWordbook(name: name.isEmpty ? "导入的词表" : name, text: text)
+    ViewRequestTask.run(request: $request, busy: $busy, pending: $pending,
+                        prepare: { message = "" }) { id in
+      try request.checkCurrent(id)
+      let outcome = await Task.detached(priority: .userInitiated) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return Result<VocabularyReviewStatus, Error> {
+          guard let data = try? VocabularyReviewStore.readWordbookData(from: url) else {
+            throw VocabularyReviewStore.Failure.unreadableWordbook
           }
-        }.value
-        guard visible, generation == id, !Task.isCancelled else { return }
-        switch outcome {
-        case .success(let next): status = next
-        case .failure(let error):
-          message = (error as? VocabularyReviewStore.Failure)?.errorDescription
-            ?? VocabularyReviewStore.Failure.unavailable.errorDescription ?? ""
+          // Windows 词表也可能使用带 BOM 的 UTF-16 或 GB18030；不能只尝试 UTF-8。
+          let text = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(decoding: data, as: UTF8.self)
+          return try store.importWordbook(name: name.isEmpty ? "导入的词表" : name, text: text)
         }
-      } catch is CancellationError {
+      }.value
+      try request.checkCurrent(id)
+      switch outcome {
+      case .success(let next): status = next
+      case .failure(let error):
+        message = (error as? VocabularyReviewStore.Failure)?.errorDescription
+          ?? VocabularyReviewStore.Failure.unavailable.errorDescription ?? ""
       }
     }
   }
@@ -238,25 +229,17 @@ struct VocabularyReviewSettingsView: View {
   /// Two taps on 认识 in quick succession would otherwise both read the same card and the second
   /// would schedule from a state the first had already replaced.
   private func act(_ operation: @escaping () throws -> VocabularyReviewStatus) {
-    guard visible, !busy else { return }
-    let id = generation
-    busy = true
-    message = ""
-    pending = Task { @MainActor in
-      defer { if visible, generation == id { busy = false; pending = nil } }
-      do {
-        try Task.checkCancellation()
-        // The shared entry point takes a file lock and may read a multi-megabyte book, so it never
-        // runs on the main actor.
-        let outcome = await Task.detached { Result { try operation() } }.value
-        guard visible, generation == id, !Task.isCancelled else { return }
-        switch outcome {
-        case .success(let next): status = next
-        case .failure(let error):
-          message = (error as? VocabularyReviewStore.Failure)?.errorDescription
-            ?? VocabularyReviewStore.Failure.unavailable.errorDescription ?? ""
-        }
-      } catch is CancellationError {
+    ViewRequestTask.run(request: $request, busy: $busy, pending: $pending,
+                        prepare: { message = "" }) { id in
+      try request.checkCurrent(id)
+      // 共享入口会加文件锁并可能读取很大的词书，不能在主线程执行。
+      let outcome = await Task.detached { Result { try operation() } }.value
+      try request.checkCurrent(id)
+      switch outcome {
+      case .success(let next): status = next
+      case .failure(let error):
+        message = (error as? VocabularyReviewStore.Failure)?.errorDescription
+          ?? VocabularyReviewStore.Failure.unavailable.errorDescription ?? ""
       }
     }
   }
