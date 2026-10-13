@@ -43,6 +43,8 @@ use msime_engine::host::{
     CommandTranslationQuery, EngineResult, EngineSnapshot, MentionEntry, OnlineQuerySnapshot,
     QuickPhraseEntry, Session, SharedKeymap,
 };
+/// 脚本插件的 `/` 指令：宿主算好哪些生效之后经 [`Runtime::set_plugin_commands`] 交给引擎。
+pub use msime_engine::host::{PluginCommand, PluginCommandQuery};
 pub use msime_engine::{GlideKeyboard, GlidePoint, KeyGrid};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

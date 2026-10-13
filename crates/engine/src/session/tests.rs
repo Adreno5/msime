@@ -4930,6 +4930,245 @@ fn the_translate_command_asks_for_its_english_and_commits_the_answer() {
     assert_eq!(words(&session), ["hellox"]);
 }
 
+// ---- 脚本插件的 `/` 指令 ----
+
+fn plugin_command(trigger: &str, title: &str) -> crate::types::PluginCommand {
+    crate::types::PluginCommand {
+        trigger: trigger.to_owned(),
+        title: title.to_owned(),
+    }
+}
+
+fn plugin_commands() -> Vec<crate::types::PluginCommand> {
+    vec![plugin_command("uuid", "UUID"), plugin_command("cz", "拆字")]
+}
+
+fn plugin_rows(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(text, note)| ((*text).to_owned(), (*note).to_owned()))
+        .collect()
+}
+
+fn plugin_session(fixture: &Fixture, configure: impl FnOnce(&mut SessionOptions)) -> Session {
+    let mut session = fixture.session_with(|options| {
+        options.local_modes.command = true;
+        options.plugin_commands = plugin_commands();
+        configure(options);
+    });
+    TestClock::install(&mut session);
+    session
+}
+
+/// 打 `/uuid`：引擎自己不列行，只有兜底行，并且要宿主去问插件。
+fn open_uuid(session: &mut Session) -> crate::types::PluginCommandQuery {
+    assert!(session.character(b'/', false).handled);
+    type_text(session, "uuid");
+    assert_eq!(words(session), ["/uuid"]);
+    assert_eq!(candidate_sources(session), [CandidateSource::Fallback]);
+    session
+        .plugin_command_query()
+        .expect("a plugin command query")
+}
+
+#[test]
+fn plugin_rows_replace_the_fallback_row() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    assert_eq!(query.preedit, "/uuid");
+    assert_eq!(query.trigger, "uuid");
+    assert_eq!(query.argument, "");
+    // 用不了的行被丢掉：同文、空白、控制字符、超过 199 个码元。
+    let long = "字".repeat(200);
+    assert!(session.apply_plugin_command_rows(
+        &query,
+        &plugin_rows(&[
+            ("a-b", "小写"),
+            ("A-B", "大写"),
+            ("a-b", "重复"),
+            (" ", "空白"),
+            ("x\ny", "换行"),
+            (&long, "太长"),
+        ]),
+    ));
+    assert_eq!(words(&session), ["a-b", "A-B"]);
+    let snapshot = session.snapshot();
+    assert!(snapshot
+        .candidates
+        .iter()
+        .all(|item| item.source == CandidateSource::Plugin && item.pinyin == "uuid"));
+    // 标题和插件注释由 runtime 画在插件注释格里，引擎注释格留空。
+    assert_eq!(snapshot.candidate_annotations, ["", ""]);
+    // 同一份预编辑串问过了，不再问；同一个查询再交一次被拒绝。
+    assert!(session.plugin_command_query().is_none());
+    assert!(!session.apply_plugin_command_rows(&query, &plugin_rows(&[("c", "")])));
+    assert_eq!(words(&session), ["a-b", "A-B"]);
+
+    // 参数跟在触发词后面。
+    session.command(Command::Cancel);
+    session.character(b'/', false);
+    type_text(&mut session, "czhuohuo");
+    let query = session
+        .plugin_command_query()
+        .expect("a plugin command query");
+    assert_eq!(
+        (query.trigger.as_str(), query.argument.as_str()),
+        ("cz", "huohuo")
+    );
+}
+
+#[test]
+fn zero_plugin_rows_keep_the_fallback_and_are_not_asked_again() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &[]));
+    assert_eq!(words(&session), ["/uuid"]);
+    assert!(session.plugin_command_query().is_none());
+    // 只剩不能用的行，也按 0 行缓存。
+    session.command(Command::Cancel);
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("", "")])));
+    assert_eq!(words(&session), ["/uuid"]);
+    assert!(session.plugin_command_query().is_none());
+}
+
+/// 方向键和列表重建不丢行、不再问；退一个字母再打回来是新的一份预编辑串，重新问（`/uuid` 删掉重打换一个 UUID）。
+#[test]
+fn plugin_rows_survive_caret_moves_and_rebuilds_but_not_an_edit() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", ""), ("乙", "")])));
+    session.command(Command::MoveLeft);
+    session.command(Command::MoveRight);
+    assert_eq!(words(&session), ["甲", "乙"]);
+    assert!(session.input.update_local_candidates().is_none());
+    assert_eq!(words(&session), ["甲", "乙"]);
+    assert!(session.plugin_command_query().is_none());
+
+    assert!(session.command(Command::Backspace).handled);
+    assert_eq!(session.snapshot().preedit, "/uui");
+    assert!(session.plugin_command_query().is_none());
+    assert_eq!(words(&session), ["/uui"]);
+    type_text(&mut session, "d");
+    assert_eq!(words(&session), ["/uuid"]);
+    let again = session.plugin_command_query().expect("asked again");
+    assert_eq!(again, query);
+    assert!(session.apply_plugin_command_rows(&again, &plugin_rows(&[("丙", "")])));
+    assert_eq!(words(&session), ["丙"]);
+}
+
+#[test]
+fn replacing_the_plugin_commands_or_the_command_table_drops_the_cached_rows() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", "")])));
+    assert_eq!(session.set_plugin_commands(&plugin_commands()), None);
+    assert_eq!(words(&session), ["/uuid"]);
+    let query = session.plugin_command_query().expect("asked again");
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", "")])));
+    assert_eq!(session.set_command_table(&[]), None);
+    assert_eq!(words(&session), ["/uuid"]);
+    assert!(session.plugin_command_query().is_some());
+
+    // 用户的指令表有 `uu`：插件的 `uuid` 不再生效。
+    assert_eq!(
+        session.set_command_table(&[crate::types::CommandTableEntry {
+            trigger: "uu".to_owned(),
+            title: "我的".to_owned(),
+            template: "我的".to_owned(),
+        }]),
+        None
+    );
+    assert!(session.plugin_command_query().is_none());
+    assert_eq!(session.set_command_table(&[]), None);
+    // 授权撤销：插件指令清空之后 `/uuid` 什么都不问。
+    assert_eq!(session.set_plugin_commands(&[]), None);
+    assert!(session.plugin_command_query().is_none());
+    assert_eq!(words(&session), ["/uuid"]);
+}
+
+#[test]
+fn stale_plugin_command_answers_are_refused() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    let mut other_session = query.clone();
+    other_session.session_id += 1;
+    assert!(!session.apply_plugin_command_rows(&other_session, &plugin_rows(&[("甲", "")])));
+    // 预编辑串变了。
+    type_text(&mut session, "x");
+    assert!(!session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", "")])));
+    assert_eq!(words(&session), ["/uuidx"]);
+    // 模式已经关了。
+    session.command(Command::Cancel);
+    assert!(!session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", "")])));
+    assert!(session.snapshot().candidates.is_empty());
+}
+
+/// 不属于插件指令的 `/` 输入照旧：内置和用户的指令照常列出、带标题，从不要宿主去问插件。插件指令也不在 `/u` 这样的前缀里列出。
+#[test]
+fn other_commands_are_untouched_by_plugin_commands() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    session.character(b'/', false);
+    assert!(session.plugin_command_query().is_none());
+    type_text(&mut session, "u");
+    assert_eq!(words(&session), ["/u"]);
+    assert!(session.plugin_command_query().is_none());
+    session.command(Command::Cancel);
+    session.character(b'/', false);
+    type_text(&mut session, "rq");
+    assert!(session.plugin_command_query().is_none());
+    assert_eq!(session.snapshot().candidate_annotations[0], "日期");
+    assert!(candidate_sources(&session)
+        .iter()
+        .all(|source| *source == CandidateSource::Generated));
+}
+
+/// 选中插件行只上屏这一行的文字，不学习、不能置顶固定删除；开着个人上下文和词频调整时，选中前后用户日志和词库一个字节都不变。指令模式的上屏不计打字统计。
+#[test]
+fn selecting_a_plugin_row_commits_its_text_and_learns_nothing() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |options| {
+        options.personal_context = true;
+        options.frequency.mode = FrequencyAdjustmentMode::Promote;
+        options.frequency.trigger_count = 1;
+    });
+    type_text(&mut session, "nihao");
+    assert_eq!(session.select(0).commit.as_deref(), Some("你好"));
+    let journal_before = journal_rows(&fixture.journal());
+    let dictionary_before = std::fs::read(fixture.main_db()).unwrap();
+
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("甲", ""), ("乙", "")])));
+    assert!(!session.pin(1).handled);
+    assert!(!session.remove(1).handled);
+    assert!(!session.fix_position(1, 1).handled);
+    assert_eq!(words(&session), ["甲", "乙"]);
+    let item = session.snapshot().candidates[1].clone();
+    assert!(!session.input.is_editable_source(&item));
+    let ranking = session.input.ranking_index(1).unwrap();
+    assert_eq!(session.input.learn_candidate(ranking), None);
+
+    let result = session.select(1);
+    assert_eq!(result.commit.as_deref(), Some("乙"));
+    assert_eq!(session.snapshot().local_mode, LocalInputMode::None);
+    assert!(session.plugin_command_query().is_none());
+    assert_eq!(journal_rows(&fixture.journal()), journal_before);
+    assert_eq!(std::fs::read(fixture.main_db()).unwrap(), dictionary_before);
+    assert!(!crate::host::local_mode_counts_as_typing(
+        LocalInputMode::Command.name()
+    ));
+
+    // 再进 `/uuid` 是一次新的组字：重新问插件。
+    let query = open_uuid(&mut session);
+    assert!(session.apply_plugin_command_rows(&query, &plugin_rows(&[("丁", "")])));
+    assert_eq!(session.select(0).commit.as_deref(), Some("丁"));
+}
+
 // ---- Vietnamese ----
 
 #[test]

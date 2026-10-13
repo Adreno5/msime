@@ -125,7 +125,7 @@ impl InputClass {
             Action::SegmentBackspace | Action::SegmentMoveLeft | Action::SegmentMoveRight => {
                 Self::Edit
             }
-            Action::Finish => Self::Commit,
+            Action::Finish | Action::FinishOnFocusLoss => Self::Commit,
             Action::Command(command) => match command {
                 Command::Backspace
                 | Command::DeleteForward

@@ -1534,6 +1534,87 @@ fn the_plugin_text_check_rejects_cc_cf_and_line_separators() {
     }
 }
 
+/// 不是 Cf、却看不见或只改字形的字符：组合用字形连接符、韩文填充符、高棉文固有元音、蒙古文自由变体选择符、盲文空白、变体选择符 VS1..VS14 和表意文字变体选择符。
+const INVISIBLE_NON_FORMAT: [char; 22] = [
+    '\u{34f}',
+    '\u{115f}',
+    '\u{1160}',
+    '\u{17b4}',
+    '\u{17b5}',
+    '\u{180b}',
+    '\u{180c}',
+    '\u{180d}',
+    '\u{180f}',
+    '\u{2800}',
+    '\u{3164}',
+    '\u{ffa0}',
+    '\u{fe00}',
+    '\u{fe01}',
+    '\u{fe07}',
+    '\u{fe0c}',
+    '\u{fe0d}',
+    '\u{e0100}',
+    '\u{e0101}',
+    '\u{e0150}',
+    '\u{e01ee}',
+    '\u{e01ef}',
+];
+
+/// 把文本写成 WAT 数据段里的逐字节转义。
+fn wat_bytes(text: &str) -> String {
+    text.bytes().map(|byte| format!("\\{byte:02x}")).collect()
+}
+
+#[test]
+fn the_plugin_text_check_rejects_invisible_fillers_and_variation_selectors() {
+    for c in INVISIBLE_NON_FORMAT {
+        assert!(abi::is_forbidden_plugin_char(c), "{c:?}");
+    }
+    // 范围的两端之外照旧放行：VS15、VS16 和表意文字变体选择符之后的第一个码位。
+    for c in [
+        '\u{fe0e}',
+        '\u{fe0f}',
+        '\u{e01f0}',
+        '\u{17b3}',
+        '\u{17b6}',
+        '\u{2801}',
+    ] {
+        assert!(!abi::is_forbidden_plugin_char(c), "{c:?}");
+    }
+}
+
+#[test]
+fn rewrites_and_annotations_with_invisible_fillers_are_invalid() {
+    let commit = before_commit_event("abc", "abc");
+    let candidates = candidates_event(Hook::Candidates, 0);
+    for c in INVISIBLE_NON_FORMAT {
+        let text = format!("a{c}b");
+        let data = wat_bytes(&text);
+        assert_eq!(
+            rewrite_status(&data, text.len(), &commit),
+            (7, None),
+            "{c:?}"
+        );
+        let annotate = format!(
+            "(i32.add (call $annotate (i32.const 0) (i32.const 0) (i32.const {})) (i32.const 10))",
+            text.len()
+        );
+        assert_eq!(transform_status(&data, &annotate, &candidates), 7, "{c:?}");
+    }
+    // 跟在 emoji 后面的 VS16 照常放行：改写和注释都成功。
+    let heart = "\u{2764}\u{fe0f}";
+    let data = wat_bytes(heart);
+    assert_eq!(
+        rewrite_status(&data, heart.len(), &commit),
+        (10, Some(heart.to_owned()))
+    );
+    let annotate = format!(
+        "(i32.add (call $annotate (i32.const 0) (i32.const 0) (i32.const {})) (i32.const 10))",
+        heart.len()
+    );
+    assert_eq!(transform_status(&data, &annotate, &candidates), 10);
+}
+
 /// 调试输出只旁观：修改类 import 照样返回 `DENIED`，`before_commit` 的快照实例上的调用也交给同一个输出，`msime_init` 里的 `log` 在实例化前接上的输出里。
 #[test]
 fn debug_sinks_observe_denied_modifications_and_init_logs() {

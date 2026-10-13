@@ -497,14 +497,16 @@ pub fn local_mode_allows_text(local_mode: u8) -> bool {
 
 /// 修改类 import 的约定。它们只暂存动作，钩子正常返回（非负）之后宿主才采用；trap、fuel 耗尽或返回负数时，这个插件这一次暂存的动作全部丢弃。
 ///
-/// - `rewrite_commit(src, len) -> i32`：只在 `before_commit` 里、这次上屏可改写（`event_scalar(REWRITABLE) == 1`）时可用，否则 `DENIED`。把 `[src, src + len)` 的 UTF-8 文本作为新的 body，tail（标点、顶字的尾巴）由宿主原样接回。区间越界直接 trap；超过 [`crate::limits::MAX_REWRITE_BYTES`] 字节或 [`crate::limits::rewrite_utf16_limit`] 个 UTF-16 码元返回 `LIMIT`；不是 UTF-8、为空、含控制字符（Cc）、格式字符（Cf）或行、段分隔符（U+2028、U+2029）返回 `INVALID`。成功返回 0，再调一次覆盖上一次。多个插件依次改写，后面的插件读到的 body 是前面改写过的，长度上限仍按原文算。
+/// - `rewrite_commit(src, len) -> i32`：只在 `before_commit` 里、这次上屏可改写（`event_scalar(REWRITABLE) == 1`）时可用，否则 `DENIED`。把 `[src, src + len)` 的 UTF-8 文本作为新的 body，tail（标点、顶字的尾巴）由宿主原样接回。区间越界直接 trap；超过 [`crate::limits::MAX_REWRITE_BYTES`] 字节或 [`crate::limits::rewrite_utf16_limit`] 个 UTF-16 码元返回 `LIMIT`；不是 UTF-8、为空、含 [`is_forbidden_plugin_char`] 拦下的字符（控制字符、格式字符、行和段分隔符、不显示的填充符和变体选择符）返回 `INVALID`。成功返回 0，再调一次覆盖上一次。多个插件依次改写，后面的插件读到的 body 是前面改写过的，长度上限仍按原文算。
 /// - `candidates_order(src, count) -> i32`、`candidates_hide(src, count) -> i32`：只在 `candidates` 里可用，否则 `DENIED`。`[src, src + 4 × count)` 是 `count` 个小端 u32 行号，指 `read_candidates` 读到的那份窗口（插件变换之前的顺序）。行号越界、重复或 `count` 超过窗口行数返回 `INVALID`，区间越界 trap。`order` 把这些行按给出的顺序排到前面，其余行保持原来的相对顺序，再调一次覆盖上一次；`hide` 把这些行降到列表末尾并隐藏，多次调用取并集。锁定的座位（固定了位置的词、云和 AI 行、五笔四码唯一时的首位）和引擎下标 0 的行由宿主静默忽略，插件看不出来，返回值照样是 0。
-/// - `candidates_annotate(index, src, len) -> i32`：只在 `candidates` 里可用。给窗口第 `index` 行加注释，不超过 [`crate::limits::MAX_ANNOTATION_UTF16`] 个 UTF-16 码元（超出返回 `LIMIT`），不含 Cc、Cf、U+2028 和 U+2029（否则 `INVALID`），空串表示不加；同一行再调一次覆盖。注释另放一格显示，不改引擎的注释，其他插件也读不到它。
+/// - `candidates_annotate(index, src, len) -> i32`：只在 `candidates` 里可用。给窗口第 `index` 行加注释，不超过 [`crate::limits::MAX_ANNOTATION_UTF16`] 个 UTF-16 码元（超出返回 `LIMIT`），不含 [`is_forbidden_plugin_char`] 拦下的字符（否则 `INVALID`），空串表示不加；同一行再调一次覆盖。注释另放一格显示，不改引擎的注释，其他插件也读不到它。
 ///
 /// 多个插件的候选操作都针对同一份原始窗口、按候选身份（文本加来源）记下，再按授权顺序合成：重排后面的插件优先，隐藏取并集，注释后面的覆盖前面的。
 pub mod modification {}
 
-/// 插件交回的文本（改写后的上屏、候选注释）里不许出现的字符：控制字符（Cc）、格式字符（Cf），以及行分隔符 U+2028（Zl）和段分隔符 U+2029（Zp）。Cf 包括双向控制符（U+202A..U+202E、U+2066..U+2069）、零宽字符（U+200B..U+200F、U+2060..U+2064、U+FEFF）和标签字符，它们能让显示的文本和实际写进文档的不一样。U+2028 和 U+2029 不是 Cc，却和换行一样断行：macOS 的宿主把候选释义交给会话时就拿 U+2028 当换行（`InputController.mm` 的 `MSIMEGlossLineSeparator`），不拦它们，拦 `\n` 就没有意义。Cf 的列表按 Unicode 15.1 写死，标准库没有通用类别的查询；以后的版本新增的 Cf 字符不在表里。
+/// 插件交回的文本（改写后的上屏、候选注释）里不许出现的字符：控制字符（Cc）、格式字符（Cf），行分隔符 U+2028（Zl）和段分隔符 U+2029（Zp），以及一批不是 Cf、却同样看不见或只改字形的字符。Cf 包括双向控制符（U+202A..U+202E、U+2066..U+2069）、零宽字符（U+200B..U+200F、U+2060..U+2064、U+FEFF）和标签字符，它们能让显示的文本和实际写进文档的不一样。U+2028 和 U+2029 不是 Cc，却和换行一样断行：macOS 的宿主把候选释义交给会话时就拿 U+2028 当换行（`InputController.mm` 的 `MSIMEGlossLineSeparator`），不拦它们，拦 `\n` 就没有意义。Cf 的列表按 Unicode 15.1 写死，标准库没有通用类别的查询；以后的版本新增的 Cf 字符不在表里。
+///
+/// 不是 Cf 但同样拦下的：组合用字形连接符 U+034F（Mn，不显示）；韩文填充符 U+115F、U+1160、U+3164、U+FFA0（Lo，显示成空白）；高棉文固有元音 U+17B4、U+17B5（Mn，不显示）；蒙古文自由变体选择符 U+180B..U+180D、U+180F（Mn）；盲文空白 U+2800（So，显示成空白）；变体选择符 U+FE00..U+FE0D 和表意文字变体选择符 U+E0100..U+E01EF（Mn，只改前一个字的字形）。它们能让一段看起来相同的文本在字节上不同，或者让一行看起来是空的。U+FE0E、U+FE0F（VS15、VS16）放行：这里是逐字符判断，分不出它是不是跟在 emoji 后面，而 emoji 注释离不开 VS16；单独出现的 VS15、VS16 不改变字义。表意文字变体选择符拦下之后，改写类插件不能再输出带异体选择符的汉字。
 ///
 /// 这条规则是插件专用的，不改 client-core 的 `text` 模块：那里的检查用在别的输入边界上。
 pub fn is_forbidden_plugin_char(c: char) -> bool {
@@ -512,19 +514,26 @@ pub fn is_forbidden_plugin_char(c: char) -> bool {
         || matches!(
             u32::from(c),
             0x00AD
+                | 0x034F
                 | 0x0600..=0x0605
                 | 0x061C
                 | 0x06DD
                 | 0x070F
                 | 0x0890..=0x0891
                 | 0x08E2
-                | 0x180E
+                | 0x115F..=0x1160
+                | 0x17B4..=0x17B5
+                | 0x180B..=0x180F
                 | 0x200B..=0x200F
                 | 0x2028..=0x2029
                 | 0x202A..=0x202E
                 | 0x2060..=0x2064
                 | 0x2066..=0x206F
+                | 0x2800
+                | 0x3164
+                | 0xFE00..=0xFE0D
                 | 0xFEFF
+                | 0xFFA0
                 | 0xFFF9..=0xFFFB
                 | 0x110BD
                 | 0x110CD
@@ -533,6 +542,7 @@ pub fn is_forbidden_plugin_char(c: char) -> bool {
                 | 0x1D173..=0x1D17A
                 | 0xE0001
                 | 0xE0020..=0xE007F
+                | 0xE0100..=0xE01EF
         )
 }
 

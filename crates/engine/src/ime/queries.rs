@@ -5,7 +5,8 @@ use std::borrow::Cow;
 use crate::assets;
 use crate::dictionary::english::EnglishDictionary;
 use crate::local::command::{
-    command_title, query_command, translation_source, usable_command_table,
+    command_title, plugin_command_source, query_command, translation_source, usable_command_table,
+    usable_plugin_commands,
 };
 use crate::local::date_time::{query_date_time, LocalDateTime};
 use crate::local::emoji::{
@@ -24,7 +25,7 @@ use crate::paths::RuntimePaths;
 use crate::shuangpin::ShuangpinProfile;
 use crate::types::{
     CandidateSource, CommandTableEntry, EnglishInputOptions, LocalInputMode, MentionEntry,
-    MixedExpressiveOptions, QuickPhraseEntry, SchemeType, WordItem,
+    MixedExpressiveOptions, PluginCommand, QuickPhraseEntry, SchemeType, WordItem,
 };
 
 pub const MIXED_ENGLISH_LIMIT: usize = 5;
@@ -49,6 +50,10 @@ pub struct CandidateQueries {
     english: Option<EnglishDictionary>,
     /// The host's command table, usable rows only.
     command_table: Vec<CommandTableEntry>,
+    /// 宿主交来的插件指令，原样保留：指令表一换就要按新表重新过滤。
+    requested_plugin_commands: Vec<PluginCommand>,
+    /// 生效的插件指令，经过 `usable_plugin_commands`。
+    plugin_commands: Vec<PluginCommand>,
     /// 宿主的短语表（插件），只保留能用的行，按编码排序。
     quick_phrase_table: Vec<QuickPhraseEntry>,
     /// The host's mention list, usable entries only.
@@ -64,6 +69,8 @@ impl CandidateQueries {
             profile,
             english: None,
             command_table: Vec::new(),
+            requested_plugin_commands: Vec::new(),
+            plugin_commands: Vec::new(),
             quick_phrase_table: Vec::new(),
             mentions: Vec::new(),
             mention_places: false,
@@ -73,6 +80,20 @@ impl CandidateQueries {
     /// Keeps the rows `/` mode can use and drops the rest.
     pub fn set_command_table(&mut self, table: &[CommandTableEntry]) {
         self.command_table = usable_command_table(table);
+        // 用户的指令表永远赢：表变了，插件指令按新表重新过滤。
+        self.plugin_commands =
+            usable_plugin_commands(&self.command_table, &self.requested_plugin_commands);
+    }
+
+    /// 换上宿主算好的插件指令，只留下引擎能用的（见 `usable_plugin_commands`）。
+    pub fn set_plugin_commands(&mut self, commands: &[PluginCommand]) {
+        self.requested_plugin_commands = commands.to_vec();
+        self.plugin_commands = usable_plugin_commands(&self.command_table, commands);
+    }
+
+    /// `/` 之后的输入属于哪条生效的插件指令：（触发词，参数）。
+    pub fn plugin_command_source<'a>(&self, code: &'a str) -> Option<(&str, &'a str)> {
+        plugin_command_source(code, &self.plugin_commands)
     }
 
     /// 保留 K 模式能用的宿主短语行，丢弃其余。
@@ -103,7 +124,7 @@ impl CandidateQueries {
         translation_source(code, &self.command_table)
     }
 
-    /// The title of a `/` mode row, by the trigger its `pinyin` holds.
+    /// The title of a `/` mode row, by the trigger its `pinyin` holds. 插件指令的标题不在这里查：它由 runtime 画在插件注释格里，不进引擎的注释。
     pub fn command_title(&self, trigger: &str) -> Option<&str> {
         command_title(trigger, &self.command_table)
     }
@@ -169,6 +190,10 @@ impl CandidateQueries {
             LocalInputMode::TemporaryEnglish => rows(self.temporary_english(code)),
             LocalInputMode::TemporaryJapanese => rows(engine_candidates.to_vec()),
             LocalInputMode::Expression => rows(query_expression(code)),
+            // 输入属于某条插件指令时，引擎不列任何行：插件的行由宿主问过插件之后写进会话的缓存，在那之前由兜底行顶着。
+            LocalInputMode::Command if self.plugin_command_source(code).is_some() => {
+                LocalQueryResult::default()
+            }
             LocalInputMode::Command => rows(query_command(code, now, &self.command_table)),
             LocalInputMode::Mention => {
                 rows(query_mentions(code, &self.mentions, self.mention_places))

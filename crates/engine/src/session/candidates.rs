@@ -137,9 +137,28 @@ impl InputSession {
         let mut candidates = result.candidates;
         self.apply_candidate_positions(&mut candidates);
         self.local_candidates = candidates;
+        self.insert_cached_plugin_rows();
         // After the positions, so the synthetic row is never moved.
         self.add_local_fallback_candidate();
         result.diagnostic
+    }
+
+    /// 缓存的插件行还属于这份预编辑串时把它们放回列表前面，同文的后面那一行去掉；预编辑串已经变了就清掉缓存，下一次派发重新问插件。
+    fn insert_cached_plugin_rows(&mut self) {
+        let Some((preedit, rows)) = &self.plugin_rows else {
+            return;
+        };
+        if *preedit != self.local_preedit {
+            self.plugin_rows = None;
+            return;
+        }
+        if rows.is_empty() {
+            return;
+        }
+        let rows = rows.clone();
+        self.local_candidates
+            .retain(|item| !rows.iter().any(|row| row.word == item.word));
+        self.local_candidates.splice(0..0, rows);
     }
 
     pub(super) fn add_local_fallback_candidate(&mut self) {

@@ -831,7 +831,15 @@ impl HostSession {
             .commit_context
             .as_ref()
             .is_some_and(|context| context.local_mode == "url");
-        if result.view.character_width == CharacterWidth::Fullwidth && !half_width_text {
+        // 脚本插件在 `/` 指令里给的行（UUID 之类）原样上屏，不转全角：转了以后上屏的和候选窗里显示的不一样。同一次 `/` 模式里内置指令（`/rq`）的上屏照旧转全角。
+        let plugin_commit = result
+            .commit_context
+            .as_ref()
+            .is_some_and(|context| context.plugin_row);
+        if result.view.character_width == CharacterWidth::Fullwidth
+            && !half_width_text
+            && !plugin_commit
+        {
             if let Some(c) = result.commit.as_mut() {
                 *c = c
                     .chars()
@@ -1599,6 +1607,7 @@ impl HostOptions {
             local_mention: self.preferences.local_modes.mention,
             local_shift_letter_entry: self.preferences.local_modes.shift_letter_entry,
             command_table: Vec::new(),
+            plugin_commands: Vec::new(),
             mention_entries: Vec::new(),
             quick_phrase_table: Vec::new(),
             helpcode_table: None,
