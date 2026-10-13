@@ -295,10 +295,17 @@ struct CallContext {
 }
 
 impl CallContext {
-    /// 按授权和本地模式复制这一次能看的字段；不能看的根本不复制。`command` 事件只带触发词、参数和随机数：宿主就算填了组字、上屏或候选，也不复制，`command` 的输出只能取决于这几样。
+    /// 按授权和本地模式复制这一次能看的字段；不能看的根本不复制。`command` 事件只带触发词、参数和随机数，标量只留本地模式（事件类型由钩子给出）：宿主就算填了组字、上屏、候选或上屏来源这类标量，也不复制，`command` 的输出只能取决于这几样。
     fn load(&mut self, grants: CapabilitySet, event: &Event<'_>) {
         self.hook = Some(event.hook);
-        self.scalars = event.scalars;
+        self.scalars = if event.hook == Hook::Command {
+            Scalars {
+                local_mode: event.scalars.local_mode,
+                ..Scalars::default()
+            }
+        } else {
+            event.scalars
+        };
         self.actions.clear();
         let command = event.command.filter(|_| event.hook == Hook::Command);
         let text_allowed = event.hook != Hook::Command

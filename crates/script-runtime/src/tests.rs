@@ -1914,6 +1914,15 @@ fn command_imports_need_the_grant_and_the_command_hook() {
         8 * 10000 + 9 * 100 + 6
     );
     assert!(elsewhere.actions().is_empty());
+    // 宿主在别的钩子里误带了 `CommandEvent` 也一样：触发词、参数和随机数只交给 `command`。
+    let mut smuggled = input_event();
+    smuggled.command = command_event("uuid", "", [7; limits::RANDOM_BYTES_PER_EVENT]).command;
+    let mut misdelivered = commander("abc", PROBE, &hooks, provides());
+    assert_eq!(
+        status_of(misdelivered.deliver(1, &smuggled)),
+        8 * 10000 + 9 * 100 + 6
+    );
+    assert!(misdelivered.actions().is_empty());
     // 别的钩子里取 0 字节随机数不算错。
     let mut zero = commander(
         "",
@@ -2005,6 +2014,75 @@ fn a_command_event_carries_no_other_text() {
     assert_eq!(
         status_of(script.deliver(2, &commit)),
         ("秘密".len() as i32 + 10) * 100 + "mimi".len() as i32 + 10
+    );
+}
+
+#[test]
+fn a_command_event_carries_only_the_local_mode_among_the_scalars() {
+    // 返回 KIND × 10000 + LOCAL_MODE × 100 + 其余九个标量各自加 10 之和：宿主误填了上屏来源这类标量，插件在 `command` 里也只读到 ABSENT，`command` 的输出只能取决于触发词、参数和随机数。
+    let others = [
+        event_field::ORIGIN,
+        event_field::HOW,
+        event_field::OUTCOME,
+        event_field::REASON,
+        event_field::INPUT_CLASS,
+        event_field::RETRACTION,
+        event_field::REWRITABLE,
+        event_field::CONTINUES,
+        event_field::GENERATED,
+    ];
+    let sum = others
+        .iter()
+        .fold("(i64.const 0)".to_owned(), |sum, field| {
+            format!("(i64.add {sum} (i64.add (call $scalar (i32.const {field})) (i64.const 10)))")
+        });
+    let body = format!(
+        "(i32.wrap_i64 (i64.add
+            (i64.add
+                (i64.mul (call $scalar (i32.const {})) (i64.const 10000))
+                (i64.mul (call $scalar (i32.const {})) (i64.const 100)))
+            {sum}))",
+        event_field::KIND,
+        event_field::LOCAL_MODE
+    );
+    let wat = module_wat(
+        &format!(
+            r#"{COMMAND_IMPORTS}
+            (import "msime" "event_scalar" (func $scalar (param i32) (result i64)))"#
+        ),
+        "",
+        &body,
+    );
+    let declared = declaration(
+        &[Capability::ProvideCommands],
+        &[Hook::Command, Hook::Commit],
+    );
+    let module = compile_wat(&wat, declared).unwrap();
+    let mut script = ScriptInstance::new(&module, provides(), limits::INIT_FUEL).unwrap();
+    let filled = Scalars {
+        origin: Some(1),
+        how: Some(1),
+        outcome: Some(1),
+        reason: Some(1),
+        local_mode: Some(8),
+        input_class: Some(1),
+        retraction: Some(1),
+        rewritable: Some(true),
+        continues: Some(true),
+        generated: Some(true),
+    };
+    let mut event = command_event("uuid", "", [0; 64]);
+    event.scalars = filled;
+    assert_eq!(
+        status_of(script.deliver(1, &event)),
+        Hook::Command.code() * 10000 + 8 * 100 + 9 * (status::ABSENT + 10)
+    );
+    // 对照：同一个实例在 `commit` 里九个标量都读得到（各是 1）。
+    let mut commit = Event::new(Hook::Commit);
+    commit.scalars = filled;
+    assert_eq!(
+        status_of(script.deliver(2, &commit)),
+        Hook::Commit.code() * 10000 + 8 * 100 + 9 * 11
     );
 }
 
