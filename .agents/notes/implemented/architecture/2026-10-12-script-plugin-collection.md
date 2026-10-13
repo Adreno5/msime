@@ -86,3 +86,5 @@ rare-chars-last、hide-rare-chars、traditional-glyph 和 unicode-codepoint 都�
 相关：[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 定义 fuel 配额；[脚本插件的作者工具](../feature/2026-10-12-script-plugin-author-tools.md) 定义 `msime-pack run`、SDK 和模板；[脚本插件修改上屏和候选](2026-10-12-script-plugins-modify-commit-and-candidates.md) 定义重排、隐藏、注释的合成规则。
 
 后续：pangu-spacing、traditional-glyph 和 unicode-codepoint 与内置功能重复，已从合集删除，见[删除与内置重复的脚本插件](../simplification/2026-10-13-remove-duplicate-script-plugins.md)。
+
+后续：「不随输入法分发」对官方包翻转了：`plugins/official-packs.json` 登记的 uuid 随 macOS、Windows、Linux 的桌面安装包分发，默认停用、要授权才运行，内容哈希锁在那个文件里，见 [官方插件包随三个桌面安装包分发](2026-10-13-official-plugin-packs-in-desktop-installers.md)。合集里其余插件照旧由用户构建后导入。
