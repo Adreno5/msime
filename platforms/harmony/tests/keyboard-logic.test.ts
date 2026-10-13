@@ -122,6 +122,7 @@ import {
   SmartPunctuationRepeatSnapshot,
 } from "../entry/src/main/ets/keyboard/input/SmartPunctuationRepeatPolicy";
 import { PairedPunctuationPolicy } from "../entry/src/main/ets/keyboard/input/PairedPunctuationPolicy";
+import { ChineseSymbolFaces } from "../entry/src/main/ets/keyboard/input/ChineseSymbolFaces";
 import {
   ReturnDispatch,
   ReturnKeyAction,
@@ -12188,6 +12189,8 @@ function fullPreferenceSchema(): AccountPreferenceSchema {
       "platform.harmony.haptic_strength",
       "platform.harmony.number_keypad_order",
       "platform.harmony.twenty_six_key_number_layout",
+      "input.quote_style",
+      "input.bracket_style",
     ],
     "string",
   );
@@ -19465,4 +19468,102 @@ group("applying cloud settings saves a whole preferences snapshot", () => {
     JSON.stringify(local.preferences) === JSON.stringify({ scheme: "quanpin", learning: true }),
     "the local snapshot is not changed in place",
   );
+});
+
+group("quote and bracket styles change only the faces and pairs of their own keys", () => {
+  check(ChineseSymbolFaces.face("'", false, false) === "‘", "the default ' face");
+  check(ChineseSymbolFaces.face("'", true, false) === "「", "corner quotes draw 「 on '");
+  check(ChineseSymbolFaces.face('"', true, false) === "『", 'and 『 on "');
+  check(ChineseSymbolFaces.face("[", false, true) === "〖", "hollow brackets draw 〖 on [");
+  check(ChineseSymbolFaces.face("]", false, true) === "〗", "and 〗 on ]");
+  check(
+    ChineseSymbolFaces.face("[", true, false) === "【",
+    "corner quotes leave the brackets alone",
+  );
+  check(ChineseSymbolFaces.face(",", true, true) === "，", "and every other mark");
+  check(
+    ChineseSymbolFaces.face("@", true, true) === undefined,
+    "a key without a Chinese face has none",
+  );
+  check(
+    ChineseSymbolFaces.cornerQuotes({ quotes: "corner", brackets: "solid" }) &&
+      !ChineseSymbolFaces.cornerQuotes({ quotes: "curly" }) &&
+      !ChineseSymbolFaces.cornerQuotes(undefined),
+    "the view's punctuation_marks decide the quotes; an older library reports nothing",
+  );
+  check(
+    ChineseSymbolFaces.hollowBrackets({ brackets: "hollow" }) &&
+      !ChineseSymbolFaces.hollowBrackets({ brackets: "solid" }),
+    "and the brackets",
+  );
+
+  check(PairedPunctuationPolicy.completion("「", true)?.closing === "」", "「 is completed");
+  check(
+    PairedPunctuationPolicy.completion("你好『", true)?.opening === 0x22,
+    '『 is completed on the " key',
+  );
+  check(PairedPunctuationPolicy.completion("〖", true)?.closing === "〗", "〖 is completed");
+  check(PairedPunctuationPolicy.completion("」", true) === null, "a corner closing half is not");
+  check(PairedPunctuationPolicy.reopenQuote("」", 0x27, true) === "「", "」 reopens as 「");
+  check(PairedPunctuationPolicy.reopenQuote("好』", 0x22, true) === "好『", "』 reopens as 『");
+  check(
+    PairedPunctuationPolicy.reopenQuote("』", 0x27, true) === "』",
+    "another key's half is left alone",
+  );
+
+  check(SmartPunctuationSpacePolicy.asciiFor(0x300c) === 0x27, "Space turns 「 back into '");
+  check(SmartPunctuationSpacePolicy.asciiFor(0x300f) === 0x22, '』 back into "');
+  check(SmartPunctuationSpacePolicy.asciiFor(0x3016) === 0x5b, "〖 back into [");
+  check(SmartPunctuationSpacePolicy.asciiFor(0x3017) === 0x5d, "〗 back into ]");
+
+  const corner: LayerKey[][] = NumberSymbolLayout.rows(false, true, true);
+  check(
+    texts(corner[1]) === "- / ： ； （ ） ¥ @ 「 」",
+    "the Chinese 123 layer's quote keys become 「」",
+  );
+  check(
+    texts(NumberSymbolLayout.rows(false, false, true)[1]) ===
+      texts(NumberSymbolLayout.numberLayer(false)[1]),
+    "the English layer ignores the style",
+  );
+  check(
+    texts(NumberSymbolLayout.rows(true, true, true)[1]) ===
+      texts(NumberSymbolLayout.moreSymbolLayer(true)[1]),
+    "and so does #+=",
+  );
+  check(
+    NumberSymbolLayout.route("「", true) === LayerCharacterRoute.LITERAL,
+    "a corner quote key is inserted as drawn",
+  );
+});
+
+group("the punctuation styles travel with the account settings", () => {
+  const values = localAccountPreferences(
+    { quote_style: "corner_when_traditional", bracket_style: "hollow" },
+    syncFeedback,
+  );
+  check(values["input.quote_style"] === "corner_when_traditional", "the quote style is exported");
+  check(values["input.bracket_style"] === "hollow", "and the bracket style");
+  const defaults = localAccountPreferences({}, syncFeedback);
+  check(
+    defaults["input.quote_style"] === "curly" && defaults["input.bracket_style"] === "solid",
+    "a document without the keys exports the defaults",
+  );
+  const schema = fullPreferenceSchema();
+  const applied = applyAccountPreferences(
+    { scheme: "quanpin" },
+    { revision: 2, settings: { "input.quote_style": "corner", "input.bracket_style": "hollow" } },
+    schema,
+    syncFeedback,
+  );
+  check(applied.preferences.quote_style === "corner", "a known quote style is applied");
+  check(applied.preferences.bracket_style === "hollow", "and a known bracket style");
+  const unknown = applyAccountPreferences(
+    { scheme: "quanpin", quote_style: "corner" },
+    { revision: 2, settings: { "input.quote_style": "semantic", "input.learning": false } },
+    schema,
+    syncFeedback,
+  );
+  check(unknown.preferences.quote_style === "corner", "an unknown style skips only its key");
+  check(unknown.preferences.learning === false, "and the rest still applies");
 });
