@@ -105,8 +105,12 @@ pub struct EngineOptions {
     pub local_command: bool,
     /// `@`: `mention_entries`.
     pub local_mention: bool,
+    /// `C`：拆字反查。默认关；host-api 按宿主形态决定偏好缺省时的值。
+    pub local_chaizi: bool,
     /// Shift+字母进入快捷模式的总开关（`LocalModeOptions::shift_letter_entry`）。
     pub local_shift_letter_entry: bool,
+    /// 宿主会把候选转成繁体输出（`SessionOptions::chaizi_traditional_output`）。
+    pub chaizi_traditional_output: bool,
     /// The `/` mode's commands beyond the built-in ones. Rows the engine cannot use are dropped, and at most `local::command::TABLE_LIMIT` are kept.
     pub command_table: Vec<CommandTableEntry>,
     /// 脚本插件在 `/` 模式里的指令，宿主算好哪些生效之后交来；`Session::set_plugin_commands` 实时替换，重建的会话从这里开始。引擎用不了的被丢弃（`local::command::usable_plugin_commands`）。只有桌面宿主会填，移动端永远是空表。
@@ -207,7 +211,9 @@ pub fn prepare_options_for(
         local_expression: false,
         local_command: false,
         local_mention: false,
+        local_chaizi: false,
         local_shift_letter_entry: true,
+        chaizi_traditional_output: false,
         command_table: Vec::new(),
         plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
@@ -304,8 +310,10 @@ pub fn session_options(options: &EngineOptions) -> Result<SessionOptions> {
         expression: options.local_expression,
         command: options.local_command,
         mention: options.local_mention,
+        chaizi: options.local_chaizi,
         shift_letter_entry: options.local_shift_letter_entry,
     };
+    session.chaizi_traditional_output = options.chaizi_traditional_output;
     session.command_table = options.command_table.clone();
     session.plugin_commands = options.plugin_commands.clone();
     session.mention_entries = options.mention_entries.clone();
