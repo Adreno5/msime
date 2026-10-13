@@ -3147,6 +3147,13 @@ public:
   bool fullwidthOutput() const {
     return view_.value("character_width", std::string{}) == "Fullwidth";
   }
+  // 英文模式下的中文标点按 View 报告的样式出字（host-api 已解析好 corner_when_traditional）。
+  msime::linux_host::PunctuationMarks viewPunctuationMarks() const {
+    const auto marks = view_.value("punctuation_marks", Json::object());
+    if (!marks.is_object()) return {};
+    return msime::linux_host::punctuation_marks_from_view(
+        marks.value("quotes", std::string{}), marks.value("brackets", std::string{}));
+  }
   // The session types Korean: jamo compose in the preedit, punctuation is always half-width ASCII and none of the Chinese punctuation helpers apply. The dedicated English mode keeps its own rules in every scheme.
   bool korean() const {
     return msime::linux_host::strict_json_value(view_, "scheme", 0u) == 4 && !view_.value("dedicated_english", false);
@@ -3325,7 +3332,8 @@ public:
     if (!pairedPunctuationEnabled()) return false;
     const auto typed = fcitx::Key::keySymToUTF8(sym);
     if (typed.size() != 1) return false;
-    const auto closing = msime::linux_host::paired_closing_for_key(typed[0], fullwidthOutput());
+    const auto closing =
+        msime::linux_host::paired_closing_for_key(typed[0], fullwidthOutput(), paired_tracker_);
     if (!closing) return false;
     using Modifier = msime::linux_host::PairedPunctuationModifier;
     std::uint32_t modifiers = 0;
@@ -7458,7 +7466,7 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
     const auto text = msime::linux_host::english_mode_output(
         static_cast<char32_t>(fcitx::Key::keySymToUnicode(sym)), keypad,
         punctuation_lock_ == 1 || (punctuation_lock_ == 0 && english_chinese_punctuation_),
-        fullwidthOutput(), english_punctuation_);
+        fullwidthOutput(), english_punctuation_, viewPunctuationMarks());
     if (text.empty()) return false;
     commitText(text, msime::linux_host::TypingSource::English);
     return true;

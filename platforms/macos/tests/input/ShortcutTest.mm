@@ -1455,6 +1455,16 @@ static void TestPairedPunctuationClosesThePair() {
     [controller apply:@{@"commit": @"’", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
     assert([client.committed isEqual:@"‘"] && [client.marked isEqual:@"’"]);
     [controller flushPendingPairedClosing];
+    // 直角引号与空心方头括号（quote_style、bracket_style）照样补全，后半个的引号同样改回前半个。
+    [controller apply:@{@"commit": @"」", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"「"] && [client.marked isEqual:@"」"]);
+    [controller flushPendingPairedClosing];
+    [controller apply:@{@"commit": @"』", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"『"] && [client.marked isEqual:@"』"]);
+    [controller flushPendingPairedClosing];
+    [controller apply:@{@"commit": @"〖", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"〖"] && [client.marked isEqual:@"〗"]);
+    [controller flushPendingPairedClosing];
 
     // A punctuation key typed during a composition finishes it, and the Engine commits the candidate and the mark as one string. The pair is read from the last character of that commit, the way the reference reads `punctuationStr.back()`.
     [controller setValue:@('(') forKey:@"punctuationKeyInFlight"];
@@ -5998,6 +6008,15 @@ static void TestEnglishModePunctuationAndWidthOutput() {
     [controller setEnglishInputMode:NO];
     [controller setEnglishInputMode:YES];
     assert([type(quote) isEqual:@"“"]);
+    [controller setEnglishInputMode:NO];
+    // 引号与方头括号按 View 报告的样式出字（host-api 已解析好 corner_when_traditional）。
+    [controller setEnglishInputMode:YES];
+    [controller setValue:@{@"editing_text":@"", @"candidates":@[],
+                           @"punctuation_marks":@{@"quotes":@"corner", @"brackets":@"hollow"}} forKey:@"view"];
+    assert([type(quote) isEqual:@"『"] && [type(quote) isEqual:@"』"]);
+    assert([type(EnglishKey(@"[", 33, 0)) isEqual:@"〖"] && [type(EnglishKey(@"]", 30, 0)) isEqual:@"〗"]);
+    assert([type(comma) isEqual:@"，"]);
+    [controller setValue:@{@"editing_text":@"", @"candidates":@[]} forKey:@"view"];
     [controller setEnglishInputMode:NO];
 
     // Follow: English mode starts with English punctuation, and Ctrl+. turns Chinese on for this app without saving it.

@@ -685,8 +685,9 @@ static NSArray<NSArray<NSString *> *> *MSIMEPunctuationPairs(void) {
     static NSArray<NSArray<NSString *> *> *pairs;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // 『』〖〗是引号样式、方头括号样式（quote_style、bracket_style）下 `"` 和 `[` 的另一组字。
         pairs = @[@[@"（", @"）"], @[@"【", @"】"], @[@"《", @"》"], @[@"“", @"”"], @[@"‘", @"’"],
-                  @[@"〈", @"〉"], @[@"「", @"」"]];
+                  @[@"〈", @"〉"], @[@"「", @"」"], @[@"『", @"』"], @[@"〖", @"〗"]];
     });
     return pairs;
 }
@@ -892,14 +893,24 @@ static unichar MSIMEASCIIForSmartChinesePunctuation(unichar character) {
     case 0x3001: return '/'; // 、
     case 0x201C: case 0x201D: return '"'; // “ ”
     case 0x2018: case 0x2019: return '\''; // ‘ ’
-    case 0x3010: return '['; // 【
-    case 0x3011: return ']'; // 】
+    case 0x300E: case 0x300F: return '"'; // 『 』
+    case 0x300C: case 0x300D: return '\''; // 「 」
+    case 0x3010: case 0x3016: return '['; // 【 〖
+    case 0x3011: case 0x3017: return ']'; // 】 〗
     case 0x300A: return '<'; // 《
     case 0x300B: return '>'; // 》
     case 0xFF08: return '('; // （
     case 0xFF09: return ')'; // ）
     default: return 0;
     }
+}
+// View 报告的引号与方头括号样式（host-api 已解析好 corner_when_traditional）；英文模式下的中文标点按它出字。
+static msime::input::PunctuationMarks MSIMEViewPunctuationMarks(NSDictionary *view) {
+    NSDictionary *marks = [view isKindOfClass:NSDictionary.class] ? view[@"punctuation_marks"] : nil;
+    if (![marks isKindOfClass:NSDictionary.class]) return {};
+    NSString *quotes = [marks[@"quotes"] isKindOfClass:NSString.class] ? marks[@"quotes"] : @"";
+    NSString *brackets = [marks[@"brackets"] isKindOfClass:NSString.class] ? marks[@"brackets"] : @"";
+    return msime::input::punctuation_marks_from_view(quotes.UTF8String, brackets.UTF8String);
 }
 static BOOL MSIMEASCIIPunctuation(unichar character) {
     return character > 0x20 && character < 0x7F && !MSIMEASCIIAlphanumeric(character);
@@ -6027,7 +6038,8 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
                 ([_appearance.punctuationLock isEqual:@"follow"] && _appearance.runtimeChinesePunctuation);
             const unichar character = [event.characters characterAtIndex:0];
             const std::string output = msime::input::english_mode_output(
-                character, keypad, chinese, _appearance.runtimeFullWidthInput, _englishPunctuation);
+                character, keypad, chinese, _appearance.runtimeFullWidthInput, _englishPunctuation,
+                MSIMEViewPunctuationMarks(_view));
             if (!output.empty()) {
                 NSString *text = [[NSString alloc] initWithBytes:output.data() length:output.size()
                                                          encoding:NSUTF8StringEncoding];
@@ -6557,11 +6569,12 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         }
     }
     const BOOL quoteKey = !markEndsLongerCommit || punctuationKey == '"' || punctuationKey == '\'';
-    if (_appearance.pairedPunctuation && [mark isKindOfClass:NSString.class] && quoteKey &&
-        ([mark isEqualToString:@"”"] || [mark isEqualToString:@"’"]) &&
+    // 直角引号（quote_style 为 corner）同理：」改回「，』改回『。
+    static NSDictionary<NSString *, NSString *> *const reopenings = @{@"”": @"“", @"’": @"‘", @"」": @"「", @"』": @"『"};
+    if (_appearance.pairedPunctuation && [mark isKindOfClass:NSString.class] && quoteKey && reopenings[mark] &&
         !_pendingPairedClosing && !MSIMEPairedPunctuationExcludedHost()) {
         NSMutableDictionary *reopened = [transition mutableCopy];
-        NSString *opening = [mark isEqualToString:@"”"] ? @"“" : @"‘";
+        NSString *opening = reopenings[mark];
         commitForTracking = [[commitForTracking substringToIndex:commitForTracking.length - mark.length] stringByAppendingString:opening];
         mark = opening;
         reopened[@"commit"] = commitForTracking;
