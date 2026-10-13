@@ -154,6 +154,61 @@ pub(crate) fn open_existing_read_only(path: &Path) -> Result<Option<Connection>>
     open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map(Some)
 }
 
+/// Move a journal SQLite cannot read as a database out of the way, so the host starts with an empty one instead of refusing to start at all.
+///
+/// Every host prepares its dictionary generation before the first session, and that replays the journal: a journal that is not a database fails the replay, the preparation and so the whole host, on every start, with nothing the user can see or do. A journal overwritten with zeros was found on a Windows machine in October 2026; the input method stayed down until the file was moved by hand.
+///
+/// Only SQLite's own verdict counts: the file is renamed when reading its schema fails with `SQLITE_NOTADB` or `SQLITE_CORRUPT`. A journal that is merely busy, locked or unreadable for permissions is left alone, because moving it would throw away a good journal. The rename keeps the file beside the new one as `msime_user.db.corrupt-<unix seconds>`, with its `-wal`, `-shm` and `-journal` files under the same name, so nothing is deleted and a sidecar can never be applied to the new journal. Returns the new path when the journal was moved, `None` when there is nothing to move.
+pub fn quarantine_corrupt_journal(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        // Missing, or not a regular file: the opening paths already refuse the latter.
+        _ => return Ok(None),
+    }
+    let verdict = open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(|connection| {
+        connection
+            .query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(Into::into)
+    });
+    let corrupt = matches!(
+        verdict,
+        Err(crate::error::EngineError::Sqlite(rusqlite::Error::SqliteFailure(ref error, _)))
+            if matches!(error.code, rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+    );
+    if !corrupt {
+        return Ok(None);
+    }
+    // This thread may still hold a connection to the file; Windows cannot rename an open file.
+    close_cached_journals();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut target = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+    let mut attempt = 1;
+    while std::fs::symlink_metadata(&target).is_ok() {
+        target = path.with_file_name(format!("{name}.corrupt-{stamp}-{attempt}"));
+        attempt += 1;
+    }
+    std::fs::rename(path, &target)?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = path.with_file_name(format!("{name}{suffix}"));
+        if std::fs::symlink_metadata(&sidecar).is_ok() {
+            let moved = target.with_file_name(format!(
+                "{}{suffix}",
+                target.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            std::fs::rename(&sidecar, moved)?;
+        }
+    }
+    Ok(Some(target))
+}
+
 /// Open (creating) the journal, reusing this thread's connection for the path.
 pub fn open_journal(path: &Path) -> Result<JournalConnection> {
     let generation = CACHE_GENERATION.load(Ordering::Acquire);
@@ -770,6 +825,60 @@ mod tests {
         close_cached_journals();
         assert!(CACHED_JOURNAL.with(|cache| cache.borrow().is_none()));
         assert_eq!(count(&journal, "SELECT count(*) FROM personal_bigram"), 1);
+    }
+
+    /// The shape found on a user's machine: every page zeroed but the last two, which were still a valid index page.
+    fn write_zeroed_journal(path: &Path) {
+        let mut bytes = vec![0u8; 23 * 4096];
+        bytes[21 * 4096] = 0x0a;
+        bytes[21 * 4096 + 4] = 0x0a;
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_journal_that_is_not_a_database_is_moved_aside_with_its_sidecars() {
+        let dir = Dir::new();
+        let journal = dir.journal();
+        write_zeroed_journal(&journal);
+        let wal = dir.root.path().join("msime_user.db-wal");
+        std::fs::write(&wal, b"stale wal").unwrap();
+
+        let moved = quarantine_corrupt_journal(&journal).unwrap().unwrap();
+        assert!(!journal.exists());
+        assert!(!wal.exists());
+        let name = moved.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("msime_user.db.corrupt-"), "{name}");
+        assert_eq!(std::fs::metadata(&moved).unwrap().len(), 23 * 4096);
+        assert_eq!(
+            std::fs::read(moved.with_file_name(format!("{name}-wal"))).unwrap(),
+            b"stale wal"
+        );
+        // The next start finds no journal and creates a working one.
+        assert!(upsert(&journal, PersonalDictionaryKind::Pinyin, "ni", "你", 1, "").is_ok());
+        close_cached_journals();
+        // A second corrupt journal in the same second never overwrites the first one moved aside.
+        write_zeroed_journal(&journal);
+        let again = quarantine_corrupt_journal(&journal).unwrap().unwrap();
+        assert_ne!(again, moved);
+        assert!(moved.exists() && again.exists());
+    }
+
+    #[test]
+    fn a_readable_missing_or_empty_journal_is_left_alone() {
+        let dir = Dir::new();
+        let journal = dir.journal();
+        assert_eq!(quarantine_corrupt_journal(&journal).unwrap(), None);
+        std::fs::write(&journal, b"").unwrap();
+        assert_eq!(quarantine_corrupt_journal(&journal).unwrap(), None);
+        assert!(journal.exists());
+        std::fs::remove_file(&journal).unwrap();
+        upsert(&journal, PersonalDictionaryKind::Pinyin, "ni", "你", 1, "").unwrap();
+        close_cached_journals();
+        assert_eq!(quarantine_corrupt_journal(&journal).unwrap(), None);
+        assert_eq!(
+            count(&journal, "SELECT count(*) FROM user_dictionary_operations"),
+            1
+        );
     }
 
     #[test]
