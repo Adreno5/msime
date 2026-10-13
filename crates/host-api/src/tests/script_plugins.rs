@@ -2388,3 +2388,19 @@ fn the_grant_page_actions_grant_reorder_and_revoke_and_the_input_method_honours_
         json!({"id": "reader", "hash": reader, "enabled": false, "granted": []})
     );
 }
+
+/// client-core 校验插件清单时用的内置 `/` 指令（触发词和标题）是自己复制的一份，因为它不能依赖引擎。host-api 两边都依赖，在这里核对两份完全相同：引擎加了内置指令而清单校验不知道时，插件就能声明一个和它互为前缀的触发词，引擎再把这条插件指令静默丢掉。
+#[test]
+fn the_manifest_check_knows_exactly_the_engines_builtin_commands() {
+    use msime_client_core::plugins::script_pack::{
+        BUILTIN_COMMAND_TITLES, BUILTIN_COMMAND_TRIGGERS,
+    };
+    assert_eq!(
+        msime_engine::host::builtin_command_triggers().collect::<Vec<_>>(),
+        BUILTIN_COMMAND_TRIGGERS
+    );
+    assert_eq!(
+        msime_engine::host::builtin_command_titles().collect::<Vec<_>>(),
+        BUILTIN_COMMAND_TITLES
+    );
+}
