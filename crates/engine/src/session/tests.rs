@@ -5410,7 +5410,9 @@ fn other_commands_are_untouched_by_plugin_commands() {
         .all(|source| *source == CandidateSource::Generated));
 }
 
-/// 选中插件行只上屏这一行的文字，不学习、不能置顶固定删除；开着个人上下文和词频调整时，选中前后用户日志和词库一个字节都不变。指令模式的上屏不计打字统计。
+/// 选中插件行只上屏这一行的文字，不学习、不能置顶固定删除；开着个人上下文和词频调整时，选中前后用户日志的行数和主词库的字节都不变。指令模式的上屏不计打字统计。
+///
+/// 能从外面看出来的是调词频这条路：插件行要是被当成词库行（`is_dictionary`），选中会去调词频，而 `/` 模式没有拼音可作键，调词频失败、带回诊断，所以这里要求没有诊断。整句学习那条路看不出来：`can_learn_sentence_candidate` 在本地模式里一律拒绝，来源 14 误进 `is_sentence_learning` 也不会写任何东西，那条由 `types.rs` 的 `plugin_rows_match_no_predicate` 守着。
 #[test]
 fn selecting_a_plugin_row_commits_its_text_and_learns_nothing() {
     let fixture = Fixture::new(QUANPIN_FIXTURE);
@@ -5432,11 +5434,11 @@ fn selecting_a_plugin_row_commits_its_text_and_learns_nothing() {
     assert_eq!(words(&session), ["甲", "乙"]);
     let item = session.snapshot().candidates[1].clone();
     assert!(!session.input.is_editable_source(&item));
-    let ranking = session.input.ranking_index(1).unwrap();
-    assert_eq!(session.input.learn_candidate(ranking), None);
 
+    // 选第二行，不是首选：开着 Promote、触发次数 1，词库行在这里会调词频。
     let result = session.select(1);
     assert_eq!(result.commit.as_deref(), Some("乙"));
+    assert_eq!(result.diagnostic, None);
     assert_eq!(session.snapshot().local_mode, LocalInputMode::None);
     assert!(session.plugin_command_query().is_none());
     assert_eq!(journal_rows(&fixture.journal()), journal_before);

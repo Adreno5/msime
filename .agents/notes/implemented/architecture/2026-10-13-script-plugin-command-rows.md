@@ -16,7 +16,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 
 `CandidateSource::Plugin = 14`。13 已经是日文混输行，10 是历史空号不复用。它不属于任何学习谓词（`is_sentence_learning`、`is_dictionary`），也不在 `is_editable_source` 的白名单里，所以：
 
-- 本地模式里选中走 `session/commit.rs` 的本地模式分支，上屏 `item.word` 并 `reset_composition`；`learn_candidate` 对它返回 `None`。`/` 只在没有组字时打开，`reset_composition` 清掉了 `ranking_candidates`，学习读的是 `local_candidates`，不会把下标错映射到另一个词库词上。
+- 本地模式里选中走 `session/commit.rs` 的本地模式分支，上屏 `item.word` 并 `reset_composition`；本地模式的选中照样调 `learn_candidate`，但整句学习被 `can_learn_sentence_candidate` 的本地模式检查挡住，调词频要 `is_dictionary`，两条都走不到。`/` 只在没有组字时打开，`reset_composition` 清掉了 `ranking_candidates`，学习读的是 `local_candidates`，不会把下标错映射到另一个词库词上。
 - 不能置顶、固定或删除。
 - 指令模式属于 `generates_text`，不计打字统计。
 
@@ -90,7 +90,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 
 - `crates/script-runtime/src/tests.rs`：新增的不可见字符逐个经 `rewrite_commit` 和 `candidates_annotate` 得到 `INVALID`，跟在 emoji 后的 VS16 放行。
 - `crates/engine/src/local/command.rs` 的 tests：内置触发词和标题的全集；插件触发词和内置、用户表、前面的插件相等或互为前缀时丢掉，长度、字符、标题不合规时丢掉；参数匹配。
-- `crates/engine/src/session/tests.rs`：插件行顶替兜底行，0 行时兜底行还在且不再问；方向键和列表重建不丢、不再问，退一个字母再打回来重新问；换插件指令、换指令表清掉缓存，用户表有 `uu` 时 `uuid` 不生效；过期查询被拒；其他指令照旧带标题、从不问插件；开着个人上下文和词频调整时选中插件行只上屏这一行，`learn_candidate` 为 `None`，用户日志行数和词库文件字节不变，不能置顶固定删除。`types.rs`：`from_u8(14)`、往返覆盖 0–255、不属于任何谓词。`host/tests.rs`：`candidate_gloss_key(_, 14)` 为 `None`。
+- `crates/engine/src/session/tests.rs`：插件行顶替兜底行，0 行时兜底行还在且不再问；方向键和列表重建不丢、不再问，退一个字母再打回来重新问；换插件指令、换指令表清掉缓存，用户表有 `uu` 时 `uuid` 不生效；过期查询被拒；其他指令照旧带标题、从不问插件；开着个人上下文和词频调整时选中插件行只上屏这一行、不带诊断，用户日志行数和词库文件字节不变，不能置顶固定删除；插件行误进 `is_dictionary` 时这条会红（调词频在 `/` 模式下没有键，带回诊断），误进 `is_sentence_learning` 时行为上看不出来（`can_learn_sentence_candidate` 在本地模式一律拒绝），只由谓词单测守着。`types.rs`：`from_u8(14)`、往返覆盖 0–255、不属于任何谓词。`host/tests.rs`：`candidate_gloss_key(_, 14)` 为 `None`。
 - `crates/input-runtime/src/tests/plugin_commands.rs`（桌面 cfg，假的提供者）：有插件指令、没有提供者时 `/` 模式的视图和没有插件指令时逐个相同；打完触发词的那次派发里写行，代次只前进一次，ID 可选，引擎注释为空，插件注释是「标题 注释」；方向键、翻页、`all_candidates`、`apply_translations`、设置类调用不问；`NotRun` 下次派发再问，0 行不再问；暂停时不问；插件行上屏不进 AI 上文而 `/rq` 照进；注释截到 32 个码元且不切开代理对；`FinishOnFocusLoss` 在高亮插件行时上屏 `/uuid`，`Finish` 和标点上屏高亮行，高亮的不是插件行时和 `Finish` 相同。`tests.rs` 的选词路由表加上 `FinishOnFocusLoss`。
 - `crates/host-api/src/tests.rs`：页上有来源 14 时 `msime_client_translation_query` 为 `null`，在线翻译、英文释义、离线释义三种开法都一样，`/rq` 作对照照常请求；全角开着时插件行上屏半角、`plugin_row` 不出现在 JSON 里，同一会话的 `/rq` 照旧转全角。`tests/lifecycle_traces.rs`：命令 20 在插件行高亮时上屏 `/uuid`、记 `commit{FocusLoss}`，命令 9 上屏插件行。`lifecycle/tests.rs`：`FinishOnFocusLoss` 的类别。
 - `client-core` 的 `translation` 测试：`source_gets_no_gloss(14)`。
