@@ -1261,6 +1261,23 @@ std::filesystem::path builtin_sound_packs() {
   return std::filesystem::is_directory(directory, error) ? directory : std::filesystem::path();
 }
 
+// 桌面安装包随带的官方插件包（uuid 脚本插件、latex-symbols 短语表）：本程序所在目录（安装后是 Program Files 下的 Server 目录，只有管理员能写）的 plugin-packs，与 Server 写进会话选项的 plugin_packs（src/system/PluginPackRoot.h）、Tauri 的 builtin_plugin_packs 在 Windows 上取的是同一个目录。目录不在（开发运行）时也照样给出：不给的话 client-core 会去内置音效包旁边找，而内置音效包在普通用户可写的数据目录里。只取模块路径，不碰文件系统。
+std::filesystem::path official_plugin_packs() {
+  std::wstring buffer(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD length =
+        GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0)
+      return {};
+    if (length < buffer.size()) {
+      buffer.resize(length);
+      break;
+    }
+    buffer.resize(buffer.size() * 2);
+  }
+  return std::filesystem::path(buffer).parent_path() / L"plugin-packs";
+}
+
 // 输入法宿主选项（runtime-options.json）里的 user_data：输入法把停用了的脚本插件记在它下面的 script-health.json 里，与 Tauri 的 user_data 取的是同一项。还没有宿主选项或不是绝对路径时为空，授权页就不显示停用记录。读文件，只在 UI 线程之外调用。
 std::wstring runtime_user_data() {
   const auto options = runtime_options_document();
@@ -1274,7 +1291,7 @@ std::wstring runtime_user_data() {
   }
 }
 
-// 一次 msime_client_plugins 请求：插件目录是数据目录下的 plugins，与 Tauri 的 PluginsState 相同；sounds 为真时带上内置声音包的目录。script_page 为真时这是「插件」页自己的请求：本窗口有脚本插件的授权页，目录列出脚本包、导入接受脚本包，并带上输入法的 user_data 读停用记录；社区发布、辅助码方案这些别处的请求不带它，看不到脚本包。读写文件，只在 UI 线程之外调用。
+// 一次 msime_client_plugins 请求：插件目录是数据目录下的 plugins，与 Tauri 的 PluginsState 相同；sounds 为真时带上内置声音包的目录。script_page 为真时这是「插件」页自己的请求：本窗口有脚本插件的授权页，目录列出脚本包、导入接受脚本包，并带上输入法的 user_data 读停用记录；社区发布、辅助码方案这些别处的请求不带它，看不到脚本包。这两种请求都带上官方插件包的目录：目录要列出官方包，授权要从那里读官方脚本插件、核对它的哈希。读写文件，只在 UI 线程之外调用。
 Response plugins_call(JsonObject const &action, bool sounds, bool script_page = false) {
   const auto root = state_directory();
   if (root.empty() || !root.is_absolute())
@@ -1285,6 +1302,10 @@ Response plugins_call(JsonObject const &action, bool sounds, bool script_page = 
   request.SetNamedValue(L"sound_packs", packs.empty()
                                             ? JsonValue::CreateNullValue()
                                             : JsonValue::CreateStringValue(hstring(packs.wstring())));
+  if (sounds || script_page) {
+    if (const auto official = official_plugin_packs(); official.is_absolute())
+      request.SetNamedValue(L"plugin_packs", JsonValue::CreateStringValue(hstring(official.wstring())));
+  }
   if (script_page) {
     request.SetNamedValue(L"script_page", JsonValue::CreateBooleanValue(true));
     if (const auto user_data = runtime_user_data(); !user_data.empty())
@@ -15463,7 +15484,7 @@ private:
     dialog.Title(box_value(hstring(pg::grant_dialog_title(*pack))));
     if (pg::script_grant_state(*pack, pg::script_grant(plugin_grants(), pack->id)) ==
         pg::ScriptGrantState::stale)
-      form.Children().Append(account_message(std::wstring(pg::grant_dialog_stale), InfoBarSeverity::Warning));
+      form.Children().Append(account_message(pg::grant_dialog_stale(*pack), InfoBarSeverity::Warning));
     form.Children().Append(make_text(pg::grant_dialog_intro, 14, palette_.sub));
     // 提供 / 指令的插件：列出它的指令；调整授权时（已启用）每条后面接着现在的状态。
     if (pack->kind == L"script" && !pack->commands.empty()) {
@@ -15590,6 +15611,8 @@ private:
     if (!pack.author.empty())
       plugin_summary_row(info, 0xE77B, L"作者", L"", pack.author);
     plugin_summary_row(info, 0xE8D7, L"许可证", L"", pack.license);
+    if (pack.builtin)
+      plugin_summary_row(info, 0xE7B8, L"来源", L"", std::wstring(pg::script_builtin_note));
     plugin_summary_row(info, 0xE928, L"内容指纹",
                        L"插件内容的哈希前 12 位；内容一变，指纹就变，之前的授权随之作废。",
                        pg::short_hash(pack.content_hash));
@@ -15626,7 +15649,8 @@ private:
     }
 
     auto status = add_group(page, L"状态");
-    auto note = group_note(pg::script_status(state, active ? pg::script_health(grants, pack) : nullptr));
+    auto note =
+        group_note(pg::script_status(pack, state, active ? pg::script_health(grants, pack) : nullptr));
     A11y::SetLiveSetting(note, Automation::Peers::AutomationLiveSetting::Polite);
     status.Children().Append(note);
     auto control = toggle_control(L"启用", active,
@@ -15666,9 +15690,12 @@ private:
         L"脚本插件在输入法里的沙箱中运行，只能做你授予的事，读不到文件和网络，也不会在密码框里运行。"));
     safety.Children().Append(group_note(pg::script_residual_risk));
 
-    auto remove = button_control(L"删除", [this, pack] { remove_plugin_pack(pack); }, !plugins_busy_);
-    A11y::SetName(remove, hstring(L"删除" + pack.name));
-    plugin_action_block(add_group(page, L""), L"删除后插件的文件会从本机移除，它的授权也一起去掉。", {remove});
+    // 随输入法分发的官方插件不能删除，同共享页。
+    if (!pack.builtin) {
+      auto remove = button_control(L"删除", [this, pack] { remove_plugin_pack(pack); }, !plugins_busy_);
+      A11y::SetName(remove, hstring(L"删除" + pack.name));
+      plugin_action_block(add_group(page, L""), L"删除后插件的文件会从本机移除，它的授权也一起去掉。", {remove});
+    }
 
     // 授权对话框关上、撤销或换位之后，焦点回到刚才那个控件；它不在了（调整授权在停用后消失）就落到启用开关上。
     if (!indexing_ && plugin_pending_focus_.starts_with(L"script-")) {

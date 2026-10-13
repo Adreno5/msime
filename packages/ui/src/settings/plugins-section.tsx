@@ -51,6 +51,7 @@ export {
   SCRIPT_CAPABILITIES,
   ScriptGrantDialog,
   capabilityLabels,
+  SCRIPT_BUILTIN_NOTE,
   SCRIPT_COMMAND_MODE_NOTE,
   scriptCommandStatus,
   scriptGrantState,

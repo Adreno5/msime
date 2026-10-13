@@ -214,7 +214,7 @@ export function scriptMarker(
     case "ungranted":
       return "未授权";
     case "stale":
-      return "已更新，需要重新授权";
+      return scriptStaleLabel(pack);
     case "disabled":
       return "未启用";
     case "enabled": {
@@ -228,6 +228,14 @@ export function scriptMarker(
 /** 脚本插件在 `/` 指令里声明的指令（清单 `[[script.commands]]`），按清单顺序；不提供指令的插件为空。 */
 export function scriptCommands(pack: PluginPackage): ScriptCommand[] {
   return pack.kind === "script" ? ((pack.commands ?? []) as ScriptCommand[]) : [];
+}
+
+/** 随输入法分发的官方脚本插件（`builtin` 为真）详情里「来源」一行：它不能删除，和导入的插件一样默认不运行。Windows 原生设置应用（`PluginPageModel.h`）用同一句。 */
+export const SCRIPT_BUILTIN_NOTE = "随输入法安装和更新，不能删除；需要你授权后才会运行。";
+
+/** 授权之后包的内容变了时的标记。内置插件的内容只会随输入法更新而变，说法跟着改。 */
+export function scriptStaleLabel(pack: Pick<PluginPackage, "builtin">): string {
+  return pack.builtin ? "已随输入法更新，需要重新授权" : "已更新，需要重新授权";
 }
 
 /** / 指令关着时，提供指令的插件详情里的说明，后面跟着「打开 / 指令」按钮。授权本身从不改这个开关。 */
@@ -373,7 +381,7 @@ export function ScriptGrantDialog({
         </h2>
         {stale && (
           <p className={dialogStyle.warning} role="status">
-            已更新，需要重新授权：这个插件的内容和你上次授权时不同，之前的授权已经作废。
+            {scriptStaleLabel(pack)}：这个插件的内容和你上次授权时不同，之前的授权已经作废。
           </p>
         )}
         <p className="m-0 leading-relaxed text-secondary">
@@ -492,7 +500,7 @@ export function ScriptPluginDetailView({
   const risk = scriptResidualRisk(platform);
   const stateText: Record<ScriptGrantState, string> = {
     ungranted: "还没有授权，不会运行。",
-    stale: "已更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。",
+    stale: `${scriptStaleLabel(pack)}：插件的内容和授权时不同，之前的授权已经作废，不会运行。`,
     enabled: "已启用。",
     disabled: "已停用，不会运行。",
   };
@@ -510,6 +518,11 @@ export function ScriptPluginDetailView({
     <>
       <PluginViewHeader title={pack.name} onBack={onBack} />
       <PluginInfoGroup pack={pack} kindLabel="脚本插件（实验）">
+        {pack.builtin && (
+          <SummaryRow title="来源" breakAnywhere>
+            {SCRIPT_BUILTIN_NOTE}
+          </SummaryRow>
+        )}
         <SummaryRow
           title="内容指纹"
           description="插件内容的哈希前 12 位；内容一变，指纹就变，之前的授权随之作废。"
@@ -620,22 +633,24 @@ export function ScriptPluginDetailView({
         </SettingsGroupNote>
         {risk && <SettingsGroupNote>{risk}</SettingsGroupNote>}
       </GroupList>
-      <GroupList>
-        <SettingsManagerBlock>
-          <SettingsManagerNote>
-            删除后插件的文件会从本机移除，它的授权也一起去掉。
-          </SettingsManagerNote>
-          <SettingsManagerActions>
-            <ActionButton
-              action={() => onRemove(pack)}
-              ariaBusy={working}
-              ariaLabel={`删除${pack.name}`}
-              disabled={working}
-              label="删除"
-            />
-          </SettingsManagerActions>
-        </SettingsManagerBlock>
-      </GroupList>
+      {!pack.builtin && (
+        <GroupList>
+          <SettingsManagerBlock>
+            <SettingsManagerNote>
+              删除后插件的文件会从本机移除，它的授权也一起去掉。
+            </SettingsManagerNote>
+            <SettingsManagerActions>
+              <ActionButton
+                action={() => onRemove(pack)}
+                ariaBusy={working}
+                ariaLabel={`删除${pack.name}`}
+                disabled={working}
+                label="删除"
+              />
+            </SettingsManagerActions>
+          </SettingsManagerBlock>
+        </GroupList>
+      )}
       {dialog && (
         <ScriptGrantDialog
           pack={pack}

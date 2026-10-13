@@ -289,11 +289,23 @@ int main() {
   check(script_marker(scripts[7], &grants, running_script_ids(&grants, scripts)) == L"未启用", "disabled");
   ScriptGrants empty;
   check(script_marker(scripts[0], &empty, {}) == L"未授权", "ungranted");
-  check(script_status(ScriptGrantState::enabled, script_health(&grants, scripts[7])) ==
+  check(script_status(scripts[7], ScriptGrantState::enabled, script_health(&grants, scripts[7])) ==
             L"已启用。运行太慢，输入法已停用它，重新授权或重启输入法后恢复。" &&
-            script_status(ScriptGrantState::stale, nullptr) ==
+            script_status(scripts[9], ScriptGrantState::stale, nullptr) ==
                 L"已更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。",
         "status lines");
+  // 随输入法分发的官方插件：内容只会随输入法更新而变，标记、状态和授权对话框都这样说；共享页用同一句「来源」。
+  auto official = scripts[9];
+  official.builtin = true;
+  check(script_marker(official, &grants, running) == L"已随输入法更新，需要重新授权" &&
+            script_status(official, ScriptGrantState::stale, nullptr) ==
+                L"已随输入法更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。" &&
+            grant_dialog_stale(official) ==
+                L"已随输入法更新，需要重新授权：这个插件的内容和你上次授权时不同，之前的授权已经作废。" &&
+            grant_dialog_stale(scripts[9]) ==
+                L"已更新，需要重新授权：这个插件的内容和你上次授权时不同，之前的授权已经作废。" &&
+            script_builtin_note == L"随输入法安装和更新，不能删除；需要你授权后才会运行。",
+        "official script packs");
   check(script_order_note(-1, 8) == L"同时启用的脚本插件超过 8 个，这个插件排在第 8 个之后，不会运行。" &&
             script_order_note(0, 3) == L"第 1 位，共 3 个。多个插件按这个顺序依次处理同一件事。",
         "order notes");

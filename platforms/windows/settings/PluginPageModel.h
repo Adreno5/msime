@@ -928,6 +928,15 @@ inline std::ptrdiff_t running_position(std::vector<std::wstring> const &running,
   return found == running.end() ? -1 : found - running.begin();
 }
 
+// 随输入法分发的官方脚本插件（`builtin` 为真）详情里「来源」一行，与共享页的 `SCRIPT_BUILTIN_NOTE` 一字不差：它不能删除，和导入的插件一样默认不运行。
+inline constexpr std::wstring_view script_builtin_note =
+    L"随输入法安装和更新，不能删除；需要你授权后才会运行。";
+
+// 授权之后包的内容变了时的标记（`scriptStaleLabel`）。内置插件的内容只会随输入法更新而变，说法跟着改。
+inline std::wstring script_stale_label(Package const &pack) {
+  return pack.builtin ? L"已随输入法更新，需要重新授权" : L"已更新，需要重新授权";
+}
+
 // 列表里这一行的标记（`scriptMarker`）。
 inline std::wstring script_marker(Package const &pack, ScriptGrants const *grants,
                                   std::vector<std::wstring> const &running) {
@@ -935,7 +944,7 @@ inline std::wstring script_marker(Package const &pack, ScriptGrants const *grant
   case ScriptGrantState::ungranted:
     return L"未授权";
   case ScriptGrantState::stale:
-    return L"已更新，需要重新授权";
+    return script_stale_label(pack);
   case ScriptGrantState::disabled:
     return L"未启用";
   case ScriptGrantState::enabled:
@@ -1017,12 +1026,14 @@ inline constexpr std::wstring_view import_description =
     L"数据插件只含音频、指令模板等数据；脚本插件（实验）带可执行代码，导入后要经授权才会运行。每个包须声明许可证";
 
 // 详情「状态」里的一句：授权状态，启用时再接输入法停用它的原因（停用原因只在启用时显示）。
-inline std::wstring script_status(ScriptGrantState state, ScriptHealth const *health) {
+inline std::wstring script_status(Package const &pack, ScriptGrantState state,
+                                  ScriptHealth const *health) {
   switch (state) {
   case ScriptGrantState::ungranted:
     return L"还没有授权，不会运行。";
   case ScriptGrantState::stale:
-    return L"已更新，需要重新授权：插件的内容和授权时不同，之前的授权已经作废，不会运行。";
+    return script_stale_label(pack) +
+           L"：插件的内容和授权时不同，之前的授权已经作废，不会运行。";
   case ScriptGrantState::disabled:
     return L"已停用，不会运行。";
   case ScriptGrantState::enabled:
@@ -1098,8 +1109,10 @@ inline std::vector<std::wstring> grant_dialog_initial(Package const &pack, Scrip
 
 inline std::wstring grant_dialog_title(Package const &pack) { return L"授权「" + pack.name + L"」"; }
 
-inline constexpr std::wstring_view grant_dialog_stale =
-    L"已更新，需要重新授权：这个插件的内容和你上次授权时不同，之前的授权已经作废。";
+// 授权对话框开头的提醒：这次授权给的是变过的内容。
+inline std::wstring grant_dialog_stale(Package const &pack) {
+  return script_stale_label(pack) + L"：这个插件的内容和你上次授权时不同，之前的授权已经作废。";
+}
 inline constexpr std::wstring_view grant_dialog_intro =
     L"脚本插件是第三方代码，会在输入法里运行。只勾选你愿意让它做的事；没有勾选的，它一律做不到。在密码框和隐私输入框里它不会运行。";
 inline constexpr std::wstring_view grant_dialog_no_permissions =

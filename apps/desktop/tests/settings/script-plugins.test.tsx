@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   PluginsSection,
+  SCRIPT_BUILTIN_NOTE,
   ScriptGrantDialog,
   SettingsPage,
   defaultPluginPreferences,
@@ -695,4 +696,50 @@ test("with the slash mode off the detail explains it and only the button turns i
   expect(onChange).not.toHaveBeenCalled();
   fireEvent.click(within(commands).getByRole("button", { name: "打开 / 指令" }));
   expect(onLocalMode).toHaveBeenCalledWith("command");
+});
+
+test("an official script pack says it ships with the input method, cannot be removed and runs only once granted", async () => {
+  const official = script({
+    id: "uuid",
+    name: "UUID",
+    builtin: true,
+    hooks: ["command"],
+    permissions: ["provide_commands"],
+    commands: [{ trigger: "uuid", title: "UUID" }],
+    content_hash: NEW_HASH,
+  } as Partial<PluginPackage> & Pick<PluginPackage, "id">);
+  const client = fakeClient({
+    catalog: vi.fn(async () => ({ packages: [official], issues: [] })),
+    // 授权给的是上一个版本的内容：内置插件只会随输入法更新而变。
+    scriptGrants: vi.fn(async () =>
+      grants({
+        plugins: [{ id: "uuid", hash: HASH, enabled: true, granted: ["provide_commands"] }],
+      }),
+    ),
+  });
+  renderSection(client);
+  const list = await screen.findByLabelText("已安装的插件");
+  const row = await within(list).findByRole("button", { name: /UUID/ });
+  await waitFor(() => expect(row.textContent).toContain("已随输入法更新，需要重新授权"));
+  fireEvent.click(row);
+  await screen.findByRole("heading", { name: "UUID" });
+  const info = screen.getByRole("region", { name: "信息" });
+  expect(within(info).getByText(SCRIPT_BUILTIN_NOTE)).toBeTruthy();
+  expect(screen.getByText(/已随输入法更新，需要重新授权：插件的内容和授权时不同/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "删除UUID" })).toBeNull();
+  expect(client.remove).not.toHaveBeenCalled();
+});
+
+test("an imported script pack keeps its delete button and the plain update wording", async () => {
+  renderSection(
+    fakeClient({
+      scriptGrants: vi.fn(async () =>
+        grants({ plugins: [{ id: "pangu", hash: NEW_HASH, enabled: true, granted: [] }] }),
+      ),
+    }),
+  );
+  await openScript("中英文之间加空格");
+  expect(screen.queryByText(SCRIPT_BUILTIN_NOTE)).toBeNull();
+  expect(screen.getByRole("button", { name: "删除中英文之间加空格" })).toBeTruthy();
+  expect(screen.getByText(/^已更新，需要重新授权：插件的内容和授权时不同/)).toBeTruthy();
 });
