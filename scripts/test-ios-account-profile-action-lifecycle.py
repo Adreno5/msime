@@ -7,29 +7,29 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "platforms/ios/App/Sources/account/AccountProfileView.swift"
+TASK = ROOT / "platforms/ios/App/Sources/app/ViewRequestTask.swift"
 
 
 class IOSAccountProfileActionLifecycleContract(unittest.TestCase):
     def test_action_task_is_owned_and_invalidated(self):
         source = SOURCE.read_text(encoding="utf-8")
         self.assertRegex(source, r"@State private var operation: Task<Void, Never>\?")
-        self.assertRegex(source, r"@State private var actionGeneration = UUID\(\)")
+        self.assertRegex(source, r"@State private var request = ViewRequestGeneration\(\)")
         disappear = re.search(r"\.onDisappear \{(?P<body>.*?)\n    \}", source, re.S)
         self.assertIsNotNone(disappear, "profile page must invalidate account actions when it disappears")
         body = disappear.group("body")
-        self.assertIn("actionGeneration = UUID()", body)
+        self.assertIn("request.disappear()", body)
         self.assertIn("operation?.cancel()", body)
 
     def test_action_completion_is_bound_to_current_generation(self):
         source = SOURCE.read_text(encoding="utf-8")
-        self.assertRegex(source, re.compile(r"let id = UUID\(\).*?actionGeneration = id", re.S))
-        self.assertRegex(source, r"operation = Task \{")
-        task = re.search(r"operation = Task \{(?P<body>.*?)\n    \}", source, re.S)
-        self.assertIsNotNone(task, "account action task must be stored for cancellation")
-        body = task.group("body")
-        self.assertIn("actionGeneration == id", body)
-        self.assertIn("operation = nil", body)
-        self.assertIn("onSignedOut()", body)
+        perform = source.split("private func perform(", 1)[1].split("private func startLoad()", 1)[0]
+        self.assertIn("ViewRequestTask.run(request: $request, busy: $busy, message: $actionMessage,", perform)
+        self.assertIn("pending: $operation", perform)
+        self.assertIn("isCancellation: AccountRequestPolicy.isCancellation", perform)
+        self.assertIn("try request.checkCurrent(id)", perform)
+        self.assertIn("onSignedOut()", perform)
+        self.assertIn("try request.wrappedValue.checkCurrent(id)", TASK.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
