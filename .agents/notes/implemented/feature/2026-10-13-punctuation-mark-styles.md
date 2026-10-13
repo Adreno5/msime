@@ -43,14 +43,14 @@ Status: implemented
 - 宿主画键面、做补全、输出英文模式下的中文标点时都读这个字段，不自己解析偏好。
 
 **宿主。** 各宿主的表只做加法。
-- macOS：`MSIMEPunctuationPairs` 加『』〖〗；改回前引号认」』；空格转换反查加这几个字；`PairedPunctuation.h` 的 `paired_closing_for_key` 按 tracker 栈顶在两组后半个里挑。
+- macOS：`MSIMEPunctuationPairs` 加『』〖〗；改回前引号认」』，但只在按的是 `'` `"` 时改（`MSIMECornerQuoteKey`）；按键出的「『只在同样的键上补全；空格转换反查加这几个字；`PairedPunctuation.h` 的 `paired_closing_for_key` 按 tracker 栈顶在两组后半个里挑。
 - Linux（IBus 与 Fcitx5）：`normalize_punctuation_pair` 按文本末尾实际是哪一组就补哪一组；跨过同 macOS；`SmartPunctuationSpace.h` 的反查加这几个字。
 - 三个桌面宿主的英文模式中文标点经 `EnglishModeOutput.h`，由新的 `PunctuationMarks` 参数决定出哪一组。
 - Windows TIP：`GetPunctuation` 查表后经 `Global::StyledPunctuation` 换字，交替与嵌套仍由原表维护。样式由 Server 经新的 Worker 帧 `PunctuationMarksChanged`（31，载荷 `q<0|1>b<0|1>`）推来，追加在所有旧帧之后。成对表、跨过、改回前引号（`ReopenedPairedQuote`）和 `SmartPunctuationAsciiFor` 都认新字。
 - iOS、Android、HarmonyOS 的键面按 View 的样式画：
   - `'` 画「，`"` 画『，`[` `]` 画〖〗；
   - 中文 123 层原样插入的 “” 两个键在直角样式下换成「」，这两个键代表首选引号，所以不按 ASCII 键位对应；
-  - 成对补全、改回前引号和跨过都认新字。
+  - 成对补全、改回前引号和跨过都认新字。鸿蒙的 `PairedPunctuationPolicy.completion` 带上按下的键，只补这个键自己的前半个。
 
 **设置入口。** 两项都紧跟在「中文标点」之后：
 - 共享 React 设置页：桌面放在「标点」组，鸿蒙手机收在「更多选项」里；
@@ -64,7 +64,7 @@ Status: implemented
 - 服务端：字段表在 msime-cloud 的 `internal/account/preferences_fields.json`，需要那边单独加两个 `"type": "string"` 字段。没加之前，客户端上传前会把这两个键过滤掉，不报错，只是不同步。
 
 **不受影响的部分。**
-- 注音的大千键位自己占着 `[` `]`，出「」，所以 `bracket_style` 对注音的 `[` `]` 不起作用。
+- 注音的大千键位自己占着 `[` `]` `{` `}`，出「」『』，所以 `bracket_style` 对注音的这几个键不起作用。这几个字和直角引号样式下 `'` `"` 出的字一模一样，宿主只看上屏的字就会认错：`]` 出的」被当成要改回的后引号，结果再开一对；`[` 出的「被补上」，而宿主只在 `'` 上跨过」，再按 `]` 就打成「内容」」。所以 macOS 改回前引号和补全都看按下的键，鸿蒙的补全也看按下的键；iOS、Android 的注音标点在补全之前就提前返回；Linux 本来就按键选补全方式。这也让 macOS 上注音 `[` 不再自动补」，与其他宿主一致。
 - 韩文、越南文、藏文写 ASCII，不受影响。
 - 词库、快捷短语、剪贴板、语音、AI 和翻译上屏的文字不改写。
 
@@ -107,7 +107,7 @@ Status: implemented
 - **Linux 没有偏好目录时。** 繁体开关只是内存覆盖（`traditional_output_override`），引擎看不到，所以 `corner_when_traditional` 不随它变。这只在开发和测试环境出现。
 - **服务端字段表没加时同步静默不生效。** msime-cloud 加字段之前，这两个键不会同步。
 - **网页引擎（`crates/engine-wasm`）没有标点设置界面**，保持缺省弯引号。
-- **iOS 工程文件。** iOS 的 `project.pbxproj` 没有重新生成并提交：重新生成会顺带加入十几个与本篇无关、早已缺漏的文件。`project.yml` 是权威，iOS CI 和本地测试都先跑 `xcodegen generate`。
+- **macOS 进程内设置窗口没有这两项。** 设置应用找不到或启动失败时退回的进程内窗口（`desktop_route_*`），「标点与字符」卡片不列引号样式和方头括号样式，与 `caps_lock_ascii_punctuation`、`second_third_candidate`、`chinese_english_spacing` 一样只在设置应用里改。
 - **重访信号。** 出现第三组需要切换的字（例如日文方案的 `,` → 、），就该重新评估逐键映射表这条路。W#874 已经把日文标点作为单独的事来做。
 
 ## Verification
