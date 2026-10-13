@@ -607,9 +607,12 @@ impl LifecycleState {
         self.with_scripts(ScriptSet::focus_in);
     }
 
-    /// 要交给引擎的插件指令（按戳重读授权之后），见 `ScriptSet::plugin_commands`。移动端恒为空。
-    pub(crate) fn plugin_commands(&self) -> Vec<msime_input_runtime::PluginCommand> {
-        self.with_scripts(ScriptSet::plugin_commands)
+    /// 要交给引擎的插件指令（按戳重读授权之后），见 `ScriptSet::plugin_commands`。移动端恒为空。脚本集合正借给别处时为 `None`，调用方保留引擎现有的那一份，而不是把它清空。
+    pub(crate) fn plugin_commands(&self) -> Option<Vec<msime_input_runtime::PluginCommand>> {
+        self.scripts
+            .try_borrow_mut()
+            .ok()
+            .map(|mut scripts| scripts.plugin_commands())
     }
 
     /// 测量和测试直接对着脚本集合投递。只有桌面上有这些测试。
@@ -1115,10 +1118,13 @@ impl crate::HostSession {
 
     /// 让引擎的插件指令跟上脚本授权：在聚焦时插件表刷新的最后、以及会话刚选择加入生命周期时调用。没有选择加入的会话（移动端宿主、设置应用、MCP）什么都不做，引擎的插件指令保持空表。授权读出来的表和 `options` 里记着的一样时什么都不交；换表失败只报告，不让聚焦失败（同 `refresh_plugin_tables`），照样记进 `options`，重建的引擎从这里开始。
     pub(crate) fn refresh_plugin_commands(&mut self) {
-        let Some(state) = self.lifecycle.as_deref() else {
+        let Some(commands) = self
+            .lifecycle
+            .as_deref()
+            .and_then(LifecycleState::plugin_commands)
+        else {
             return;
         };
-        let commands = state.plugin_commands();
         if commands == self.options.plugin_commands {
             return;
         }
