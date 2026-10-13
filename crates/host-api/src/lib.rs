@@ -348,6 +348,17 @@ fn engine_sentence_association(
     }
 }
 
+/// 引擎的引号与方头括号样式，由 client-core 从偏好解析（`corner_when_traditional` 在那里按繁体开关定下）。View 报告的是同一个解析结果。
+fn apply_punctuation_marks(
+    options: &mut EngineOptions,
+    preferences: &msime_client_core::preferences::Preferences,
+) {
+    let marks = msime_client_core::punctuation::punctuation_marks(preferences);
+    options.corner_quotes = marks.quotes == msime_client_core::punctuation::QuoteMarks::Corner;
+    options.hollow_brackets =
+        marks.brackets == msime_client_core::preferences::BracketStyle::Hollow;
+}
+
 /// The switch the Engine is handed. Windows turns the punctuation switch on whenever punctuation is locked to Chinese, while the Engine drops Chinese punctuation whenever its switch is off, so a lock to Chinese has to carry the switch with it.
 fn engine_chinese_punctuation(enabled: bool, lock: u8) -> bool {
     enabled || lock == 1
@@ -660,6 +671,8 @@ impl HostSession {
         options.punctuation_lock = punctuation_lock_code(preferences.punctuation_lock);
         options.chinese_punctuation =
             engine_chinese_punctuation(preferences.chinese_punctuation, options.punctuation_lock);
+        // 繁体输出开关一变，`corner_when_traditional` 解析出的样式也跟着变；两者都是偏好，都会在空闲时走到这里重建。
+        apply_punctuation_marks(&mut options, &preferences);
         // Build and validate first; errors leave the original session usable.
         let mut engine = Session::new(&options).map_err(|e| e.to_string())?;
         if self.punctuation_override.is_some() || self.punctuation_lock_override.is_some() {
@@ -726,6 +739,10 @@ impl HostSession {
             .map_err(|e| e.to_string())?;
         self.runtime
             .set_settled_rerank_enabled(preferences.sentence_association.neural_desktop);
+        self.runtime
+            .set_punctuation_marks(msime_client_core::punctuation::punctuation_marks(
+                &preferences,
+            ));
         // The keyboard model follows its switch the same way, but is dropped rather than idled while off: it is the one that runs inside every keystroke.
         if options.sentence_association.neural_keyboard != self.runtime.has_reranker() {
             self.runtime.set_reranker(ffi::keyboard_reranker(
@@ -1681,6 +1698,7 @@ impl HostOptions {
             corner_quotes: false,
             hollow_brackets: false,
         };
+        apply_punctuation_marks(&mut options, &self.preferences);
         // 建会话没有地方带原因，表不能用时按小鹤建起来就够了；之后的偏好变更会在诊断里报告原因。
         let _ = apply_shuangpin_profile(&mut options, &self.preferences);
         apply_local_mode_resource_gates(&mut options, edition);

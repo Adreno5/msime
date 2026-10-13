@@ -30,8 +30,7 @@ const CORNER_SINGLE_QUOTE: (&str, &str) = ("「", "」");
 const HOLLOW_BRACKETS: [(u8, &str); 2] = [(b'[', "〖"), (b']', "〗")];
 
 /// 引号键出哪一组字。`Corner` 下 `'` 出「」、`"` 出『』，按键对应，不按语义对应。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QuoteMarks {
     #[default]
     Curly,
@@ -39,8 +38,7 @@ pub enum QuoteMarks {
 }
 
 /// `[` `]` 出实心【】还是空心〖〗。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BracketMarks {
     #[default]
     Solid,
@@ -48,7 +46,7 @@ pub enum BracketMarks {
 }
 
 /// 已经解析好的标点样式：宿主从偏好算出它（`corner_when_traditional` 在那之前就按繁体开关定成两者之一），引擎只认这两种值。缺省就是契约第 1 版的表。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PunctuationMarks {
     pub quotes: QuoteMarks,
     pub brackets: BracketMarks,

@@ -7932,3 +7932,25 @@ fn the_reranker_leaves_mixed_japanese_rows_alone() {
 }
 
 mod facts;
+
+/// View 报告宿主设下的标点样式，缺省是弯引号、实心括号；换样式不动组字和候选。
+#[test]
+fn view_reports_the_applied_punctuation_marks() {
+    let mut runtime = runtime();
+    let json = serde_json::to_value(runtime.view()).unwrap();
+    assert_eq!(
+        json["punctuation_marks"],
+        serde_json::json!({ "quotes": "curly", "brackets": "solid" })
+    );
+    let before = runtime.view().generation;
+    runtime.set_punctuation_marks(PunctuationMarks {
+        quotes: QuoteMarks::Corner,
+        brackets: msime_client_core::preferences::BracketStyle::Hollow,
+    });
+    let view = runtime.view();
+    assert_eq!(view.generation, before);
+    assert_eq!(
+        serde_json::to_value(&view).unwrap()["punctuation_marks"],
+        serde_json::json!({ "quotes": "corner", "brackets": "hollow" })
+    );
+}

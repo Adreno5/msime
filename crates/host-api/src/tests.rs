@@ -14884,3 +14884,197 @@ mod lifecycle_traces;
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 mod script_plugins;
+
+fn punctuation_commit(handle: u64, key: u8) -> String {
+    read(msime_client_punctuation(handle, key))["value"]["commit"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// 引号与方头括号样式随偏好在空闲时重建生效，View 报告的样式和引擎出的字一致。
+#[test]
+fn punctuation_marks_follow_preferences_and_the_view_reports_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = test_host(dir.path());
+    read(msime_client_focus(handle, true));
+    let view = read(msime_client_view(handle))["value"].clone();
+    assert_eq!(
+        view["punctuation_marks"],
+        json!({ "quotes": "curly", "brackets": "solid" })
+    );
+    assert_eq!(punctuation_commit(handle, b'\''), "‘");
+    assert_eq!(punctuation_commit(handle, b'['), "【");
+
+    let corner = Preferences {
+        quote_style: msime_client_core::preferences::QuoteStyle::Corner,
+        bracket_style: msime_client_core::preferences::BracketStyle::Hollow,
+        ..chinese_preferences()
+    };
+    assert_eq!(update(handle, 1, &corner)["value"]["deferred"], false);
+    assert_eq!(
+        read(msime_client_view(handle))["value"]["punctuation_marks"],
+        json!({ "quotes": "corner", "brackets": "hollow" })
+    );
+    // 重建会话重置交替，所以从前半个开始。
+    assert_eq!(punctuation_commit(handle, b'\''), "「");
+    assert_eq!(punctuation_commit(handle, b'"'), "『");
+    assert_eq!(punctuation_commit(handle, b'\''), "」");
+    assert_eq!(punctuation_commit(handle, b'"'), "』");
+    assert_eq!(punctuation_commit(handle, b'['), "〖");
+    assert_eq!(punctuation_commit(handle, b']'), "〗");
+    assert_eq!(punctuation_commit(handle, b','), "，");
+    read(msime_client_destroy(handle));
+}
+
+/// 组字中改样式，这次组字结束前仍是旧样式；结束组字的那次转换里重建，之后按新样式出字。
+#[test]
+fn punctuation_marks_wait_for_the_composition_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = test_host(dir.path());
+    read(msime_client_focus(handle, true));
+    read(msime_client_character(handle, b'U', true));
+    for byte in b"4e2d" {
+        read(msime_client_character(handle, *byte, false));
+    }
+    let corner = Preferences {
+        quote_style: msime_client_core::preferences::QuoteStyle::Corner,
+        ..chinese_preferences()
+    };
+    assert_eq!(update(handle, 1, &corner)["value"]["deferred"], true);
+    assert_eq!(
+        read(msime_client_view(handle))["value"]["punctuation_marks"]["quotes"],
+        "curly"
+    );
+    let committed = read(msime_client_command(handle, 9));
+    assert_eq!(committed["value"]["commit"], "中");
+    assert_eq!(
+        committed["value"]["view"]["punctuation_marks"]["quotes"],
+        "corner"
+    );
+    assert_eq!(punctuation_commit(handle, b'\''), "「");
+    read(msime_client_destroy(handle));
+}
+
+/// `corner_when_traditional`：繁体输出开着时是直角引号，关着时是弯引号；切换繁体开关就是改偏好，空闲时重建后样式跟着变。
+#[test]
+fn corner_when_traditional_follows_the_traditional_output_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    let simplified = Preferences {
+        quote_style: msime_client_core::preferences::QuoteStyle::CornerWhenTraditional,
+        ..chinese_preferences()
+    };
+    let handle = test_host_preferences(dir.path(), simplified.clone());
+    read(msime_client_focus(handle, true));
+    assert_eq!(
+        read(msime_client_view(handle))["value"]["punctuation_marks"]["quotes"],
+        "curly"
+    );
+    assert_eq!(punctuation_commit(handle, b'"'), "“");
+
+    let traditional = Preferences {
+        traditional_chinese_output: true,
+        ..simplified.clone()
+    };
+    assert_eq!(update(handle, 1, &traditional)["value"]["deferred"], false);
+    assert_eq!(
+        read(msime_client_view(handle))["value"]["punctuation_marks"]["quotes"],
+        "corner"
+    );
+    assert_eq!(punctuation_commit(handle, b'"'), "『");
+
+    assert_eq!(update(handle, 2, &simplified)["value"]["deferred"], false);
+    assert_eq!(punctuation_commit(handle, b'"'), "“");
+    read(msime_client_destroy(handle));
+}
+
+/// 固定为中文标点时英文模式下也写中文标点，样式同样生效。
+#[test]
+fn punctuation_marks_apply_in_english_mode_under_the_chinese_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = test_host_preferences(
+        dir.path(),
+        Preferences {
+            punctuation_lock: msime_client_core::preferences::PunctuationLock::Chinese,
+            quote_style: msime_client_core::preferences::QuoteStyle::Corner,
+            ..chinese_preferences()
+        },
+    );
+    read(msime_client_focus(handle, true));
+    read(msime_client_set_english_mode(handle, true));
+    assert_eq!(
+        read(msime_client_punctuation_with_context(handle, b'\'', 0))["value"]["commit"],
+        "「"
+    );
+    read(msime_client_destroy(handle));
+}
+
+/// 关掉成对补全时直角引号照样交替，《》照样嵌套。
+#[test]
+fn unpaired_corner_quotes_still_alternate() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = test_host_preferences(
+        dir.path(),
+        Preferences {
+            paired_punctuation: false,
+            quote_style: msime_client_core::preferences::QuoteStyle::Corner,
+            bracket_style: msime_client_core::preferences::BracketStyle::Hollow,
+            ..chinese_preferences()
+        },
+    );
+    read(msime_client_focus(handle, true));
+    let marks: Vec<String> = b"''\"\"<<>>[]"
+        .iter()
+        .map(|&key| punctuation_commit(handle, key))
+        .collect();
+    assert_eq!(
+        marks,
+        ["「", "」", "『", "』", "《", "〈", "〉", "》", "〖", "〗"]
+    );
+    read(msime_client_destroy(handle));
+}
+
+/// 中文标点后按空格转换认直角引号和空心括号：它们转回按下的那个键。
+#[test]
+fn space_convert_turns_corner_quotes_and_hollow_brackets_back_to_ascii() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = test_host_preferences(
+        dir.path(),
+        Preferences {
+            smart_punctuation: true,
+            smart_punctuation_space_convert: true,
+            quote_style: msime_client_core::preferences::QuoteStyle::Corner,
+            bracket_style: msime_client_core::preferences::BracketStyle::Hollow,
+            ..chinese_preferences()
+        },
+    );
+    for (key, mark) in [
+        (b'\'', "「"),
+        (b'\'', "」"),
+        (b'"', "『"),
+        (b'"', "』"),
+        (b'[', "〖"),
+        (b']', "〗"),
+    ] {
+        let text = json!({
+            "ascii": key, "commit": mark, "timestamp_ms": 1_000,
+            "editor_generation": 3, "auto_closed_pair": false
+        })
+        .to_string();
+        // SAFETY: the buffer outlives the call.
+        let armed =
+            read(unsafe { msime_client_smart_punctuation_arm(handle, text.as_ptr(), text.len()) });
+        assert_eq!(armed["value"]["space"]["ascii"], key, "{mark}");
+        let text = json!({
+            "character": 32, "preceding": mark, "timestamp_ms": 1_100,
+            "editor_generation": 3, "repeat": null, "space": armed["value"]["space"]
+        })
+        .to_string();
+        // SAFETY: the buffer outlives the call.
+        let decided = read(unsafe {
+            msime_client_smart_punctuation_decide(handle, text.as_ptr(), text.len())
+        });
+        assert_eq!(decided["value"]["space_ascii"], key, "{mark}");
+    }
+    read(msime_client_destroy(handle));
+}

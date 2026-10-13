@@ -3,14 +3,16 @@
 use crate::preferences::{BracketStyle, Preferences, PunctuationLock, QuoteStyle};
 
 /// 解析后的引号样式：`corner_when_traditional` 已按繁体开关定成两者之一。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum QuoteMarks {
+    #[default]
     Curly,
     Corner,
 }
 
-/// 中文标点下引号键和方头括号键实际出哪一组字。引擎、View 和 Windows Server 都只认这两种确定的值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 中文标点下引号键和方头括号键实际出哪一组字。引擎、View 和 Windows Server 都只认这两种确定的值；View 里序列化成 `{"quotes": "curly"|"corner", "brackets": "solid"|"hollow"}`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct PunctuationMarks {
     pub quotes: QuoteMarks,
     pub brackets: BracketStyle,

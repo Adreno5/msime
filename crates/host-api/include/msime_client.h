@@ -612,6 +612,7 @@ char *msime_client_set_candidate_page_size(uint64_t session, uint8_t size);
 char *msime_client_character(uint64_t session, uint8_t ascii, bool shift);
 // Explicit native punctuation: finish the highlighted composition, then translate.
 // Invalid non-punctuation bytes fail without modifying the session.
+/* 中文标点下 '\'' 与 '"' 出哪种引号、'[' ']' 出哪种方头括号由偏好 quote_style、bracket_style 决定（契约 shared/contracts/punctuation 的 styles 段）。View.punctuation_marks 报告引擎已应用的样式：{"quotes": "curly"|"corner", "brackets": "solid"|"hollow"}，corner_when_traditional 已按繁体输出开关解析成 curly 或 corner。宿主做成对补全、跨过后半个、空格转换、英文模式下的中文标点和画触屏键面时读它，不自己解析偏好；改了偏好要等空闲重建后它才变，和引擎出字同步。 */
 char *msime_client_punctuation(uint64_t session, uint8_t ascii);
 /* Resolve native punctuation using the immediately preceding Unicode scalar
  * supplied by the platform editor. Zero means unavailable. Only the scalar is

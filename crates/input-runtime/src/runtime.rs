@@ -89,6 +89,7 @@ pub struct Runtime<E: InputEngine = Session> {
     pub(crate) engine_order: Vec<usize>,
     pub(crate) snapshot_valid: bool,
     pub(crate) character_width: CharacterWidth,
+    pub(crate) punctuation_marks: PunctuationMarks,
     pub(crate) touch_keyboard_layout: TouchKeyboardLayout,
     /// 整个候选列表只给出一个词的完整五笔码，是否在第四键提交。
     ///
@@ -654,6 +655,7 @@ impl<E: InputEngine> Runtime<E> {
             cached,
             snapshot_valid: true,
             character_width: CharacterWidth::Halfwidth,
+            punctuation_marks: PunctuationMarks::default(),
             touch_keyboard_layout,
             wubi_auto_commit_unique: true,
             phrase_preedit: false,
@@ -749,6 +751,11 @@ impl<E: InputEngine> Runtime<E> {
 
     pub fn set_character_width(&mut self, width: CharacterWidth) {
         self.character_width = width;
+    }
+
+    /// 记下引擎当前用的标点样式，只用于在 View 里报告；出字由引擎按自己的选项决定。宿主在建会话和每次重建引擎后设它。
+    pub fn set_punctuation_marks(&mut self, marks: PunctuationMarks) {
+        self.punctuation_marks = marks;
     }
 
     /// Put text into the committed context without typing it.
@@ -857,6 +864,7 @@ impl<E: InputEngine> Runtime<E> {
             nine_key_strokes: self.cached.nine_key_strokes.clone(),
             touch_keyboard_layout: self.touch_keyboard_layout,
             character_width: self.character_width,
+            punctuation_marks: self.punctuation_marks,
             microsoft_shuangpin: self.cached.microsoft_shuangpin,
             shuangpin_profile: self.cached.shuangpin_profile.clone(),
             answered_by_pinyin_fallback: self.cached.answered_by_pinyin_fallback,
