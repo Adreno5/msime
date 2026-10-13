@@ -113,7 +113,7 @@ pub struct EngineOptions {
     pub chaizi_traditional_output: bool,
     /// The `/` mode's commands beyond the built-in ones. Rows the engine cannot use are dropped, and at most `local::command::TABLE_LIMIT` are kept.
     pub command_table: Vec<CommandTableEntry>,
-    /// 脚本插件在 `/` 模式里的指令，宿主算好哪些生效之后交来；`Session::set_plugin_commands` 实时替换，重建的会话从这里开始。引擎用不了的被丢弃（`local::command::usable_plugin_commands`）。只有桌面宿主会填，移动端永远是空表。
+    /// 脚本插件在 `/` 模式里的指令，宿主按执行顺序交来；`Session::set_plugin_commands` 实时替换，重建的会话从这里开始。哪些生效由引擎决定，用不了的被丢弃（`local::command::usable_plugin_commands`）。只有桌面宿主会填，移动端永远是空表。
     pub plugin_commands: Vec<PluginCommand>,
     /// The `@` mode's names and places, the user's own list. Entries the engine cannot use are dropped, and at most `local::mention::LIST_LIMIT` are kept.
     pub mention_entries: Vec<MentionEntry>,

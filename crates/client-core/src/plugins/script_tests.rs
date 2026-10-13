@@ -1145,7 +1145,9 @@ fn the_grants_view_keeps_the_order_and_the_capability_names() {
         granted,
     };
     let rewriting = capabilities(&["rewrite_commit", "read_commit"]);
+    let root = tempdir().unwrap();
     let view = script_grants::view(
+        root.path(),
         ScriptGrants {
             revision_epoch: 0,
             revision: 4,
@@ -1155,6 +1157,7 @@ fn the_grants_view_keeps_the_order_and_the_capability_names() {
             ],
         },
         None,
+        &[],
     );
     assert_eq!(view.revision, 4);
     // 文件里的顺序就是执行顺序，原样交给页面；能力名按 `Capability::ALL` 的顺序。
@@ -1176,6 +1179,7 @@ fn the_grants_view_keeps_the_order_and_the_capability_names() {
         ]
     );
     assert!(view.health.is_empty());
+    assert!(view.commands.is_empty());
 }
 
 /// 在 `/` 指令里给出候选的包：申请 `provide_commands`、声明 `command` 钩子，`commands` 是接在 `[script]` 后面的 `[[script.commands]]`。
@@ -1400,4 +1404,143 @@ fn every_builtin_trigger_is_reserved() {
             "{title}"
         );
     }
+}
+
+/// `id` 的指令插件清单，`commands` 是接在 `[script]` 后面的 `[[script.commands]]`。
+fn commander_named(id: &str, commands: &str) -> String {
+    manifest(
+        id,
+        "'provide_commands'",
+        &format!("abi = 1\nmodule = 'main.wasm'\nhooks = ['command']\n{commands}"),
+    )
+}
+
+/// 授权页和输入法算进来的是启用、授予了 `provide_commands`、清单能载入的插件，按执行顺序；状态按「用户指令表赢、插件先到先得」。
+#[test]
+fn granted_commands_and_their_states_follow_the_grants_and_the_user_table() {
+    let files = tempdir().unwrap();
+    let root = tempdir().unwrap();
+    let wasm = module(&[COMMAND_ROW]);
+    let provide = CapabilitySet::EMPTY.with(Capability::ProvideCommands);
+    let mut hashes = Vec::new();
+    for (id, commands) in [
+        ("first", command("uuid", "UUID")),
+        (
+            "second",
+            format!("{}{}", command("uuidx", "长"), command("sig", "签")),
+        ),
+        ("ungranted", command("abc", "甲")),
+        ("disabled", command("def", "乙")),
+        ("broken", command("ghi", "丙")),
+    ] {
+        hashes.push(import_pack(
+            files.path(),
+            root.path(),
+            id,
+            &commander_named(id, &commands),
+            &wasm,
+        ));
+    }
+    for (index, (id, enabled, granted)) in [
+        ("first", true, provide),
+        ("second", true, provide),
+        ("ungranted", true, CapabilitySet::EMPTY),
+        ("disabled", false, provide),
+        ("broken", true, provide),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        script_grants::set(root.path(), id, &hashes[index], enabled, granted).unwrap();
+    }
+    // 授权之后模块文件没了：清单载入不了，不算进来。
+    fs::remove_file(kind_directory(root.path(), PluginKind::Script).join("broken/main.wasm"))
+        .unwrap();
+    let grants = script_grants::read(root.path());
+    let granted = super::script_commands::granted_commands(root.path(), &grants);
+    let ids: Vec<&str> = granted.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["first", "second"]);
+    assert_eq!(granted[1].1.len(), 2);
+
+    // 用户的指令表包：`sig` 归用户。
+    let table = files.path().join("mine");
+    fs::create_dir_all(&table).unwrap();
+    fs::write(
+        table.join(MANIFEST_FILE),
+        "schema_version = 1\nkind = 'command_table'\nid = 'mine'\nname = '我的'\nversion = '1.0.0'\nlicense = 'MIT'\n[[commands]]\ntrigger = 'si'\ntitle = '我的'\ntemplate = '张三'\n",
+    )
+    .unwrap();
+    import(&table, root.path()).unwrap();
+    let user = super::script_commands::user_triggers(root.path(), &["mine".to_owned()]);
+    assert_eq!(user, ["si"]);
+    let view = script_grants::view(root.path(), grants, None, &user);
+    assert_eq!(
+        serde_json::to_value(&view.commands).unwrap(),
+        serde_json::json!([
+            {"id": "first", "trigger": "uuid", "title": "UUID", "status": "active"},
+            {"id": "second", "trigger": "uuidx", "title": "长", "status": "shadowed_by_plugin", "conflict_id": "first", "conflict": "uuid"},
+            {"id": "second", "trigger": "sig", "title": "签", "status": "shadowed_by_user_table", "conflict": "si"},
+        ])
+    );
+    // 没启用指令表时 `sig` 生效。
+    let view = script_grants::view(
+        root.path(),
+        script_grants::read(root.path()),
+        None,
+        &super::script_commands::user_triggers(root.path(), &[]),
+    );
+    assert_eq!(
+        view.commands[2].status,
+        super::script_commands::CommandStatus::Active
+    );
+}
+
+/// 只算执行顺序上会运行的前 `MAX_ENABLED_SCRIPTS` 个：排在后面的插件声明的指令不进来。
+#[test]
+fn only_the_scripts_the_input_method_runs_count() {
+    let files = tempdir().unwrap();
+    let root = tempdir().unwrap();
+    let wasm = module(&[COMMAND_ROW]);
+    let provide = CapabilitySet::EMPTY.with(Capability::ProvideCommands);
+    let ids: Vec<String> = (0..=limits::MAX_ENABLED_SCRIPTS)
+        .map(|index| format!("p{}", char::from(b'a' + index as u8)))
+        .collect();
+    for id in &ids {
+        let trigger = format!("{id}{id}");
+        let hash = import_pack(
+            files.path(),
+            root.path(),
+            id,
+            &commander_named(id, &command(&trigger, "T")),
+            &wasm,
+        );
+        // 准入按个数拒绝第 9 个；授权文件照样可以列着它（同一用户的程序能写），输入法只取前 8 个。
+        if script_grants::set(root.path(), id, &hash, true, provide).is_err() {
+            let mut grants = script_grants::read(root.path());
+            assert_eq!(grants.plugins.len(), limits::MAX_ENABLED_SCRIPTS);
+            grants.plugins.push(script_grants::ScriptGrant {
+                id: id.clone(),
+                hash,
+                enabled: true,
+                granted: provide,
+            });
+            let document = serde_json::json!({
+                "format_version": 1,
+                "revision": grants.revision + 1,
+                "plugins": grants.plugins.iter().map(|grant| serde_json::json!({
+                    "id": grant.id, "hash": grant.hash, "enabled": grant.enabled,
+                    "granted": grant.granted.iter().map(Capability::as_str).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            });
+            fs::write(
+                script_grants::document_path(root.path()),
+                serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    let granted =
+        super::script_commands::granted_commands(root.path(), &script_grants::read(root.path()));
+    assert_eq!(granted.len(), limits::MAX_ENABLED_SCRIPTS);
+    assert!(granted.iter().all(|(id, _)| id != ids.last().unwrap()));
 }

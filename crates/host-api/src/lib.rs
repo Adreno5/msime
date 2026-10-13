@@ -741,7 +741,7 @@ impl HostSession {
         Ok(fallback)
     }
 
-    /// 输入框获得焦点时，让 `/` 指令表、K 模式短语表、辅助码表和 `@` 名单跟上插件目录：设置页可能刚导入了表或改了名单。没有文件变动时什么都不读。换表失败只报告，不让聚焦失败。
+    /// 输入框获得焦点时，让 `/` 指令表、K 模式短语表、辅助码表、`@` 名单和脚本插件的 `/` 指令跟上插件目录：设置页可能刚导入了表、改了名单或改了授权。没有文件变动时什么都不读。换表失败只报告，不让聚焦失败。
     fn refresh_plugin_tables(&mut self) {
         let root = self.plugin_roots.installed.as_deref();
         let tables = plugin_tables::PluginTables::stamp(root, &self.options, &self.applied.plugins);
@@ -778,6 +778,8 @@ impl HostSession {
             }
         }
         self.plugin_tables = tables;
+        // 脚本插件的 `/` 指令跟着授权文件走，它有自己的戳（`ScriptSet` 按戳重读授权），不进上面的表戳。
+        self.refresh_plugin_commands();
     }
 
     /// 输入框获得焦点时，看设置应用是否在会话打开后装好（或移除）了日文、粤拼、注音、笔画的资源包和落定重排模型：只做几次 stat。词典路径有变就记下，等输入空闲时由 `apply_pending` 重建 Engine（重建时日文临时模式的开关按新路径重新判断）；落定重排模型的文件有变就起一个后台线程加载它（经 `sentence_model_settled` 的共享缓存），加载完之后由某次输入空闲的 `apply_pending` 换上。聚焦本身不读词典也不读模型文件。

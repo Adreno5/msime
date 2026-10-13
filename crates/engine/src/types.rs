@@ -1247,7 +1247,7 @@ pub struct CommandTableEntry {
     pub template: String,
 }
 
-/// 一条脚本插件指令（`/` 模式）：插件在清单里声明的触发词和标题。宿主算好哪些插件指令生效之后交给引擎；引擎仍然丢掉它用不了的（见 `local::command::usable_plugin_commands`），不照单全收。
+/// 一条脚本插件指令（`/` 模式）：插件在清单里声明的触发词和标题。宿主把会运行的插件声明的指令按执行顺序交给引擎，引擎按 `local::command::usable_plugin_commands` 决定哪些生效（用户指令表赢、插件先到先得），不照单全收。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
     /// 2..=16 个小写 ASCII 字母，即 `/` 之后输入的触发词。

@@ -5,13 +5,27 @@
 use crate::*;
 use key_sound::{KeyClass, PluginRoots, SessionSound};
 use msime_client_core::plugins::mentions::{MentionEntry, MentionStore};
+use msime_client_core::plugins::{self, PluginFailure};
 #[cfg(any(
     target_os = "macos",
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
-use msime_client_core::plugins::script_grants;
-use msime_client_core::plugins::{self, PluginFailure};
+use msime_client_core::plugins::{script_commands, script_grants};
+
+/// 授权页说明插件指令的状态时用的用户指令表：状态目录 `state_root`（插件根目录的上一级，偏好文件也在这里）里偏好启用的指令表包，和输入法交给引擎的是同一份。偏好读不出时按没有启用任何指令表说明。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+fn user_command_triggers(state_root: &str, root: &Path) -> Vec<String> {
+    let enabled = msime_client_core::preferences::PreferencesStore::new(state_root)
+        .load()
+        .map(|snapshot| snapshot.preferences.plugins.command_tables)
+        .unwrap_or_default();
+    script_commands::user_triggers(root, &enabled)
+}
 
 /// 拿会话的声音设置执行 `action`。未知会话、错线程、重入调用和 panic（不能越过 C 边界）都返回 false。会话开了生命周期的 FEEDBACK 时同样返回 false、什么都不做：声音由核心驱动，宿主再调一次会响两遍。
 fn with_sound(handle: u64, action: impl FnOnce(&SessionSound) -> bool) -> bool {
@@ -164,7 +178,7 @@ const MAX_PLUGINS_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 
 /// 插件页的包仓库和 @ 名单，给桌面外壳以外的设置宿主：Windows 的原生设置应用、鸿蒙的插件页，以及 Android、iOS 设置里导入辅助码表。所有规则和失败码都来自 client-core，与桌面外壳回答设置页的相同。
 ///
-/// 脚本插件只给有授权页的宿主：请求带 `script_page: true` 时目录列出脚本包、导入接受脚本包（`import_from_settings`），桌面上还能读写授权（`script_grants`、`set_script_grant`、`reorder_scripts`，回答和桌面外壳的同名命令一样是 `ScriptGrantsView`）。不带它时（Android、HarmonyOS 和各处的辅助码表导入）照旧：目录经 `without_scripts`，导入走 `import_without_script_page`。
+/// 脚本插件只给有授权页的宿主：请求带 `script_page: true` 时目录列出脚本包、导入接受脚本包（`import_from_settings`），桌面上还能读写授权（`script_grants`、`set_script_grant`、`reorder_scripts`，回答和桌面外壳的同名命令一样是 `ScriptGrantsView`，其中插件 `/` 指令的状态按 `state_root` 里偏好启用的指令表算）。不带它时（Android、HarmonyOS 和各处的辅助码表导入）照旧：目录经 `without_scripts`，导入走 `import_without_script_page`。
 /// # Safety
 /// `request` points to `length` readable UTF-8 JSON bytes. Null is rejected.
 /// The returned response must be released with `msime_client_string_free`.
@@ -299,9 +313,12 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
                 target_os = "windows",
                 all(target_os = "linux", not(target_env = "ohos"))
             ))]
-            PluginAction::ScriptGrants => {
-                serde_json::to_value(script_grants::view(script_grants::read(&root), user_data))
-            }
+            PluginAction::ScriptGrants => serde_json::to_value(script_grants::view(
+                &root,
+                script_grants::read(&root),
+                user_data,
+                &user_command_triggers(&request.state_root, &root),
+            )),
             #[cfg(any(
                 target_os = "macos",
                 target_os = "windows",
@@ -315,7 +332,12 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
             } => {
                 let granted = script_grants::capabilities(&granted)?;
                 let grants = script_grants::set(&root, &id, &hash, enabled, granted)?;
-                serde_json::to_value(script_grants::view(grants, user_data))
+                serde_json::to_value(script_grants::view(
+                    &root,
+                    grants,
+                    user_data,
+                    &user_command_triggers(&request.state_root, &root),
+                ))
             }
             #[cfg(any(
                 target_os = "macos",
@@ -323,8 +345,10 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
                 all(target_os = "linux", not(target_env = "ohos"))
             ))]
             PluginAction::ReorderScripts { ids } => serde_json::to_value(script_grants::view(
+                &root,
                 script_grants::reorder(&root, &ids)?,
                 user_data,
+                &user_command_triggers(&request.state_root, &root),
             )),
         };
         value.map_err(|_| PluginFailure::code("storage"))

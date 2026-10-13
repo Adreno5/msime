@@ -607,6 +607,11 @@ impl LifecycleState {
         self.with_scripts(ScriptSet::focus_in);
     }
 
+    /// 要交给引擎的插件指令（按戳重读授权之后），见 `ScriptSet::plugin_commands`。移动端恒为空。
+    pub(crate) fn plugin_commands(&self) -> Vec<msime_input_runtime::PluginCommand> {
+        self.with_scripts(ScriptSet::plugin_commands)
+    }
+
     /// 测量和测试直接对着脚本集合投递。只有桌面上有这些测试。
     #[cfg(all(
         test,
@@ -1106,6 +1111,21 @@ impl crate::HostSession {
             }
         }
         result
+    }
+
+    /// 让引擎的插件指令跟上脚本授权：在聚焦时插件表刷新的最后、以及会话刚选择加入生命周期时调用。没有选择加入的会话（移动端宿主、设置应用、MCP）什么都不做，引擎的插件指令保持空表。授权读出来的表和 `options` 里记着的一样时什么都不交；换表失败只报告，不让聚焦失败（同 `refresh_plugin_tables`），照样记进 `options`，重建的引擎从这里开始。
+    pub(crate) fn refresh_plugin_commands(&mut self) {
+        let Some(state) = self.lifecycle.as_deref() else {
+            return;
+        };
+        let commands = state.plugin_commands();
+        if commands == self.options.plugin_commands {
+            return;
+        }
+        if let Err(error) = self.runtime.set_plugin_commands(&commands) {
+            crate::diagnostics::report("plugin commands view not refreshed", &error.to_string());
+        }
+        self.options.plugin_commands = commands;
     }
 
     /// `msime_client_focus(true)` 开始时，紧挨着插件表的刷新：丢弃上一个字段留下的脚本实例，按戳重读脚本授权。

@@ -157,6 +157,8 @@ struct Script {
     hooks: &'static [Hook],
     capabilities: CapabilitySet,
     granted: CapabilitySet,
+    /// 清单里的 `[[script.commands]]`（触发词，标题）。不为空时 [`install`] 把清单写到插件目录里：输入法从清单取触发词。
+    commands: &'static [(&'static str, &'static str)],
 }
 
 impl Script {
@@ -167,7 +169,18 @@ impl Script {
             hooks,
             capabilities: CapabilitySet::EMPTY,
             granted: CapabilitySet::EMPTY,
+            commands: &[],
         }
+    }
+
+    /// 申请 `provide_commands`（`granted` 时授予）并在清单里声明 `commands`。
+    fn commanding(
+        mut self,
+        commands: &'static [(&'static str, &'static str)],
+        granted: bool,
+    ) -> Self {
+        self.commands = commands;
+        self.reading(Capability::ProvideCommands, granted)
     }
 
     fn reading(mut self, capability: Capability, granted: bool) -> Self {
@@ -264,6 +277,9 @@ fn install(fixture: &Fixture, scripts: &[Script], revision: u64) -> Vec<String> 
         let module = compile_text(&script.wat, declaration)
             .unwrap_or_else(|error| panic!("{}: {error}", script.id));
         insert_ready(&fixture.plugins, &hash, module);
+        if !script.commands.is_empty() {
+            write_command_manifest(fixture, script);
+        }
         entries.push(json!({
             "id": script.id,
             "hash": hash,
@@ -2403,4 +2419,554 @@ fn the_manifest_check_knows_exactly_the_engines_builtin_commands() {
         msime_engine::host::builtin_command_titles().collect::<Vec<_>>(),
         BUILTIN_COMMAND_TITLES
     );
+}
+
+// ---- `/` 指令（`command` 钩子）----
+
+/// 把一个指令插件的清单（带 `[[script.commands]]`）和一个占位模块文件写进插件目录。输入法聚焦时只读清单取触发词，模块取自进程缓存（[`install`] 放进去的那份），这里的模块文件只为通过文件检查。
+fn write_command_pack(
+    fixture: &Fixture,
+    id: &str,
+    capabilities: CapabilitySet,
+    hooks: &[Hook],
+    commands: &[(&str, &str)],
+) {
+    let directory = fixture.plugins.join("script").join(id);
+    std::fs::create_dir_all(&directory).unwrap();
+    let quoted = |names: Vec<&str>| {
+        names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let commands: String = commands
+        .iter()
+        .map(|(trigger, title)| {
+            format!("[[script.commands]]\ntrigger = '{trigger}'\ntitle = '{title}'\n")
+        })
+        .collect();
+    let manifest = format!(
+        "schema_version = 2\nkind = 'script'\nid = '{id}'\nname = '指令'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = [{permissions}]\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = [{hooks}]\nmemory_pages = 1\n{commands}",
+        permissions = quoted(capabilities.iter().map(Capability::as_str).collect()),
+        hooks = quoted(hooks.iter().map(|hook| hook.as_str()).collect()),
+    );
+    std::fs::write(directory.join(MANIFEST_FILE), manifest).unwrap();
+    std::fs::write(directory.join("main.wasm"), b"\0asm\x01\0\0\0").unwrap();
+}
+
+fn write_command_manifest(fixture: &Fixture, script: &Script) {
+    write_command_pack(
+        fixture,
+        script.id,
+        script.capabilities,
+        script.hooks,
+        script.commands,
+    );
+}
+
+/// `/` 指令插件：每次投递先写出（事件类型，触发词），再给两行：「触发词-参数」带注释 `note`，和 8 个由随机数换成的字母（`a` 到 `p`）。
+fn commander(note: &str) -> String {
+    let length = note.len();
+    format!(
+        r#"(module
+  (import "msime" "command_text" (func $text (param i32 i32 i32) (result i32)))
+  (import "msime" "command_row" (func $row (param i32 i32 i32 i32) (result i32)))
+  (import "msime" "random_fill" (func $random (param i32 i32) (result i32)))
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (data (i32.const 512) "{note}")
+  (func (export "msime_on_event") (param $kind i32) (result i32) (local $t i32) (local $a i32) (local $i i32)
+    (local.set $t (call $text (i32.const 0) (i32.const 0) (i32.const 32)))
+    (call $log (local.get $kind) (i32.const 0) (local.get $t))
+    (i32.store8 (local.get $t) (i32.const 45))
+    (local.set $a (call $text (i32.const 1) (i32.add (local.get $t) (i32.const 1)) (i32.const 64)))
+    (drop (call $row (i32.const 0) (i32.add (i32.add (local.get $t) (i32.const 1)) (local.get $a)) (i32.const 512) (i32.const {length})))
+    (drop (call $random (i32.const 600) (i32.const 8)))
+    (loop $letters
+      (i32.store8 (i32.add (i32.const 700) (local.get $i))
+        (i32.add (i32.const 97) (i32.and (i32.load8_u (i32.add (i32.const 600) (local.get $i))) (i32.const 15))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $letters (i32.lt_u (local.get $i) (i32.const 8))))
+    (drop (call $row (i32.const 700) (i32.const 8) (i32.const 0) (i32.const 0)))
+    (i32.const 0)))"#
+    )
+}
+
+/// 先写出事件类型、暂存一行，再按 `ending` 结束：`unreachable` 是 trap，`(loop $forever (br $forever))` 是耗尽 fuel。暂存的行随失败作废。
+fn failing_commander(ending: &str) -> String {
+    format!(
+        r#"(module
+  (import "msime" "command_row" (func $row (param i32 i32 i32 i32) (result i32)))
+  (import "msime" "log" (func $log (param i32 i32 i32)))
+  {HEADER}
+  (data (i32.const 0) "x")
+  (func (export "msime_on_event") (param $kind i32) (result i32)
+    (call $log (local.get $kind) (i32.const 0) (i32.const 0))
+    (drop (call $row (i32.const 0) (i32.const 1) (i32.const 0) (i32.const 0)))
+    {ending}
+    (i32.const 0)))"#
+    )
+}
+
+fn command_preferences() -> Preferences {
+    let mut preferences = chinese_preferences();
+    preferences.local_modes.command = true;
+    preferences
+}
+
+/// 宿主打一串键（每个先 `msime_client_key`），返回最后的视图。
+fn slash(handle: u64, keys: &[u8]) -> Value {
+    let mut view = Value::Null;
+    for key in keys {
+        msime_client_key(handle, 0);
+        let result = read(msime_client_character(handle, *key, false));
+        assert_eq!(result["ok"], true, "{result}");
+        view = result["value"]["view"].clone();
+    }
+    view
+}
+
+/// 视图里来源 14（脚本插件）的行：（文本，插件注释）。
+fn plugin_rows(view: &Value) -> Vec<(String, String)> {
+    view["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|candidate| candidate["source"] == 14)
+        .map(|candidate| {
+            (
+                candidate["text"].as_str().unwrap().to_owned(),
+                candidate["script_annotation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// 取消组字，回到没有输入的状态。
+fn cancel(handle: u64) {
+    msime_client_key(handle, 0);
+    assert_eq!(read(msime_client_command(handle, 3))["ok"], true);
+}
+
+fn command_log(trigger: &str) -> (i32, String) {
+    (Hook::Command.code(), trigger.to_owned())
+}
+
+#[test]
+fn a_granted_plugin_answers_its_trigger_once_per_typed_command_and_its_row_commits_as_shown() {
+    let fixture = fixture_with(command_preferences());
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    let view = slash(fixture.handle, b"/uuid");
+    let rows = plugin_rows(&view);
+    assert_eq!(rows.len(), 2, "{view}");
+    assert_eq!(rows[0], ("uuid-".to_owned(), "UUID one".to_owned()));
+    assert_eq!(rows[1].1, "UUID");
+    let random = rows[1].0.clone();
+    assert!(
+        random.len() == 8 && random.bytes().all(|byte| (b'a'..=b'p').contains(&byte)),
+        "{random}"
+    );
+    // 插件行排在前面，引擎注释格是空的；打 `/uui` 时还不是触发词，不投递。
+    assert_eq!(view["candidates"][0]["source"], 14);
+    assert_eq!(view["candidates"][0]["annotation"], "");
+    assert_eq!(take_log(), [command_log("uuid")]);
+
+    // 同一份预编辑串上移动高亮、翻页、别的派发（这里是 `reset_cache`，它照常刷新列表）都不再投递，行还在。
+    for command in [102, 100, 101, 103] {
+        msime_client_key(fixture.handle, 0);
+        assert_eq!(
+            read(msime_client_command(fixture.handle, command))["ok"],
+            true
+        );
+    }
+    assert_eq!(read(msime_client_reset_cache(fixture.handle))["ok"], true);
+    let view = read(msime_client_view(fixture.handle))["value"].clone();
+    assert_eq!(plugin_rows(&view)[1].0, random);
+    assert!(take_log().is_empty());
+    // 改一个字母再改回来：重新投递，换了一份随机数。
+    msime_client_key(fixture.handle, 0);
+    read(msime_client_command(fixture.handle, 0));
+    let view = slash(fixture.handle, b"d");
+    let again = plugin_rows(&view);
+    assert_eq!(again[0].0, "uuid-");
+    assert_ne!(again[1].0, random);
+    assert_eq!(take_log(), [command_log("uuid")]);
+
+    // 选中第 1 行：上屏的就是显示的那一行，原样（指令模式）。
+    let generation = view["generation"].as_u64().unwrap();
+    msime_client_key(fixture.handle, 0);
+    let picked = read(msime_client_select(fixture.handle, generation, 0));
+    assert_eq!(picked["value"]["commit"], "uuid-", "{picked}");
+    assert_eq!(picked["value"]["commit_context"]["local_mode"], "command");
+    assert_eq!(picked["value"]["view"]["local_mode"], "none");
+
+    // 触发词后面的字母是参数，每打一个字母投递一次。
+    let view = slash(fixture.handle, b"/uuidab");
+    assert_eq!(plugin_rows(&view)[0].0, "uuid-ab");
+    assert_eq!(
+        take_log(),
+        [
+            command_log("uuid"),
+            command_log("uuid"),
+            command_log("uuid")
+        ]
+    );
+}
+
+#[test]
+fn secure_fields_and_observe_only_commits_get_only_the_typed_row() {
+    let fixture = fixture_with(command_preferences());
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN | TRAIT_SECURE);
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(!view["candidates"].as_array().unwrap().is_empty());
+    assert!(take_log().is_empty());
+    cancel(fixture.handle);
+
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    assert_eq!(
+        msime_client_set_lifecycle(fixture.handle, COMMIT_OBSERVE_ONLY),
+        COMMIT_OBSERVE_ONLY
+    );
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(take_log().is_empty());
+    cancel(fixture.handle);
+
+    // 对照：普通字段、上屏可改写时有插件行。
+    assert_eq!(msime_client_set_lifecycle(fixture.handle, 0), 0);
+    let view = slash(fixture.handle, b"/uuid");
+    assert_eq!(plugin_rows(&view).len(), 2, "{view}");
+    assert_eq!(take_log(), [command_log("uuid")]);
+}
+
+#[test]
+fn only_granted_enabled_plugins_answer_and_a_trigger_belongs_to_the_first_in_order() {
+    let fixture = fixture_with(command_preferences());
+    let hashes = install(
+        &fixture,
+        &[
+            Script::new("first", commander("one"), &[Hook::Command])
+                .commanding(&[("uuid", "UUID")], true),
+            Script::new("second", commander("two"), &[Hook::Command])
+                .commanding(&[("uuid", "Two"), ("guid", "GUID")], true),
+            Script::new("ungranted", commander("three"), &[Hook::Command])
+                .commanding(&[("abc", "ABC")], false),
+        ],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    let rows = plugin_rows(&slash(fixture.handle, b"/uuid"));
+    assert_eq!(rows[0], ("uuid-".to_owned(), "UUID one".to_owned()));
+    assert_eq!(take_log(), [command_log("uuid")]);
+    cancel(fixture.handle);
+    let rows = plugin_rows(&slash(fixture.handle, b"/guid"));
+    assert_eq!(rows[0], ("guid-".to_owned(), "GUID two".to_owned()));
+    assert_eq!(take_log(), [command_log("guid")]);
+    cancel(fixture.handle);
+    // 没授予 `provide_commands`：触发词不生效，一次都不投递。
+    let view = slash(fixture.handle, b"/abc");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(take_log().is_empty());
+    cancel(fixture.handle);
+
+    // 换执行顺序之后 `/uuid` 归 second；停用 second 之后又归 first，`/guid` 不再生效。
+    let entry = |id: &str, hash: &str, enabled: bool| json!({"id": id, "hash": hash, "enabled": enabled, "granted": ["provide_commands"]});
+    let refocus = || {
+        read(msime_client_focus(fixture.handle, false));
+        msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+        read(msime_client_focus(fixture.handle, true));
+    };
+    write_grants(
+        &fixture,
+        2,
+        vec![
+            entry("second", &hashes[1], true),
+            entry("first", &hashes[0], true),
+        ],
+    );
+    refocus();
+    let rows = plugin_rows(&slash(fixture.handle, b"/uuid"));
+    assert_eq!(rows[0], ("uuid-".to_owned(), "Two two".to_owned()));
+    cancel(fixture.handle);
+    write_grants(
+        &fixture,
+        3,
+        vec![
+            entry("second", &hashes[1], false),
+            entry("first", &hashes[0], true),
+        ],
+    );
+    refocus();
+    let rows = plugin_rows(&slash(fixture.handle, b"/uuid"));
+    assert_eq!(rows[0], ("uuid-".to_owned(), "UUID one".to_owned()));
+    cancel(fixture.handle);
+    take_log();
+    assert!(plugin_rows(&slash(fixture.handle, b"/guid")).is_empty());
+    assert!(take_log().is_empty());
+}
+
+/// 在插件目录里写一个启用了的指令表包 `mine`，只有一条指令 `trigger`。
+fn write_user_table(fixture: &Fixture, trigger: &str) {
+    let directory = fixture.plugins.join("command_table").join("mine");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join(MANIFEST_FILE),
+        format!("schema_version = 1\nkind = 'command_table'\nid = 'mine'\nname = '我的'\nversion = '1.0.0'\nlicense = 'MIT'\n[[commands]]\ntrigger = '{trigger}'\ntitle = '我的'\ntemplate = '张三'\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_users_own_command_table_wins_over_a_plugin_trigger() {
+    let mut preferences = command_preferences();
+    preferences.plugins.command_tables = vec!["mine".into()];
+    let fixture = fixture_with(preferences);
+    write_user_table(&fixture, "uu");
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID"), ("guid", "GUID")], true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // `uu` 和 `uuid` 互为前缀：归用户的指令，插件一次都不投递。
+    let view = slash(fixture.handle, b"/uu");
+    assert_eq!(view["candidates"][0]["text"], "张三", "{view}");
+    let view = slash(fixture.handle, b"id");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(take_log().is_empty());
+    cancel(fixture.handle);
+    // 同一个插件不冲突的那条照常生效。
+    assert_eq!(plugin_rows(&slash(fixture.handle, b"/guid")).len(), 2);
+    assert_eq!(take_log(), [command_log("guid")]);
+}
+
+#[test]
+fn a_module_still_compiling_leaves_the_typed_row_until_it_is_ready() {
+    let fixture = fixture_with(command_preferences());
+    let script = Script::new("uuid", commander("one"), &[Hook::Command])
+        .commanding(&[("uuid", "UUID")], true);
+    write_command_manifest(&fixture, &script);
+    let hash = unique_hash(&fixture, script.id);
+    write_grants(
+        &fixture,
+        1,
+        vec![json!({"id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]})],
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    // 编译请求在聚焦时交给后台线程（磁盘上的占位模块对不上哈希，它不会编出东西）；屏障之后那次处理已经做完。
+    let barrier = fixture.user_data.join("barrier.json");
+    crate::scripts::health_barrier(&barrier);
+    wait_for(|| barrier.exists().then_some(()));
+    // 触发词不等模块：已经交给引擎，`/uuid` 只有原样的兜底行，不写缓存。
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(!view["candidates"].as_array().unwrap().is_empty());
+    assert!(take_log().is_empty());
+    // 模块就绪之后的下一次派发就有行，预编辑串不用变（`reset_cache` 照常刷新列表）：没运行的那次没有写缓存。
+    let declaration = Declaration {
+        capabilities: script.capabilities,
+        hooks: script.hooks.iter().copied().collect::<HookSet>(),
+        memory_pages: 1,
+    };
+    insert_ready(
+        &fixture.plugins,
+        &hash,
+        compile_text(&script.wat, declaration).unwrap(),
+    );
+    let view = read(msime_client_reset_cache(fixture.handle))["value"]["view"].clone();
+    assert_eq!(plugin_rows(&view)[0].0, "uuid-", "{view}");
+    assert_eq!(take_log(), [command_log("uuid")]);
+}
+
+#[test]
+fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
+    for ending in ["unreachable", "(loop $forever (br $forever))"] {
+        let fixture = fixture_with(command_preferences());
+        let hashes = install(
+            &fixture,
+            &[
+                Script::new("uuid", failing_commander(ending), &[Hook::Command])
+                    .commanding(&[("uuid", "UUID")], true),
+            ],
+            1,
+        );
+        opt_in(&fixture, TRAIT_KNOWN);
+        for failures in 1..=3 {
+            let view = slash(fixture.handle, b"/uuid");
+            assert!(plugin_rows(&view).is_empty(), "{ending}: {view}");
+            assert_eq!(kinds(&take_log()), [Hook::Command.code()], "{ending}");
+            assert_eq!(
+                process_health(&fixture, "uuid", &hashes[0]).0,
+                failures,
+                "{ending}"
+            );
+            // 插件运行过（失败了），引擎把这份预编辑串缓存成空表：同一份预编辑串上的下一次派发不再投递，不会接连失败。
+            read(msime_client_reset_cache(fixture.handle));
+            assert!(take_log().is_empty(), "{ending}");
+            cancel(fixture.handle);
+        }
+        // 最近 50 次里失败 3 次：停用，之后不再投递。
+        assert!(process_health(&fixture, "uuid", &hashes[0]).1.is_some());
+        assert!(plugin_rows(&slash(fixture.handle, b"/uuid")).is_empty());
+        assert!(take_log().is_empty(), "{ending}");
+    }
+}
+
+#[test]
+fn real_plugin_rows_ask_for_no_gloss_and_command_20_commits_what_was_typed() {
+    let mut preferences = command_preferences();
+    preferences.candidate_english_gloss = true;
+    let fixture = fixture_with(preferences);
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    slash(fixture.handle, b"/uuid");
+    assert!(read(msime_client_translation_query(fixture.handle))["value"].is_null());
+    // 命令 20（宿主替失焦结束组字）：用户没在看候选窗，上屏他打的原文。
+    let finished = read(msime_client_command(
+        fixture.handle,
+        crate::lifecycle::COMMAND_FINISH_ON_FOCUS_LOSS,
+    ));
+    assert_eq!(finished["value"]["commit"], "/uuid", "{finished}");
+    // 命令 9（按键结束）上屏高亮的插件行。
+    slash(fixture.handle, b"/uuid");
+    let finished = read(msime_client_command(fixture.handle, 9));
+    assert_eq!(finished["value"]["commit"], "uuid-", "{finished}");
+}
+
+/// 授权页（这里是 Windows 原生设置应用的调用）列出会运行的插件声明的每条指令和状态：用户指令表（状态目录里的偏好启用的那些）赢，插件之间先到先得，没授予 `provide_commands` 的插件不列。
+#[test]
+fn the_grant_page_lists_each_plugin_command_with_its_state() {
+    let fixture = fixture();
+    let provide = CapabilitySet::EMPTY.with(Capability::ProvideCommands);
+    for (id, commands) in [
+        ("first", &[("uuid", "UUID")][..]),
+        ("second", &[("uuidx", "X"), ("sig", "S")][..]),
+        ("ungranted", &[("abc", "A")][..]),
+    ] {
+        write_command_pack(&fixture, id, provide, &[Hook::Command], commands);
+    }
+    let entry = |id: &str, granted: Value| json!({"id": id, "hash": unique_hash(&fixture, id), "enabled": true, "granted": granted});
+    write_grants(
+        &fixture,
+        1,
+        vec![
+            entry("first", json!(["provide_commands"])),
+            entry("second", json!(["provide_commands"])),
+            entry("ungranted", json!([])),
+        ],
+    );
+    let grants = || plugins_request(&fixture, true, json!({"operation": "script_grants"}));
+    let listed = grants();
+    assert_eq!(
+        listed["value"]["commands"],
+        json!([
+            {"id": "first", "trigger": "uuid", "title": "UUID", "status": "active"},
+            {"id": "second", "trigger": "uuidx", "title": "X", "status": "shadowed_by_plugin", "conflict_id": "first", "conflict": "uuid"},
+            {"id": "second", "trigger": "sig", "title": "S", "status": "active"},
+        ]),
+        "{listed}"
+    );
+    // 偏好里启用了有 `si` 的指令表：`sig` 归用户。
+    write_user_table(&fixture, "si");
+    let mut preferences = chinese_preferences();
+    preferences.plugins.command_tables = vec!["mine".into()];
+    msime_client_core::preferences::PreferencesStore::new(fixture.plugins.parent().unwrap())
+        .save(0, preferences)
+        .unwrap();
+    assert_eq!(
+        grants()["value"]["commands"][2],
+        json!({"id": "second", "trigger": "sig", "title": "S", "status": "shadowed_by_user_table", "conflict": "si"})
+    );
+}
+
+/// 授权页的状态（client-core 的 `script_commands::resolve`）和引擎实际让哪些插件指令生效（`usable_plugin_commands`）是两份写法，这里拿同一批输入对两边：触发词只用 `a`、`b`、`r`、`q` 四个字母、1 到 5 个，相等、互为前缀、单字母不合规和撞上内置的 `/rq` 都很密。
+#[test]
+fn the_grant_page_and_the_engine_resolve_plugin_commands_alike() {
+    use msime_client_core::plugins::script_commands::{resolve, CommandStatus};
+    use msime_client_core::plugins::script_pack::ScriptCommand;
+    use msime_engine::host::{usable_command_table, usable_plugin_commands, CommandTableEntry};
+    use msime_input_runtime::PluginCommand;
+    // xorshift64：固定种子，每次运行同一批输入。
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = move |bound: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % bound
+    };
+    let mut trigger = || -> String {
+        let length = 1 + next(5) as usize;
+        let mut text = String::with_capacity(length);
+        for _ in 0..length {
+            text.push(['a', 'b', 'r', 'q'][next(4) as usize]);
+        }
+        text
+    };
+    for _ in 0..2000 {
+        let user_count = trigger().len() % 3;
+        let user: Vec<String> = (0..user_count).map(|_| trigger()).collect();
+        let mut plugins: Vec<(String, Vec<ScriptCommand>)> = Vec::new();
+        for index in 0..1 + trigger().len() % 4 {
+            let mut commands = Vec::new();
+            for _ in 0..1 + trigger().len() % 4 {
+                commands.push(ScriptCommand {
+                    trigger: trigger(),
+                    title: "T".into(),
+                });
+            }
+            plugins.push((format!("p{index}"), commands));
+        }
+        let active: Vec<PluginCommand> = resolve(&user, &plugins)
+            .into_iter()
+            .filter(|command| command.status == CommandStatus::Active)
+            .map(|command| PluginCommand {
+                trigger: command.trigger,
+                title: command.title,
+            })
+            .collect();
+        let table: Vec<CommandTableEntry> = user
+            .iter()
+            .map(|trigger| CommandTableEntry {
+                trigger: trigger.clone(),
+                title: "我的".into(),
+                template: "张三".into(),
+            })
+            .collect();
+        let given: Vec<PluginCommand> = plugins
+            .iter()
+            .flat_map(|(_, commands)| commands)
+            .map(|command| PluginCommand {
+                trigger: command.trigger.clone(),
+                title: command.title.clone(),
+            })
+            .collect();
+        assert_eq!(
+            active,
+            usable_plugin_commands(&usable_command_table(&table), &given),
+            "{user:?} {plugins:?}"
+        );
+    }
 }

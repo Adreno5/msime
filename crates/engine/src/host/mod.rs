@@ -23,6 +23,7 @@ pub use crate::shuangpin::hints::ShuangpinKeyHint;
 // 九键双拼的表：内置方案、用户表的校验（编辑中的表用不留存的 `check_nine_key_shuangpin_table`）、按方案取表，以及键面提示。宿主拿到的 `NineKeyShuangpin` 经 `KeyGrid::NineKeyShuangpin` 交给会话。
 pub use crate::local::command::{
     builtin_titles as builtin_command_titles, builtin_triggers as builtin_command_triggers,
+    usable_command_table, usable_plugin_commands,
 };
 pub use crate::nine_key_shuangpin::{
     builtin_table as nine_key_shuangpin_builtin_table,

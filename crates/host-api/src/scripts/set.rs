@@ -1,16 +1,20 @@
-//! 每个会话的脚本集合：按授权顺序的插件、各自延迟创建的实例、轮次和初始化预算，把一个生命周期事件变成脚本看到的 `Event`，以及两个修改类钩子（`candidates`、`before_commit`）。
+//! 每个会话的脚本集合：按授权顺序的插件、各自延迟创建的实例、轮次和初始化预算，把一个生命周期事件变成脚本看到的 `Event`，两个修改类钩子（`candidates`、`before_commit`），以及只投递给触发词主人的 `command`。
 
 use super::process::{self, Health, Lookup, Reservation, Trip};
 use super::{CallTexts, RewriteRequest};
 use crate::key_sound::{stamp, PackStamp};
 use crate::lifecycle::{Context, InputClass, LifecycleEvent, LocalModeClass};
-use msime_client_core::plugins::{kind_directory, script_grants, PluginKind, MANIFEST_FILE};
+use msime_client_core::plugins::script_pack::ScriptCommand;
+use msime_client_core::plugins::{
+    kind_directory, script_commands, script_grants, PluginKind, MANIFEST_FILE,
+};
 use msime_input_runtime::{
-    CandidateOps, CandidateTransform, TransformRow, View, MAX_TRANSFORM_ROWS,
+    CandidateOps, CandidateTransform, CommandOutcome, CommandProvider, PluginCommand, TransformRow,
+    View, MAX_TRANSFORM_ROWS,
 };
 use msime_script_runtime::{
-    abi, limits, Actions, CandidateRow, Candidates, CapabilitySet, CommitTexts, Composition, Event,
-    Failure, Hook, InitFailure, Outcome, ScriptInstance, ScriptModule,
+    abi, limits, Actions, CandidateRow, Candidates, CapabilitySet, CommandEvent, CommitTexts,
+    Composition, Event, Failure, Hook, InitFailure, Outcome, ScriptInstance, ScriptModule,
 };
 use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -46,6 +50,8 @@ struct Entry {
     trapped: bool,
     /// 这个插件最近一次投递所在的轮次，和那一轮其余钩子、`before_commit`、`command` 各还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
     turn: Option<(u64, u64, u64, u64)>,
+    /// 它在 `/` 指令里声明的指令（清单原样）：用户授予了 `provide_commands`、清单也申请了它时才有，否则为空。读授权时从清单取（`script_commands::granted_commands`），不等模块编译好。
+    commands: Vec<ScriptCommand>,
 }
 
 /// 一个活着的实例和它在内存总账里占的那份。
@@ -163,6 +169,7 @@ impl ScriptSet {
         let grants = script_grants::read(&root);
         process::adopt_health(&root, self.health_file.as_deref());
         process::observe_revision(&root, grants.revision_epoch, grants.revision);
+        let mut commands = script_commands::granted_commands(&root, &grants);
         self.plan = grants
             .enabled()
             .map(|grant| Entry {
@@ -175,6 +182,11 @@ impl ScriptSet {
                 instance: None,
                 trapped: false,
                 turn: None,
+                commands: commands
+                    .iter_mut()
+                    .find(|(id, _)| *id == grant.id)
+                    .map(|(_, commands)| std::mem::take(commands))
+                    .unwrap_or_default(),
             })
             .collect();
         for entry in &self.plan {
@@ -184,6 +196,82 @@ impl ScriptSet {
         process::retain(&root, &hashes);
         self.grants = grants_stamp;
         self.loaded = true;
+    }
+
+    /// 交给引擎的插件指令：计划里各插件声明的指令按执行顺序原样排开，由引擎按「用户指令表赢、插件先到先得、相等或互为前缀算冲突」过滤（`usable_plugin_commands`，用户指令表变了引擎当场重新过滤），和授权页的 `script_commands::resolve` 是同一套规则。授权按戳重读。进程开关关着、没有插件根目录时为空：这个会话不会投递，`/uuid` 只是一段普通的输入。
+    ///
+    /// 引擎在同一个触发词重复时只留第一条（标题都经过清单校验），所以它问到的触发词的主人就是计划里第一个声明它的插件，见 [`Self::command`]。
+    pub(crate) fn plugin_commands(&mut self) -> Vec<PluginCommand> {
+        if self.root.is_none() || !process::running() {
+            return Vec::new();
+        }
+        self.refresh();
+        self.plan
+            .iter()
+            .flat_map(|entry| &entry.commands)
+            .map(|command| PluginCommand {
+                trigger: command.trigger.clone(),
+                title: command.title.clone(),
+            })
+            .collect()
+    }
+
+    /// `/` 指令（`command` 钩子）：引擎问到触发词 `trigger` 时，只投递给计划里第一个声明它的插件，别的插件一律不投递。运行条件同其余钩子（普通字段、属性已确认、进程开关开着）；事件只带本地模式（`command`）、触发词、参数和这一次的 64 字节随机数，在快照上运行，同一轮里用自己的一份配额。
+    ///
+    /// 插件运行了（正常返回、trap、fuel 耗尽、返回负数）是 `Ran`：正常返回时行放进 `out`，其余情况这一次没有行，引擎照样缓存成空表，同一份预编辑串不再问，免得一个出错的插件在每次派发里重跑、很快熔断。没有运行（运行条件不满足、没有主人、模块还在编译、已经熔断、推迟实例化、本轮配额用完、取不到随机数）是 `NotRun`，引擎不写缓存，下一次派发再问。
+    pub(crate) fn command(
+        &mut self,
+        trigger: &str,
+        argument: &str,
+        out: &mut Vec<(String, String)>,
+    ) -> CommandOutcome {
+        let context = self.context;
+        if !self.prepare(context) {
+            return CommandOutcome::NotRun;
+        }
+        let Some(owner) = self.plan.iter().position(|entry| {
+            entry
+                .commands
+                .iter()
+                .any(|command| command.trigger == trigger)
+        }) else {
+            return CommandOutcome::NotRun;
+        };
+        let mut random = [0; limits::RANDOM_BYTES_PER_EVENT];
+        if !script_commands::random_bytes(&mut random) {
+            return CommandOutcome::NotRun;
+        }
+        let mut event = Event::new(Hook::Command);
+        event.scalars.local_mode = Some(LocalModeClass::Command as u8);
+        event.command = Some(CommandEvent {
+            trigger,
+            argument,
+            random,
+        });
+        let turn = self.turn;
+        let entry = &mut self.plan[owner];
+        let init_left = &mut self.init_left;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            match deliver_one(entry, turn, init_left, &event) {
+                Outcome::Delivered { .. } => {
+                    if let Some(live) = entry.instance.as_ref() {
+                        out.extend(live.instance.actions().rows.iter().cloned());
+                    }
+                    CommandOutcome::Ran
+                }
+                Outcome::Failed { .. } => CommandOutcome::Ran,
+                Outcome::NotSubscribed | Outcome::TurnExhausted { .. } => CommandOutcome::NotRun,
+            }
+        }));
+        match outcome {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                out.clear();
+                process::panic_caught();
+                self.drop_instances();
+                CommandOutcome::NotRun
+            }
+        }
     }
 
     /// 这次能不能投递：五项运行条件（选择加入已经由调用方保证），属性确认过，授权在第一次需要时读。
@@ -447,7 +535,7 @@ impl ScriptSet {
     }
 }
 
-/// 挂在 runtime 上的候选变换：和生命周期共用同一个脚本集合。runtime 只在派发类调用里调用它，这时生命周期没有借着集合；万一借着就跳过，不 panic。
+/// 挂在 runtime 上的候选变换和插件指令的提供者：和生命周期共用同一个脚本集合。runtime 只在派发类调用里调用它们，这时生命周期没有借着集合；万一借着就跳过（插件指令按没运行处理），不 panic。
 pub(crate) struct ScriptTransform(Rc<RefCell<ScriptSet>>);
 
 impl ScriptTransform {
@@ -469,7 +557,21 @@ impl CandidateTransform for ScriptTransform {
     }
 }
 
-/// 一个插件收一个事件：查缓存拿模块、需要时实例化、投递、记账。没有运行（停用、还没编译好、没声明这个钩子、推迟实例化）时返回 `NotSubscribed`。
+impl CommandProvider for ScriptTransform {
+    fn provide(
+        &mut self,
+        trigger: &str,
+        argument: &str,
+        out: &mut Vec<(String, String)>,
+    ) -> CommandOutcome {
+        match self.0.try_borrow_mut() {
+            Ok(mut scripts) => scripts.command(trigger, argument, out),
+            Err(_) => CommandOutcome::NotRun,
+        }
+    }
+}
+
+/// 一个插件收一个事件：查缓存拿模块、需要时实例化、投递、记账。没有运行（停用、还没编译好、没声明这个钩子、推迟实例化、`command` 事件不合规）时返回 `NotSubscribed`。
 fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<'_>) -> Outcome {
     #[cfg(test)]
     if TEST_PANIC.with(|panic| panic.replace(false)) {

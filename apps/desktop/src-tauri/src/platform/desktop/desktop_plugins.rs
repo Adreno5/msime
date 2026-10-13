@@ -5,8 +5,12 @@
 use crate::DictionaryHostOptions;
 use msime_client_core::plugins::mentions::{MentionEntry, MentionStore};
 use msime_client_core::plugins::script_grants::{self, ScriptGrantsView};
-use msime_client_core::plugins::{self, PluginCatalog, PluginFailure, PluginSummary};
+use msime_client_core::plugins::{
+    self, script_commands, PluginCatalog, PluginFailure, PluginSummary,
+};
+use msime_client_core::preferences::PreferencesStore;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
@@ -175,19 +179,47 @@ fn user_data(options: &DictionaryHostOptions) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 脚本插件的授权、执行顺序和输入法记下的停用。
+/// 授权页说明插件指令的状态时用的用户指令表：偏好里启用的指令表包，和输入法交给引擎的是同一份。偏好读不出时按没有启用任何指令表说明。
+fn user_command_triggers(store: &PreferencesStore, root: &Path) -> Vec<String> {
+    let enabled = store
+        .load()
+        .map(|snapshot| snapshot.preferences.plugins.command_tables)
+        .unwrap_or_default();
+    script_commands::user_triggers(root, &enabled)
+}
+
+/// 交给授权页的整份授权，带上停用记录和插件 `/` 指令的状态。
+fn grants_view(
+    root: &Path,
+    grants: script_grants::ScriptGrants,
+    options: &DictionaryHostOptions,
+    store: &PreferencesStore,
+) -> ScriptGrantsView {
+    let user_data = user_data(options);
+    script_grants::view(
+        root,
+        grants,
+        user_data.as_deref(),
+        &user_command_triggers(store, root),
+    )
+}
+
+/// 脚本插件的授权、执行顺序、输入法记下的停用和插件 `/` 指令的状态。
 #[tauri::command]
 pub async fn script_grants(
     state: State<'_, PluginsState>,
     options: State<'_, DictionaryHostOptions>,
+    store: State<'_, Arc<PreferencesStore>>,
 ) -> Result<ScriptGrantsView, PluginFailure> {
     let root = state.0.clone();
     let options = options.inner().clone();
+    let store = Arc::clone(store.inner());
     blocking(move || {
-        let user_data = user_data(&options);
-        Ok(script_grants::view(
+        Ok(grants_view(
+            &root,
             script_grants::read(&root),
-            user_data.as_deref(),
+            &options,
+            &store,
         ))
     })
     .await
@@ -198,6 +230,7 @@ pub async fn script_grants(
 pub async fn set_script_grant(
     state: State<'_, PluginsState>,
     options: State<'_, DictionaryHostOptions>,
+    store: State<'_, Arc<PreferencesStore>>,
     id: String,
     hash: String,
     enabled: bool,
@@ -205,11 +238,11 @@ pub async fn set_script_grant(
 ) -> Result<ScriptGrantsView, PluginFailure> {
     let root = state.0.clone();
     let options = options.inner().clone();
+    let store = Arc::clone(store.inner());
     blocking(move || {
-        let user_data = user_data(&options);
         let granted = script_grants::capabilities(&granted)?;
         let grants = script_grants::set(&root, &id, &hash, enabled, granted)?;
-        Ok(script_grants::view(grants, user_data.as_deref()))
+        Ok(grants_view(&root, grants, &options, &store))
     })
     .await
 }
@@ -219,16 +252,15 @@ pub async fn set_script_grant(
 pub async fn reorder_scripts(
     state: State<'_, PluginsState>,
     options: State<'_, DictionaryHostOptions>,
+    store: State<'_, Arc<PreferencesStore>>,
     ids: Vec<String>,
 ) -> Result<ScriptGrantsView, PluginFailure> {
     let root = state.0.clone();
     let options = options.inner().clone();
+    let store = Arc::clone(store.inner());
     blocking(move || {
-        let user_data = user_data(&options);
-        Ok(script_grants::view(
-            script_grants::reorder(&root, &ids)?,
-            user_data.as_deref(),
-        ))
+        let grants = script_grants::reorder(&root, &ids)?;
+        Ok(grants_view(&root, grants, &options, &store))
     })
     .await
 }
