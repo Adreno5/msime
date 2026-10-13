@@ -668,6 +668,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
+    InputSchemePreference.refreshResourceAvailability()
     // 进程可能跨过换季或应用主题的改动；在下面任何地方解析皮肤之前先刷新。
     KeyboardTheme.refreshSeason()
     incognito = KeyboardPrivacyPreference.incognito
@@ -2059,7 +2060,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   /// 关掉面板并打开 app 的某个页面；app 在前台时面板没有可显示的内容。
   private func openApp(_ url: URL) {
     closeKeyboardPicker()
-    KeyboardAppLauncher.open(url, from: self)
+    KeyboardAppLauncher.open(url, from: self) { [weak self] success in
+      guard !success else { return }
+      DispatchQueue.main.async { [weak self] in
+        self?.showDiagnostic("未能打开水杉，请手动打开应用。")
+      }
+    }
   }
 
   private func resetCandidateCache() {

@@ -13,7 +13,6 @@ private func msimeDeveloperStringFree(_ value: UnsafeMutablePointer<CChar>?)
 
 /// 开发者选项，对应 Android 的 `DeveloperPage`，但不含其中的 MCP 上传、「显示调试信息」和「日志级别」：iOS 没有支撑这几项的后端或键盘能力。「调试」一组放键盘诊断日志的开关及其页面；「数据」一组导出诊断包、恢复出厂设置。
 struct DeveloperOptionsView: View {
-  @Environment(\.scenePhase) private var scenePhase
   @State private var logEnabled = false
   @State private var logSaveFailed = false
   @State private var exporting = false
@@ -28,7 +27,7 @@ struct DeveloperOptionsView: View {
       VStack(spacing: 28) {
         DesignGroup(title: "调试", footer: logSaveFailed ? SettingsSaveFailure.message : nil) {
           DesignToggleRow(title: "记录输入日志", subtitle: "仅保存在本机，不会上传",
-                          isOn: Binding(get: { logEnabled }, set: saveLog))
+                          isOn: logBinding)
             .accessibilityIdentifier("developerDiagnosticLogToggle")
           DesignDivider()
           NavigationLink(destination: DiagnosticLogSettingsView()) {
@@ -69,10 +68,7 @@ struct DeveloperOptionsView: View {
       }
       .onDisappear { try? FileManager.default.removeItem(at: file.url.deletingLastPathComponent()) }
     }
-    .onAppear(perform: reload)
-    .onChange(of: scenePhase) { _, phase in
-      if phase == .active { reload() }
-    }
+    .reloadOnAppearAndActive(reload)
     .onDisappear {
       ViewRequestTask.cancel(generation: $lifecycle, task: $pending)
       exporting = false
@@ -81,14 +77,11 @@ struct DeveloperOptionsView: View {
   }
 
   /// 与 `DiagnosticLogSettingsView` 写的是同一处：共享文档里的 `diagnostic_log.server`，键盘下次出现时读到。
-  private func saveLog(_ value: Bool) {
-    logEnabled = value
-    logSaveFailed = !MetasequoiaInputSessionBridge.updateSharedPreferences {
-      var diagnostic = $0["diagnostic_log"] as? [String: Any] ?? [:]
-      diagnostic["server"] = value
-      $0["diagnostic_log"] = diagnostic
+  private var logBinding: Binding<Bool> {
+    SharedPreferenceBinding.nested("diagnostic_log", key: "server", state: $logEnabled) { saved in
+      logSaveFailed = !saved
+      if !saved { reload() }
     }
-    if logSaveFailed { reload() }
   }
 
   private func reload() {
