@@ -1592,8 +1592,7 @@ impl<E: InputEngine> Runtime<E> {
     }
 
     fn transition(&mut self, result: EngineResult) -> Transition {
-        // Every commit passes through here, so this is the one place the AI
-        // context has to be fed from. 插件给的行不是用户打的字，不进 AI 和重排的上文。
+        // 每一次上屏都经过这里，所以 AI 上文只在这一处喂；插件给的行不是用户打的字，不进 AI 和重排的上文。
         if result.has_commit && !self.commits_plugin_row() {
             self.remember_commit(&result.commit);
         }
