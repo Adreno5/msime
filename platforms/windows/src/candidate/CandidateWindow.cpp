@@ -12,6 +12,7 @@
 #include "TypingEffectSignal.h"
 #include "WindowShadow.h"
 #include <algorithm>
+#include <cmath>
 #include <commctrl.h>
 #include <iterator>
 #include "../../../../shared/contracts/msime_edition.h"
@@ -43,6 +44,7 @@ constexpr wchar_t class_name[] = L"MSIME.Client.Preview.Candidates" MSIME_EDITIO
 // 打字闪光和 Power Mode 抖动持续期间约每秒重画 30 帧，结束后停掉定时器；连击定时器只在显示的计数过期时触发一次。
 constexpr UINT_PTR typing_flash_timer = 0x4501;
 constexpr UINT_PTR typing_combo_timer = 0x4502;
+constexpr UINT_PTR skin_animation_timer = 0x4503;
 constexpr UINT typing_flash_frame_millis = 30;
 // Affect only this UI operation; restore the caller's thread context even on
 // failure. The created HWND retains PMv2 awareness for its entire lifetime.
@@ -309,6 +311,7 @@ CandidateWindow::Apartment::~Apartment() {
     CoUninitialize();
 }
 CandidateWindow::~CandidateWindow() {
+  finish_skin_animation();
   // 先断开读屏拿着的提供者，再销毁窗口。
   accessible_.reset();
   if (tooltip_)
@@ -344,6 +347,63 @@ void CandidateWindow::set_palette(CandidatePalette palette) {
   palette_ = std::move(palette);
   painted_.reset();
   if (window_)
+    InvalidateRect(window_, nullptr, FALSE);
+}
+
+bool CandidateWindow::skin_motion_enabled() const {
+  if (!animation_active_ || active_animation_ == CandidateSkinAnimationPreset::none ||
+      animation_.duration_ms == 0)
+    return false;
+  BOOL enabled = TRUE;
+  if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
+    enabled = TRUE;
+  return enabled != FALSE;
+}
+
+float CandidateWindow::skin_motion_progress() const {
+  if (!skin_motion_enabled())
+    return 1.0f;
+  const auto elapsed = GetTickCount64() - animation_started_;
+  return static_cast<float>(std::min<uint64_t>(elapsed, animation_.duration_ms)) /
+         static_cast<float>(animation_.duration_ms);
+}
+
+void CandidateWindow::begin_skin_animation(CandidateSkinAnimationPreset preset) {
+  // 新的显示或选中变化会打断旧的退出帧，退出快照不能覆盖新会话。
+  finishing_animation_ = false;
+  selection_animation_ = false;
+  exit_value_.reset();
+  if (preset == CandidateSkinAnimationPreset::none || animation_.duration_ms == 0) {
+    finish_skin_animation();
+    return;
+  }
+  active_animation_ = preset;
+  animation_started_ = GetTickCount64();
+  animation_active_ = true;
+  SetTimer(window_, skin_animation_timer, 16, nullptr);
+}
+
+void CandidateWindow::finish_skin_animation() {
+  animation_active_ = false;
+  selection_animation_ = false;
+  active_animation_ = CandidateSkinAnimationPreset::none;
+  if (window_)
+    KillTimer(window_, skin_animation_timer);
+}
+
+void CandidateWindow::skin_animation_tick() {
+  if (!animation_active_) {
+    KillTimer(window_, skin_animation_timer);
+    return;
+  }
+  if (!skin_motion_enabled() || skin_motion_progress() >= 1.0f) {
+    const bool finishing = finishing_animation_;
+    finishing_animation_ = false;
+    finish_skin_animation();
+    if (finishing)
+      hide_now();
+  }
+  if (IsWindowVisible(window_))
     InvalidateRect(window_, nullptr, FALSE);
 }
 void CandidateWindow::set_theme_palette(CandidatePalette palette) {
@@ -427,7 +487,9 @@ void CandidateWindow::invalidate_geometry() {
   if (window_)
     InvalidateRect(window_, nullptr, FALSE);
 }
-void CandidateWindow::hide() {
+void CandidateWindow::hide_now() {
+  finish_skin_animation();
+  exit_value_.reset();
   // The composition is over, so the next one starts its flip decision fresh.
   tallest_ = 0;
   // And its position fresh: "keep the first position" lasts until the card
@@ -446,6 +508,33 @@ void CandidateWindow::hide() {
   if (accessible_)
     accessible_->publish({AccessibleContainer::List, candidate_accessible_name, {}});
   ShowWindow(window_, SW_HIDE);
+}
+
+void CandidateWindow::hide_immediately() {
+  finishing_animation_ = false;
+  hide_now();
+}
+
+void CandidateWindow::hide() {
+  if (finishing_animation_)
+    return;
+  BOOL animations = TRUE;
+  if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0))
+    animations = TRUE;
+  if (IsWindowVisible(window_) && animations && animation_.duration_ms > 0 &&
+      animation_.exit != CandidateSkinAnimationPreset::none && shown_ &&
+      shown_->visible) {
+    exit_value_ = shown_;
+    finishing_animation_ = true;
+    selection_animation_ = false;
+    active_animation_ = animation_.exit;
+    animation_started_ = GetTickCount64();
+    animation_active_ = true;
+    SetTimer(window_, skin_animation_timer, 16, nullptr);
+    InvalidateRect(window_, nullptr, FALSE);
+    return;
+  }
+  hide_now();
 }
 // Measuring the page reads Engine text, so unusable presentation data reaches
 // this path as well as the paint one. The owner's thread learns nothing about
@@ -550,7 +639,8 @@ void CandidateWindow::release_latch(const char *cause) {
   }
 }
 void CandidateWindow::policy_hide(const CandidatePresentation &value) {
-  hide();
+  // 会话、焦点和全屏策略变化涉及隐私与输入目标，必须立即清掉窗口，不能把旧文字留在退出帧里。
+  hide_immediately();
   if (rendered_ && value.render_serial != receipted_serial_) {
     receipted_serial_ = value.render_serial;
     rendered_(value);
@@ -582,6 +672,11 @@ void CandidateWindow::reposition() {
   if (!value || !value->visible) {
     hide();
     return;
+  }
+  if (finishing_animation_) {
+    finishing_animation_ = false;
+    exit_value_.reset();
+    finish_skin_animation();
   }
   const DWORD pid = client_pid(value->lease.transport);
   // 同一个客户端换了登记代次，说明它断开后又连上了，锁存随之解除。
@@ -699,6 +794,18 @@ void CandidateWindow::reposition() {
   }
   const auto dpi = GetDpiForWindow(window_);
   const auto bounds = card_bounds(*value, work, dpi);
+  const bool was_visible = IsWindowVisible(window_) != FALSE;
+  const auto previous_highlight = [&]() -> std::optional<size_t> {
+    if (!shown_) return std::nullopt;
+    for (size_t index = 0; index < shown_->candidates.size(); ++index)
+      if (shown_->candidates[index].highlighted) return index;
+    return std::nullopt;
+  }();
+  const auto next_highlight = [&]() -> std::optional<size_t> {
+    for (size_t index = 0; index < value->candidates.size(); ++index)
+      if (value->candidates[index].highlighted) return index;
+    return std::nullopt;
+  }();
   if (!SetWindowPos(window_, HWND_TOPMOST, bounds.x, bounds.y, bounds.width,
                     bounds.height, SWP_NOACTIVATE | SWP_SHOWWINDOW))
     throw std::runtime_error("Candidate positioning failed");
@@ -721,6 +828,14 @@ void CandidateWindow::reposition() {
   }
   shown_ = value;
   shown_dpi_ = dpi;
+  if (!was_visible) {
+    begin_skin_animation(animation_.enter);
+  } else if (previous_highlight != next_highlight &&
+             (!animation_active_ || selection_animation_)) {
+    // A highlight move while the card is still entering lets the entrance finish rather than restarting the card.
+    begin_skin_animation(animation_.selection);
+    selection_animation_ = animation_active_;
+  }
   InvalidateRect(window_, nullptr, FALSE);
 }
 // Measure the page, size the card from the shared geometry and keep it inside
@@ -975,7 +1090,9 @@ void CandidateWindow::paint() {
   Painting painting(window_);
   if (!painting.dc)
     throw std::runtime_error("Candidate painting unavailable");
-  const auto value = reader_(); // Never paint the last cached owner's text.
+  auto value = reader_(); // Never paint the last cached owner's text unless an exit animation owns that last frame.
+  if ((!value || !value->visible) && finishing_animation_ && exit_value_)
+    value = exit_value_;
   if (!value || !value->visible) {
     hide();
     return;
@@ -1006,8 +1123,45 @@ void CandidateWindow::paint() {
       size.height - decoration_offset_ -
           static_cast<float>(shadow_insets_.top + shadow_insets_.bottom),
       decoration_offset_, shadow_insets_);
+  const float motion_progress = skin_motion_progress();
+  const float eased = motion_progress * motion_progress * (3.0f - 2.0f * motion_progress);
+  // The selection preset animates the highlighted row below; only the enter and exit presets move the whole card.
+  const bool selection_motion = animation_active_ && selection_animation_;
+  const bool motion_entering = animation_active_ && !selection_animation_ &&
+                               (active_animation_ == CandidateSkinAnimationPreset::fade ||
+                                active_animation_ == CandidateSkinAnimationPreset::fade_scale ||
+                                active_animation_ == CandidateSkinAnimationPreset::slide_up ||
+                                active_animation_ == CandidateSkinAnimationPreset::spring ||
+                                active_animation_ == CandidateSkinAnimationPreset::glow);
+  float motion_alpha = 1.0f;
+  float motion_scale = 1.0f;
+  float motion_offset_y = 0.0f;
+  if (motion_entering) {
+    motion_alpha = finishing_animation_
+                       ? (active_animation_ == CandidateSkinAnimationPreset::glow
+                              ? 1.0f - 0.18f * eased
+                              : 1.0f - eased)
+                       : (active_animation_ == CandidateSkinAnimationPreset::glow
+                              ? 0.82f + 0.18f * eased
+                              : eased);
+    if (active_animation_ == CandidateSkinAnimationPreset::fade_scale ||
+        active_animation_ == CandidateSkinAnimationPreset::spring)
+      motion_scale = finishing_animation_
+                         ? (active_animation_ == CandidateSkinAnimationPreset::spring
+                                ? 1.0f - 0.04f * (eased + 0.08f * std::sin(eased * 6.2831853f) * (1.0f - eased))
+                                : 1.0f - 0.04f * eased)
+                         : (active_animation_ == CandidateSkinAnimationPreset::spring
+                                ? 0.96f + 0.04f * (eased + 0.08f * std::sin(eased * 6.2831853f) * (1.0f - eased))
+                                : 0.96f + 0.04f * eased);
+    if (active_animation_ == CandidateSkinAnimationPreset::slide_up)
+      motion_offset_y = finishing_animation_ ? -8.0f * eased : 8.0f * (1.0f - eased);
+  }
+  // brush() caches one brush per colour and the cache never shrinks, so the per-frame opacity takes the typing flash's finite steps.
+  motion_alpha = typing_effect_quantized_alpha(motion_alpha);
   auto brush = [&](const CandidateColor &color) {
-    auto *value = device_.GetSolidColorBrush(D2D1::ColorF(color.r, color.g, color.b, color.a));
+    auto faded = color;
+    faded.a *= motion_alpha;
+    auto *value = device_.GetSolidColorBrush(D2D1::ColorF(faded.r, faded.g, faded.b, faded.a));
     if (!value)
       throw std::runtime_error("Candidate brush unavailable");
     return value;
@@ -1042,12 +1196,15 @@ void CandidateWindow::paint() {
   target->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
   // Power Mode 的抖动：整张卡片连同阴影横向位移一两个设备无关像素，阴影的透明边距装得下；抖完回到原位，点击区域不受影响。
   // 每帧都设一次：上一帧若在 EndDraw 之前抛出，留在目标上的位移不会带进这一帧。
-  target->SetTransform(
-      effect_shaking_
-          ? D2D1::Matrix3x2F::Translation(
-                typing_shake_offset(static_cast<uint32_t>(GetTickCount64() - effect_started_), effect_settings_.intensity),
-                0.0f)
-          : D2D1::Matrix3x2F::Identity());
+  const float shake = effect_shaking_
+                          ? typing_shake_offset(static_cast<uint32_t>(GetTickCount64() - effect_started_), effect_settings_.intensity)
+                          : 0.0f;
+  auto transform = D2D1::Matrix3x2F::Translation(shake, motion_offset_y);
+  if (motion_scale != 1.0f)
+    transform = transform * D2D1::Matrix3x2F::Scale(
+                              motion_scale, motion_scale,
+                              D2D1::Point2F(size.width / 2.0f, size.height / 2.0f));
+  target->SetTransform(transform);
   const D2D1_RECT_F card_rect{
       static_cast<float>(frame.card_left) + inset,
       static_cast<float>(frame.card_top) + inset,
@@ -1240,10 +1397,28 @@ void CandidateWindow::paint() {
                            static_cast<float>(frame.card_left + row.right),
                            static_cast<float>(frame.card_top + row.bottom)};
     if (value->candidates[i].highlighted || hovered_ == i) {
-      const D2D1_ROUNDED_RECT selection{rect, row_radius, row_radius};
-      target->FillRoundedRectangle(selection, brush(value->candidates[i].highlighted
-                                                        ? palette_.selected
-                                                        : palette_.hover));
+      const bool moving = selection_motion && value->candidates[i].highlighted;
+      D2D1_RECT_F fill = rect;
+      auto fill_color = value->candidates[i].highlighted ? palette_.selected : palette_.hover;
+      if (moving && active_animation_ == CandidateSkinAnimationPreset::spring) {
+        // The highlight grows from 94% past its size and settles; the text stays where hit testing expects it.
+        const float grow = 0.94f + 0.06f * eased + 0.12f * std::sin(eased * 3.1415927f) * (1.0f - eased);
+        const float half_width = (rect.right - rect.left) * grow * 0.5f;
+        const float half_height = (rect.bottom - rect.top) * grow * 0.5f;
+        const float center_x = (rect.left + rect.right) * 0.5f;
+        const float center_y = (rect.top + rect.bottom) * 0.5f;
+        fill = {center_x - half_width, center_y - half_height, center_x + half_width,
+                center_y + half_height};
+      } else if (moving && active_animation_ != CandidateSkinAnimationPreset::glow) {
+        fill_color.a *= typing_effect_quantized_alpha(0.45f + 0.55f * eased);
+      }
+      const D2D1_ROUNDED_RECT selection{fill, row_radius, row_radius};
+      target->FillRoundedRectangle(selection, brush(fill_color));
+      if (moving && active_animation_ == CandidateSkinAnimationPreset::glow) {
+        auto glow = palette_.accent;
+        glow.a = typing_effect_quantized_alpha(0.65f * (1.0f - eased));
+        target->DrawRoundedRectangle(selection, brush(glow), 2.0f);
+      }
       if (value->candidates[i].highlighted && palette_.show_selected_bar) {
         const auto extent = candidate_selection_bar(
             rect.left, rect.top, rect.bottom, metrics.candidate_row);
@@ -1722,6 +1897,10 @@ LRESULT CALLBACK CandidateWindow::procedure(HWND window, UINT message,
         self->take_typing_effect();
         return 0;
       case WM_TIMER:
+        if (wparam == skin_animation_timer) {
+          self->skin_animation_tick();
+          return 0;
+        }
         if (wparam != typing_flash_timer && wparam != typing_combo_timer)
           break;
         self->typing_effect_tick(static_cast<UINT_PTR>(wparam));
