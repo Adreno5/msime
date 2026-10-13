@@ -380,6 +380,11 @@ impl Session {
         self.input.set_plugin_commands(commands)
     }
 
+    /// 生效的插件指令里 `trigger` 的标题，见 `CandidateQueries::plugin_command_title`。
+    pub fn plugin_command_title(&self, trigger: &str) -> Option<&str> {
+        self.input.queries.plugin_command_title(trigger)
+    }
+
     /// 替换 K 模式的宿主短语表；用不了的行被丢弃。只有打开的 K 模式列表刷新失败时才返回诊断。
     pub fn set_quick_phrase_table(&mut self, table: &[QuickPhraseEntry]) -> Option<String> {
         self.input.set_quick_phrase_table(table)

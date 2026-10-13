@@ -36,8 +36,8 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 
 - **`CommandProvider`**（`transform.rs` 的 desktop 模块，cfg 同候选变换）：`provide(trigger, argument, out) -> CommandOutcome`。`Ran` 表示插件运行完了，`out` 就是它的行（可以是 0 行）；`NotRun` 表示插件没运行（模块还在编译、已经熔断、本轮配额用完、没有主人），不写缓存，下一次派发再问。`Runtime::set_command_provider` 挂上或去掉它；移动端和网页引擎没有这个 trait，inert 模块里同名的内部方法什么都不做。
 - **调用时机**：`refresh` 的第一步、取快照之前（`run_command_provider`）。只有同时满足才问：正在派发类调用里（`dispatch_live` 置的 `live` 标记）、没有暂停（`suspend_candidate_transform`，宿主在 `COMMIT_OBSERVE_ONLY` 时设）、挂着提供者、引擎的 `plugin_command_query()` 是 `Some`。插件运行了就 `apply_plugin_command_rows`，然后照常取快照。行在同一次派发里写进引擎，代次只在派发开头前进那一次，`CandidateId` 当场就能选。旁路调用（`apply_online_*`、`rerank_settled`、`all_candidates`、`apply_translations`、设置类调用）从不问，引擎缓存的行照样显示，所以停顿和网络时序都不交给脚本；高亮移动和翻页在 refresh 之前就返回，也不问。
-- **`Runtime::set_plugin_commands`**：交给引擎、记下标题（触发词 → 标题），照 `set_command_table` 推进代次并刷新。
-- **插件注释**：runtime 记下最近一次写进引擎的行的（文本 → 注释）。`script_annotation(seat)` 对来源 14 的可见行返回「标题 注释」，没有注释时只有标题，含控制字符的注释不显示，整段截到 `MAX_ANNOTATION_UTF16 = 32` 个 UTF-16 码元（和 script-runtime 的 `limits::MAX_ANNOTATION_UTF16` 同值，在字符边界上截）。来源 14 的行不经过候选变换的注释表。
+- **`Runtime::set_plugin_commands`**：交给引擎，照 `set_command_table` 推进代次并刷新。runtime 不另记标题：宿主交来的表可能有重复的触发词、不合规的标题，哪一条生效只有引擎知道（先到先得、标题不合规的丢掉，用户指令表变了还要重新过滤），runtime 另记一张表就会和引擎分叉，后来者的标题画到先来者的行旁边。
+- **插件注释**：runtime 记下最近一次写进引擎的行的（文本 → 注释）；标题按行的 `pinyin`（触发词）向引擎要（`InputEngine::plugin_command_title`，引擎侧是 `Session::plugin_command_title`，查的是过滤之后的生效表）。`script_annotation(seat)` 对来源 14 的可见行返回「标题 注释」，没有注释时只有标题，含控制字符的注释不显示，整段截到 `MAX_ANNOTATION_UTF16 = 32` 个 UTF-16 码元（和 script-runtime 的 `limits::MAX_ANNOTATION_UTF16` 同值，在字符边界上截）。来源 14 的行不经过候选变换的注释表。
 - **不进 AI 上文**：`transition` 在 `facts.selection` 的来源是 14、结果是 Committed 时跳过 `remember_commit`。runtime 只能按选中行的来源区分，这是来源 14 不能复用 `Generated` 的原因。
 - **全角**：`OutputContext::plugin_row`（`#[serde(skip)]`，不上线缆）按同一条件算；host-api 的 `complete_transition` 在它为真时不转全角，写法同网址模式。同一个 `/` 模式里内置指令（`/rq`）的上屏照旧转全角。
 - **失焦**：新动作 `Action::FinishOnFocusLoss`，host-api 的命令 20（宿主替失焦结束组字，macOS 的 `commitComposition:`）派发它，生命周期类别仍是 `FocusLoss`（`InputClass::of` 对它返回 `Commit`，命令 20 再覆盖成 `FocusLoss`）。它和 `Finish` 只差一处：高亮行是来源 14 时走 `Command::CommitRaw`，上屏用户打的 `/uuid`，因为这一次用户没在看候选窗。`Finish`（命令 9）和标点结束仍提交高亮行，和 `/rq` 一致：那是用户自己按下的键。
@@ -68,6 +68,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 ## Alternatives considered
 
 - **插件行插进普通组字的主候选窗**（设计里的方案 B：错音提示、行内拆字）。最强的理由是用户价值更高，不用先进 `/`。不用：全拼、双拼、五笔下 `READING` 是空串，插件拿不到读音；插行要同时改 `mixed_candidates` 和 `ranking_candidates`，否则 `ranking_index` 回退成显示下标、`learn_candidate` 会调到另一个词库词的词频；每个按键都要多跑一次脚本、多取一次快照，时延没量过；五笔四码唯一的判断看的是整个列表的长度。`/` 模式复用 `/fy` 的现成路径，只有本地模式受影响。
+- **runtime 在 `set_plugin_commands` 里自己记一张（触发词 → 标题）表**（最初的实现）。最强的理由是 `InputEngine` 不用多一个方法，画注释时也不用跨进引擎。不用：那张表从宿主交来的原表直接收集，重复的触发词后写覆盖前写，标题被引擎丢掉的那条也收进来，而引擎是先到先得，`[{uuid,UUID},{uuid,EVIL}]` 时引擎把 `/uuid` 交给第一条，行旁却画「EVIL」；照着引擎的规则再过滤一遍又得跟着用户指令表变，等于第二份过滤。
 - **复用来源 `Generated`（8）**。最强的理由是不用改线缆上的来源编号，宿主一行不改。不用：runtime 只能按选中行的来源区分上屏，复用 8 就分不出哪一次上屏来自插件，UUID 会被喂进 AI 上文，也分不出该不该转全角、该不该请求释义。
 - **只记「这份预编辑串已经问过」的标记，不缓存行**。最强的理由是状态最少。不用：`update_local_candidates` 每次都从头重建列表，标记还在、行已经没了，又不会再问，插件行就此消失。
 - **缓存多槽，或者只在发出新查询时才替换缓存**。最强的理由是 `/uuid` 退一个字母再打回来时不用再跑插件。不用：那样同一份预编辑串永远是同一个 UUID，和「删掉重打换一个」矛盾；一槽、预编辑串一变就清掉，语义最简单。
@@ -91,7 +92,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - `crates/script-runtime/src/tests.rs`：新增的不可见字符逐个经 `rewrite_commit` 和 `candidates_annotate` 得到 `INVALID`，跟在 emoji 后的 VS16 放行。
 - `crates/engine/src/local/command.rs` 的 tests：内置触发词和标题的全集；插件触发词和内置、用户表、前面的插件相等或互为前缀时丢掉，长度、字符、标题不合规时丢掉；参数匹配。
 - `crates/engine/src/session/tests.rs`：插件行顶替兜底行，0 行时兜底行还在且不再问；方向键和列表重建不丢、不再问，退一个字母再打回来重新问；换插件指令、换指令表清掉缓存，用户表有 `uu` 时 `uuid` 不生效；过期查询被拒；其他指令照旧带标题、从不问插件；开着个人上下文和词频调整时选中插件行只上屏这一行、不带诊断，用户日志行数和词库文件字节不变，不能置顶固定删除；插件行误进 `is_dictionary` 时这条会红（调词频在 `/` 模式下没有键，带回诊断），误进 `is_sentence_learning` 时行为上看不出来（`can_learn_sentence_candidate` 在本地模式一律拒绝），只由谓词单测守着。`types.rs`：`from_u8(14)`、往返覆盖 0–255、不属于任何谓词。`host/tests.rs`：`candidate_gloss_key(_, 14)` 为 `None`。
-- `crates/input-runtime/src/tests/plugin_commands.rs`（桌面 cfg，假的提供者）：有插件指令、没有提供者时 `/` 模式的视图和没有插件指令时逐个相同；打完触发词的那次派发里写行，代次只前进一次，ID 可选，引擎注释为空，插件注释是「标题 注释」；方向键、翻页、`all_candidates`、`apply_translations`、设置类调用不问；`NotRun` 下次派发再问，0 行不再问；暂停时不问；插件行上屏不进 AI 上文而 `/rq` 照进；注释截到 32 个码元且不切开代理对；`FinishOnFocusLoss` 在高亮插件行时上屏 `/uuid`，`Finish` 和标点上屏高亮行，高亮的不是插件行时和 `Finish` 相同。`tests.rs` 的选词路由表加上 `FinishOnFocusLoss`。
+- `crates/input-runtime/src/tests/plugin_commands.rs`（桌面 cfg，假的提供者）：有插件指令、没有提供者时 `/` 模式的视图和没有插件指令时逐个相同；打完触发词的那次派发里写行，代次只前进一次，ID 可选，引擎注释为空，插件注释是「标题 注释」；表里触发词重复、或前一条标题含控制字符时，行旁的标题是引擎留下的那一条；方向键、翻页、`all_candidates`、`apply_translations`、设置类调用不问；`NotRun` 下次派发再问，0 行不再问；暂停时不问；插件行上屏不进 AI 上文而 `/rq` 照进；注释截到 32 个码元且不切开代理对；`FinishOnFocusLoss` 在高亮插件行时上屏 `/uuid`，`Finish` 和标点上屏高亮行，高亮的不是插件行时和 `Finish` 相同。`tests.rs` 的选词路由表加上 `FinishOnFocusLoss`。
 - `crates/host-api/src/tests.rs`：页上有来源 14 时 `msime_client_translation_query` 为 `null`，在线翻译、英文释义、离线释义三种开法都一样，`/rq` 作对照照常请求；全角开着时插件行上屏半角、`plugin_row` 不出现在 JSON 里，同一会话的 `/rq` 照旧转全角。`tests/lifecycle_traces.rs`：命令 20 在插件行高亮时上屏 `/uuid`、记 `commit{FocusLoss}`，命令 9 上屏插件行。`lifecycle/tests.rs`：`FinishOnFocusLoss` 的类别。
 - `client-core` 的 `translation` 测试：`source_gets_no_gloss(14)`。
 - Windows `tests/input/candidate_completion_policy.cpp` 加 14，只经 CI 的 MinGW 交叉构建编译运行。

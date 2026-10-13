@@ -325,6 +325,38 @@ fn plugin_annotations_are_cut_to_the_annotation_limit() {
     assert_eq!(third.encode_utf16().count(), 31);
 }
 
+/// 宿主交来的表里触发词重复、或者前一条的标题不合规时，行旁画的是引擎留下的那一条的标题：重复的后来者不能把先来者的行标成自己的名字，被引擎丢掉的标题也不显示。
+#[test]
+fn the_title_beside_a_plugin_row_is_the_one_the_engine_kept() {
+    let command = |trigger: &str, title: &str| PluginCommand {
+        trigger: trigger.into(),
+        title: title.into(),
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (mut runtime, _script) = plugin_runtime(directory.path(), rows(&[("甲", "")]));
+    runtime
+        .set_plugin_commands(&[command("uuid", "UUID"), command("uuid", "EVIL")])
+        .unwrap();
+    let view = type_text(&mut runtime, "/uuid").view;
+    assert_eq!(texts(&view), ["甲"]);
+    assert_eq!(
+        view.candidates[0].script_annotation.as_deref(),
+        Some("UUID")
+    );
+
+    // 第一条的标题含控制字符，引擎丢掉它、留下第二条。
+    runtime.dispatch(Action::Command(Command::Cancel)).unwrap();
+    runtime
+        .set_plugin_commands(&[command("uuid", "A\tB"), command("uuid", "UUID")])
+        .unwrap();
+    let view = type_text(&mut runtime, "/uuid").view;
+    assert_eq!(texts(&view), ["甲"]);
+    assert_eq!(
+        view.candidates[0].script_annotation.as_deref(),
+        Some("UUID")
+    );
+}
+
 /// 失焦（命令 20）时高亮的是插件行：原样上屏用户打的 `/uuid`。按键结束和标点照旧上屏高亮行；高亮的不是插件行时，失焦和结束组字一样。
 #[test]
 fn focus_loss_commits_the_typed_command_instead_of_a_plugin_row() {

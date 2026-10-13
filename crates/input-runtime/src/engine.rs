@@ -62,6 +62,10 @@ pub trait InputEngine {
     fn plugin_command_query(&self) -> Option<PluginCommandQuery> {
         None
     }
+    /// 生效的插件指令里 `trigger` 的标题；没有 `/` 模式的引擎永远没有。
+    fn plugin_command_title(&self, _trigger: &str) -> Option<&str> {
+        None
+    }
     /// 把插件给的行（文本，插件注释）放到 `/` 列表前面；过期的查询返回 false。没有 `/` 模式的引擎一律拒绝。
     fn apply_plugin_command_rows(
         &mut self,
@@ -293,6 +297,9 @@ impl InputEngine for Session {
     }
     fn plugin_command_query(&self) -> Option<PluginCommandQuery> {
         Session::plugin_command_query(self)
+    }
+    fn plugin_command_title(&self, trigger: &str) -> Option<&str> {
+        Session::plugin_command_title(self, trigger)
     }
     fn apply_plugin_command_rows(
         &mut self,

@@ -607,11 +607,10 @@ impl<E: InputEngine> Runtime<E> {
         self.refresh()
     }
 
-    /// 把宿主算好的插件指令交给引擎并记下标题；打开的 `/` 列表据此重建，所以视图要刷新。引擎缓存的插件行随之清掉。
+    /// 把宿主算好的插件指令交给引擎；打开的 `/` 列表据此重建，所以视图要刷新。引擎缓存的插件行随之清掉。标题也由引擎保管，插件注释格画标题时向引擎要。
     pub fn set_plugin_commands(&mut self, commands: &[PluginCommand]) -> Result<(), RuntimeError> {
         self.advance()?;
         self.engine.set_plugin_commands(commands)?;
-        self.remember_command_titles(commands);
         self.refresh()
     }
 

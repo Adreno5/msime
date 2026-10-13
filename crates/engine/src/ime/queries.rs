@@ -95,6 +95,14 @@ impl CandidateQueries {
         self.plugin_commands = usable_plugin_commands(&self.command_table, commands);
     }
 
+    /// 生效的插件指令里 `trigger` 的标题；`trigger` 不属于任何生效的插件指令时为 `None`。宿主交来的表里触发词重复、或者标题不合规时，标题以过滤之后留下的那一条为准。
+    pub fn plugin_command_title(&self, trigger: &str) -> Option<&str> {
+        self.plugin_commands
+            .iter()
+            .find(|command| command.trigger == trigger)
+            .map(|command| command.title.as_str())
+    }
+
     /// `/` 之后的输入属于哪条生效的插件指令：（触发词，参数）。
     pub fn plugin_command_source<'a>(&self, code: &'a str) -> Option<(&str, &'a str)> {
         plugin_command_source(code, &self.plugin_commands)

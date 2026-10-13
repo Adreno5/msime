@@ -387,6 +387,11 @@ impl Session {
         }
     }
 
+    /// 生效的插件指令里 `trigger` 的标题：引擎丢掉用不了的、重复的插件指令之后留下的那一条。插件指令行（来源 14）的 `pinyin` 就是它的触发词。
+    pub fn plugin_command_title(&self, trigger: &str) -> Option<&str> {
+        self.inner.plugin_command_title(trigger)
+    }
+
     /// 实时替换宿主给的辅助码表（辅助码表插件）；`None` 回到 `helpcode_schema` 对应的表。重建的会话从 `EngineOptions::helpcode_table` 开始。
     ///
     /// 从不失败：回退的表读不出来（典型是 `custom/<stem>` 的文件已被删掉）时装上空表并记一条日志。宿主在获得焦点时调用它，这里报错会让每一次聚焦都失败。

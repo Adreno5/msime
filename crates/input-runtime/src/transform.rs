@@ -153,8 +153,6 @@ mod desktop {
         suspended: bool,
         /// 插件指令的提供者，见 [`CommandProvider`]。
         commands: Option<Box<dyn CommandProvider>>,
-        /// 插件指令的标题，按触发词。
-        command_titles: HashMap<String, String>,
         /// 最近一次写进引擎的插件行的注释，按行文本；同文的行引擎只留第一行，这里也只记第一条。
         command_notes: HashMap<String, String>,
     }
@@ -188,14 +186,6 @@ mod desktop {
             self.plugins.commands = provider;
         }
 
-        /// 记下插件指令的标题，`set_plugin_commands` 调用。
-        pub(crate) fn remember_command_titles(&mut self, commands: &[PluginCommand]) {
-            self.plugins.command_titles = commands
-                .iter()
-                .map(|command| (command.trigger.clone(), command.title.clone()))
-                .collect();
-        }
-
         /// refresh 开头、取快照之前调用：派发类调用里、没有暂停、挂着提供者、引擎有要问的查询时问插件，插件运行了就把行写进引擎。旁路调用一概不问，引擎缓存的行照样显示。
         pub(crate) fn run_command_provider(&mut self) {
             if !self.plugins.live || self.plugins.suspended {
@@ -222,15 +212,13 @@ mod desktop {
             }
         }
 
-        /// 插件指令行的插件注释：「标题 注释」，没有注释时只有标题，截到 [`MAX_ANNOTATION_UTF16`] 个码元；含控制字符的注释不显示。
+        /// 插件指令行的插件注释：「标题 注释」，没有注释时只有标题，截到 [`MAX_ANNOTATION_UTF16`] 个码元；含控制字符的注释不显示。标题向引擎要（`InputEngine::plugin_command_title`），不在这里另记一份：宿主交来的表里触发词重复或标题不合规时，只有引擎知道哪一条生效。
         fn plugin_row_annotation(&self, seat: usize) -> Option<String> {
             let text = self.cached.candidates.get(seat)?;
             let trigger = self.cached.candidate_codes.get(seat)?;
             let title = self
-                .plugins
-                .command_titles
-                .get(trigger)
-                .map(String::as_str)
+                .engine
+                .plugin_command_title(trigger)
                 .unwrap_or_default();
             let note = self
                 .plugins
@@ -526,9 +514,6 @@ mod inert {
         pub(crate) fn transform_candidates(&mut self) -> bool {
             false
         }
-
-        /// 移动端和网页引擎不运行插件指令，也不记标题。
-        pub(crate) fn remember_command_titles(&mut self, _commands: &[PluginCommand]) {}
 
         pub(crate) fn run_command_provider(&mut self) {}
     }
