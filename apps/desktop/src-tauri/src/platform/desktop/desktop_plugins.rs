@@ -253,6 +253,8 @@ pub async fn script_grants(
 }
 
 /// 授予、调整或撤销一个脚本插件的授权。`hash` 是页面展示给用户的那个内容哈希，包在这之后被换过时返回 `plugin_script_changed`；启用时超出同时启用的个数或内存总账分别返回 `plugin_script_limit`、`plugin_script_memory`。
+// 后四个参数是前端调用这条命令时传的字段，合并成结构体会改掉 IPC 契约；多出的一个是官方插件包目录要用的 AppHandle。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn set_script_grant(
     app: tauri::AppHandle,
