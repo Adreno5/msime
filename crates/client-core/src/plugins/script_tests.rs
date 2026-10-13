@@ -19,6 +19,7 @@ const COMMIT_SCALAR: Import = ("commit_scalar", &[I32], &[I64]);
 const COMMIT_TEXT: Import = ("commit_text", &[I32, I32, I32], &[I32]);
 const REWRITE_COMMIT: Import = ("rewrite_commit", &[I32, I32], &[I32]);
 const COMPOSITION_SCALAR: Import = ("composition_scalar", &[I32], &[I64]);
+const COMMAND_ROW: Import = ("command_row", &[I32, I32, I32, I32], &[I32]);
 
 fn leb(mut value: usize, out: &mut Vec<u8>) {
     loop {
@@ -1175,4 +1176,228 @@ fn the_grants_view_keeps_the_order_and_the_capability_names() {
         ]
     );
     assert!(view.health.is_empty());
+}
+
+/// 在 `/` 指令里给出候选的包：申请 `provide_commands`、声明 `command` 钩子，`commands` 是接在 `[script]` 后面的 `[[script.commands]]`。
+fn commander(commands: &str) -> String {
+    manifest(
+        "uuid",
+        "'provide_commands'",
+        &format!("abi = 1\nmodule = 'main.wasm'\nhooks = ['command']\n{commands}"),
+    )
+}
+
+fn command(trigger: &str, title: &str) -> String {
+    format!("[[script.commands]]\ntrigger = '{trigger}'\ntitle = '{title}'\n")
+}
+
+#[test]
+fn a_script_pack_declares_its_slash_commands() {
+    let files = tempdir().unwrap();
+    let script = commander(&format!(
+        "{}{}",
+        command("uuid", "UUID"),
+        command("guid", "GUID")
+    ));
+    let directory = write_pack(files.path(), "uuid", &script, &module(&[COMMAND_ROW]));
+    let summary = validate(&directory).unwrap();
+    let pack = script_content(&summary);
+    assert_eq!(
+        pack.commands,
+        [
+            script_pack::ScriptCommand {
+                trigger: "uuid".into(),
+                title: "UUID".into(),
+            },
+            script_pack::ScriptCommand {
+                trigger: "guid".into(),
+                title: "GUID".into(),
+            },
+        ]
+    );
+    assert_eq!(
+        pack.permissions,
+        CapabilitySet::EMPTY.with(Capability::ProvideCommands)
+    );
+    let json = serde_json::to_value(&summary).unwrap();
+    assert_eq!(json["permissions"], serde_json::json!(["provide_commands"]));
+    assert_eq!(json["hooks"], serde_json::json!(["command"]));
+    assert_eq!(
+        json["commands"],
+        serde_json::json!([
+            {"trigger": "uuid", "title": "UUID"},
+            {"trigger": "guid", "title": "GUID"},
+        ])
+    );
+    // 内容哈希的算法不变：清单字节本来就计入。
+    assert_eq!(
+        pack.content_hash,
+        script_pack::content_hash(script.as_bytes(), &module(&[COMMAND_ROW]))
+    );
+
+    // 不声明指令的旧包：摘要里没有 `commands`。
+    let (reader, wasm) = reader("pangu");
+    let directory = write_pack(files.path(), "pangu", &reader, &wasm);
+    let json = serde_json::to_value(validate(&directory).unwrap()).unwrap();
+    assert!(json.get("commands").is_none());
+}
+
+#[test]
+fn slash_commands_that_could_not_work_are_refused_with_the_reason() {
+    let files = tempdir().unwrap();
+    let wasm = module(&[COMMAND_ROW]);
+    let five: String = ["aa", "bb", "cc", "dd", "ee"]
+        .iter()
+        .map(|trigger| command(trigger, "五"))
+        .collect();
+    let cases: Vec<(String, &str)> = vec![
+        // 内置触发词：相等、插件触发词是它的前缀、它是插件触发词的前缀。
+        (
+            commander(&command("rq", "日")),
+            "和内置指令 /rq 相同或互为前缀",
+        ),
+        (
+            commander(&command("fan", "翻")),
+            "和内置指令 /fanyi 相同或互为前缀",
+        ),
+        (
+            commander(&command("riqix", "日")),
+            "和内置指令 /riqi 相同或互为前缀",
+        ),
+        (
+            commander(&command("dates", "日")),
+            "和内置指令 /date 相同或互为前缀",
+        ),
+        // 同一清单里重复、互为前缀。
+        (
+            commander(&format!(
+                "{}{}",
+                command("uuid", "甲"),
+                command("uuid", "乙")
+            )),
+            "指令触发词 uuid 重复了",
+        ),
+        (
+            commander(&format!("{}{}", command("uu", "甲"), command("uuid", "乙"))),
+            "指令触发词 uuid 和 uu 互为前缀",
+        ),
+        // 单字母、17 个字母、大写、不是字母。
+        (commander(&command("u", "U")), "必须是 2 到 16 个小写字母"),
+        (
+            commander(&command(&"u".repeat(17), "U")),
+            "必须是 2 到 16 个小写字母",
+        ),
+        (
+            commander(&command("UUID", "U")),
+            "必须是 2 到 16 个小写字母",
+        ),
+        (commander(&command("uu1", "U")), "必须是 2 到 16 个小写字母"),
+        // 标题：9 个字、空、内置标题、首尾空白、不可见字符。
+        (
+            commander(&command("uuid", "一二三四五六七八九")),
+            "标题必须是 1 到 8 个字符",
+        ),
+        (commander(&command("uuid", "")), "标题必须是 1 到 8 个字符"),
+        (
+            commander(&command("uuid", "翻译")),
+            "不能和内置指令的标题「翻译」相同",
+        ),
+        (commander(&command("uuid", " U")), "标题首尾不能是空白"),
+        (
+            commander("[[script.commands]]\ntrigger = 'uuid'\ntitle = \"U\\u200BU\"\n"),
+            "标题含有不允许的字符",
+        ),
+        // 结构：多出来的键、缺标题、空表、超过 4 条、不是表的数组。
+        (
+            commander("[[script.commands]]\ntrigger = 'uuid'\ntitle = 'U'\ntemplate = 'x'\n"),
+            "script.commands 里有未知的键 template",
+        ),
+        (
+            commander("[[script.commands]]\ntrigger = 'uuid'\n"),
+            "需要字符串 title",
+        ),
+        (commander("commands = []\n"), "要有 1 到 4 条指令"),
+        (commander(&five), "要有 1 到 4 条指令"),
+        (commander("commands = 'uuid'\n"), "必须是表的数组"),
+        // 指令、能力和钩子三者缺一不可。
+        (
+            commander(&command("uuid", "U")).replace("'provide_commands'", ""),
+            "声明了 script.commands 就必须申请 provide_commands",
+        ),
+        (
+            commander(&command("uuid", "U")).replace("['command']", "['commit']"),
+            "声明了 script.commands 就必须声明 command 钩子",
+        ),
+        (
+            commander(""),
+            "申请了 provide_commands 就必须在 script.commands 里声明指令",
+        ),
+        (
+            commander("").replace("'provide_commands'", ""),
+            "声明了 command 钩子就必须在 script.commands 里声明指令",
+        ),
+    ];
+    for (script, expected) in &cases {
+        let directory = write_pack(files.path(), "uuid", script, &wasm);
+        let reason = refusal(&directory);
+        assert!(reason.contains(expected), "{expected}: {reason}");
+    }
+    // 四条、各不相关、标题用到 8 个字，可以。
+    let four: String = [
+        ("uuid", "八个字的标题也行"),
+        ("guid", "G"),
+        ("lorem", "L"),
+        ("ipsum", "I"),
+    ]
+    .iter()
+    .map(|(trigger, title)| command(trigger, title))
+    .collect();
+    let directory = write_pack(files.path(), "uuid", &commander(&four), &wasm);
+    assert_eq!(
+        script_content(&validate(&directory).unwrap())
+            .commands
+            .len(),
+        4
+    );
+}
+
+/// 没有 `commands` 的旧包：清单键和能力都加了一项，内容哈希一个字节都不变，已有的授权继续有效。固定值是这份夹具按现在的哈希公式（`commands` 没有让公式多出任何一段）算出的，以后谁改了公式或夹具，这里就会变红。
+#[test]
+fn the_content_hash_of_a_pack_without_commands_is_unchanged() {
+    let (script, wasm) = reader("pangu");
+    assert_eq!(
+        script_pack::content_hash(script.as_bytes(), &wasm),
+        "b49377d0055743c345a30b9fed4890f404557d8def290cb7430563755c6f3315"
+    );
+}
+
+/// client-core 复制的内置指令规则在清单里生效：每个内置触发词本身、以及在它后面加一个字母，都不能声明。
+#[test]
+fn every_builtin_trigger_is_reserved() {
+    let files = tempdir().unwrap();
+    let wasm = module(&[COMMAND_ROW]);
+    for builtin in script_pack::BUILTIN_COMMAND_TRIGGERS {
+        for trigger in [builtin.to_owned(), format!("{builtin}x")] {
+            let directory = write_pack(
+                files.path(),
+                "uuid",
+                &commander(&command(&trigger, "U")),
+                &wasm,
+            );
+            let reason = refusal(&directory);
+            assert!(reason.contains("和内置指令"), "{trigger}: {reason}");
+        }
+    }
+    for title in script_pack::BUILTIN_COMMAND_TITLES {
+        let directory = write_pack(
+            files.path(),
+            "uuid",
+            &commander(&command("uuid", title)),
+            &wasm,
+        );
+        assert!(
+            refusal(&directory).contains("不能和内置指令的标题"),
+            "{title}"
+        );
+    }
 }

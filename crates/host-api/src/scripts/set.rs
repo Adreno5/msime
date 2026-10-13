@@ -44,8 +44,8 @@ struct Entry {
     instance: Option<Live>,
     /// 这次聚焦里 trap 过（包括运行到一半被本轮配额截断）：实例已经丢弃，到下一次聚焦之前不再重建。否则一个每 50 次故意失败 2 次的插件永远不熔断，每次失败后都在按键路径上重跑一遍初始化。
     trapped: bool,
-    /// 这个插件最近一次投递所在的轮次，和那一轮其余钩子、`before_commit` 各还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
-    turn: Option<(u64, u64, u64)>,
+    /// 这个插件最近一次投递所在的轮次，和那一轮其余钩子、`before_commit`、`command` 各还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
+    turn: Option<(u64, u64, u64, u64)>,
 }
 
 /// 一个活着的实例和它在内存总账里占的那份。
@@ -496,12 +496,12 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
     if !module.declaration().hooks.contains(event.hook) {
         return Outcome::NotSubscribed;
     }
-    // 这个插件本轮里这个钩子所用的那份配额（`before_commit` 自己一份，其余钩子合用一份）已经用完：跳过到下一轮，也不为它在按键路径上重新初始化。
-    if let Some((last, left, before_commit_left)) = entry.turn {
-        let left = if event.hook == Hook::BeforeCommit {
-            before_commit_left
-        } else {
-            left
+    // 这个插件本轮里这个钩子所用的那份配额（`before_commit`、`command` 各自一份，其余钩子合用一份）已经用完：跳过到下一轮，也不为它在按键路径上重新初始化。
+    if let Some((last, left, before_commit_left, command_left)) = entry.turn {
+        let left = match event.hook {
+            Hook::BeforeCommit => before_commit_left,
+            Hook::Command => command_left,
+            _ => left,
         };
         if last == turn && left == 0 {
             return Outcome::TurnExhausted { fuel: 0 };
@@ -518,10 +518,10 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
         match ScriptInstance::new(module, entry.granted, budget) {
             Ok(mut instance) => {
                 *init_left = budget.saturating_sub(instance.init_fuel());
-                if let Some((last, left, before_commit_left)) =
+                if let Some((last, left, before_commit_left, command_left)) =
                     entry.turn.filter(|(last, ..)| *last == turn)
                 {
-                    instance.resume_turn(last, left, before_commit_left);
+                    instance.resume_turn(last, left, before_commit_left, command_left);
                 }
                 #[cfg(test)]
                 let instance = {
@@ -558,6 +558,7 @@ fn deliver_one(entry: &mut Entry, turn: u64, init_left: &mut u64, event: &Event<
             turn,
             live.instance.turn_fuel_left(),
             live.instance.before_commit_fuel_left(),
+            live.instance.command_fuel_left(),
         ));
     }
     match outcome {
