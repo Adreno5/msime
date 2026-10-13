@@ -1834,6 +1834,169 @@ fn tibetan_scheme_crosses_the_host_boundary() {
     read(msime_client_destroy(handle));
 }
 
+/// 测试用的插件指令提供者：不论触发词和参数，交回固定的行。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+struct FixedPluginRows(Vec<(String, String)>);
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+impl msime_input_runtime::CommandProvider for FixedPluginRows {
+    fn provide(
+        &mut self,
+        _trigger: &str,
+        _argument: &str,
+        out: &mut Vec<(String, String)>,
+    ) -> msime_input_runtime::CommandOutcome {
+        out.extend(self.0.iter().cloned());
+        msime_input_runtime::CommandOutcome::Ran
+    }
+}
+
+/// 在 crate 内部给会话挂上插件指令 `/uuid` 和一个交回固定行的提供者，代替 host-api 以后经授权算出的那一份。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+fn attach_plugin_rows(handle: u64, rows: &[&str]) {
+    let rows = rows
+        .iter()
+        .map(|text| ((*text).to_owned(), String::new()))
+        .collect();
+    SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        let session = sessions.get_mut(&handle).unwrap();
+        session
+            .runtime
+            .set_plugin_commands(&[msime_input_runtime::PluginCommand {
+                trigger: "uuid".into(),
+                title: "UUID".into(),
+            }])
+            .unwrap();
+        session
+            .runtime
+            .set_command_provider(Some(Box::new(FixedPluginRows(rows))));
+    });
+}
+
+/// 打一串字母，返回最后的视图。
+fn type_letters(handle: u64, keys: &[u8]) -> Value {
+    let mut view = Value::Null;
+    for key in keys {
+        let result = read(msime_client_character(handle, *key, false));
+        assert_eq!(result["ok"], true, "{result}");
+        view = result["value"]["view"].clone();
+    }
+    view
+}
+
+/// 页上有脚本插件的行（来源 14）时整页不请求释义和翻译：不论开的是在线翻译、英文释义还是离线释义。对照组是同一偏好下的 `/rq`，它照常请求，确认拦下它的是插件行本身。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+#[test]
+fn plugin_rows_ask_for_no_gloss_or_translation() {
+    let variants: [(&str, fn(&mut Preferences)); 3] = [
+        ("translation", |preferences| {
+            preferences.candidate_translations = true;
+        }),
+        ("english gloss", |preferences| {
+            preferences.candidate_english_gloss = true;
+        }),
+        ("offline gloss", |preferences| {
+            preferences.candidate_english_gloss = true;
+            preferences.translation_target_language =
+                msime_client_core::preferences::TranslationTargetLanguage::Fr;
+        }),
+    ];
+    for (label, configure) in variants {
+        let dir = tempfile::tempdir().unwrap();
+        offline_gloss_fixture(&dir.path().join("offline-glosses/zh-fr.db"), "fr");
+        let mut preferences = chinese_preferences();
+        preferences.local_modes.command = true;
+        preferences.candidate_translations = false;
+        preferences.candidate_english_gloss = false;
+        preferences.tencent_tmt.enabled = false;
+        configure(&mut preferences);
+        let handle = test_host_preferences(dir.path(), preferences);
+        assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+        attach_plugin_rows(handle, &["你好", "hello"]);
+
+        let view = type_letters(handle, b"/rq");
+        assert!(!view["candidates"].as_array().unwrap().is_empty());
+        assert!(
+            !read(msime_client_translation_query(handle))["value"].is_null(),
+            "{label}: the control asks"
+        );
+        read(msime_client_command(handle, 3));
+
+        let view = type_letters(handle, b"/uuid");
+        assert_eq!(view["candidates"][0]["text"], "你好", "{label}");
+        assert_eq!(view["candidates"][0]["source"], 14, "{label}");
+        assert!(
+            read(msime_client_translation_query(handle))["value"].is_null(),
+            "{label}"
+        );
+        read(msime_client_destroy(handle));
+    }
+}
+
+/// 全角输出开着时插件行原样上屏（半角 ASCII），候选窗里显示的就是上屏的；同一个会话里内置指令 `/rq` 的上屏照旧转全角。
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+#[test]
+fn plugin_rows_commit_half_width_in_full_width_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut preferences = chinese_preferences();
+    preferences.local_modes.command = true;
+    let handle = test_host_preferences(directory.path(), preferences);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    read(msime_client_set_character_width(handle, true));
+    attach_plugin_rows(handle, &["0f8fad5b-d9cb-469f"]);
+
+    let view = type_letters(handle, b"/uuid");
+    assert_eq!(view["candidates"][0]["text"], "0f8fad5b-d9cb-469f");
+    let committed = read(msime_client_command(handle, 1));
+    assert_eq!(committed["value"]["commit"], "0f8fad5b-d9cb-469f");
+    assert_eq!(
+        committed["value"]["commit_context"]["local_mode"],
+        "command"
+    );
+    assert!(
+        committed["value"]["commit_context"]
+            .get("plugin_row")
+            .is_none(),
+        "the flag stays off the wire"
+    );
+
+    let view = type_letters(handle, b"/rq");
+    let date = view["candidates"][0]["text"].as_str().unwrap().to_owned();
+    let widened: String = date
+        .chars()
+        .map(|character| match character {
+            '!'..='~' => char::from_u32(character as u32 + 0xfee0).unwrap(),
+            ' ' => '\u{3000}',
+            other => other,
+        })
+        .collect();
+    assert!(date.chars().any(|character| character.is_ascii_digit()));
+    let committed = read(msime_client_command(handle, 1));
+    assert_eq!(committed["value"]["commit"], widened.as_str());
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
 // 全角输出开着时，中文方案的上屏都转成全角，网址例外：上屏后 view 已回到 `none`，所以按上屏前的 `commit_context.local_mode` 豁免。
 #[test]
 fn url_commits_stay_half_width_in_full_width_mode() {
