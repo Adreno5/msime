@@ -118,6 +118,7 @@ class CCompositionProcessorEngine
 
     // Punctuation
     BOOL IsPunctuation(WCHAR wch);
+    // 按当前的引号与方头括号样式出字（Global::CornerQuotes、Global::HollowBrackets）。
     const WCHAR *GetPunctuation(WCHAR wch);
     // Smart punctuation (rime digit_separators-style): after ASCII letters/digits,
     // keep ',' '.' ':' as ASCII instead of mapping to Chinese punctuation.

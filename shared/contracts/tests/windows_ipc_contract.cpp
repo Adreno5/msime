@@ -185,6 +185,10 @@ int main()
 
     CHECK(FanyImeWorkerReplyType::SwitchToEn == FanyImeWorkerReplyType::SwitchToEnglish);
     CHECK(FanyImeWorkerReplyType::CommitCandidate == FanyImeWorkerReplyType::CommitCurCandidate);
+    // 新帧只能追加在最后：旧 TIP 丢掉大于它所知 MaxKnown 的类型，已有类型的编号不能动。
+    CHECK(FanyImeWorkerReplyType::SecondThirdCandidateChanged == 30);
+    CHECK(FanyImeWorkerReplyType::PunctuationMarksChanged == 31);
+    CHECK(FanyImeWorkerReplyType::MaxKnown == FanyImeWorkerReplyType::PunctuationMarksChanged);
     CHECK(FanyImeVoiceControl::Start == 1);
     CHECK(FanyImeVoiceControl::Stop == 2);
     CHECK(FanyImeVoiceControl::Cancel == 3);

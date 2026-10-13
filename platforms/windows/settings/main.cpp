@@ -11025,6 +11025,15 @@ private:
     auto punctuation = add_group(page, L"标点");
     bool_row(punctuation, 0xE8C1, L"中文标点", L"在中文模式下使用全角标点。",
              L"chinese_punctuation", true);
+    // 两项只在中文标点下起作用，所以紧跟在「中文标点」之后。取值与共享设置页、偏好文档相同。
+    select_row(punctuation, 0xE8C1, L"引号样式",
+               L"中文标点下 ' 键和 Shift+' 键输出的引号。直角引号：' 出「」，Shift+' 出『』",
+               L"quote_style",
+               {{L"curly", L"弯引号 “ ” ‘ ’"}, {L"corner", L"直角引号 「 」『 』"},
+                {L"corner_when_traditional", L"繁体输出时用直角引号"}},
+               L"curly");
+    select_row(punctuation, 0xE8C1, L"方头括号样式", L"中文标点下 [ ] 键输出的括号",
+               L"bracket_style", {{L"solid", L"实心 【 】"}, {L"hollow", L"空心 〖 〗"}}, L"solid");
     select_row(punctuation, 0xE72E, L"固定标点", L"切换中英文时的标点形态，三者互斥",
                L"punctuation_lock",
                {{L"follow", L"跟随中英文状态"}, {L"chinese", L"始终使用中文标点"},
