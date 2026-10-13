@@ -4,7 +4,7 @@
 //!
 //! 唯一的例外是桌面上的脚本插件（`kind = "script"`，见 `script_pack`）：它带一个 core wasm 模块，只在桌面输入法进程里由沙箱解释器按用户逐项授予的能力运行。它只在 macOS、Windows 和非 ohos 的 Linux 上编译，清单必须写 `schema_version = 2`，`permissions` 只对它放行白名单里的能力；授权记在 `script-grants.json`（`script_grants`）。移动端没有这个类型，上面的原则在移动端原样成立。
 //!
-//! 一个包放在 `<root>/<kind>/<id>/`：`root` 是宿主状态根目录下的 `plugins` 目录，`kind` 是 `PluginKind::as_str` 给出的名字（`sound`、`music`、`command_table`、`effect`、`phrase_table` 等）。目录里只有 `plugin.toml`、清单点名的平铺文件（音频或数据文件）和可选的说明文本，别的一律没有：没有子目录、没有符号链接、没有清单不认账的文件。内置音效包随各平台的安装包分发，不在 `root` 下，而在宿主指定的目录里（仓库中是 `resources/sound-packs`），与已安装的包并列列出。
+//! 一个包放在 `<root>/<kind>/<id>/`：`root` 是宿主状态根目录下的 `plugins` 目录，`kind` 是 `PluginKind::as_str` 给出的名字（`sound`、`music`、`command_table`、`effect`、`phrase_table` 等）。目录里只有 `plugin.toml`、清单点名的平铺文件（音频或数据文件）和可选的说明文本，别的一律没有：没有子目录、没有符号链接、没有清单不认账的文件。内置音效包随各平台的安装包分发，不在 `root` 下，而在宿主指定的目录里（仓库中是 `resources/sound-packs`），与已安装的包并列列出。桌面安装包另外随带官方插件包（`plugins/official-packs.json` 登记的脚本插件和短语表），在宿主指定的只读目录里按 `<kind>/<id>/` 排（[`BuiltinDirs::packs`]）；它们的 id 和内置音效包一样保留，载入时永远从那里读，默认停用。
 //!
 //! `mentions.json` beside the kind directories is the @ mode's name list, kept by `mentions`. It lives here rather than in the preferences document because that document is the one hosts copy and account sync reads from, and a contact list belongs to neither.
 
