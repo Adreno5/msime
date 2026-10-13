@@ -2796,6 +2796,34 @@ fn a_module_still_compiling_leaves_the_typed_row_until_it_is_ready() {
     assert_eq!(take_log(), [command_log("uuid")]);
 }
 
+/// 同哈希重新导入时授权文件先写、包目录后换，中间有一瞬包目录不在。那一瞬聚焦时清单载不入、指令为空；包回来之后授权文件不再变，指令要跟着清单的戳回来，而不是等下一次写授权或重启进程。
+#[test]
+fn a_pack_back_in_place_under_unchanged_grants_brings_its_trigger_back() {
+    let fixture = fixture_with(command_preferences());
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    let pack = fixture.plugins.join("script").join("uuid");
+    let aside = fixture.plugins.join("script").join(".replaced-uuid");
+    std::fs::rename(&pack, &aside).unwrap();
+    opt_in(&fixture, TRAIT_KNOWN);
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    assert!(take_log().is_empty());
+    cancel(fixture.handle);
+
+    std::fs::rename(&aside, &pack).unwrap();
+    read(msime_client_focus(fixture.handle, false));
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, true));
+    let view = slash(fixture.handle, b"/uuid");
+    assert_eq!(plugin_rows(&view)[0].0, "uuid-", "{view}");
+    assert_eq!(take_log(), [command_log("uuid")]);
+}
+
 #[test]
 fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
     for ending in ["unreachable", "(loop $forever (br $forever))"] {

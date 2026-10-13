@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use msime_script_runtime::{limits, Capability};
+use msime_script_runtime::{limits, Capability, CapabilitySet};
 use serde::Serialize;
 
 use super::script_grants::ScriptGrants;
@@ -118,16 +118,27 @@ pub fn resolve(
 pub fn granted_commands(root: &Path, grants: &ScriptGrants) -> Vec<(String, Vec<ScriptCommand>)> {
     grants
         .enabled()
-        .filter(|grant| grant.granted.contains(Capability::ProvideCommands))
         .filter_map(|grant| {
-            let summary = load_package_unread(root, PluginKind::Script, &grant.id).ok()?;
-            let PluginContent::Script(pack) = summary.content else {
-                return None;
-            };
-            (pack.permissions.contains(Capability::ProvideCommands) && !pack.commands.is_empty())
-                .then(|| (grant.id.clone(), pack.commands))
+            let commands = granted_commands_of(root, &grant.id, grant.granted);
+            (!commands.is_empty()).then(|| (grant.id.clone(), commands))
         })
         .collect()
+}
+
+/// 一个插件交给输入法的指令：用户授予了 `provide_commands`（`granted`）、清单也申请了它、清单能载入时是清单里的指令（原样、按清单顺序），否则为空。只读清单，同 [`granted_commands`]；输入法在授权没变、只有包的清单变了时用它重算这一个插件。
+pub fn granted_commands_of(root: &Path, id: &str, granted: CapabilitySet) -> Vec<ScriptCommand> {
+    if !granted.contains(Capability::ProvideCommands) {
+        return Vec::new();
+    }
+    let Ok(summary) = load_package_unread(root, PluginKind::Script, id) else {
+        return Vec::new();
+    };
+    match summary.content {
+        PluginContent::Script(pack) if pack.permissions.contains(Capability::ProvideCommands) => {
+            pack.commands
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// 授权页用的用户指令表触发词：`enabled` 里按顺序启用的指令表包合起来，和输入法交给引擎的是同一份（`command_table::enabled_commands`）。`/` 指令关着时引擎拿到的是空表，授权页仍按启用的表说明，打开 `/` 之后就是那样。

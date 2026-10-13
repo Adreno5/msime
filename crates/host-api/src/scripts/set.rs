@@ -40,7 +40,7 @@ struct Entry {
     hash: String,
     /// 用户授予的能力。实例化时再和清单申请的取交集。
     granted: CapabilitySet,
-    /// 包清单的戳：`Retry` 的模块在它变了之后才重新登记编译。
+    /// 包清单的戳。它变了之后重算这个插件的指令（`commands`），模块还没拿到时重新登记编译（`Retry` 的模块等的就是它）。
     manifest: PackStamp,
     health: Arc<Health>,
     /// 从进程缓存拿到的模块，拿到之后不再查缓存。
@@ -50,7 +50,7 @@ struct Entry {
     trapped: bool,
     /// 这个插件最近一次投递所在的轮次，和那一轮其余钩子、`before_commit`、`command` 各还剩的 fuel。轮配额按插件算：同一轮里重建的实例（换了字段、属性变过）接着用剩下的，而不是重新给满。
     turn: Option<(u64, u64, u64, u64)>,
-    /// 它在 `/` 指令里声明的指令（清单原样）：用户授予了 `provide_commands`、清单也申请了它时才有，否则为空。读授权时从清单取（`script_commands::granted_commands`），不等模块编译好。
+    /// 它在 `/` 指令里声明的指令（清单原样）：用户授予了 `provide_commands`、清单也申请了它时才有，否则为空。读授权时、以及授权没变而清单的戳变了时从清单取（`script_commands::granted_commands_of`），不等模块编译好。
     commands: Vec<ScriptCommand>,
 }
 
@@ -143,7 +143,9 @@ impl ScriptSet {
         }
     }
 
-    /// 授权文件的戳变了就整份重读，计划换掉、实例丢弃；没变时只给包已经变了的 `Retry` 模块重新登记编译。
+    /// 授权文件的戳变了就整份重读，计划换掉、实例丢弃。没变时逐个看包清单的戳：变了的插件重算指令，模块还没拿到的重新登记编译。
+    ///
+    /// 指令必须跟着清单的戳重算：同哈希重新导入一个包时授权文件先写、包目录后换，中间有一瞬包目录不在；这时聚焦整份重读，清单载不入，指令为空，之后授权文件不再变，只看授权戳的话触发词在这个进程里再也不交给引擎，模块却照样恢复。
     fn refresh(&mut self) {
         let Some(root) = self.root.clone() else {
             return;
@@ -157,10 +159,15 @@ impl ScriptSet {
             ))
         };
         if self.loaded && grants_stamp == self.grants {
-            for entry in self.plan.iter_mut().filter(|entry| entry.module.is_none()) {
+            for entry in &mut self.plan {
                 let current = manifest(&entry.id);
-                if current != entry.manifest {
-                    entry.manifest = current;
+                if current == entry.manifest {
+                    continue;
+                }
+                entry.manifest = current;
+                entry.commands =
+                    script_commands::granted_commands_of(&root, &entry.id, entry.granted);
+                if entry.module.is_none() {
                     process::request(&root, &entry.id, &entry.hash);
                 }
             }
@@ -169,7 +176,6 @@ impl ScriptSet {
         let grants = script_grants::read(&root);
         process::adopt_health(&root, self.health_file.as_deref());
         process::observe_revision(&root, grants.revision_epoch, grants.revision);
-        let mut commands = script_commands::granted_commands(&root, &grants);
         self.plan = grants
             .enabled()
             .map(|grant| Entry {
@@ -182,11 +188,7 @@ impl ScriptSet {
                 instance: None,
                 trapped: false,
                 turn: None,
-                commands: commands
-                    .iter_mut()
-                    .find(|(id, _)| *id == grant.id)
-                    .map(|(_, commands)| std::mem::take(commands))
-                    .unwrap_or_default(),
+                commands: script_commands::granted_commands_of(&root, &grant.id, grant.granted),
             })
             .collect();
         for entry in &self.plan {
