@@ -9,9 +9,7 @@ struct CommonPhrasesSettingsView: View {
   @State private var deleting: CommonPhrasesBridge.Phrase?
   @State private var requestState = CommonPhrasesRequestState()
   @State private var pending: Task<Void, Never>?
-  @State private var visible = false
-  @State private var lifecycle = UUID()
-  @State private var pendingID = UUID()
+  @State private var request = ViewRequestGeneration()
 
   var body: some View {
     List {
@@ -52,14 +50,10 @@ struct CommonPhrasesSettingsView: View {
     .designPage()
     .navigationTitle("常用语")
     .navigationBarTitleDisplayMode(.inline)
-    .onAppear { visible = true; reload() }
+    .onAppear { request.appear(); reload() }
     .onChange(of: scenePhase) { _, phase in if phase == .active { reload() } }
     .onDisappear {
-      visible = false
-      lifecycle = UUID()
-      pendingID = UUID()
-      pending?.cancel()
-      pending = nil
+      ViewRequestTask.disappear(request: $request, pending: $pending)
       requestState.invalidate()
     }
     .sheet(isPresented: $adding) {
@@ -82,17 +76,15 @@ struct CommonPhrasesSettingsView: View {
   }
 
   private func reload() {
-    guard visible, let request = requestState.beginReload() else { return }
-    let id = lifecycle
-    let taskID = claimTask()
+    guard request.isVisible, let reloadRequest = requestState.beginReload() else { return }
+    let id = ViewRequestTask.claim(request: $request, pending: $pending)
     pending = Task { @MainActor in
-      defer { if lifecycle == id { clearTask(taskID) } }
+      defer { ViewRequestTask.clear(request: $request, pending: $pending, id: id) }
       do {
-        try Task.checkCancellation()
+        try request.checkCurrent(id)
         let loaded = await Task.detached(priority: .userInitiated) { Result { try CommonPhrasesBridge.load() } }.value
-        try Task.checkCancellation()
-        guard visible, lifecycle == id, !Task.isCancelled else { return }
-        guard requestState.acceptReload(request) else { return }
+        try request.checkCurrent(id)
+        guard requestState.acceptReload(reloadRequest) else { return }
         switch loaded {
         case .success(let list):
           phrases = list
@@ -102,31 +94,31 @@ struct CommonPhrasesSettingsView: View {
           if phrases == nil { loadFailed = true }
         }
       } catch is CancellationError {
+      } catch {
+        // 业务错误已由 Result 返回；完整捕获保证任务的失败类型为 Never。
       }
     }
   }
 
   /// 在主线程之外执行一次写入，并显示它返回的已存储列表，或说明存储拒绝的原因。写入被拒绝时会重新加载，这样在别处被删除的短语（`common_phrases_not_found`）也会从列表中消失。
   private func run(success: String, _ operation: @escaping @Sendable () throws -> [CommonPhrasesBridge.Phrase]) {
-    guard visible, requestState.beginMutation() else { return }
-    let id = lifecycle
-    let taskID = claimTask()
+    guard request.isVisible, requestState.beginMutation() else { return }
+    let id = ViewRequestTask.claim(request: $request, pending: $pending)
     pending = Task { @MainActor in
       var mutationFinished = false
       defer {
-        if lifecycle == id {
+        if request.isCurrent(id) {
           if !mutationFinished { requestState.finishMutation() }
-          clearTask(taskID)
+          ViewRequestTask.clear(request: $request, pending: $pending, id: id)
         }
       }
       do {
-        try Task.checkCancellation()
+        try request.checkCurrent(id)
         let result = await Task.detached(priority: .userInitiated) { Result { try operation() } }.value
-        try Task.checkCancellation()
-        guard visible, lifecycle == id, !Task.isCancelled else { return }
+        try request.checkCurrent(id)
         requestState.finishMutation()
         mutationFinished = true
-        clearTask(taskID)
+        ViewRequestTask.clear(request: $request, pending: $pending, id: id)
         switch result {
         case .success(let list):
           phrases = list
@@ -137,19 +129,10 @@ struct CommonPhrasesSettingsView: View {
           reload()
         }
       } catch is CancellationError {
+      } catch {
+        // 业务错误已由 Result 返回；完整捕获保证任务的失败类型为 Never。
       }
     }
-  }
-
-  private func claimTask() -> UUID {
-    pending?.cancel()
-    let id = UUID()
-    pendingID = id
-    return id
-  }
-
-  private func clearTask(_ id: UUID) {
-    if pendingID == id { pending = nil }
   }
 }
 
