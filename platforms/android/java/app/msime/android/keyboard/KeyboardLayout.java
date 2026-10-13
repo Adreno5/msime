@@ -147,6 +147,9 @@ public final class KeyboardLayout {
         List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "0");
     private static final List<String> CHINESE_NUMBER_SYMBOLS =
         List.of("-", "/", "：", "；", "（", "）", "¥", "@", "“", "”");
+    /** 直角引号样式（View 的 `punctuation_marks`）下的中文 123 层：两个引号键代表首选引号、原样上屏，所以换成「」，不按 ASCII 键位对应成『』。 */
+    private static final List<String> CHINESE_CORNER_NUMBER_SYMBOLS =
+        List.of("-", "/", "：", "；", "（", "）", "¥", "@", "「", "」");
     private static final List<String> ENGLISH_NUMBER_SYMBOLS =
         List.of("-", "/", ":", ";", "(", ")", "$", "@", "\"", "'");
     private static final List<String> CHINESE_PUNCTUATION = List.of("。", "，", "、", "？", "！");
@@ -177,8 +180,15 @@ public final class KeyboardLayout {
 
     /** `chinese` 决定左下返回键是「拼音」还是「ABC」；`chinesePunctuation` 决定标点和符号用全角中文还是半角英文，跟「中文标点」开关走。两者分开：中文模式下关掉中文标点时，这一层要上屏半角标点。 */
     public static List<List<LayerKey>> numberLayer(boolean chinese, boolean chinesePunctuation) {
+        return numberLayer(chinese, chinesePunctuation, false);
+    }
+
+    /** 同 {@link #numberLayer(boolean, boolean)}；`cornerQuotes` 为真时中文标点下的两个引号键是「」。 */
+    public static List<List<LayerKey>> numberLayer(boolean chinese, boolean chinesePunctuation,
+            boolean cornerQuotes) {
         return layer(NUMBER_DIGITS,
-            chinesePunctuation ? CHINESE_NUMBER_SYMBOLS : ENGLISH_NUMBER_SYMBOLS,
+            chinesePunctuation ? (cornerQuotes ? CHINESE_CORNER_NUMBER_SYMBOLS : CHINESE_NUMBER_SYMBOLS)
+                : ENGLISH_NUMBER_SYMBOLS,
             new LayerKey("#+=", "更多符号", LayerKeyKind.LAYER_TOGGLE, LAYER_EDGE_WEIGHT),
             chinese, chinesePunctuation,
             new LayerKey("😀", "表情", LayerKeyKind.EMOJI, LAYER_EMOJI_WEIGHT));

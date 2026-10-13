@@ -2539,8 +2539,11 @@ public final class MSIMEInputService extends InputMethodService {
         defaultImeMode = nextDefaultImeMode;
         imeModeScope = nextImeModeScope;
         JSONObject nextView = result.getJSONObject("view");
+        // 引号与方头括号样式变了也重建键行：符号键、字母提示和 123 层的键面都跟着它画。
         boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(nextView)
-            || japaneseEmojiKeyChanged;
+            || japaneseEmojiKeyChanged
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(nextView));
         enabledSchemes = nextSchemeConfiguration.enabled();
         visibleSchemes = nextSchemeConfiguration.visible();
         selectedScheme = nextSchemeConfiguration.selected();
@@ -2595,7 +2598,10 @@ public final class MSIMEInputService extends InputMethodService {
     boolean apply(String response) throws JSONException {
         JSONObject result = value(response);
         JSONObject next = result.getJSONObject("view");
-        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next);
+        // 偏好改了样式时，引擎在空闲重建后的那次转换里才换样式，键面在这里跟上。
+        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next)
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(next));
         String commit = result.isNull("commit") ? null : result.getString("commit");
         if (commit != null) {
             // The runtime widened this already - it holds the character width now, and applies it
@@ -3924,6 +3930,11 @@ public final class MSIMEInputService extends InputMethodService {
             InputViewValuePolicy.scheme(view, -1), InputViewValuePolicy.textOr(view, "local_mode", "none"), chinesePunctuation);
     }
 
+    /** 当前 View 报告的引号与方头括号样式；画键面、提示和 123 层时用它，不自己解析偏好。 */
+    ChineseSymbolFaces.Marks punctuationMarks() {
+        return InputViewValuePolicy.punctuationMarks(view);
+    }
+
     private java.util.List<QuickPunctuationPolicy.Entry> quickPunctuationEntries() {
         return QuickPunctuationPolicy.entries(dedicatedEnglish,
             view == null ? -1 : InputViewValuePolicy.scheme(view, -1),
@@ -3976,7 +3987,8 @@ public final class MSIMEInputService extends InputMethodService {
     private void updateSymbolKeyFaces() {
         boolean chineseMode = sendsChinesePunctuation();
         for (int index = 0; index < symbolKeyButtons.size(); index++) {
-            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode);
+            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode,
+                punctuationMarks());
             Button button = symbolKeyButtons.get(index);
             button.setText(face);
             button.setContentDescription("按键 " + face);
@@ -3989,7 +4001,8 @@ public final class MSIMEInputService extends InputMethodService {
         for (int index = 0; index < shuangpinKeyButtons.size(); index++) {
             String input = shuangpinKeyInputs.get(index);
             if (";".equals(input)) continue;
-            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese));
+            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese,
+                punctuationMarks()));
         }
     }
 
