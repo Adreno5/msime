@@ -36,14 +36,20 @@ export class PairedPunctuationPolicy {
     return commit;
   }
 
-  /** Return a closing mark only when the Engine commit ends in a known opening mark. */
+  /**
+   * Engine 的上屏以按下的键 `ascii` 自己的前半个结尾时，返回要补的后半个；否则为 null。
+   *
+   * 只认这个键自己的前半个：注音的大千键位 `[` `{` 自己出「『（引擎的 `SHIFT_PUNCTUATION`），`]` `}` 也照样出」』，这个宿主没有跨过，补了就成了「内容」」。
+   */
   static completion(
     commit: string | null | undefined,
+    ascii: number,
     enabled: boolean,
   ): PairedPunctuationCompletion | null {
     if (!enabled || typeof commit !== "string" || commit.length === 0) return null;
     for (const completion of COMPLETIONS) {
-      if (commit.endsWith(completion.openingMark)) return completion;
+      if (completion.opening === ascii && commit.endsWith(completion.openingMark))
+        return completion;
     }
     return null;
   }

@@ -5737,27 +5737,27 @@ group("replaces a repeated smart ASCII mark only in the same short-lived editor 
 
 group("completes Engine opening punctuation only when paired mode is enabled", () => {
   check(
-    PairedPunctuationPolicy.completion("“", true)?.closing === "”",
+    PairedPunctuationPolicy.completion("“", 0x22, true)?.closing === "”",
     "double quote opens a Chinese pair",
   );
   check(
-    PairedPunctuationPolicy.completion("拟（", true)?.closing === "）",
+    PairedPunctuationPolicy.completion("拟（", 0x28, true)?.closing === "）",
     "a composition commit can end in an opening parenthesis",
   );
   check(
-    PairedPunctuationPolicy.completion("《", true)?.opening === 0x3c,
+    PairedPunctuationPolicy.completion("《", 0x3c, true)?.opening === 0x3c,
     "book title marks retain the balance input",
   );
   check(
-    PairedPunctuationPolicy.completion("”", true) === null,
+    PairedPunctuationPolicy.completion("”", 0x22, true) === null,
     "a closing quote is not completed again",
   );
   check(
-    PairedPunctuationPolicy.completion("“", false) === null,
+    PairedPunctuationPolicy.completion("“", 0x22, false) === null,
     "disabled paired punctuation leaves the editor to the Engine",
   );
   check(
-    PairedPunctuationPolicy.completion("", true) === null,
+    PairedPunctuationPolicy.completion("", 0x22, true) === null,
     "an empty commit cannot open a pair",
   );
 });
@@ -5767,7 +5767,7 @@ group("with pairing on every quote press opens a fresh pair, as the reference do
   const reopened = PairedPunctuationPolicy.reopenQuote("”", 0x22, true);
   check(reopened === "“", "a closing double quote from the Engine is rewritten to the opening one");
   check(
-    PairedPunctuationPolicy.completion(reopened, true)?.closing === "”",
+    PairedPunctuationPolicy.completion(reopened, 0x22, true)?.closing === "”",
     "and the rewritten quote is then completed to a pair",
   );
   check(
@@ -19497,13 +19497,26 @@ group("quote and bracket styles change only the faces and pairs of their own key
     "and the brackets",
   );
 
-  check(PairedPunctuationPolicy.completion("「", true)?.closing === "」", "「 is completed");
+  check(PairedPunctuationPolicy.completion("「", 0x27, true)?.closing === "」", "「 is completed");
   check(
-    PairedPunctuationPolicy.completion("你好『", true)?.opening === 0x22,
+    PairedPunctuationPolicy.completion("你好『", 0x22, true)?.opening === 0x22,
     '『 is completed on the " key',
   );
-  check(PairedPunctuationPolicy.completion("〖", true)?.closing === "〗", "〖 is completed");
-  check(PairedPunctuationPolicy.completion("」", true) === null, "a corner closing half is not");
+  check(PairedPunctuationPolicy.completion("〖", 0x5b, true)?.closing === "〗", "〖 is completed");
+  check(
+    PairedPunctuationPolicy.completion("」", 0x27, true) === null,
+    "a corner closing half is not",
+  );
+  // 注音的大千键位 `[` `{` 自己出「『，`]` `}` 也照样出」』，这个宿主没有跨过：不是引号键出的「『不补。
+  check(
+    PairedPunctuationPolicy.completion("「", 0x5b, true) === null &&
+      PairedPunctuationPolicy.completion("你好『", 0x7b, true) === null,
+    "Zhuyin's [ and { corner marks are not completed",
+  );
+  check(
+    PairedPunctuationPolicy.reopenQuote("」", 0x5d, true) === "」",
+    "and Zhuyin's ] keeps its closing half",
+  );
   check(PairedPunctuationPolicy.reopenQuote("」", 0x27, true) === "「", "」 reopens as 「");
   check(PairedPunctuationPolicy.reopenQuote("好』", 0x22, true) === "好『", "』 reopens as 『");
   check(

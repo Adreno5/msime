@@ -3528,7 +3528,7 @@ export class KeyboardSession implements HardwareKeyTarget {
       }
       completion = EngineViewValuePolicy.isObject(response) && response.ok === true
         && EngineViewValuePolicy.isObject(response.value)
-        ? PairedPunctuationPolicy.completion(response.value.commit,
+        ? PairedPunctuationPolicy.completion(response.value.commit, ascii,
           this.appearance.pairedPunctuation) : null;
     } catch (error) {
       KeyboardLog.error(`paired punctuation response unavailable: ${describeError(error)}`);
