@@ -176,6 +176,8 @@ fn local_mode_resource_gates_preserve_unrelated_modes() {
         chinese_punctuation: true,
         paired_punctuation: true,
         punctuation_lock: 0,
+        corner_quotes: false,
+        hollow_brackets: false,
         frequency_mode: "disabled".into(),
         frequency_trigger_count: 1,
         frequency_linear_step: 1,

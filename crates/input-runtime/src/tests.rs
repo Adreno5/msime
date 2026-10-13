@@ -3877,6 +3877,8 @@ fn real_engine_options(root: &std::path::Path) -> msime_engine::host::EngineOpti
         chinese_punctuation: true,
         paired_punctuation: true,
         punctuation_lock: 0,
+        corner_quotes: false,
+        hollow_brackets: false,
         frequency_mode: "promote".into(),
         frequency_trigger_count: 1,
         frequency_linear_step: 1,

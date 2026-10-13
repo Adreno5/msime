@@ -1678,6 +1678,8 @@ impl HostOptions {
             ),
             paired_punctuation: self.preferences.paired_punctuation,
             punctuation_lock: punctuation_lock_code(self.preferences.punctuation_lock),
+            corner_quotes: false,
+            hollow_brackets: false,
         };
         // 建会话没有地方带原因，表不能用时按小鹤建起来就够了；之后的偏好变更会在诊断里报告原因。
         let _ = apply_shuangpin_profile(&mut options, &self.preferences);
