@@ -62,6 +62,7 @@ fn options(root: &Path) -> EngineOptions {
         local_shift_letter_entry: true,
         chaizi_traditional_output: false,
         command_table: Vec::new(),
+        plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
         helpcode_table: None,
@@ -2218,6 +2219,9 @@ fn gloss_keys_follow_the_bridge_rules() {
     assert_eq!(candidate_gloss_key("天气", 7), None);
     // 日文混输行的汉字是日文，不当中文查释义。
     assert_eq!(candidate_gloss_key("私", 13), None);
+    // 脚本插件的行不交给任何释义来源，汉字和英文都一样。
+    assert_eq!(candidate_gloss_key("天气", 14), None);
+    assert_eq!(candidate_gloss_key("hello", 14), None);
     assert_eq!(candidate_gloss_key("- '", 4), None);
     assert_eq!(candidate_gloss_key("123", 0), None);
     assert_eq!(candidate_gloss_key("〇", 0), None);

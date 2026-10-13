@@ -3437,7 +3437,7 @@ fn switching_the_language_drops_the_composition_being_spelled() {
 
 #[test]
 fn commit_context_precedes_mode_reset_for_every_selection_route() {
-    for route in 0..5 {
+    for route in 0..6 {
         let mut runtime = runtime();
         runtime.focus(true).unwrap();
         runtime.engine.local_mode = "unicode".into();
@@ -3448,6 +3448,8 @@ fn commit_context_precedes_mode_reset_for_every_selection_route() {
             1 => Action::SelectEdge(id, CandidateEdge::FirstHan),
             2 => Action::SelectHighlighted,
             3 => Action::Finish,
+            // 高亮的不是插件行时，失焦结束组字和 `Finish` 一样。
+            4 => Action::FinishOnFocusLoss,
             _ => Action::Character {
                 value: b'1',
                 shift: false,
@@ -3937,6 +3939,7 @@ fn real_engine_options(root: &std::path::Path) -> msime_engine::host::EngineOpti
         local_shift_letter_entry: true,
         chaizi_traditional_output: false,
         command_table: Vec::new(),
+        plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
         helpcode_table: None,
@@ -7912,6 +7915,12 @@ fn the_reranker_never_weighs_ai_rows_or_their_placeholder() {
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 mod candidate_transform;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+mod plugin_commands;
 /// 拼音拆不开、英文完全匹配时引擎把英文放在首位（如 `hello`），句子模型不把它偏爱的中文行转到英文前面。英文行不算词典命中，若不挡住，开了句子模型的用户就看不到引擎的这个安排。首行换成整句时模型照常提它偏爱的行。
 #[test]
 fn the_reranker_leaves_a_leading_english_word_in_place() {
