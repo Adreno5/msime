@@ -14,7 +14,7 @@ use super::script_grants::ScriptGrants;
 use super::script_pack::{
     ScriptCommand, BUILTIN_COMMAND_TRIGGERS, COMMAND_TITLE_CHARS, COMMAND_TRIGGER_BYTES,
 };
-use super::{command_table, load_package_unread, PluginContent, PluginKind};
+use super::{command_table, load_package_unread, BuiltinDirs, PluginContent, PluginKind};
 
 /// 一条插件指令在输入法里的状态。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -114,23 +114,37 @@ pub fn resolve(
     resolved
 }
 
-/// 会运行、并且能提供指令的插件和它们声明的指令，按执行顺序：启用的前 `limits::MAX_ENABLED_SCRIPTS` 条里，用户授予了 `provide_commands`、清单也申请了它、清单能载入的那些。只读 `root` 下的清单（和模块文件的大小），不读模块、不核对内容哈希，见模块说明。
-pub fn granted_commands(root: &Path, grants: &ScriptGrants) -> Vec<(String, Vec<ScriptCommand>)> {
+/// 会运行、并且能提供指令的插件和它们声明的指令，按执行顺序：启用的前 `limits::MAX_ENABLED_SCRIPTS` 条里，用户授予了 `provide_commands`、清单也申请了它、清单能载入的那些。只读清单（`root` 下已安装的，官方的在 `builtin_packs` 下）和模块文件的大小，不读模块、不核对内容哈希，见模块说明。
+pub fn granted_commands(
+    root: &Path,
+    builtin_packs: Option<&Path>,
+    grants: &ScriptGrants,
+) -> Vec<(String, Vec<ScriptCommand>)> {
     grants
         .enabled()
         .filter_map(|grant| {
-            let commands = granted_commands_of(root, &grant.id, grant.granted);
+            let commands = granted_commands_of(root, builtin_packs, &grant.id, grant.granted);
             (!commands.is_empty()).then(|| (grant.id.clone(), commands))
         })
         .collect()
 }
 
 /// 一个插件交给输入法的指令：用户授予了 `provide_commands`（`granted`）、清单也申请了它、清单能载入时是清单里的指令（原样、按清单顺序），否则为空。只读清单，同 [`granted_commands`]；输入法在授权没变、只有包的清单变了时用它重算这一个插件。
-pub fn granted_commands_of(root: &Path, id: &str, granted: CapabilitySet) -> Vec<ScriptCommand> {
+pub fn granted_commands_of(
+    root: &Path,
+    builtin_packs: Option<&Path>,
+    id: &str,
+    granted: CapabilitySet,
+) -> Vec<ScriptCommand> {
     if !granted.contains(Capability::ProvideCommands) {
         return Vec::new();
     }
-    let Ok(summary) = load_package_unread(root, PluginKind::Script, id) else {
+    let Ok(summary) = load_package_unread(
+        root,
+        BuiltinDirs::packs(builtin_packs),
+        PluginKind::Script,
+        id,
+    ) else {
         return Vec::new();
     };
     match summary.content {

@@ -1225,6 +1225,7 @@ fn an_installed_pack_compiles_on_the_background_thread_and_then_runs() {
     };
     script_grants::set(
         &fixture.plugins,
+        None,
         "e2e",
         &pack.content_hash,
         true,

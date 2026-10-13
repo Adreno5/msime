@@ -143,8 +143,11 @@ pub fn read(root: &Path) -> ScriptGrants {
 /// 授予、调整或撤销脚本插件 `id` 的授权，返回写入后的整份授权。
 ///
 /// `hash` 是授权页展示给用户的那个内容哈希：写入前在锁里重新读一遍包、算一遍哈希，不一致时返回 [`ScriptGrantError::Changed`]，免得用户授权的是一个版本、生效的是另一个。`granted` 必须是清单 `permissions` 的子集，并满足依赖和互斥规则。启用时检查同时启用的个数和进程内存总账。新条目排在最后执行。包目录已经不在的条目顺带去掉（和删包时一样）：它们永远不会运行，却占着输入法运行的前 `limits::MAX_ENABLED_SCRIPTS` 个位置，页面上又列不出来、撤销不了。
+///
+/// 官方脚本插件（`super::BUILTIN_SCRIPT_PACKS`）从内置目录 `builtin_packs` 读，授权照样写在 `root` 下，绑定内置那一份的内容哈希。宿主没给内置目录时，官方 id 的条目不算「包已不在」：这里只是看不见它，不能替用户收回授权。
 pub fn set(
     root: &Path,
+    builtin_packs: Option<&Path>,
     id: &str,
     hash: &str,
     enabled: bool,
@@ -158,7 +161,8 @@ pub fn set(
         return Err(ScriptGrantError::Missing("插件文件夹不存在".into()));
     }
     let writes = lock_plugin_root(root)?;
-    let installed = script_pack::load(root, id).map_err(ScriptGrantError::Missing)?;
+    let installed =
+        script_pack::load(root, builtin_packs, id).map_err(ScriptGrantError::Missing)?;
     if installed.pack.content_hash != hash {
         return Err(ScriptGrantError::Changed);
     }
@@ -189,12 +193,17 @@ pub fn set(
         Stored::Missing | Stored::Unreadable => ScriptGrants::default(),
         Stored::UnknownFormat => return Err(ScriptGrantError::Format),
     };
-    let packs = super::kind_directory(root, super::PluginKind::Script);
+    let builtin = super::BuiltinDirs::packs(builtin_packs);
     grants.plugins.retain(|grant| {
-        !matches!(fs::symlink_metadata(packs.join(&grant.id)), Err(error) if error.kind() == io::ErrorKind::NotFound)
+        let Some(directory) =
+            super::pack_directory(root, builtin, super::PluginKind::Script, &grant.id)
+        else {
+            return true;
+        };
+        !matches!(fs::symlink_metadata(directory), Err(error) if error.kind() == io::ErrorKind::NotFound)
     });
     if enabled {
-        admit(root, &grants, &installed)?;
+        admit(root, builtin_packs, &grants, &installed)?;
     }
     let entry = ScriptGrant {
         id: id.to_owned(),
@@ -333,16 +342,17 @@ pub fn health(user_data: Option<&Path>) -> Vec<ScriptHealthView> {
         .collect()
 }
 
-/// 交给授权页的整份授权：条目原样按执行顺序、能力名原样，加上 `user_data` 下的停用记录，和 `root` 下会运行的插件声明的指令在用户指令表 `user_triggers`（[`script_commands::user_triggers`]）之下的状态。
+/// 交给授权页的整份授权：条目原样按执行顺序、能力名原样，加上 `user_data` 下的停用记录，和会运行的插件（`root` 下已安装的，官方的在 `builtin_packs` 下）声明的指令在用户指令表 `user_triggers`（[`script_commands::user_triggers`]）之下的状态。
 pub fn view(
     root: &Path,
+    builtin_packs: Option<&Path>,
     grants: ScriptGrants,
     user_data: Option<&Path>,
     user_triggers: &[String],
 ) -> ScriptGrantsView {
     let commands = script_commands::resolve(
         user_triggers,
-        &script_commands::granted_commands(root, &grants),
+        &script_commands::granted_commands(root, builtin_packs, &grants),
     );
     ScriptGrantsView {
         revision: grants.revision,
@@ -364,6 +374,7 @@ pub fn view(
 /// 启用 `installed` 之前的准入检查：同时启用的个数，和进程内存总账。个数按输入法占位置的方式算：其他启用的条目，不管包载不载得了、哈希对不对得上，它们都占着输入法运行的前 `limits::MAX_ENABLED_SCRIPTS` 个位置（输入法取前几个之后才核对哈希），少算一个就会让新启用的插件排到位置之外、永远不运行。内存只算其中真会占内存的：包还在、哈希对得上的。
 fn admit(
     root: &Path,
+    builtin_packs: Option<&Path>,
     grants: &ScriptGrants,
     installed: &script_pack::LoadedScript,
 ) -> Result<(), ScriptGrantError> {
@@ -377,7 +388,7 @@ fn admit(
     let others: Vec<script_pack::LoadedScript> = others
         .into_iter()
         .filter_map(|grant| {
-            script_pack::load(root, &grant.id)
+            script_pack::load(root, builtin_packs, &grant.id)
                 .ok()
                 .filter(|other| other.pack.content_hash == grant.hash)
         })

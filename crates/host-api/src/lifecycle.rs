@@ -593,8 +593,13 @@ impl LifecycleState {
     }
 
     /// 记下脚本插件的位置：`root` 是 `<state root>/plugins`（宿主没给状态根目录时为 `None`，脚本不运行），健康文件写在 `user_data` 下。
-    pub(crate) fn bind_scripts(&mut self, root: Option<std::path::PathBuf>, user_data: &str) {
-        self.with_scripts(|scripts| scripts.bind(root, user_data));
+    pub(crate) fn bind_scripts(
+        &mut self,
+        root: Option<std::path::PathBuf>,
+        builtin_packs: Option<std::path::PathBuf>,
+        user_data: &str,
+    ) {
+        self.with_scripts(|scripts| scripts.bind(root, builtin_packs, user_data));
     }
 
     /// 把脚本集合挂到 runtime 上，作为它在派发类调用里的候选变换。

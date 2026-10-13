@@ -138,6 +138,10 @@ char *msime_client_community(const uint8_t *request, size_t length);
  * mentions.json. They are read at creation, on preference updates and when a field gains
  * focus, and only while the mode that uses them is on. Optional sound_packs is the absolute
  * path of the bundle's built-in sound packs; absent means sound-packs beside resources.
+ * Optional plugin_packs is the absolute path of the official plugin packs the desktop
+ * installers ship (<kind>/<id>/ folders: the uuid script plugin, the latex-symbols phrase
+ * table); absent means plugin-packs beside the built-in sound packs, and nothing when that
+ * directory is not there (mobile, development builds without them).
  * Do not delete .msime-dictionary-access.lock files. Legacy/external writers do
  * not participate; preparation/upgrades still require stopped sessions.
  */
@@ -1006,11 +1010,11 @@ char *msime_client_typing_effect_settings(uint64_t session);
 char *msime_client_key_sound_pack(const uint8_t *request, size_t length);
 /* The validated tracks of one music pack, for a host that streams music itself (HarmonyOS). Request (<=65536 bytes): {state_root: absolute|null, sound_packs: absolute|null, pack: id}, as for key_sound_pack. Built-in ids ("msime-music-lofi", "msime-music-ambient") resolve from sound_packs, which holds them beside the built-in sound packs; any other id needs state_root and is refused without one. Value: {id, name, license, tracks:[absolute path, in play order], max_track_seconds}; a host plays a track only when its duration is within max_track_seconds, then the next, starting over after the last. Reads the pack from disk: not for the key path. */
 char *msime_client_music_pack(const uint8_t *request, size_t length);
-/* 插件页的包仓库和 @ 名单，给桌面外壳以外的设置宿主：Windows 的原生设置应用、鸿蒙的插件页，以及 Android、iOS 设置里导入辅助码表。Request（<=2 MiB）为 {state_root: 绝对路径, sound_packs: 绝对路径|null, script_page?: bool, user_data?: 绝对路径|null, action}；包和 mentions.json 放在 state_root/plugins 下，sound_packs 是安装包自带的内置音效包目录。script_page 为 true 表示宿主有脚本插件的授权页（列出、授权、排序，并写明同一用户下的其他程序能伪造授权），缺省为 false：Android、HarmonyOS 和只导入辅助码表的宿主不带它，永远看不到脚本插件。user_data 是输入法宿主选项里的 user_data 目录，只用于脚本授权的回答里的停用记录。action.operation：
- * "catalog"：value 为 {packages:[...], issues:[{kind, folder, reason}]}，即全部已安装的包和内置音效包，与桌面外壳列出的相同；不带 script_page 时去掉脚本插件（kind 为 script）的包和问题行。脚本包另有 abi、module、hooks（声明的钩子名）、permissions（申请的能力名）、memory_pages 和 content_hash（64 位小写十六进制的内容哈希，授权绑定在它上面）。
+/* 插件页的包仓库和 @ 名单，给桌面外壳以外的设置宿主：Windows 的原生设置应用、鸿蒙的插件页，以及 Android、iOS 设置里导入辅助码表。Request（<=2 MiB）为 {state_root: 绝对路径, sound_packs: 绝对路径|null, plugin_packs?: 绝对路径|null, script_page?: bool, user_data?: 绝对路径|null, action}；包和 mentions.json 放在 state_root/plugins 下，sound_packs 是安装包自带的内置音效包目录，plugin_packs 是桌面安装包自带的官方插件包目录（<kind>/<id>/，没给时取 sound_packs 旁边的 plugin-packs，同宿主选项的 plugin_packs）。script_page 为 true 表示宿主有脚本插件的授权页（列出、授权、排序，并写明同一用户下的其他程序能伪造授权），缺省为 false：Android、HarmonyOS 和只导入辅助码表的宿主不带它，永远看不到脚本插件。user_data 是输入法宿主选项里的 user_data 目录，只用于脚本授权的回答里的停用记录。action.operation：
+ * "catalog"：value 为 {packages:[...], issues:[{kind, folder, reason}]}，即全部已安装的包、内置音效包和官方插件包（builtin 为 true，默认停用：脚本包要授权，短语表要在偏好里启用），与桌面外壳列出的相同；官方包的 id 在插件目录里有同名的旧副本时，那份副本列在 issues 里，不会被使用；不带 script_page 时去掉脚本插件（kind 为 script）的包和问题行。脚本包另有 abi、module、hooks（声明的钩子名）、permissions（申请的能力名）、memory_pages 和 content_hash（64 位小写十六进制的内容哈希，授权绑定在它上面）。
  * "import" {source: 包文件夹或 .zip 文件的绝对路径}：安装它，整包替换已安装的同 id 包；value 是装好的包。不带 script_page 时 release 构建拒绝脚本包（plugin_invalid，与移动端遇到 script 时的原因相同）；带 script_page 时接受，装好的脚本包默认不运行，要经授权。
  * "import_helpcode_table" {file_name, text}：把单个 .txt 辅助码表装成 kind 为 helpcode 的包。file_name 是用户选的文件名，只用于报错、显示名和 id；text 是码表正文，宿主必须先按 UTF-8 严格解码（解码失败就不要调用），原始字节不超过 1 MiB。码表按辅助码表包的严格规则校验（每行「字=码」，码是 1 到 2 个小写字母，同一个字只能出现一次，1 到 30000 条），不合格时是 plugin_invalid，detail 写明文件名、原因和行号。显示名取开头的 # name: 注释，没有时用去掉扩展名的文件名；id 是 custom-<小写文件名主干>，组不成合法 id 时是 custom-<12 位十六进制哈希>，同名文件再次导入时整包替换。value 是装好的包，其中 entries 是条数。宿主再把 id 写进 preferences.plugins.helpcode_pack_quanpin 或 helpcode_pack_shuangpin 来选用它。
- * "remove" {kind: "sound"|"music"|"command_table"|"effect"|"phrase_table"|"helpcode"|"wordbook"|"symbol_set", id}：value 为 null；没装的包视为已删除。
+ * "remove" {kind: "sound"|"music"|"command_table"|"effect"|"phrase_table"|"helpcode"|"wordbook"|"symbol_set", id}：value 为 null；没装的包视为已删除。内置音效包和背景音乐包的 id 是 plugin_reserved；官方插件包的 id 只删插件目录里的同名旧副本，内置的那一份和它的授权都不动。
  * "load_mentions"：value 为 [{text, key}]，还没保存过名单时为空。
  * "save_mentions" {entries:[{text, key}]}：替换名单；value 为 null。
  * 以下三项只在桌面（macOS、Windows、Linux）上有，别处是 invalid；value 都是整份授权 {revision, plugins:[{id, hash, enabled, granted:[能力名]}], health:[{id, hash, disabled: "invalid"|"init"|"failed"|"slow"}], commands:[{id, trigger, title, status: "active"|"shadowed_by_user_table"|"shadowed_by_plugin", conflict?, conflict_id?}]}，plugins 的顺序就是执行顺序，health 是输入法停用了的插件（来自 user_data/script-health.json，没给 user_data 时为空），commands 是启用、授予了 provide_commands、清单能载入的插件声明的 / 指令和状态（conflict 是冲突的触发词，conflict_id 是冲突的插件，用户指令表取 state_root 里偏好启用的指令表包），与桌面外壳的 script_grants 命令相同。

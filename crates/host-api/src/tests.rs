@@ -12157,6 +12157,7 @@ fn a_phrase_table_that_cannot_refresh_the_open_list_does_not_fail_focus() {
         let session = &sessions[&handle];
         let current = plugin_tables::PluginTables::stamp(
             session.plugin_roots.installed.as_deref(),
+            session.plugin_roots.builtin_packs.as_deref(),
             &session.options,
             &session.applied.plugins,
         );

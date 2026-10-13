@@ -209,7 +209,13 @@ mod inert {
     pub(crate) struct ScriptSet;
 
     impl ScriptSet {
-        pub(crate) fn bind(&mut self, _root: Option<PathBuf>, _user_data: &str) {}
+        pub(crate) fn bind(
+            &mut self,
+            _root: Option<PathBuf>,
+            _builtin_packs: Option<PathBuf>,
+            _user_data: &str,
+        ) {
+        }
         pub(crate) fn next_turn(&mut self) {}
         pub(crate) fn traits_reported(&mut self, _context: Context) {}
         pub(crate) fn key_reported(&mut self) {}

@@ -638,8 +638,12 @@ impl HostSession {
         options.show_helpcode = helpcode.show_in_candidate_window;
         options.helpcode_schema = helpcode.schema.as_str().into();
         let plugin_root = self.plugin_roots.installed.as_deref();
-        let plugin_tables =
-            plugin_tables::PluginTables::stamp(plugin_root, &options, &preferences.plugins);
+        let plugin_tables = plugin_tables::PluginTables::stamp(
+            plugin_root,
+            self.plugin_roots.builtin_packs.as_deref(),
+            &options,
+            &preferences.plugins,
+        );
         plugin_tables.fill(&self.plugin_tables, plugin_root, &mut options);
         options.sentence_association =
             engine_sentence_association(&preferences.sentence_association);
@@ -744,7 +748,12 @@ impl HostSession {
     /// 输入框获得焦点时，让 `/` 指令表、K 模式短语表、辅助码表、`@` 名单和脚本插件的 `/` 指令跟上插件目录：设置页可能刚导入了表、改了名单或改了授权。没有文件变动时什么都不读。换表失败只报告，不让聚焦失败。
     fn refresh_plugin_tables(&mut self) {
         let root = self.plugin_roots.installed.as_deref();
-        let tables = plugin_tables::PluginTables::stamp(root, &self.options, &self.applied.plugins);
+        let tables = plugin_tables::PluginTables::stamp(
+            root,
+            self.plugin_roots.builtin_packs.as_deref(),
+            &self.options,
+            &self.applied.plugins,
+        );
         // 指令表、`@` 名单和短语表换不上也不算聚焦失败。这三个 setter 都是先把表交给 Engine，再刷新打开着的那个模式的列表；除了代次耗尽（那时随后的 `runtime.focus` 同样失败），报错只来自这次刷新，典型是 K 模式开着而数据库短语查不了。此时 Engine 已经用上新表，所以照样记进 `options`（重建的 Engine 从这里开始），戳也照常更新；把错误往上抛会让这次和之后每一次聚焦都失败（戳没更新，下次又会重试）。
         if tables.commands_differ(&self.plugin_tables) {
             let table = tables.command_table(root);
@@ -1511,6 +1520,9 @@ struct HostOptions {
     /// Absolute path to the bundle's built-in sound packs (`resources/sound-packs` in the repository), for a host whose bundle does not put them in `sound-packs` beside `resources`, the directory used when this is absent. Installed packs, command tables and the `@` name list are read from `plugins` under `preferences_directory`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sound_packs: Option<String>,
+    /// 桌面安装包随带的官方插件包目录（绝对路径，`<kind>/<id>/`，构建产物是 `target/plugin-packs`）。没有时取内置音效包目录旁边的 `plugin-packs`，那里也没有就没有官方包。macOS 的 bundle 和 Linux 的安装把它放在音效包旁边，不用写；Windows 的 Server 写它，因为那里的音效包在普通用户可写的数据目录里。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugin_packs: Option<String>,
     /// Absolute path to the directory holding `msime-cantonese.db`, `msime-zhuyin.db` and `msime-stroke.db`, for a host that installs any of them. Absent, or a directory missing one of them, means that scheme falls back as `effective_scheme` describes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     language_dictionaries: Option<String>,
@@ -1991,6 +2003,7 @@ fn prepare_shipped_host_configuration(
         sentence_model: None,
         settled_model: settled_model_beside(&resources),
         sound_packs: None,
+        plugin_packs: None,
         language_dictionaries: installed_language_dictionaries(&resources),
         edition: (!edition.is_full()).then_some(edition),
     })?)

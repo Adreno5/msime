@@ -44,8 +44,8 @@ use std::path::Path;
 use toml::Value;
 
 use super::{
-    kind_directory, load_installed, only_keys, read_file, valid_file_name, DataFile, DataFiles,
-    PluginContent, PluginKind,
+    load_installed, only_keys, pack_parent, read_file, valid_file_name, BuiltinDirs, DataFile,
+    DataFiles, PluginContent, PluginKind,
 };
 
 /// 脚本插件清单的 `schema_version`。
@@ -408,15 +408,15 @@ pub struct LoadedScript {
     pub wasm: Vec<u8>,
 }
 
-/// 读出 `root` 下已安装的脚本包 `id`：清单和文件照常检查，模块读出来但不在这里编译。宿主的后台编译线程用它，编译一次就够，不必先校验一遍再编译一遍。
-pub fn load(root: &Path, id: &str) -> Result<LoadedScript, String> {
-    let summary = load_installed(
-        &kind_directory(root, PluginKind::Script),
-        id,
+/// 读出脚本包 `id`：官方 id 从内置目录 `builtin_packs` 读，其他 id 从 `root` 下已安装的包读。清单和文件照常检查，模块读出来但不在这里编译。宿主的后台编译线程用它，编译一次就够，不必先校验一遍再编译一遍。
+pub fn load(root: &Path, builtin_packs: Option<&Path>, id: &str) -> Result<LoadedScript, String> {
+    let (parent, builtin) = pack_parent(
+        root,
+        BuiltinDirs::packs(builtin_packs),
         PluginKind::Script,
-        false,
-        DataFiles::Module,
+        id,
     )?;
+    let summary = load_installed(&parent, id, PluginKind::Script, builtin, DataFiles::Module)?;
     let PluginContent::Script(mut pack) = summary.content else {
         return Err("plugin.toml 里的 kind 与所在目录不一致".into());
     };

@@ -122,9 +122,11 @@ unsafe fn pack_request(
     if !absolute(&request.state_root) || !absolute(&request.sound_packs) {
         return Err(relative.into());
     }
+    // 这两个调用只认音效包和背景音乐包，官方插件包与它们无关。
     let roots = PluginRoots::new(
         request.state_root.as_deref(),
         request.sound_packs.as_deref(),
+        None,
         "",
     );
     Ok((roots, request.pack))
@@ -189,6 +191,8 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
     struct Request {
         state_root: String,
         sound_packs: Option<String>,
+        /// 桌面安装包随带的官方插件包目录，同宿主选项的 `plugin_packs`：没有时取 `sound_packs` 旁边的 `plugin-packs`。目录、授权和授权页的指令状态都按它找官方包。
+        plugin_packs: Option<String>,
         /// 宿主有脚本插件的授权页（列出、授权、排序、写明残余风险）。没有时为假。
         #[serde(default)]
         script_page: bool,
@@ -255,6 +259,7 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
         .map_err(|_| invalid())?;
         if !absolute_path(&request.state_root)
             || !request.sound_packs.as_deref().is_none_or(absolute_path)
+            || !request.plugin_packs.as_deref().is_none_or(absolute_path)
             || !request.user_data.as_deref().is_none_or(absolute_path)
         {
             return Err(invalid());
@@ -262,9 +267,19 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
         let roots = PluginRoots::new(
             Some(&request.state_root),
             request.sound_packs.as_deref(),
+            request.plugin_packs.as_deref(),
             "",
         );
-        let root = roots.installed.ok_or_else(invalid)?;
+        let root = roots.installed.clone().ok_or_else(invalid)?;
+        #[cfg_attr(
+            not(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            )),
+            allow(unused_variables)
+        )]
+        let builtin_packs = roots.builtin_packs.as_deref();
         #[cfg_attr(
             not(any(
                 target_os = "macos",
@@ -277,7 +292,7 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
         let value = match request.action {
             // 没有授权页的宿主看不到脚本插件。
             PluginAction::Catalog => {
-                let catalog = plugins::scan(&root, roots.builtin_sounds.as_deref());
+                let catalog = plugins::scan(&root, roots.builtin());
                 serde_json::to_value(if request.script_page {
                     catalog
                 } else {
@@ -315,6 +330,7 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
             ))]
             PluginAction::ScriptGrants => serde_json::to_value(script_grants::view(
                 &root,
+                builtin_packs,
                 script_grants::read(&root),
                 user_data,
                 &user_command_triggers(&request.state_root, &root),
@@ -331,9 +347,11 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
                 granted,
             } => {
                 let granted = script_grants::capabilities(&granted)?;
-                let grants = script_grants::set(&root, &id, &hash, enabled, granted)?;
+                let grants =
+                    script_grants::set(&root, builtin_packs, &id, &hash, enabled, granted)?;
                 serde_json::to_value(script_grants::view(
                     &root,
+                    builtin_packs,
                     grants,
                     user_data,
                     &user_command_triggers(&request.state_root, &root),
@@ -346,6 +364,7 @@ pub unsafe extern "C" fn msime_client_plugins(request: *const u8, length: usize)
             ))]
             PluginAction::ReorderScripts { ids } => serde_json::to_value(script_grants::view(
                 &root,
+                builtin_packs,
                 script_grants::reorder(&root, &ids)?,
                 user_data,
                 &user_command_triggers(&request.state_root, &root),

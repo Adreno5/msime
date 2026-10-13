@@ -6,7 +6,7 @@ use crate::key_sound::{stamp, PackStamp};
 use crate::lifecycle::{Context, InputClass, LifecycleEvent, LocalModeClass};
 use msime_client_core::plugins::script_pack::ScriptCommand;
 use msime_client_core::plugins::{
-    kind_directory, script_commands, script_grants, PluginKind, MANIFEST_FILE,
+    pack_directory, script_commands, script_grants, BuiltinDirs, PluginKind, MANIFEST_FILE,
 };
 use msime_input_runtime::{
     CandidateOps, CandidateTransform, CommandOutcome, CommandProvider, PluginCommand, TransformRow,
@@ -65,6 +65,8 @@ struct Live {
 pub(crate) struct ScriptSet {
     /// `<state root>/plugins`。宿主没给状态根目录时为 `None`，脚本不运行。
     root: Option<PathBuf>,
+    /// 桌面安装包随带的官方插件包目录（`PluginRoots::builtin_packs`）：官方脚本插件的清单和模块从这里读，授权仍在 `root` 下。
+    builtin_packs: Option<PathBuf>,
     /// `<user_data>/script-health.json`。
     health_file: Option<PathBuf>,
     /// 授权读过没有。第一次需要投递时、以及每次聚焦时按戳重读。
@@ -84,9 +86,15 @@ pub(crate) struct ScriptSet {
 }
 
 impl ScriptSet {
-    /// 会话选择加入生命周期时记下插件根目录和健康文件的位置。
-    pub(crate) fn bind(&mut self, root: Option<PathBuf>, user_data: &str) {
+    /// 会话选择加入生命周期时记下插件根目录、官方插件包目录和健康文件的位置。
+    pub(crate) fn bind(
+        &mut self,
+        root: Option<PathBuf>,
+        builtin_packs: Option<PathBuf>,
+        user_data: &str,
+    ) {
         self.root = root;
+        self.builtin_packs = builtin_packs;
         self.health_file =
             (!user_data.is_empty()).then(|| Path::new(user_data).join(process::HEALTH_FILE));
         self.init_left = limits::FOCUS_INIT_FUEL;
@@ -150,13 +158,20 @@ impl ScriptSet {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let builtin_packs = self.builtin_packs.clone();
+        let builtin_packs = builtin_packs.as_deref();
         let grants_stamp = stamp(Some(script_grants::document_path(&root)));
+        // 官方插件的清单在内置目录里。
         let manifest = |id: &str| {
-            stamp(Some(
-                kind_directory(&root, PluginKind::Script)
-                    .join(id)
-                    .join(MANIFEST_FILE),
-            ))
+            stamp(
+                pack_directory(
+                    &root,
+                    BuiltinDirs::packs(builtin_packs),
+                    PluginKind::Script,
+                    id,
+                )
+                .map(|directory| directory.join(MANIFEST_FILE)),
+            )
         };
         if self.loaded && grants_stamp == self.grants {
             for entry in &mut self.plan {
@@ -165,10 +180,14 @@ impl ScriptSet {
                     continue;
                 }
                 entry.manifest = current;
-                entry.commands =
-                    script_commands::granted_commands_of(&root, &entry.id, entry.granted);
+                entry.commands = script_commands::granted_commands_of(
+                    &root,
+                    builtin_packs,
+                    &entry.id,
+                    entry.granted,
+                );
                 if entry.module.is_none() {
-                    process::request(&root, &entry.id, &entry.hash);
+                    process::request(&root, builtin_packs, &entry.id, &entry.hash);
                 }
             }
             return;
@@ -188,11 +207,16 @@ impl ScriptSet {
                 instance: None,
                 trapped: false,
                 turn: None,
-                commands: script_commands::granted_commands_of(&root, &grant.id, grant.granted),
+                commands: script_commands::granted_commands_of(
+                    &root,
+                    builtin_packs,
+                    &grant.id,
+                    grant.granted,
+                ),
             })
             .collect();
         for entry in &self.plan {
-            process::request(&root, &entry.id, &entry.hash);
+            process::request(&root, builtin_packs, &entry.id, &entry.hash);
         }
         let hashes: Vec<&str> = self.plan.iter().map(|entry| entry.hash.as_str()).collect();
         process::retain(&root, &hashes);

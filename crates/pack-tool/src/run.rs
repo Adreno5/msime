@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use msime_client_core::plugins::{self, script_pack};
+use msime_client_core::plugins::{self, script_pack, ReservedIds};
 use msime_script_runtime::abi::{scalar_values as values, status};
 use msime_script_runtime::{
     limits, CandidateRow, Candidates, Capability, CapabilitySet, CommandEvent, CommitTexts,
@@ -677,15 +677,16 @@ pub fn run_module(
     status
 }
 
-/// `msime-pack run <pack> --events <fixture> [--grant ...]` 的实现。
+/// `msime-pack run <pack> --events <fixture> [--grant ...] [--builtin]` 的实现。`reserved` 是 `--builtin` 给的保留 id 处理方式。
 pub fn command(
     pack: &Path,
     fixture: &Path,
     grant: &GrantSpec,
+    reserved: ReservedIds,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> i32 {
-    let loaded = match plugins::load_script_source(pack) {
+    let loaded = match plugins::load_script_source(pack, reserved) {
         Ok(loaded) => loaded,
         Err(error) => {
             let _ = writeln!(err, "error {}: {}", pack.display(), reason(&error));
