@@ -29,14 +29,16 @@ const allSchemes = [
   "stroke",
 ] as const;
 
-/** 还没加入的入口，按语言分组：`[语言, [入口名…]]`。 */
+/** 展开后还没加入的入口，按语言分组：`[语言, [入口名…]]`。 */
 async function missingGroups() {
+  const toggle = await screen.findByRole("button", { name: /查看怎么添加和全部/ });
+  fireEvent.click(toggle);
   const list = await screen.findByRole("list", { name: "还没加入的入口" });
   return within(list)
     .getAllByRole("listitem")
     .map((item) => {
-      const [language, ...names] = [...item.children].map((child) => child.textContent);
-      return [language, names] as const;
+      const [language, names] = [...item.children];
+      return [language.textContent, [...names.children].map((name) => name.textContent)] as const;
     });
 }
 
@@ -72,6 +74,30 @@ test("names the language each missing entry sits under in the add dialog", async
   expect(screen.getByRole("button", { name: "打开键盘设置" })).toBeTruthy();
 });
 
+test("keeps the instructions and the full list folded until asked for", async () => {
+  render(
+    <MacosInputModeEntriesSection
+      client={client([prefix + "Hans"])}
+      scheme="quanpin"
+      inputSchemes={allSchemes}
+      onError={vi.fn()}
+    />,
+  );
+
+  const toggle = await screen.findByRole("button", { name: /查看怎么添加和全部 10 个入口/ });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("list", { name: "还没加入的入口" })).toBeNull();
+  expect(screen.getByText(/左下角「\+」/).closest("[hidden]")).not.toBeNull();
+
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText(/左下角「\+」/).closest("[hidden]")).toBeNull();
+  expect(screen.getByRole("list", { name: "还没加入的入口" })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: /收起/ }));
+  expect(screen.queryByRole("list", { name: "还没加入的入口" })).toBeNull();
+});
+
 test("leads with the current scheme's entry when it is missing", async () => {
   render(
     <MacosInputModeEntriesSection
@@ -83,7 +109,7 @@ test("leads with the current scheme's entry when it is missing", async () => {
   );
 
   const text = (await screen.findByText(/菜单栏里还没有/)).textContent ?? "";
-  expect(text.startsWith("菜单栏里还没有「水杉输入法 · 粤」")).toBe(true);
+  expect(text.startsWith("菜单栏里还没有「水杉输入法 · 粤」，到「粤语」下添加")).toBe(true);
   expect(text).not.toContain("重新登录");
   // 简体中文下的几个入口排在同一行，不再各写一遍语言。
   expect((await missingGroups())[0]).toEqual([
