@@ -297,6 +297,8 @@ targets:
       - path: App/Services/SkinCommunityAPI.swift
       - path: App/Sources/dictionary/TauriPersonalDictionaryBridge.swift
       - path: App/Sources/settings/CandidateOptionsSettingsView.swift
+      # CandidateOptionsSettingsView 用到的写入失败提示（#7681 抽出来时漏列，测试目标编不过）。
+      - path: App/Sources/settings/SettingsSaveFailure.swift
       - path: App/Sources/settings/SharedPreferenceBinding.swift
       - path: App/Sources/settings/CandidatePreviewCard.swift
       # 辅助码页导入码表的选择规则和导入、删除流程（#7176），HelpcodeChoicePolicyTests 与 HelpcodeSettingsTests 直接测它们。

@@ -846,6 +846,38 @@ final class NineKeyKeyboardTests: XCTestCase {
     XCTAssertEqual(SymbolLayerLayout.lettersTitle(chinese: false), "ABC")
   }
 
+  /// 引号与方头括号样式（View 的 `punctuation_marks`）改变经 Engine 上屏的那几个键的键面，以及中文 123 层原样插入的两个引号键。
+  func testPunctuationStylesChangeTheFacesOfTheirKeys() {
+    let face = { (ascii: String, corner: Bool, hollow: Bool) in
+      KeyboardViewController.chineseSymbolFace(ascii, cornerQuotes: corner, hollowBrackets: hollow)
+    }
+    XCTAssertEqual(face("'", false, false), "‘")
+    XCTAssertEqual(face("\"", false, true), "“")
+    XCTAssertEqual(face("'", true, false), "「")
+    XCTAssertEqual(face("\"", true, false), "『")
+    XCTAssertEqual(face("[", true, false), "【")
+    XCTAssertEqual(face("[", false, true), "〖")
+    XCTAssertEqual(face("]", false, true), "〗")
+    XCTAssertEqual(face(",", true, true), "，")
+    XCTAssertNil(face("@", true, true))
+    XCTAssertEqual(KeyboardViewController.zhuyinSymbolText("'", chinesePunctuation: true, cornerQuotes: true), "「")
+    XCTAssertEqual(KeyboardViewController.zhuyinSymbolText("'", chinesePunctuation: false, cornerQuotes: true), "'")
+
+    let curly = SymbolLayerLayout.characterRows(more: false, chinese: true)
+    let corner = SymbolLayerLayout.characterRows(more: false, chinese: true, cornerQuotes: true)
+    XCTAssertEqual(Array(curly[1].suffix(2)), ["“", "”"])
+    XCTAssertEqual(Array(corner[1].suffix(2)), ["「", "」"])
+    XCTAssertEqual(Array(corner[1].prefix(8)), Array(curly[1].prefix(8)))
+    XCTAssertEqual(corner.map(\.count), [10, 10, 5])
+    // 英文层和 #+= 层不跟样式走。
+    XCTAssertEqual(SymbolLayerLayout.characterRows(more: false, chinese: false, cornerQuotes: true),
+                   SymbolLayerLayout.characterRows(more: false, chinese: false))
+    XCTAssertEqual(SymbolLayerLayout.characterRows(more: true, chinese: true, cornerQuotes: true),
+                   SymbolLayerLayout.characterRows(more: true, chinese: true))
+    // 直角引号键原样插入，不走 Engine 的标点路由。
+    XCTAssertEqual(SymbolLayerLayout.input(for: "「", chinese: true, chinesePunctuation: true), .literal("「"))
+  }
+
   func testSpacingChangesKeepDefaultKeyPlacementAndComposition() throws {
     let previousScheme = InputSchemePreference.scheme
     defer { InputSchemePreference.scheme = previousScheme }
