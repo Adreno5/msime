@@ -761,12 +761,13 @@ fn before_commit_has_its_own_turn_quota() {
         script.before_commit_fuel_left(),
         limits::BEFORE_COMMIT_FUEL - spent
     );
-    // 新一轮两份都补满。
+    // 新一轮三份都补满。
     assert!(matches!(
         script.deliver(4, &input_event()),
         Outcome::Delivered { .. }
     ));
     assert_eq!(script.before_commit_fuel_left(), limits::BEFORE_COMMIT_FUEL);
+    assert_eq!(script.command_fuel_left(), limits::COMMAND_FUEL);
     assert_eq!(script.turn_fuel_left(), limits::TURN_FUEL - per_input);
 }
 

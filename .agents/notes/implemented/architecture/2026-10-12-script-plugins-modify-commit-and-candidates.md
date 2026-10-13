@@ -56,7 +56,7 @@ Status: implemented
 
 每次 `before_commit` 都在复位到 `msime_init` 之后快照的新实例上运行（见 [沙箱运行时](2026-10-12-script-runtime-sandbox.md)），只改 body：`DispatchFacts::split_commit` 按字符数从末尾切出 tail，改写后的 body 接上原来的 tail 写回 `transition.commit`。多个插件按授权顺序依次改写，后面的插件读到的 body 和 COMMIT 是前面改写过的；每次改写的长度上限都按原 body 算，超出的那一次不采用。`commit` 事件带改写后的字符数和 `rewritten`，观察类插件读到的是改写后的文本；`candidate_selected` 的选中文本仍是原文。runtime 在 `dispatch` 里已经按原文调过 `remember_commit`（AI 上文和引擎的上文），改写不回灌引擎学习。插件 trap、fuel 耗尽、返回负数或结果不合规时上屏用原文。
 
-**`before_commit` 的 fuel 单独记。** 每个插件每轮给 `before_commit` 另一份 100 000 的配额，不从其余钩子每轮 125 000 的配额里扣，也不让它们扣；宿主在同一轮里重建实例时两份剩余都交回去（`resume_turn`）。共用一份时，持久实例在同一轮里先收到 `input`、`candidate_selected`、`candidates`，它按之前攒下的状态烧掉多少 fuel，就决定了快照上的改写会不会因为 fuel 耗尽被丢掉，改写结果不再只是本次 body 的函数。分开之后 `before_commit` 能用多少只取决于同一轮里之前的 `before_commit`，它们同样只看得到各自的上屏文本。被这一份截断时和其余钩子同一条规则：这一次用掉不少于 50 000（单次上限的一半）算 fuel 耗尽的失败，计入熔断，持久实例照用；不到一半是 `TurnExhausted`。
+**`before_commit` 的 fuel 单独记。** 每个插件每轮给 `before_commit` 另一份 100 000 的配额，不从其余钩子每轮 125 000 的配额里扣，也不让它们扣；宿主在同一轮里重建实例时各份剩余都交回去（`resume_turn`，`command` 另有一份，见 [插件指令的行](2026-10-13-script-plugin-command-rows.md)）。共用一份时，持久实例在同一轮里先收到 `input`、`candidate_selected`、`candidates`，它按之前攒下的状态烧掉多少 fuel，就决定了快照上的改写会不会因为 fuel 耗尽被丢掉，改写结果不再只是本次 body 的函数。分开之后 `before_commit` 能用多少只取决于同一轮里之前的 `before_commit`，它们同样只看得到各自的上屏文本。被这一份截断时和其余钩子同一条规则：这一次用掉不少于 50 000（单次上限的一半）算 fuel 耗尽的失败，计入熔断，持久实例照用；不到一半是 `TurnExhausted`。
 
 ### Linux 宿主怎么画插件注释（IBus、Fcitx5）
 
