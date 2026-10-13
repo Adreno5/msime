@@ -83,7 +83,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 
 - **收益**：插件可以在自己的 `/` 指令里给出能选中的行，选中的就是显示的那一行；插件行不学习、不计统计、不进 AI 上文、不请求释义和翻译、不转全角，失焦时不替用户上屏；旁路调用不运行脚本；没有插件指令时引擎和 runtime 的行为不变（有一条测试逐个比较视图）。
 - **代价**：`/` 模式多一份缓存和一次匹配；每份预编辑串第一次出现时同步跑一次插件，耗时由 fuel 上限兜住，真机时延要在投递接上之后量。
-- **只在 macOS 上验证过失焦路径的来源**：macOS 经命令 20 结束组字；Windows 由 TSF 结束组字、Linux 由 IBus/Fcitx5 自己上屏客户端预编辑，二者在 `/` 模式下写进文档的应当是原样的 `/xxx`，没有在设备上核实。Fcitx5 在快捷键等路径上发 `MSIME_FINISH_COMPOSITION`，提交的是高亮行，那属于用户主动按键，和标点同一类。
+- **只在 macOS 上验证过失焦路径的来源**：命令 20 只有 macOS 发（`commitComposition:`）。Windows Server 和 Linux 失焦时调 `msime_client_focus(false)`，`Runtime::focus` 在本地模式里丢弃组字、不提交任何行，所以插件行不会被替用户上屏；文档里最后留下什么由各自的框架决定。IBus 对不属于 `commits_on_blur` 的组字用 `IBUS_ENGINE_PREEDIT_CLEAR` 画预编辑（`platforms/linux/src/core/ClientEngine.cpp` 的 `render`），失焦时清掉，什么都不写；Fcitx5 的客户端预编辑是用户打的 `/xxx`，失焦时写不写进文档看 Fcitx5 和客户端，Windows 看 TSF 结束组字时组字范围里的文字，这两处都没有在设备上核实。Fcitx5 在快捷键等路径上发 `MSIME_FINISH_COMPOSITION`，提交的是高亮行，那属于用户主动按键，和标点同一类。
 - **触发词规则有两份**：引擎一份，client-core 一份（client-core 不能依赖引擎，见 `docs/ARCHITECTURE.md`），由分支 B、C 的一致性测试守着。
 - **重访信号**：真要做「普通组字里插行」（错音、行内拆字）时，上面第一条备选的几个前提都要先解决；需要第 9 项能力时扩 `CapabilitySet`。
 
