@@ -647,7 +647,7 @@ enum MsimeCommand {
     MSIME_CONVERSION_LEFT = 17, MSIME_CONVERSION_RIGHT = 18,
     /* 宿主已经自己把文本写进了文档，再丢弃组字：对会话的作用同 MSIME_CANCEL（一次，组字没结束时照旧再发一次），区别只在生命周期里结束原因记 HostCommit、不出取消音。 */
     MSIME_CANCEL_AFTER_HOST_COMMIT = 19,
-    /* 焦点即将离开或会话即将关闭，宿主替用户结束组字（macOS IMK 的 commitComposition:，宿主为词库维护关掉会话之前）：对会话的作用同 MSIME_FINISH_COMPOSITION，区别只在生命周期里上屏来源记 FocusLoss，同 msime_client_focus(false) 的上屏：不可改写、不出提交音、不画上屏特效，回复里 feedback 的 typing_effect 为 0。用户按键或点选引起的结束组字仍发 MSIME_FINISH_COMPOSITION。 */
+    /* 焦点即将离开或会话即将关闭，宿主替用户结束组字（macOS IMK 的 commitComposition:，宿主为词库维护关掉会话之前）：对会话的作用同 MSIME_FINISH_COMPOSITION（只有一处不同：高亮的是脚本插件在 / 指令里给的行，即来源 14 时，上屏用户打的原文，例如 /uuid，因为这时用户没在看候选窗），生命周期里上屏来源记 FocusLoss，同 msime_client_focus(false) 的上屏：不可改写、不出提交音、不画上屏特效，回复里 feedback 的 typing_effect 为 0。用户按键或点选引起的结束组字仍发 MSIME_FINISH_COMPOSITION。 */
     MSIME_FINISH_ON_FOCUS_LOSS = 20,
     MSIME_NEXT_PAGE = 100, MSIME_PREVIOUS_PAGE = 101,
     MSIME_NEXT_CANDIDATE = 102, MSIME_PREVIOUS_CANDIDATE = 103,

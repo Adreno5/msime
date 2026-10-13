@@ -1905,7 +1905,8 @@ fn type_letters(handle: u64, keys: &[u8]) -> Value {
 ))]
 #[test]
 fn plugin_rows_ask_for_no_gloss_or_translation() {
-    let variants: [(&str, fn(&mut Preferences)); 3] = [
+    type Configure = fn(&mut Preferences);
+    let variants: [(&str, Configure); 3] = [
         ("translation", |preferences| {
             preferences.candidate_translations = true;
         }),

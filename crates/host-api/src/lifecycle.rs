@@ -61,7 +61,7 @@ pub const KEY_PASSTHROUGH: u32 = 0x400;
 
 /// `msime_client_command` 的命令 19：宿主自己写入文本后丢弃组字。
 pub const COMMAND_CANCEL_AFTER_HOST_COMMIT: u32 = 19;
-/// `msime_client_command` 的命令 20：焦点即将离开或会话即将关闭，宿主替用户结束组字。对会话同 `MSIME_FINISH_COMPOSITION`，上屏来源记 `FocusLoss`。
+/// `msime_client_command` 的命令 20：焦点即将离开或会话即将关闭，宿主替用户结束组字。对会话同 `MSIME_FINISH_COMPOSITION`（高亮的是脚本插件行时原样上屏，见 `Action::FinishOnFocusLoss`），上屏来源记 `FocusLoss`。
 pub const COMMAND_FINISH_ON_FOCUS_LOSS: u32 = 20;
 
 /// 一次物理按下，来自 `msime_client_key`。
