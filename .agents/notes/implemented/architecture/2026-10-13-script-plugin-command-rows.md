@@ -8,7 +8,7 @@ Status: implemented
 
 v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户打 `/uuid` 时由插件给出几行，用户选中其中一行上屏。这要先在引擎和 runtime 里回答几件事：插件的行用什么来源、和内置指令怎么分、列表重建时行怎么不丢、什么时候问插件（不能把打字停顿和网络时序交给脚本）、这些行上屏之后哪些内置机制不能碰它（学习、统计、AI 上文、释义、全角、失焦上屏）。
 
-这篇记引擎和 runtime 一侧（分支 A）和 ABI、清单、作者工具与设置页文案（分支 B，见「ABI」一节）；host-api 的投递（找触发词的主人、有效触发词、随机数）由分支 C 就地补进这一篇。A、B 合入之后生产路径上没有东西会调用新代码：`EngineOptions::plugin_commands` 默认为空，`CommandProvider` 没有人挂，host-api 不投递 `command` 钩子；B 让用户能导入、授权申请了 `provide_commands` 的包，设置页画得出它，但授权了也不出候选。
+这篇记引擎和 runtime 一侧（分支 A）、ABI、清单、作者工具与设置页文案（分支 B，见「ABI」一节），以及 host-api 的投递、授权页的指令列表和作者文档（分支 C，见「投递」一节）。A、B 单独合入时生产路径上没有东西会调用新代码：`EngineOptions::plugin_commands` 默认为空，`CommandProvider` 没有人挂，host-api 不投递 `command` 钩子；B 让用户能导入、授权申请了 `provide_commands` 的包，设置页画得出它，但授权了也不出候选。C 合入之后三个桌面平台上授权了的插件在自己的 `/` 指令里出候选。
 
 ## Decision
 
@@ -23,7 +23,7 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 ### 引擎：插件指令、匹配和缓存
 
 - **类型**：`PluginCommand { trigger, title }`（`types.rs`，`CommandTableEntry` 旁边）；`EngineOptions::plugin_commands` 和 `SessionOptions::plugin_commands` 默认空表，`Session::set_plugin_commands` 实时替换。
-- **哪些插件指令生效**（`local::command::usable_plugin_commands`）：触发词 2–16 个小写 ASCII 字母，标题 1–8 个字符、不含控制字符、首尾不是空白；触发词不等于、也不和任何内置触发词、用户指令表（`usable_command_table` 之后）的触发词、排在前面的插件触发词互为前缀。用户的指令表永远赢，插件之间先到先得。`CandidateQueries` 留着宿主交来的原表，`set_command_table` 之后按新表重新过滤。过滤之后任何两个生效的触发词都没有前缀关系，所以 `plugin_command_source` 不需要最长匹配，一段输入至多属于一条插件指令。client-core 算有效触发词时要用同一套规则（分支 C），内置触发词由 `local::command::builtin_triggers`、`builtin_titles` 公开（`msime_engine::host::builtin_command_triggers`、`builtin_command_titles`），给分支 B 的一致性测试用。
+- **哪些插件指令生效**（`local::command::usable_plugin_commands`）：触发词 2–16 个小写 ASCII 字母，标题 1–8 个字符、不含控制字符、首尾不是空白；触发词不等于、也不和任何内置触发词、用户指令表（`usable_command_table` 之后）的触发词、排在前面的插件触发词互为前缀。用户的指令表永远赢，插件之间先到先得。`CandidateQueries` 留着宿主交来的原表，`set_command_table` 之后按新表重新过滤。过滤之后任何两个生效的触发词都没有前缀关系，所以 `plugin_command_source` 不需要最长匹配，一段输入至多属于一条插件指令。client-core 的 `script_commands::resolve` 用同一套规则给授权页算状态（分支 C，见「投递」），内置触发词由 `local::command::builtin_triggers`、`builtin_titles` 公开（`msime_engine::host::builtin_command_triggers`、`builtin_command_titles`），给分支 B 的一致性测试用。
 - **匹配**（`plugin_command_source`）：`/` 之后的输入以某个生效的触发词开头、剩下的全是小写字母时，返回（触发词，参数），参数可以为空。收键本来就只收小写字母（`'` 只在 `/fy` 的单词之间收），本地预编辑串最长 `GENERATED_MODE_INPUT_LIMIT = 64` 字节，参数长度由它封顶。
 - **引擎自己不列行**：`CandidateQueries::local` 的指令分支在输入属于插件指令时返回空，列表由缓存的插件行或兜底行（原样的 `/uuid`）顶着。打 `/u` 这样的前缀时插件指令不出现在列表里：列表里每一行都必须能上屏，插件指令在用户打完触发词之前给不出行。
 - **要问插件的那一次**（`Session::plugin_command_query`）：只在 `/` 模式里、不在专用英文、输入属于某条插件指令、这份预编辑串还没有缓存时返回 `PluginCommandQuery { session_id, preedit, trigger, argument }`。九键会话一律 `None`。
@@ -82,6 +82,18 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - **设置页文案（审查意见 M3）**：共享页（`plugin-script-view.tsx` 的 `capabilityLabels`）和 Windows 原生页（`PluginPageModel.h` 的 `capability_label`）都加「提供 / 指令」，两处一字不差，分支 C 写 `docs/plugins.md` 时照抄：「你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；在有的系统上，按快捷键或 Tab 等键、用菜单或工具栏结束输入时也会输入这一行。按回车时只输入你打的原文（例如 /uuid），点到别的窗口时插件给出的行不会输入。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。」回车那半句逐个宿主核对过：macOS（`InputController.mm` 的 Return 分支）、Windows（`KeyEvent.h` 的 `0x0D`）、IBus（`ClientEngine.cpp`）和 Fcitx5（`FcitxEngine.cpp`）在 `/` 指令里都发 `MSIME_COMMIT_RAW`，只有韩文汉字表、注音表打开时改发选中命令，上屏的是原文。「点到别的窗口」只说插件行不会输入，不说输入原文：macOS 失焦走命令 20 上屏 `/uuid`，Windows Server 和 Linux 的 `Runtime::focus` 在本地模式里丢弃组字，文档里留下什么看框架（见「后果」里失焦那一条）。用键盘切窗口不写进这句：macOS 上 Cmd+反引号这类组合键如果交给了输入法，会走下面的组合键路径，没在设备上核实。快捷键那半句写成「在有的系统上」，因为各宿主不一致：macOS 的 Cmd、Ctrl、Option 组合键（`InputController.mm` 组合键分支）、候选窗不可见时的 Tab，Fcitx5 没被前面处理的非字符键（`FcitxEngine.cpp` 按键处理的末尾），以及 macOS 切方案、切英文、开表情面板、开始语音这些菜单和工具栏动作都发 `MSIME_FINISH_COMPOSITION`，上屏高亮行；Windows Server 的 `translate_key` 对组合键发 `MSIME_CANCEL`。这些都是用户自己的操作，和标点同一类；早先的文案只列了序号、点选、空格、标点，漏了它们（分支 B 的复审意见 1）。钩子的白话名是「你在 / 指令里输入它的触发词时（给出候选）」。共享页的 `ScriptCapability` 和 Windows 的 `script_capabilities` 各多一项；没有这些，导入一个申请了 `provide_commands` 的包会让共享授权页取文案时抛错，Windows 页把它当成不认识的能力丢掉。脚本包摘要的 `commands` 在 TypeScript 里和指令表共用一个字段，类型是 `(PluginCommand | ScriptCommand)[]`。
 - **数据文件不做**：设计里给拆字准备的 `[script].data`、MSTB 和三个查表 import，唯一的消费者改成了内置模式，见 [脚本插件的只读数据文件](../../rejected/architecture/2026-10-13-script-plugin-data-files.md)。
 
+### 投递（分支 C）
+
+- **交给引擎的是原样列表**：`ScriptSet::refresh`（授权戳变了时）用 `client-core::plugins::script_commands::granted_commands` 读每个启用、用户授予了 `provide_commands`、清单也申请了它的插件的清单（`load_package_unread`：清单和模块文件的大小，不读模块、不算哈希），把指令记在计划条目上。`ScriptSet::plugin_commands` 按执行顺序把它们排开，`HostSession::refresh_plugin_commands` 在它和 `options.plugin_commands` 不同时经 `Runtime::set_plugin_commands` 交给引擎并记进 `options`（重建的引擎从这里开始），换表失败只报告、不让聚焦失败，规则同 [插件表刷新从不让聚焦失败](../bug-fix/2026-10-11-plugin-table-refresh-never-fails-focus.md)。调用处是聚焦时 `refresh_plugin_tables` 的最后一步，和 `msime_client_set_lifecycle` 刚挂上脚本集合时。没有选择加入生命周期的会话（移动端、设置应用、MCP）、进程开关关着、没有插件根目录时是空表，`/uuid` 只是一段普通的输入。
+- **谁生效只由引擎决定一次**：用户指令表赢、插件先到先得的过滤只在 `usable_plugin_commands` 里做；用户指令表变了（聚焦时换表、偏好应用时重建引擎）引擎当场重新过滤，host-api 不跟着重算。client-core 的 `script_commands::resolve` 用同一套规则只给授权页算状态（`ScriptGrantsView::commands`，每条 `active`、`shadowed_by_user_table` 带冲突的触发词、`shadowed_by_plugin` 带冲突的插件和触发词）。client-core 不能依赖引擎，两份写法由 host-api 的 `the_grant_page_and_the_engine_resolve_plugin_commands_alike` 拿 2000 组随机输入对齐（触发词只用 `a`、`b`、`r`、`q`，相等、互为前缀、单字母和撞上内置 `/rq` 的情况都很密）；引擎为此在 `msime_engine::host` 公开了 `usable_command_table`、`usable_plugin_commands`。授权页的用户指令表是偏好里启用的指令表包（`script_commands::user_triggers`，和输入法交给引擎的同一份；桌面外壳读它管着的 `PreferencesStore`，`msime_client_plugins` 读 `state_root` 里的偏好）；`/` 关着时引擎拿到的是空表，授权页仍按启用的表说明，打开之后就是那样。
+- **触发词的主人**是计划里第一个声明它的插件。引擎在同一个触发词重复时只留第一条（标题都过了清单校验，不会因为标题被丢），后面同名的那条在引擎里也被前一条挡住，所以引擎问到的触发词和 host-api 找到的主人是同一个插件。别的插件一律不投递。
+- **运行条件**同其余钩子（`prepare`）：普通字段、属性已确认、进程开关开着、计划不空。`COMMIT_OBSERVE_ONLY` 时 runtime 暂停插件变换，提供者也不问。不满足时是 `NotRun`，引擎不写缓存，列表里只有原样的兜底行。
+- **事件**：`Event::new(Hook::Command)`，标量只填本地模式 `command`，`CommandEvent` 带触发词、参数和这一次的 64 字节随机数（`script_commands::random_bytes`，即 `getrandom`；取不到时 `NotRun`，不拿全 0 顶替）。经 `deliver_one` 投递：查缓存拿模块、需要时实例化、在快照上运行、用 `command` 自己那一份轮配额、记健康。
+- **结果**：正常返回是 `Ran`，`Actions::rows` 交给引擎。trap、fuel 耗尽、返回负数也是 `Ran`，只是 0 行：插件运行过了，引擎把这份预编辑串缓存成空表，同一份预编辑串上的下一次派发不再投递，免得一个出错的插件在每次派发里重跑、很快熔断；健康计数和熔断规则照旧。没运行（没有主人、模块还在编译或包对不上哈希、已经熔断、推迟实例化、本轮配额用完、宿主一侧 panic）是 `NotRun`，下一次派发再问。宿主一侧 panic 照旧关掉本进程的全部脚本。
+- **模块未就绪**：触发词取自清单，不等模块编译好（审查意见 m2），刚启用的插件在这次聚焦就占住触发词；第一次打 `/uuid` 时模块可能还在后台编译，这时只有兜底行，模块好了之后同一份预编辑串的下一次派发就出行。
+- **授权页**：共享页和 Windows 原生页在提供指令的插件详情里多一组「提供的 / 指令」，每条「/uuid UUID」一行，右边是状态：「生效」「与你的指令 /uu 冲突，未生效」「与插件 xx 的 /uui 冲突，未生效」（插件用名字），没启用时「授权并启用后生效」，启用了但没授予这项能力时「没有授予「提供 / 指令」，不会生效」，被输入法停用时照实说，宿主没列出（超过 8 个、清单载不入）时「未生效」。授权对话框列出这些指令，调整授权时带上状态。`/` 指令关着时这一组写「需要先打开 / 指令，并使用中文标点；在全拼、双拼、五笔下没有输入时按 / 再输入触发词。」并给「打开 / 指令」按钮，点了才调 `onLocalMode("command")`（Windows 是 `enable_local_mode(L"command")`），授权本身从不改偏好。两处文案逐字相同（`SCRIPT_COMMAND_MODE_NOTE`、`script_command_mode_note`）。
+- **作者文档**：`docs/plugins.md` 的能力表、钩子表、限制表、隐私规则、失败、`msime-pack run` 的夹具表，和新的「/ 指令」一节（触发词规则与冲突、投递时机、事件和行的规则、上屏与排除项、`/` 默认关和一键打开、残余风险）。能力文案和两处设置页一字不差。
+
 ## Alternatives considered
 
 - **插件行插进普通组字的主候选窗**（设计里的方案 B：错音提示、行内拆字）。最强的理由是用户价值更高，不用先进 `/`。不用：全拼、双拼、五笔下 `READING` 是空串，插件拿不到读音；插行要同时改 `mixed_candidates` 和 `ranking_candidates`，否则 `ranking_index` 回退成显示下标、`learn_candidate` 会调到另一个词库词的词频；每个按键都要多跑一次脚本、多取一次快照，时延没量过；五笔四码唯一的判断看的是整个列表的长度。`/` 模式复用 `/fy` 的现成路径，只有本地模式受影响。
@@ -99,6 +111,12 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - **参数超长时给 `Outcome` 加一个变体**。最强的理由是语义比借用 `NotSubscribed` 准确。不用：`Outcome` 被 host-api 和 `msime-pack run` 穷举匹配，宿主对这种投递只需要知道「没运行、没花 fuel」，`NotSubscribed` 就是这个意思；宿主本来也不该这样投递。
 - **`random_fill` 归到 `provide_commands` 名下**。最强的理由是每个 import 都对应一项能力，更像最小权限。不用：随机数和用户输入无关，又只在 `command` 里有内容，而声明 `command` 钩子必须申请 `provide_commands`，归过去拦不住任何多出来的东西。
 - **用 `unicode-general-category` 拦连续的组合附加符号（Mn/Me 超过 2 个）**（设计 5.2）。最强的理由是能挡住把一个字叠得很高、盖住相邻行的文本。不用：它对 script-runtime 是一条新的依赖边，没有获批；`MAX_COMMAND_ROW_UTF16 = 64` 的硬上限已经限制了能叠多少，获批后在 `valid_command_row_text` 里加一条规则即可。
+- **host-api 用 `resolve` 算好生效的表再交给引擎**（计划原来的写法）。最强的理由是引擎拿到的就是授权页上显示生效的那几条。不用：用户指令表在偏好应用、重建引擎时也会变，host-api 得在 `apply_pending` 里再重算一次才跟得上，而引擎每次换表本来就重新过滤；两边规则相同，交原样列表只让引擎这一处决定，授权页的状态由一致性测试守着。
+- **在 `plugin_tables.rs` 的戳里再加上授权文件**（计划原来的写法）。最强的理由是和指令表、短语表同一种结构。不用：`ScriptSet` 已经用同一个 `key_sound::stamp` 按戳重读授权，再记一份戳就是同一件事的两份状态；`refresh_plugin_commands` 只在列表变了时才交给引擎。
+- **触发词等模块编译好才生效**（设计原文）。最强的理由是生效的触发词一定有能运行的模块。不用：编译在后台，第一次聚焦时总还没好，刚启用的插件要再换一次输入框才有触发词（审查意见 m2）；先占住触发词、没就绪时给兜底行不写缓存，用户只是第一次没有行。
+- **插件失败时按 `NotRun` 处理，不缓存**。最强的理由是失败可能是偶发的，下一次派发能补上行。不用：同一份预编辑串上的派发（修饰键、刷新）每次都会再跑一遍出错的插件，三次就熔断；失败是插件自己的，改一个字母就会重新问。
+- **随机数取不到时照样投递全 0**。最强的理由是插件总能运行。不用：UUID 这类输出会变成可预测的固定值，用户看不出来；系统随机数源不可用时不投递，列表里是原样的兜底行。
+- **授权页从输入法进程拿生效的触发词**（例如健康文件旁再写一份）。最强的理由是显示的就是输入法实际用的那一份。不用：要给输入法加一个写文件的出口，而状态只取决于授权、清单和偏好里的指令表，设置进程自己就读得到；两边规则相同由测试守着。
 - **宿主的注释过滤跟着追加新的禁用字符**。见 [脚本插件改写上屏与重排、注释、过滤候选](2026-10-12-script-plugins-modify-commit-and-candidates.md) 里禁用字符那一段：宿主那一道只防断行和方向翻转，runtime 是插件文本的唯一权威。
 
 ## Consequences
@@ -109,6 +127,8 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - **触发词规则有两份**：引擎一份，client-core 一份（client-core 不能依赖引擎，见 `docs/ARCHITECTURE.md`）。内置触发词和标题由分支 B 的一致性测试守着；长度和字符的规则两边各写一份常量，分支 C 的有效触发词计算还要再对一次。
 - **每个插件每轮最多用三份 fuel 之和**（其余钩子 125 000、`before_commit` 100 000、`command` 100 000）。三份互不挤占，代价是一个插件一轮的最坏工作量比 v2 多了 100 000。
 - **B 单独合入时是惰性的**：能导入、能授权、设置页认得新能力，但输入法不投递 `command`，授权了也不出候选，PR 正文要写明。
+- **投递（分支 C）的收益和代价**：插件只在自己的 `/` 指令里、只给触发词的主人投递，设置页说明每条指令为什么生效或没生效，`/` 关着时一键打开。代价是授权戳变了的那次聚焦要多读几份清单（每个提供指令的插件一个小文件）；授权页每次读授权都读一次偏好和启用的指令表包；规则仍有两份，靠一致性测试守。包被绕过导入路径换掉、和授权的哈希对不上时，触发词照样占着（取自清单），但模块永远编不出来，`/uuid` 只有兜底行。
+- **AI 上文在 host-api 层没有端到端断言**：runtime 不公开 `ai_context`，host-api 的端到端测试只断言上屏的就是显示的插件行和 `commit_context`；「插件行不进 AI 上文」由 input-runtime 的测试守着。
 - **重访信号**：真要做「普通组字里插行」（错音、行内拆字）时，上面第一条备选的几个前提都要先解决；需要第 9 项能力时扩 `CapabilitySet`。
 
 ## Verification
@@ -124,6 +144,13 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - 分支 B，`crates/client-core/src/plugins/script_tests.rs`：两条指令的包摘要和 JSON；内置触发词相等或互为前缀（`rq`、`fan`、`riqix`、`dates`，以及每个内置触发词本身和加一个字母）、清单内重复和互为前缀、单字母、17 个字母、大写、带数字、标题 9 个字、空标题、等于内置标题（全部五个）、首尾空白、零宽字符、多余的键、缺标题、空表、5 条、不是表的数组、有指令缺能力、有能力缺钩子、有能力没指令、有钩子没指令，各自给出中文原因；没有 `commands` 的旧包摘要里没有这个键，内容哈希等于固定值（另用 Python 按公式独立算过一遍，相同）。`crates/host-api/src/tests/script_plugins.rs`：内置触发词和标题与引擎一致。
 - 分支 B，`crates/pack-tool/tests/run.rs`：WAT 写的指令插件的金样（授予时的 `rows` 和随机数换成的字母、不授予时 `denied` 和空 `rows`，其余事件没有 `rows`）；夹具里 `command` 缺触发词、别的事件带触发词、大写触发词、参数带数字、`random` 长度不对、`local_mode` 不是 `command` 的报错；经命令行：`validate` 接受带指令的包、拒绝和 `/fy` 冲突的触发词，`run` 拒绝清单没声明的触发词。`tests/sdk.rs` 的两条一致性测试覆盖新的常量和 import。
 - 分支 B，界面：`apps/desktop/tests/settings/script-plugins.test.tsx` 加两条（授权对话框里「提供 / 指令」能勾、没有依赖和互斥提示、交出去的是 `["provide_commands"]`；详情页列出这项能力和 `command` 钩子的白话名），`pnpm --filter @msime/desktop typecheck` 通过。Windows `tests/ui/plugin_page_model.cpp` 加第 8 项能力的排序、依赖、互斥、勾选、文案和钩子名，用 Studio 上的 `clang++ -std=c++17 -Wall -Wextra -Werror` 编过并运行通过；MinGW 交叉构建只在 CI 上跑。
+
+- 分支 C，`client-core::plugins::script_commands` 的 tests：用户指令表赢、插件先到先得（比的是排在前面已经生效的，被用户表挡住的不挡后面的插件）、相等和两个方向的前缀、用户表里引擎不用的触发词不挡、不合规和撞内置的不列出、状态的 JSON 形状、随机数填满。`plugins/script_tests.rs`：只算启用、授予了 `provide_commands`、清单能载入的插件（模块文件被删的不算），用户指令表包里的 `si` 挡住 `sig`、不启用时 `sig` 生效，只算执行顺序上的前 8 个。
+- 分支 C，`crates/host-api/src/tests/script_plugins.rs`（经 FFI，WAT 插件放进进程缓存，清单写在插件目录里）：打完 `/uuid` 出两行（「触发词-参数」带注释、8 个随机字母），插件注释是「UUID one」、引擎注释为空，打 `/uui` 时不投递；移动高亮、翻页和 `reset_cache` 都不再投递；改一个字母再改回来重新投递、换了随机数；选中第 1 行上屏的就是它、`commit_context.local_mode` 是 `command`；参数每打一个字母投递一次。SECURE 字段和 `COMMIT_OBSERVE_ONLY` 下只有兜底行、一次都不投递，换回来就有。没授予 `provide_commands` 的不投递；两个插件同触发词时归执行顺序在前的，换顺序之后归另一个，停用之后它的触发词不再生效。用户指令表有 `uu` 时 `/uuid` 不归插件，同一个插件不冲突的 `/guid` 照常。模块还在编译时只有兜底行，模块就绪之后同一份预编辑串的下一次派发（`reset_cache`）就出行。trap 和死循环各三次：没有行，失败计数逐次加一，同一份预编辑串上的下一次派发不再投递，第三次熔断、之后不再投递。页上有真实插件行时释义请求为 `null`，命令 20 上屏 `/uuid`、命令 9 上屏插件行。`msime_client_plugins` 的授权回答列出每条指令的状态，偏好里启用了有 `si` 的指令表后 `sig` 归用户。两份规则对 2000 组随机输入给出相同的生效表。变异检查：把主人改成计划里最后一个声明的插件、把失败改成 `NotRun`，各有一条测试变红（已还原）。
+- 分支 C，界面：`apps/desktop/tests/settings/script-plugins.test.tsx` 加三条（状态和两种冲突的说法、没授权和宿主没列出时的说法、`/` 关着时有说明和按钮且经对话框授权不改偏好、点按钮才调 `onLocalMode("command")`）。Windows `tests/ui/plugin_page_model.cpp` 加状态的各种情况、对话框的行和 `/` 的说明，用 Studio 的 `clang++ -std=c++17 -Wall -Wextra -Werror` 编过并运行通过；`main.cpp` 的画法只做了源码审阅，MinGW 交叉构建在 CI 上。Linux 的 Tauri 外壳（`desktop_plugins.rs` 的授权命令）在 `Dockerfile.desktop-check` 的容器里 `cargo check -p msime-desktop --all-targets` 通过。
+- 分支 C 没有做的：三个桌面平台的装机打字验收（macOS 安装 `.app`、在 TextEdit 里打 `/<触发词>`）要等分支 D 有了 uuid 插件；Windows 原生页和 MinGW 构建只到源码审阅。
+
+分支 C 的当场分类：[脚本插件在输入法进程里](2026-10-12-script-plugins-in-the-input-method-process.md) 部分重叠，就地补了 `command` 的投递路径和聚焦时把清单里的指令交给引擎；[授权页](2026-10-12-script-grants-settings-page-without-keychain.md) 和 [Windows 授权页](2026-10-12-windows-script-grants-page.md) 部分重叠，就地补了指令列表、状态和按钮；[插件表刷新从不让聚焦失败](../bug-fix/2026-10-11-plugin-table-refresh-never-fails-focus.md) 的规则由 `refresh_plugin_commands` 照搬，无冲突；[指令表去重](../testing/2026-10-08-local-command-table-dedup.md) 讲用户指令表本身，无关。
 
 分支 B 的当场分类：[脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)、[作者工具](../feature/2026-10-12-script-plugin-author-tools.md)、[Windows 授权页](2026-10-12-windows-script-grants-page.md) 部分重叠，各自就地更新了键数、轮配额份数、import 数和能力表的事实并链到这里；[沙箱运行时](2026-10-12-script-runtime-sandbox.md) 和 [脚本插件改写上屏与重排、注释、过滤候选](2026-10-12-script-plugins-modify-commit-and-candidates.md) 部分重叠，就地改了能力数、钩子数、`command_fuel_left`、三份轮配额和 `command` 也跑在快照上的事实并链到这里（最初的分类漏了这两篇，复审时补上）；[脚本插件合集](2026-10-12-script-plugin-collection.md) 讲编进模块的数据和 `check_run.py`，部分重叠（`command` 的 fuel 上限），无冲突；新建的 [脚本插件的只读数据文件](../../rejected/architecture/2026-10-13-script-plugin-data-files.md) 记下没做的那一块。
 
