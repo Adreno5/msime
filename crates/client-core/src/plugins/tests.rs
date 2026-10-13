@@ -2262,6 +2262,7 @@ fn phrase_tables_hold_bounded_rows_and_merge_in_priority_order() {
 
     let rows: Vec<_> = phrase_table::enabled_phrases(
         root.path(),
+        None,
         &["home".into(), "missing".into(), "office".into()],
     )
     .into_iter()
@@ -2278,11 +2279,12 @@ fn phrase_tables_hold_bounded_rows_and_merge_in_priority_order() {
     );
     let enabled = vec!["office".to_owned()];
     assert_eq!(
-        phrase_table::enabled_phrases(root.path(), &enabled).capacity(),
+        phrase_table::enabled_phrases(root.path(), None, &enabled).capacity(),
         2
     );
     let merged = phrase_table::enabled_phrases(
         root.path(),
+        None,
         &[
             "office".into(),
             "missing".into(),
@@ -2294,16 +2296,17 @@ fn phrase_tables_hold_bounded_rows_and_merge_in_priority_order() {
     assert_eq!(merged.capacity(), 4);
     assert_eq!(merged[0].text, "电话");
     assert_eq!(merged[3].text, "地址");
-    let saturated = phrase_table::enabled_phrases(root.path(), &vec!["full".into(); 5]);
+    let saturated = phrase_table::enabled_phrases(root.path(), None, &vec!["full".into(); 5]);
     assert_eq!(saturated.len(), phrase_table::MAX_ENABLED_PHRASES);
     assert_eq!(saturated.capacity(), phrase_table::MAX_ENABLED_PHRASES);
     assert_eq!(saturated.last().unwrap().text, "191");
     assert_eq!(
-        phrase_table::enabled_phrases(root.path(), &["missing".into(), "over".into()]).capacity(),
+        phrase_table::enabled_phrases(root.path(), None, &["missing".into(), "over".into()])
+            .capacity(),
         0
     );
     assert_eq!(
-        phrase_table::enabled_phrases(root.path(), &[]).capacity(),
+        phrase_table::enabled_phrases(root.path(), None, &[]).capacity(),
         0
     );
     let summary = load_package(
@@ -2820,4 +2823,213 @@ fn importing_a_helpcode_table_again_replaces_the_pack_and_leaves_no_staging() {
         staging_leftovers(&kind_directory(root.path(), PluginKind::Helpcode)),
         Vec::<String>::new()
     );
+}
+
+/// 官方短语表的清单：`packs` 下的 `phrase_table/<id>/plugin.toml`（官方插件包目录的布局），或者用户插件目录里同 id 的影子副本。
+fn official_phrase_table(kind_parent: &Path, id: &str, text: &str) -> PathBuf {
+    let pack = kind_parent.join(id);
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(
+        pack.join(MANIFEST_FILE),
+        format!("schema_version = 1\nkind = 'phrase_table'\nid = '{id}'\nname = 'LaTeX 符号'\nversion = '1.0.0'\nlicense = 'MIT'\n[[phrases]]\nkey = 'alpha'\ntext = '{text}'\n"),
+    )
+    .unwrap();
+    pack
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "android",
+    ignore = "读主机仓库里的文件，设备上没有这份检出"
+)]
+fn official_packs_match_the_repository_lock() {
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        format_version: u64,
+        packs: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        kind: String,
+        id: String,
+    }
+    let lock: Lock =
+        serde_json::from_str(include_str!("../../../../plugins/official-packs.json")).unwrap();
+    assert_eq!(lock.format_version, 1);
+    let ids = |kind: &str| -> Vec<String> {
+        lock.packs
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .map(|entry| entry.id.clone())
+            .collect()
+    };
+    assert_eq!(ids("script"), BUILTIN_SCRIPT_PACKS);
+    assert_eq!(ids("phrase_table"), BUILTIN_PHRASE_TABLES);
+    assert_eq!(
+        lock.packs.len(),
+        BUILTIN_SCRIPT_PACKS.len() + BUILTIN_PHRASE_TABLES.len(),
+        "official-packs.json 只登记脚本插件和短语表"
+    );
+    for id in BUILTIN_PHRASE_TABLES {
+        assert!(
+            is_builtin(PluginKind::PhraseTable, id) && is_official(PluginKind::PhraseTable, id)
+        );
+    }
+    // 官方 id 和内置音效包、背景音乐包的 id 不重叠，也不是别的类型的保留 id。
+    for id in BUILTIN_SCRIPT_PACKS
+        .iter()
+        .chain(BUILTIN_PHRASE_TABLES.iter())
+    {
+        assert!(!BUILTIN_SOUND_PACKS.contains(id) && !BUILTIN_MUSIC_PACKS.contains(id));
+        assert!(!is_builtin(PluginKind::CommandTable, id));
+    }
+    assert!(!is_official(PluginKind::Sound, DEFAULT_SOUND_PACK));
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "android",
+    ignore = "读主机仓库里的文件，设备上没有这份检出"
+)]
+fn official_phrase_tables_come_from_the_packs_directory_and_stay_off_until_enabled() {
+    let root = tempdir().unwrap();
+    let bundle = tempdir().unwrap();
+    let packs = bundle.path().join("plugin-packs");
+    let sounds = builtin_root();
+    let both = BuiltinDirs {
+        sounds: Some(&sounds),
+        packs: Some(&packs),
+    };
+    official_phrase_table(
+        &kind_directory(&packs, PluginKind::PhraseTable),
+        "latex-symbols",
+        "α",
+    );
+    // 内置目录里不是官方 id 的文件夹：载入时不会从这里读到它，列出来只会是一个用不了的「内置」包。
+    official_phrase_table(
+        &kind_directory(&packs, PluginKind::PhraseTable),
+        "stray",
+        "β",
+    );
+
+    let catalog = scan(root.path(), both);
+    let official: Vec<_> = catalog
+        .packages
+        .iter()
+        .filter(|package| package.kind() == PluginKind::PhraseTable)
+        .map(|package| (package.id.as_str(), package.builtin))
+        .collect();
+    assert_eq!(official, [("latex-symbols", true)]);
+    assert_eq!(
+        catalog
+            .packages
+            .iter()
+            .filter(|package| package.kind() == PluginKind::Sound && package.builtin)
+            .count(),
+        BUILTIN_SOUND_PACKS.len()
+    );
+    assert_eq!(
+        catalog
+            .issues
+            .iter()
+            .map(|issue| (issue.kind, issue.folder.as_str(), issue.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [(PluginKind::PhraseTable, "stray", "不是随输入法分发的插件")]
+    );
+
+    // 载入永远从内置目录读；宿主没有内置目录（移动端、不带官方包的开发构建）时载不入，也列不出来。
+    let loaded = load_package(root.path(), both, PluginKind::PhraseTable, "latex-symbols").unwrap();
+    assert!(loaded.builtin);
+    assert!(loaded.directory.starts_with(&packs));
+    assert_eq!(
+        load_package(
+            root.path(),
+            BuiltinDirs::default(),
+            PluginKind::PhraseTable,
+            "latex-symbols"
+        )
+        .unwrap_err(),
+        "内置插件包不可用"
+    );
+    assert!(scan(root.path(), BuiltinDirs::default())
+        .packages
+        .is_empty());
+    assert_eq!(
+        pack_directory(root.path(), both, PluginKind::PhraseTable, "latex-symbols"),
+        Some(packs.join("phrase_table").join("latex-symbols"))
+    );
+    assert_eq!(
+        pack_directory(root.path(), both, PluginKind::PhraseTable, "office"),
+        Some(root.path().join("phrase_table").join("office"))
+    );
+
+    // K 模式只读 `enabled` 里点名的表：不启用就没有行。
+    let enabled = ["latex-symbols".to_owned()];
+    assert!(phrase_table::enabled_phrases(root.path(), Some(&packs), &[]).is_empty());
+    let rows = phrase_table::enabled_phrases(root.path(), Some(&packs), &enabled);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].key.as_str(), rows[0].text.as_str()),
+        ("alpha", "α")
+    );
+    assert!(phrase_table::enabled_phrases(root.path(), None, &enabled).is_empty());
+
+    // 官方包随安装包分发之前导入过的同 id 副本：报为问题、不被使用，能删，删的只是这份副本。
+    let shadow = official_phrase_table(
+        &kind_directory(root.path(), PluginKind::PhraseTable),
+        "latex-symbols",
+        "影子",
+    );
+    let catalog = scan(root.path(), both);
+    assert!(catalog
+        .issues
+        .iter()
+        .any(|issue| issue.kind == PluginKind::PhraseTable
+            && issue.folder == "latex-symbols"
+            && issue.reason.contains("属于内置插件")));
+    let rows = phrase_table::enabled_phrases(root.path(), Some(&packs), &enabled);
+    assert_eq!(rows[0].text, "α");
+    remove(root.path(), PluginKind::PhraseTable, "latex-symbols").unwrap();
+    assert!(!shadow.exists());
+    assert!(packs
+        .join("phrase_table/latex-symbols/plugin.toml")
+        .is_file());
+    // 再删一次（没有副本）照样成功，内置的仍在。
+    remove(root.path(), PluginKind::PhraseTable, "latex-symbols").unwrap();
+    assert!(packs
+        .join("phrase_table/latex-symbols/plugin.toml")
+        .is_file());
+    // 音效包的内置 id 照旧拒绝删除。
+    assert!(matches!(
+        remove(root.path(), PluginKind::Sound, DEFAULT_SOUND_PACK),
+        Err(PluginError::Reserved)
+    ));
+
+    // 导入和社区库照旧拒绝官方 id。
+    let source = official_phrase_table(bundle.path(), "latex-symbols", "导入");
+    assert!(matches!(
+        import(&source, root.path()),
+        Err(PluginError::Reserved)
+    ));
+    assert!(matches!(validate(&source), Err(PluginError::Reserved)));
+    assert_eq!(
+        validate_with(&source, ReservedIds::Allow).unwrap().id,
+        "latex-symbols"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_official_packs_directory_is_not_scanned() {
+    let state = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    official_phrase_table(
+        &kind_directory(outside.path(), PluginKind::PhraseTable),
+        "latex-symbols",
+        "α",
+    );
+    let linked = state.path().join("plugin-packs");
+    msime_path_trust::untrusted_symlink(outside.path(), &linked).unwrap();
+    let catalog = scan(state.path(), BuiltinDirs::packs(Some(&linked)));
+    assert_eq!(catalog, PluginCatalog::default());
 }

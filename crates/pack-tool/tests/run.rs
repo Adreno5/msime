@@ -829,3 +829,92 @@ fn bad_packs_grants_and_command_lines_are_refused() {
         assert!(err.starts_with("usage: msime-pack validate"), "{err}");
     }
 }
+
+#[test]
+fn hash_prints_the_content_hash_the_grants_bind() {
+    let files = tempfile::tempdir().unwrap();
+    let (pack, _) = pack_and_fixture(files.path(), COMMIT_THEN_RETRACT);
+    let (status, out, err) = invoke(&[Path::new("hash"), &pack]);
+    assert_eq!((status, err.as_str()), (EXIT_OK, ""));
+    let expected = msime_client_core::plugins::script_pack::content_hash(
+        PACK_MANIFEST.as_bytes(),
+        &binary_module(),
+    );
+    assert_eq!(out, format!("{expected}\n"));
+
+    // 不是脚本包、不是包、命令行写错。
+    let (status, out, _) = invoke(&[Path::new("hash"), &files.path().join("missing")]);
+    assert_eq!(status, EXIT_INVALID);
+    assert!(out.contains("plugin_unsupported_source"), "{out}");
+    for args in [
+        &[Path::new("hash")][..],
+        &[Path::new("hash"), &pack, &pack][..],
+        &[Path::new("hash"), Path::new("--builtin")][..],
+    ] {
+        let (status, _, err) = invoke(args);
+        assert_eq!(status, EXIT_USAGE, "{args:?}");
+        assert!(err.starts_with("usage: msime-pack validate"));
+    }
+}
+
+#[test]
+fn official_ids_need_the_builtin_flag_everywhere() {
+    let files = tempfile::tempdir().unwrap();
+    let (logger, events) = pack_and_fixture(files.path(), COMMIT_THEN_RETRACT);
+    // 随桌面安装包分发的官方脚本插件的 id：导入和社区库拒绝它，只有仓库的构建脚本加 `--builtin`。
+    let pack = files.path().join("uuid");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(
+        pack.join("plugin.toml"),
+        PACK_MANIFEST.replace("id = 'logger'", "id = 'uuid'"),
+    )
+    .unwrap();
+    fs::copy(logger.join("main.wasm"), pack.join("main.wasm")).unwrap();
+    let reserved = format!(
+        "error {}: plugin_reserved: 这个 id 属于内置插件，不能导入\n",
+        pack.display()
+    );
+
+    let (status, out, _) = invoke(&[Path::new("validate"), &pack]);
+    assert_eq!((status, out.as_str()), (EXIT_INVALID, reserved.as_str()));
+    let (status, out, _) = invoke(&[Path::new("validate"), Path::new("--builtin"), &pack]);
+    assert_eq!((status, out.as_str()), (EXIT_OK, "ok uuid script 1.0.0\n"));
+
+    let (status, out, _) = invoke(&[Path::new("hash"), &pack]);
+    assert_eq!((status, out.as_str()), (EXIT_INVALID, reserved.as_str()));
+    let (status, out, _) = invoke(&[Path::new("hash"), Path::new("--builtin"), &pack]);
+    assert_eq!(status, EXIT_OK);
+    assert_eq!(out.trim_end().len(), 64);
+
+    let (status, out, err) = invoke(&[Path::new("run"), &pack, Path::new("--events"), &events]);
+    assert_eq!(status, EXIT_INVALID);
+    assert!(out.is_empty());
+    assert_eq!(err, reserved);
+    let (status, out, err) = invoke(&[
+        Path::new("run"),
+        Path::new("--builtin"),
+        &pack,
+        Path::new("--events"),
+        &events,
+    ]);
+    // 和 logger 同一个模块：第二个事件 trap，所以是 1；要看的是它真的运行了。
+    assert_eq!((status, err.as_str()), (EXIT_INVALID, ""));
+    assert_eq!(out.lines().count(), 3, "{out}");
+
+    // `--builtin` 只能出现一次，也不能当作包。
+    let (status, _, _) = invoke(&[
+        Path::new("validate"),
+        Path::new("--builtin"),
+        Path::new("--builtin"),
+    ]);
+    assert_eq!(status, EXIT_USAGE);
+    let (status, _, _) = invoke(&[
+        Path::new("run"),
+        &pack,
+        Path::new("--builtin"),
+        Path::new("--builtin"),
+        Path::new("--events"),
+        &events,
+    ]);
+    assert_eq!(status, EXIT_USAGE);
+}

@@ -2562,7 +2562,7 @@ fn a_granted_plugin_answers_its_trigger_once_per_typed_command_and_its_row_commi
     let fixture = fixture_with(command_preferences());
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );
@@ -2629,7 +2629,7 @@ fn secure_fields_and_observe_only_commits_get_only_the_typed_row() {
     let fixture = fixture_with(command_preferences());
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );
@@ -2742,7 +2742,7 @@ fn the_users_own_command_table_wins_over_a_plugin_trigger() {
     write_user_table(&fixture, "uu");
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID"), ("guid", "GUID")], true)],
         1,
     );
@@ -2762,14 +2762,16 @@ fn the_users_own_command_table_wins_over_a_plugin_trigger() {
 #[test]
 fn a_module_still_compiling_leaves_the_typed_row_until_it_is_ready() {
     let fixture = fixture_with(command_preferences());
-    let script = Script::new("uuid", commander("one"), &[Hook::Command])
+    let script = Script::new("generator", commander("one"), &[Hook::Command])
         .commanding(&[("uuid", "UUID")], true);
     write_command_manifest(&fixture, &script);
     let hash = unique_hash(&fixture, script.id);
     write_grants(
         &fixture,
         1,
-        vec![json!({"id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]})],
+        vec![
+            json!({"id": "generator", "hash": hash, "enabled": true, "granted": ["provide_commands"]}),
+        ],
     );
     opt_in(&fixture, TRAIT_KNOWN);
     // 编译请求在聚焦时交给后台线程（磁盘上的占位模块对不上哈希，它不会编出东西）；屏障之后那次处理已经做完。
@@ -2803,12 +2805,12 @@ fn a_pack_back_in_place_under_unchanged_grants_brings_its_trigger_back() {
     let fixture = fixture_with(command_preferences());
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );
-    let pack = fixture.plugins.join("script").join("uuid");
-    let aside = fixture.plugins.join("script").join(".replaced-uuid");
+    let pack = fixture.plugins.join("script").join("generator");
+    let aside = fixture.plugins.join("script").join(".replaced-generator");
     std::fs::rename(&pack, &aside).unwrap();
     opt_in(&fixture, TRAIT_KNOWN);
     let view = slash(fixture.handle, b"/uuid");
@@ -2831,7 +2833,7 @@ fn opting_in_after_focus_hands_the_plugin_commands_over_at_once() {
     let fixture = fixture_with(command_preferences());
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );
@@ -2849,7 +2851,7 @@ fn refreshing_while_the_scripts_are_borrowed_keeps_the_engines_plugin_commands()
     let fixture = fixture_with(command_preferences());
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );
@@ -2876,7 +2878,7 @@ fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
         let hashes = install(
             &fixture,
             &[
-                Script::new("uuid", failing_commander(ending), &[Hook::Command])
+                Script::new("generator", failing_commander(ending), &[Hook::Command])
                     .commanding(&[("uuid", "UUID")], true),
             ],
             1,
@@ -2887,7 +2889,7 @@ fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
             assert!(plugin_rows(&view).is_empty(), "{ending}: {view}");
             assert_eq!(kinds(&take_log()), [Hook::Command.code()], "{ending}");
             assert_eq!(
-                process_health(&fixture, "uuid", &hashes[0]).0,
+                process_health(&fixture, "generator", &hashes[0]).0,
                 failures,
                 "{ending}"
             );
@@ -2897,7 +2899,9 @@ fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
             cancel(fixture.handle);
         }
         // 最近 50 次里失败 3 次：停用，之后不再投递。
-        assert!(process_health(&fixture, "uuid", &hashes[0]).1.is_some());
+        assert!(process_health(&fixture, "generator", &hashes[0])
+            .1
+            .is_some());
         assert!(plugin_rows(&slash(fixture.handle, b"/uuid")).is_empty());
         assert!(take_log().is_empty(), "{ending}");
     }
@@ -2910,7 +2914,7 @@ fn real_plugin_rows_ask_for_no_gloss_and_command_20_commits_what_was_typed() {
     let fixture = fixture_with(preferences);
     install(
         &fixture,
-        &[Script::new("uuid", commander("one"), &[Hook::Command])
+        &[Script::new("generator", commander("one"), &[Hook::Command])
             .commanding(&[("uuid", "UUID")], true)],
         1,
     );

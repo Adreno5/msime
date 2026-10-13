@@ -1191,7 +1191,7 @@ fn the_grants_view_keeps_the_order_and_the_capability_names() {
 /// 在 `/` 指令里给出候选的包：申请 `provide_commands`、声明 `command` 钩子，`commands` 是接在 `[script]` 后面的 `[[script.commands]]`。
 fn commander(commands: &str) -> String {
     manifest(
-        "uuid",
+        "generator",
         "'provide_commands'",
         &format!("abi = 1\nmodule = 'main.wasm'\nhooks = ['command']\n{commands}"),
     )
@@ -1553,4 +1553,108 @@ fn only_the_scripts_the_input_method_runs_count() {
     );
     assert_eq!(granted.len(), limits::MAX_ENABLED_SCRIPTS);
     assert!(granted.iter().all(|(id, _)| id != ids.last().unwrap()));
+}
+
+/// 官方脚本插件（`BUILTIN_SCRIPT_PACKS`）：从内置目录读，授权照样写在插件目录里、绑定内置那一份的哈希；影子副本不被使用，删它不动授权；宿主不知道内置目录时，授权条目不当作「包已不在」清掉。
+#[test]
+fn official_script_packs_are_granted_from_the_packs_directory() {
+    let root = tempdir().unwrap();
+    let bundle = tempdir().unwrap();
+    let packs = bundle.path().join("plugin-packs");
+    let builtin = Some(packs.as_path());
+    let wasm = module(&[COMMAND_ROW]);
+    let official = commander(&command("uuid", "UUID")).replace("id = 'generator'", "id = 'uuid'");
+    let directory = write_pack(&packs.join("script"), "uuid", &official, &wasm);
+    let hash = script_pack::content_hash(official.as_bytes(), &wasm);
+
+    let loaded = script_pack::load(root.path(), builtin, "uuid").unwrap();
+    assert_eq!(loaded.pack.content_hash, hash);
+    assert!(script_pack::load(root.path(), None, "uuid").is_err());
+    let catalog = scan(root.path(), BuiltinDirs::packs(builtin));
+    assert_eq!(catalog.packages.len(), 1);
+    assert!(catalog.packages[0].builtin);
+    assert_eq!(script_content(&catalog.packages[0]).content_hash, hash);
+
+    // 默认停用：没有授权条目就不算进指令。
+    let provide = CapabilitySet::EMPTY.with(Capability::ProvideCommands);
+    assert!(super::script_commands::granted_commands(
+        root.path(),
+        builtin,
+        &script_grants::read(root.path())
+    )
+    .is_empty());
+    let grants = script_grants::set(root.path(), builtin, "uuid", &hash, true, provide).unwrap();
+    assert_eq!(grants.plugins[0].hash, hash);
+    let commands = super::script_commands::granted_commands(root.path(), builtin, &grants);
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].1[0].trigger, "uuid");
+    let view = script_grants::view(root.path(), builtin, grants, None, &[]);
+    assert_eq!(view.commands.len(), 1);
+    // 不知道内置目录的读法看不到它的指令，但授权还在。
+    assert!(super::script_commands::granted_commands(
+        root.path(),
+        None,
+        &script_grants::read(root.path())
+    )
+    .is_empty());
+
+    // 另一个插件授权时，宿主没给内置目录：官方条目不算「包已不在」。
+    let (reader, reader_wasm) = reader("pangu");
+    let reader_hash = import_pack(bundle.path(), root.path(), "pangu", &reader, &reader_wasm);
+    let grants = script_grants::set(
+        root.path(),
+        None,
+        "pangu",
+        &reader_hash,
+        true,
+        read_commit(),
+    )
+    .unwrap();
+    assert_eq!(
+        grants
+            .plugins
+            .iter()
+            .map(|grant| grant.id.as_str())
+            .collect::<Vec<_>>(),
+        ["uuid", "pangu"]
+    );
+
+    // 官方包随安装包分发之前导入过的同 id 副本：载入、授权都只认内置的那一份，删它不动授权。
+    let shadow = write_pack(
+        &root.path().join("script"),
+        "uuid",
+        &official.replace("UUID", "影子"),
+        &wasm,
+    );
+    assert_eq!(
+        script_pack::load(root.path(), builtin, "uuid")
+            .unwrap()
+            .pack
+            .content_hash,
+        hash
+    );
+    remove(root.path(), PluginKind::Script, "uuid").unwrap();
+    assert!(!shadow.exists());
+    assert!(directory.join(MANIFEST_FILE).is_file());
+    assert!(script_grants::read(root.path()).get("uuid").is_some());
+
+    // 宿主给了内置目录、包却真的不在了（新版本去掉了它）：条目照常清掉。
+    fs::remove_dir_all(&directory).unwrap();
+    let grants = script_grants::set(
+        root.path(),
+        builtin,
+        "pangu",
+        &reader_hash,
+        true,
+        read_commit(),
+    )
+    .unwrap();
+    assert_eq!(
+        grants
+            .plugins
+            .iter()
+            .map(|grant| grant.id.as_str())
+            .collect::<Vec<_>>(),
+        ["pangu"]
+    );
 }
