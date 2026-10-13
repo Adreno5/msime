@@ -14,7 +14,7 @@ class CommunityResourceEditorLifecycleTests(unittest.TestCase):
         self.assertIn("@State private var request = ViewRequestGeneration()", editor)
         self.assertIn("@State private var pending: Task<Void, Never>?", editor)
         self.assertIn(".onAppear { request.appear() }", editor)
-        self.assertIn("request.disappear()", editor)
+        self.assertIn("ViewRequestTask.disappear(request: $request, pending: $pending)", editor)
 
     def test_import_and_publish_share_cancellation_fence(self):
         editor = SOURCE.split("struct CommunityResourceEditor", 1)[1]
@@ -22,6 +22,7 @@ class CommunityResourceEditorLifecycleTests(unittest.TestCase):
         self.assertIn("ViewRequestTask.run(request: $request, busy: $busy, message: $message, pending: $pending", editor)
         self.assertGreaterEqual(editor.count("try request.checkCurrent(id)"), 2)
         self.assertGreaterEqual(editor.count("run { id in"), 2)
+        self.assertIn("CommunityUnseenItems.filter(existing: words, incoming: imported.entries)", editor)
         self.assertIn("let id = request.wrappedValue.begin()", TASK.read_text())
 
 

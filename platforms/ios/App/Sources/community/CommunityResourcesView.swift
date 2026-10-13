@@ -91,9 +91,7 @@ struct CommunityResourcesView: View {
     // 每次回到列表都重读：详情页里导入词库、添加或移除回复模板后，返回时胶囊按钮跟着变。
     .onAppear { request.appear(); Task { await refreshInstalled() } }
     .onDisappear {
-      request.disappear()
-      pending?.cancel()
-      pending = nil
+      ViewRequestTask.disappear(request: $request, pending: $pending)
       busy = false
     }
     .confirmationDialog("导入这版词库到本机？", isPresented: Binding(get: { confirmingImport != nil }, set: { if !$0 { confirmingImport = nil } }),
@@ -210,7 +208,7 @@ struct CommunityResourcesView: View {
     do {
       let page = try await SkinCommunityAPI.shared.resources(kind, scope: scope, search: search, offset: append ? items.count : 0)
       try request.checkCurrent(id)
-      if append { let ids = Set(items.map(\.id)); items += page.items.filter { !ids.contains($0.id) } }
+      if append { items += CommunityUnseenItems.filter(existing: items, incoming: page.items) }
       else { items = page.items }
       more = page.has_more
     } catch is CancellationError { }
@@ -289,9 +287,7 @@ struct CommunityReplyTemplatesSection: View {
         }
         .onAppear { request.appear() }
         .onDisappear {
-          request.disappear()
-          pending?.cancel()
-          pending = nil
+          ViewRequestTask.disappear(request: $request, pending: $pending)
           addGeneration.invalidate()
           addTasks.values.forEach { $0.cancel() }
           addTasks.removeAll()
@@ -520,9 +516,7 @@ struct CommunityResourceDetail: View {
       } message: { Text(message ?? "") }
       .onAppear { request.appear() }
       .onDisappear {
-      request.disappear()
-      pending?.cancel()
-      pending = nil
+      ViewRequestTask.disappear(request: $request, pending: $pending)
       busy = false
       }
   }
@@ -616,7 +610,7 @@ struct CommunityResourceEditor: View {
               let imported = try await Task.detached { try PersonalDictionaryImport.read(from: url) }.value
               try request.checkCurrent(id)
               guard imported.entries.allSatisfy({ PersonalWordKind.communityCases.contains($0.kind) }) else { throw CommunityFailure(message: "社区词库暂不支持 98 五笔词条，请从文件中去掉后再选择。") }
-              let ids = Set(words.map(\.id)); let additions = imported.entries.filter { !ids.contains($0.id) }
+              let additions = CommunityUnseenItems.filter(existing: words, incoming: imported.entries)
               guard words.count + additions.count <= 128 else { throw CommunityFailure(message: "每份社区词库最多 128 条，请先精简文件。") }
               words += additions
             }
@@ -641,9 +635,7 @@ struct CommunityResourceEditor: View {
     .navigationViewStyle(.stack)
     .onAppear { request.appear() }
     .onDisappear {
-      request.disappear()
-      pending?.cancel()
-      pending = nil
+      ViewRequestTask.disappear(request: $request, pending: $pending)
       busy = false
     }
   }

@@ -135,14 +135,8 @@ struct AccountSettingsView: View {
       }
     }
     .onDisappear {
-      request.disappear()
-      pending?.cancel()
-      pending = nil
-      operation?.cancel()
-      operation = nil
-      syncGeneration.invalidate()
-      syncTask?.cancel()
-      syncTask = nil
+      ViewRequestTask.disappear(request: $request, pending: $pending)
+      ViewRequestTask.cancel(generation: $syncGeneration, task: $syncTask)
       busy = false
     }
   }
@@ -494,9 +488,7 @@ struct AppleAccountSection: View {
         // task 挂在这一行上，不挂在 Section 上：Form 会把 Section 上的修饰符分给每一行，出现「清除失效登录状态」那一行时会再读一次登录状态。
         .task { request.appear(); startCheckSession() }
         .onDisappear {
-          request.disappear()
-          pending?.cancel()
-          pending = nil
+          ViewRequestTask.disappear(request: $request, pending: $pending)
           busy = false
           model.invalidate()
         }
