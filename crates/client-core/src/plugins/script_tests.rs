@@ -1658,3 +1658,25 @@ fn official_script_packs_are_granted_from_the_packs_directory() {
         ["pangu"]
     );
 }
+
+/// 从没导入过插件的用户：状态目录下还没有插件目录，官方脚本插件照样能授权，授权时把插件目录建出来，授权文件写在里面。
+#[test]
+fn an_official_script_pack_is_granted_before_the_plugin_root_exists() {
+    let state = tempdir().unwrap();
+    let root = state.path().join("plugins");
+    let bundle = tempdir().unwrap();
+    let packs = bundle.path().join("plugin-packs");
+    let builtin = Some(packs.as_path());
+    let wasm = module(&[COMMAND_ROW]);
+    let official = commander(&command("uuid", "UUID")).replace("id = 'generator'", "id = 'uuid'");
+    write_pack(&packs.join("script"), "uuid", &official, &wasm);
+    let hash = script_pack::content_hash(official.as_bytes(), &wasm);
+    assert!(!root.exists());
+
+    let provide = CapabilitySet::EMPTY.with(Capability::ProvideCommands);
+    let grants = script_grants::set(&root, builtin, "uuid", &hash, true, provide).unwrap();
+    assert_eq!(grants.plugins[0].id, "uuid");
+    assert!(root.is_dir());
+    assert!(script_grants::document_path(&root).is_file());
+    assert_eq!(script_grants::read(&root), grants);
+}

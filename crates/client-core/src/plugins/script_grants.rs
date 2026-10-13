@@ -156,9 +156,9 @@ pub fn set(
     if !safe_id(id) {
         return Err(ScriptGrantError::Invalid("插件 id 无效".into()));
     }
-    crate::storage::reject_symlink(root).map_err(|_| ScriptGrantError::Storage)?;
-    if !fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir()) {
-        return Err(ScriptGrantError::Missing("插件文件夹不存在".into()));
+    // 插件目录只在导入插件或保存 @ 名单时建出来，官方脚本插件不经导入：从没导入过插件的用户第一次授权它时，这里还没有插件目录。和导入一样先建好它，链接或不是目录照样拒绝。
+    if !crate::storage::create_directory_and_check(root).map_err(|_| ScriptGrantError::Storage)? {
+        return Err(ScriptGrantError::Storage);
     }
     let writes = lock_plugin_root(root)?;
     let installed =

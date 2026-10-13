@@ -3182,6 +3182,37 @@ fn an_official_script_pack_is_listed_granted_and_compiled_from_the_packs_directo
     assert_eq!(picked["value"]["commit"], "ok", "{picked}");
 }
 
+/// 从没导入过插件的用户：状态目录下还没有 `plugins`，设置页照样列出并授权官方脚本插件，授权文件写进新建的插件目录。
+#[test]
+fn an_official_script_pack_is_granted_before_the_plugin_root_exists() {
+    let bundle = tempfile::tempdir().unwrap();
+    let packs = bundle.path().join("plugin-packs");
+    let pack = packs.join("script").join("uuid");
+    std::fs::create_dir_all(&pack).unwrap();
+    std::fs::write(pack.join(MANIFEST_FILE), OFFICIAL_UUID_MANIFEST).unwrap();
+    std::fs::write(pack.join("main.wasm"), binary_ok_commander()).unwrap();
+    let fixture = fixture_with_packs(command_preferences(), Some(&packs));
+    std::fs::remove_dir_all(&fixture.plugins).unwrap();
+
+    let catalog = plugins_page(&fixture, &packs, json!({"operation": "catalog"}));
+    let hash = catalog["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["id"] == "uuid")
+        .unwrap_or_else(|| panic!("{catalog}"))["content_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let grants = plugins_page(
+        &fixture,
+        &packs,
+        json!({"operation": "set_script_grant", "id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]}),
+    );
+    assert_eq!(grants["plugins"][0]["id"], "uuid", "{grants}");
+    assert!(fixture.plugins.join("script-grants.json").is_file());
+}
+
 /// 没有内置目录的宿主（移动端、不带官方包的开发构建）：官方 id 列不出来、授权不了，用户插件目录里同 id 的副本也不会顶替它。
 #[test]
 fn without_a_packs_directory_an_official_id_resolves_to_nothing() {
