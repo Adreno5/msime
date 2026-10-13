@@ -12134,6 +12134,82 @@ fn phrase_tables_reach_the_quick_phrase_mode_from_the_plugins_directory() {
     assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
+/// 官方短语表（随桌面安装包分发的 latex-symbols）从内置目录读：宿主选项给了 `plugin_packs` 时读那里，没给时读内置音效包旁边的 `plugin-packs`（macOS 的 bundle、Linux 的安装就是这样放的）。不在 `phrase_tables` 里就不进 K 模式；插件目录里同 id 的旧副本不顶替它。
+#[test]
+fn an_official_phrase_table_comes_from_the_bundle_and_only_once_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["resources", "dictionaries"] {
+        let directory = dir.path().join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        rusqlite::Connection::open(directory.join("msime-pinyin.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE quick_parases(key TEXT,value TEXT,weight INTEGER);")
+            .unwrap();
+    }
+    let bundle = dir.path().join("bundle");
+    let sounds = bundle.join("sound-packs");
+    std::fs::create_dir_all(&sounds).unwrap();
+    let official = bundle.join("plugin-packs/phrase_table/latex-symbols");
+    std::fs::create_dir_all(&official).unwrap();
+    std::fs::write(
+        official.join("plugin.toml"),
+        "schema_version = 1\nkind = \"phrase_table\"\nid = \"latex-symbols\"\nname = \"LaTeX 符号\"\nversion = \"1.0.0\"\nlicense = \"MIT\"\n[[phrases]]\nkey = \"gamma\"\ntext = \"γ\"\n[[phrases]]\nkey = \"gamma\"\ntext = \"Γ\"\n",
+    )
+    .unwrap();
+    // 官方包随安装包分发之前导入过的同 id 副本。
+    install_phrase_table(dir.path(), "latex-symbols", &[("gamma", "旧副本")]);
+    let path = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    };
+    let create = |preferences: &Preferences, plugin_packs: Option<&std::path::Path>| {
+        let mut options = json!({ "api_version": 1, "resources": path("resources"), "user_data": path("user"), "cache": path("cache"), "dictionaries": path("dictionaries"), "preferences": preferences, "preferences_directory": path("state"), "sound_packs": sounds });
+        if let Some(packs) = plugin_packs {
+            options["plugin_packs"] = json!(packs);
+        }
+        let options = options.to_string();
+        let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
+        assert_eq!(created["ok"], true, "{created}");
+        created["value"]["session"].as_u64().unwrap()
+    };
+
+    // 没启用：K 模式里没有它。
+    let mut preferences = chinese_preferences();
+    let handle = create(&preferences, None);
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    let rows = quick_phrase_candidates(handle, b"gamma");
+    assert!(
+        !rows
+            .iter()
+            .any(|row| ["γ", "Γ", "旧副本"].contains(&row.as_str())),
+        "{rows:?}"
+    );
+    // 启用之后读的是内置那一份。
+    preferences.plugins.phrase_tables = vec!["latex-symbols".into()];
+    assert_eq!(update(handle, 1, &preferences)["value"]["deferred"], false);
+    assert_eq!(quick_phrase_candidates(handle, b"gamma"), ["γ", "Γ"]);
+    SESSIONS.with(|sessions| {
+        assert_eq!(
+            sessions.borrow()[&handle].plugin_roots.builtin_packs,
+            Some(bundle.join("plugin-packs"))
+        );
+    });
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+
+    // 显式给出的目录优先；它不在时什么都不读，也不退回插件目录里的副本。
+    let handle = create(&preferences, Some(&dir.path().join("elsewhere")));
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    let rows = quick_phrase_candidates(handle, b"gamma");
+    assert!(
+        !rows
+            .iter()
+            .any(|row| ["γ", "Γ", "旧副本"].contains(&row.as_str())),
+        "{rows:?}"
+    );
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
+}
+
 /// K 模式开着、数据库短语又查不了（这里没有主词库文件 `msime-pinyin.db`，查询返回 `QUICK_PHRASE_UNAVAILABLE`）时设置页换了短语表：Engine 已换上新表，只是刷新打开的列表时返回了诊断。聚焦不因此失败，会话记下的戳就是磁盘上的现状，之后的聚焦看不到变动、不会再换一次表；新表照常生效，偏好更新重建 Engine 后仍是新表。
 #[test]
 fn a_phrase_table_that_cannot_refresh_the_open_list_does_not_fail_focus() {

@@ -579,7 +579,7 @@ fn binary_commander() -> Vec<u8> {
     out
 }
 
-const COMMANDER_MANIFEST: &str = "schema_version = 2\nkind = 'script'\nid = 'uuid'\nname = 'UUID'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = ['provide_commands']\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['command']\nmemory_pages = 1\n[[script.commands]]\ntrigger = 'uuid'\ntitle = 'UUID'\n";
+const COMMANDER_MANIFEST: &str = "schema_version = 2\nkind = 'script'\nid = 'generator'\nname = 'UUID'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = ['provide_commands']\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['command']\nmemory_pages = 1\n[[script.commands]]\ntrigger = 'uuid'\ntitle = 'UUID'\n";
 
 /// `validate` 按清单规则查 `[[script.commands]]`，`run` 只投递清单里声明过的触发词。
 #[test]
@@ -590,7 +590,10 @@ fn slash_commands_are_validated_and_only_declared_triggers_run() {
     fs::write(pack.join("plugin.toml"), COMMANDER_MANIFEST).unwrap();
     fs::write(pack.join("main.wasm"), binary_commander()).unwrap();
     let (status, out, _) = invoke(&[Path::new("validate"), &pack]);
-    assert_eq!((status, out.as_str()), (EXIT_OK, "ok uuid script 1.0.0\n"));
+    assert_eq!(
+        (status, out.as_str()),
+        (EXIT_OK, "ok generator script 1.0.0\n")
+    );
 
     let events = files.path().join("events.jsonl");
     fs::write(

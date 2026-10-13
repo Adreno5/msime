@@ -17,7 +17,7 @@ use msime_script_runtime::abi::{commit_field, event_field};
 use msime_script_runtime::{
     abi::status, compile_text, Capability, CapabilitySet, Declaration, Hook, HookSet,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// 观察类钩子，全部。
@@ -213,6 +213,11 @@ fn fixture() -> Fixture {
 
 /// 同 [`fixture`]，偏好由调用方给。
 fn fixture_with(preferences: Preferences) -> Fixture {
+    fixture_with_packs(preferences, None)
+}
+
+/// 同 [`fixture_with`]，宿主选项里另给官方插件包目录 `plugin_packs`（桌面安装包随带的那个）。
+fn fixture_with_packs(preferences: Preferences, plugin_packs: Option<&Path>) -> Fixture {
     TEST_SWITCH.with(|switch| switch.set(Some(true)));
     TEST_PANICKED.with(|panicked| panicked.set(false));
     TEST_SLOW.with(|slow| slow.set(false));
@@ -244,7 +249,11 @@ fn fixture_with(preferences: Preferences) -> Fixture {
             .unwrap();
     }
     let user_data = path("user");
-    let options = json!({ "api_version": 1, "resources": resources, "user_data": user_data, "cache": path("cache"), "dictionaries": dictionaries, "preferences_directory": state, "preferences": preferences }).to_string();
+    let mut options = json!({ "api_version": 1, "resources": resources, "user_data": user_data, "cache": path("cache"), "dictionaries": dictionaries, "preferences_directory": state, "preferences": preferences });
+    if let Some(packs) = plugin_packs {
+        options["plugin_packs"] = json!(packs);
+    }
+    let options = options.to_string();
     let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
     assert_eq!(created["ok"], true, "{created}");
     Fixture {
@@ -3046,4 +3055,229 @@ fn the_grant_page_and_the_engine_resolve_plugin_commands_alike() {
             "{user:?} {plugins:?}"
         );
     }
+}
+
+// ---- 随桌面安装包分发的官方插件包 ----
+
+/// 按字节手写的指令插件：导入 `msime.command_row`，一页内存里放着 `ok`；`msime_on_event` 给出一行 `ok`（没有注释），返回 0。后台编译线程从磁盘读包，要一个真的 `.wasm` 文件。
+fn binary_ok_commander() -> Vec<u8> {
+    let mut out = b"\0asm\x01\0\0\0".to_vec();
+    let mut section = |id: u8, content: &[u8]| {
+        out.push(id);
+        out.push(u8::try_from(content.len()).unwrap());
+        out.extend_from_slice(content);
+    };
+    // 类型：(i32 i32 i32 i32) -> i32、() -> i32、(i32) -> i32。
+    section(
+        1,
+        &[
+            3, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 0, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f,
+        ],
+    );
+    let mut imports = vec![1, 5];
+    imports.extend_from_slice(b"msime");
+    imports.push(11);
+    imports.extend_from_slice(b"command_row");
+    imports.extend_from_slice(&[0x00, 0]);
+    section(2, &imports);
+    section(3, &[2, 1, 2]);
+    section(5, &[1, 0x00, 1]);
+    let mut exports = vec![3];
+    for (export, kind, index) in [
+        ("memory", 2, 0),
+        ("msime_abi", 0, 1),
+        ("msime_on_event", 0, 2),
+    ] {
+        exports.push(u8::try_from(export.len()).unwrap());
+        exports.extend_from_slice(export.as_bytes());
+        exports.extend_from_slice(&[kind, index]);
+    }
+    section(7, &exports);
+    let abi = [0x00, 0x41, 0x01, 0x0b];
+    let on_event = [
+        0x00, // 没有局部变量
+        0x41, 0x00, 0x41, 0x02, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00,
+        0x1a, // command_row(0, 2, 0, 0)
+        0x41, 0x00, 0x0b, // 0
+    ];
+    let mut code = vec![2, abi.len() as u8];
+    code.extend_from_slice(&abi);
+    code.push(on_event.len() as u8);
+    code.extend_from_slice(&on_event);
+    section(10, &code);
+    // 数据：内存 0 的偏移 0 处放 `ok`。
+    section(11, &[1, 0x00, 0x41, 0x00, 0x0b, 2, b'o', b'k']);
+    out
+}
+
+/// 官方 uuid 插件的清单，形状和 plugins/script/uuid 的相同。
+const OFFICIAL_UUID_MANIFEST: &str = "schema_version = 2\nkind = 'script'\nid = 'uuid'\nname = 'UUID'\nversion = '1.0.0'\nlicense = 'MIT'\npermissions = ['provide_commands']\n[script]\nabi = 1\nmodule = 'main.wasm'\nhooks = ['command']\nmemory_pages = 1\n[[script.commands]]\ntrigger = 'uuid'\ntitle = 'UUID'\n";
+
+/// 设置页的 `msime_client_plugins`：状态根目录是插件目录的上一级，带上官方插件包目录和授权页。
+fn plugins_page(fixture: &Fixture, plugin_packs: &Path, action: Value) -> Value {
+    let request = json!({
+        "state_root": fixture.plugins.parent().unwrap(),
+        "plugin_packs": plugin_packs,
+        "script_page": true,
+        "user_data": fixture.user_data,
+        "action": action,
+    })
+    .to_string();
+    let answer = read(unsafe { msime_client_plugins(request.as_ptr(), request.len()) });
+    assert_eq!(answer["ok"], true, "{answer}");
+    answer["value"].clone()
+}
+
+/// 官方脚本插件从宿主的 `plugin_packs` 读：设置页把它列为内置包，默认不运行；授权写在插件目录里、绑定内置那一份的哈希，之后后台编译线程从内置目录读出模块，`/uuid` 出它的行。
+#[test]
+fn an_official_script_pack_is_listed_granted_and_compiled_from_the_packs_directory() {
+    let bundle = tempfile::tempdir().unwrap();
+    let packs = bundle.path().join("plugin-packs");
+    let pack = packs.join("script").join("uuid");
+    std::fs::create_dir_all(&pack).unwrap();
+    std::fs::write(pack.join(MANIFEST_FILE), OFFICIAL_UUID_MANIFEST).unwrap();
+    std::fs::write(pack.join("main.wasm"), binary_ok_commander()).unwrap();
+    let fixture = fixture_with_packs(command_preferences(), Some(&packs));
+
+    let catalog = plugins_page(&fixture, &packs, json!({"operation": "catalog"}));
+    let listed = catalog["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["id"] == "uuid")
+        .unwrap_or_else(|| panic!("{catalog}"))
+        .clone();
+    assert_eq!(listed["builtin"], true);
+    assert_eq!(listed["kind"], "script");
+    let hash = listed["content_hash"].as_str().unwrap().to_owned();
+
+    // 默认停用：没有授权就没有插件行。
+    opt_in(&fixture, TRAIT_KNOWN);
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    cancel(fixture.handle);
+
+    let grants = plugins_page(
+        &fixture,
+        &packs,
+        json!({"operation": "set_script_grant", "id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]}),
+    );
+    assert_eq!(grants["plugins"][0]["hash"], hash.as_str());
+    assert_eq!(grants["commands"][0]["trigger"], "uuid");
+    assert_eq!(grants["commands"][0]["status"], "active");
+
+    // 下一次聚焦读到新授权，交给后台线程从内置目录编译；编好之前 `/uuid` 只有原样的行，不写缓存。
+    read(msime_client_focus(fixture.handle, false));
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    read(msime_client_focus(fixture.handle, true));
+    slash(fixture.handle, b"/uuid");
+    let view = wait_for(|| {
+        let view = read(msime_client_reset_cache(fixture.handle))["value"]["view"].clone();
+        (!plugin_rows(&view).is_empty()).then_some(view)
+    });
+    assert_eq!(plugin_rows(&view), [("ok".to_owned(), "UUID".to_owned())]);
+    let generation = view["generation"].as_u64().unwrap();
+    msime_client_key(fixture.handle, 0);
+    let picked = read(msime_client_select(fixture.handle, generation, 0));
+    assert_eq!(picked["value"]["commit"], "ok", "{picked}");
+}
+
+/// 没有内置目录的宿主（移动端、不带官方包的开发构建）：官方 id 列不出来、授权不了，用户插件目录里同 id 的副本也不会顶替它。
+#[test]
+fn without_a_packs_directory_an_official_id_resolves_to_nothing() {
+    let fixture = fixture_with(command_preferences());
+    let shadow = fixture.plugins.join("script").join("uuid");
+    std::fs::create_dir_all(&shadow).unwrap();
+    std::fs::write(shadow.join(MANIFEST_FILE), OFFICIAL_UUID_MANIFEST).unwrap();
+    std::fs::write(shadow.join("main.wasm"), binary_ok_commander()).unwrap();
+    let hash = msime_client_core::plugins::script_pack::content_hash(
+        OFFICIAL_UUID_MANIFEST.as_bytes(),
+        &binary_ok_commander(),
+    );
+    write_grants(
+        &fixture,
+        1,
+        vec![json!({"id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]})],
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    let view = slash(fixture.handle, b"/uuid");
+    assert!(plugin_rows(&view).is_empty(), "{view}");
+    SESSIONS.with(|sessions| {
+        assert_eq!(
+            sessions.borrow()[&fixture.handle]
+                .plugin_roots
+                .builtin_packs,
+            None
+        );
+        assert!(sessions.borrow()[&fixture.handle]
+            .options
+            .plugin_commands
+            .is_empty());
+    });
+}
+
+/// 仓库构建出的真实官方包（`scripts/build-official-plugins.sh` 写到 `target/plugin-packs`）：授权 uuid、打开 `/`、打 `/uuid` 选第一行，上屏的是 36 个字符的小写 UUID（版本 4）；启用 latex-symbols 后 `Kalpha` 出 α，`Kgamma` 出 γ 和 Γ。要先构建这些包，所以默认不跑：`cargo test -p msime-host-api --locked official_packs_from_the_build -- --ignored`。
+#[test]
+#[ignore = "needs target/plugin-packs from scripts/build-official-plugins.sh"]
+fn official_packs_from_the_build_type_a_uuid_and_latex_symbols() {
+    let packs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-packs");
+    assert!(
+        packs.join("script/uuid/plugin.toml").is_file()
+            && packs
+                .join("phrase_table/latex-symbols/plugin.toml")
+                .is_file(),
+        "run scripts/build-official-plugins.sh first"
+    );
+    let packs = packs.canonicalize().unwrap();
+    let mut preferences = command_preferences();
+    preferences.plugins.phrase_tables = vec!["latex-symbols".into()];
+    let fixture = fixture_with_packs(preferences, Some(&packs));
+    read(msime_client_focus(fixture.handle, true));
+    assert_eq!(quick_phrase_candidates(fixture.handle, b"alpha"), ["α"]);
+    assert_eq!(
+        quick_phrase_candidates(fixture.handle, b"gamma"),
+        ["γ", "Γ"]
+    );
+
+    let catalog = plugins_page(&fixture, &packs, json!({"operation": "catalog"}));
+    let hash = catalog["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["id"] == "uuid")
+        .unwrap()["content_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugins_page(
+        &fixture,
+        &packs,
+        json!({"operation": "set_script_grant", "id": "uuid", "hash": hash, "enabled": true, "granted": ["provide_commands"]}),
+    );
+    read(msime_client_focus(fixture.handle, false));
+    opt_in(&fixture, TRAIT_KNOWN);
+    slash(fixture.handle, b"/uuid");
+    let view = wait_for(|| {
+        let view = read(msime_client_reset_cache(fixture.handle))["value"]["view"].clone();
+        (!plugin_rows(&view).is_empty()).then_some(view)
+    });
+    let rows = plugin_rows(&view);
+    assert_eq!(rows.len(), 4, "{view}");
+    assert_eq!(rows[0].1, "UUID 小写");
+    let generation = view["generation"].as_u64().unwrap();
+    msime_client_key(fixture.handle, 0);
+    let picked = read(msime_client_select(fixture.handle, generation, 0));
+    let text = picked["value"]["commit"].as_str().unwrap().to_owned();
+    assert_eq!(text.len(), 36, "{picked}");
+    assert!(text
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| if matches!(index, 8 | 13 | 18 | 23) {
+            byte == b'-'
+        } else {
+            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+        }));
+    assert_eq!(&text[14..15], "4");
+    assert!(matches!(&text[19..20], "8" | "9" | "a" | "b"));
+    assert_eq!(picked["value"]["commit_context"]["local_mode"], "command");
 }
