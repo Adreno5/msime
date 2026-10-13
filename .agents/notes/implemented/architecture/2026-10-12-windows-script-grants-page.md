@@ -18,7 +18,7 @@ Status: implemented
 
 **授权页读到的形状归 client-core。** `ScriptGrantsView`、`ScriptGrantView`、`ScriptHealthView`、健康文件的读取（`script_grants::health`，只认 `invalid`、`init`、`failed`、`slow` 四个类别）和 `script_grants::view` 从 Tauri 的 `desktop_plugins.rs` 移进 `plugins::script_grants`，健康文件名 `HEALTH_FILE` 也在那里，host-api 的输入法进程（`scripts::process`）写文件时用同一个常量。桌面外壳的三条命令和 `msime_client_plugins` 调同一个函数，回答的 JSON 一样。授权规则（依赖、互斥、哈希绑定、准入、`revision`）仍只在 `script_grants::set` 和 `reorder` 里。
 
-**原生设置应用照共享页画。** 规则和文案逐条移进 `PluginPageModel.h`（不依赖 Windows 头文件）：能力的白话说明、钩子的白话名字、停用原因、`toggleCapability` 的依赖联动和互斥、`runningScriptIds`（启用的前 8 个里哈希对得上的）、列表标记、状态句、执行顺序的换位、授权对话框每一项的勾选、禁用和说明（新版本不再申请的一项不算勾着、不交出去），以及 `scriptResidualRisk` 的 Windows 那一句。`main.cpp` 只管调宿主和画控件：
+**原生设置应用照共享页画。** 规则和文案逐条移进 `PluginPageModel.h`（不依赖 Windows 头文件）：能力的白话说明（`script_capabilities` 按 `Capability::ALL` 的顺序，现在 8 项，第 8 项「提供 / 指令」的文案和共享页一字不差，见 [插件指令行](2026-10-13-script-plugin-command-rows.md)）、钩子的白话名字、停用原因、`toggleCapability` 的依赖联动和互斥、`runningScriptIds`（启用的前 8 个里哈希对得上的）、列表标记、状态句、执行顺序的换位、授权对话框每一项的勾选、禁用和说明（新版本不再申请的一项不算勾着、不交出去），以及 `scriptResidualRisk` 的 Windows 那一句。`main.cpp` 只管调宿主和画控件：
 
 - 「插件」页自己的目录、导入和授权请求带 `script_page`，`user_data` 取 `runtime-options.json` 的同名项（与 Tauri 的 `user_data` 同一项）。进入页面时和导入、删除之后，目录和授权一起重读。
 - 列表在八类之后画「脚本插件（实验）」一组：开头是脚本插件的说明和残余风险，行尾是授权状态和第几位。「导入插件」的说明换成区分数据插件和脚本插件的那一句。

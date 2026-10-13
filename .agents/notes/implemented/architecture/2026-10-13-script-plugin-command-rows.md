@@ -8,7 +8,7 @@ Status: implemented
 
 v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户打 `/uuid` 时由插件给出几行，用户选中其中一行上屏。这要先在引擎和 runtime 里回答几件事：插件的行用什么来源、和内置指令怎么分、列表重建时行怎么不丢、什么时候问插件（不能把打字停顿和网络时序交给脚本）、这些行上屏之后哪些内置机制不能碰它（学习、统计、AI 上文、释义、全角、失焦上屏）。
 
-这篇只记引擎和 runtime 一侧（分支 A）。ABI（能力 `provide_commands`、钩子 `command`、三个 import）和 host-api 的投递（找触发词的主人、有效触发词、随机数）由后续两个分支就地补进这一篇。A 合入之后生产路径上没有东西会调用新代码：`EngineOptions::plugin_commands` 默认为空，`CommandProvider` 没有人挂。
+这篇记引擎和 runtime 一侧（分支 A）和 ABI、清单、作者工具与设置页文案（分支 B，见「ABI」一节）；host-api 的投递（找触发词的主人、有效触发词、随机数）由分支 C 就地补进这一篇。A、B 合入之后生产路径上没有东西会调用新代码：`EngineOptions::plugin_commands` 默认为空，`CommandProvider` 没有人挂，host-api 不投递 `command` 钩子；B 让用户能导入、授权申请了 `provide_commands` 的包，设置页画得出它，但授权了也不出候选。
 
 ## Decision
 
@@ -65,6 +65,23 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 | 引擎注释 | 空；标题和插件注释画在插件注释格 |
 | 简繁转换 | 照做，显示和上屏一致 |
 
+### ABI（分支 B）
+
+- **能力 `provide_commands`**（`Capability::ProvideCommands = 7`）：没有依赖、不和任何一项互斥，`reads_text()` 为真（它读用户在它的触发词后面打的字母）。`Capability::ALL` 现在 8 项，正好占满 u8 的 `CapabilitySet`；`abi.rs` 里一条编译期断言 `Capability::ALL.len() <= u8::BITS`，第 9 项加入时编译失败，那时再扩宽（授权文件存的是能力名，扩宽不影响格式）。
+- **钩子 `command = 18`**：不是生命周期事件，排在 `candidates = 17` 之后，`Hook::ALL` 14 项；只投递给触发词的主人。`Hook::modifies()` 包含它，但那只是归类：真正的门控在每个 import 的 `modification_allowed(caller, 能力, 钩子)` 里。
+- **三个 import**（`IMPORTS` 15 → 18，追加在最后）：
+  - `command_text(field, dst, cap)`：能力 `provide_commands`，字段 `abi::command_field::TRIGGER = 0`、`ARGUMENT = 1`，只在 `command` 里有值，别处是 `ABSENT`。它不受本地模式白名单限制：`/` 是本地模式 8，对别的钩子、别的插件照旧屏蔽，只有触发词的主人在 `command` 里读得到自己触发词后面的字母，所以不需要新的 `LocalModeClass`。
+  - `command_row(text, tlen, note, nlen)`：能力 `provide_commands`，只在 `command` 里可用，别处 `DENIED`。行暂存在 `Actions::rows`，钩子正常返回才交给宿主，trap、fuel 耗尽、返回负数时整批作废。第 10 行、文本超过 64 个 UTF-16 码元、注释超过 32 个返回 `LIMIT`；文本为空、首尾是空白、含 `is_forbidden_plugin_char` 拦下的字符或者含 `://`、`www.`、`mailto:`（不分大小写，不让插件行成为链接），注释含拦下的字符，返回 `INVALID`（`abi::valid_command_row_text`）。成功返回行号。
+  - `random_fill(dst, len)`：不需要能力。每次 `command` 事件 64 字节，按调用顺序取，剩下的不够 `len` 个时返回 `LIMIT`、什么都不写；别的钩子里没有随机数。产品里取自操作系统的 CSPRNG（分支 C），`msime-pack run` 取自夹具。没申请任何权限的插件声明不了 `command` 钩子（见下面的清单规则），所以两处授权页「只能知道发生了什么事件」那句照旧成立，没有改。
+- **跑在快照上（审查意见 B1）**：模块声明了 `before_commit` 或 `command` 时在 `msime_init` 之后取快照（`Hook::runs_on_snapshot`），这两个钩子每次都在快照复位出的新实例上运行，持久实例不受影响，`command` trap 了也不让持久实例不可用。所以 `command` 给出的行只取决于触发词、参数、随机数和模块本身：同时申请了 `read_commit` 的插件在 `commit` 里存进内存的上屏文本、全局计数，进不了任何一次 `command`。`CallContext::load` 另外对 `command` 事件不复制组字、上屏和候选，宿主误填了插件也读不到；触发词和参数只在授予了 `provide_commands` 时复制。因此 `check_rules` 不新增互斥，三处界面的单对互斥写法不动。
+- **fuel**：`COMMAND_FUEL = 100_000`，是单次上限，也是每个插件每轮 `command` 的合计，和 `BEFORE_COMMIT_FUEL` 同一个理由单独记：同一轮里 `input` 等钩子先花掉多少，不该决定用户主动打开的指令里有没有候选，它也不扣其余钩子的配额。`ScriptInstance::resume_turn` 多一个参数、新增 `command_fuel_left()`，host-api 的 `Entry::turn` 和 `msime-pack run` 的轮配额元组各多一份。被本轮配额截断时的判定和其余钩子相同（这一次用掉达到单次上限一半就算失败）。一次投递的工作量按构造有界（审查意见 M4）：最多 100 000 fuel、9 行、每行 64 个码元、64 字节随机数。
+- **其余限制**（`limits.rs`）：`MAX_COMMAND_ROWS = 9`、`MAX_COMMAND_ROW_UTF16 = 64`、`RANDOM_BYTES_PER_EVENT = 64`、`MAX_COMMAND_ARGUMENT_BYTES = 64`、`MAX_COMMAND_TRIGGER_BYTES = 16`。`command` 事件没带 `CommandEvent`、触发词或参数超长时 `deliver` 不运行，返回 `Outcome::NotSubscribed`：宿主本不该这样投递，引擎的本地输入最多 64 字节，参数本来也到不了这个长度，这里是第二道；分支 C 把它和模块没编译好一样当作 `CommandOutcome::NotRun`。
+- **清单 `[[script.commands]]`**（`client-core::plugins::script_pack`，`[script]` 的键 4 → 5）：1 到 4 条，每条只有 `trigger` 和 `title`。触发词 2–16 个小写 ASCII 字母，不等于、也不和任何内置触发词互为前缀，同一清单里不重复、不互为前缀；标题 1–8 个字符，不含 `abi::has_forbidden_plugin_char` 的字符，首尾不是空白，不等于内置标题。指令、`provide_commands`、`command` 钩子三者缺一不可。摘要的 `commands` 只在非空时序列化，旧包的 JSON 不变；内容哈希公式不变，清单字节本来就计入，没有 `commands` 的旧包哈希逐字节不变。清单查不了和别的插件、用户指令表的冲突：那由分支 C 的 `script_commands::resolve` 和引擎的 `usable_plugin_commands` 按同一套规则决定。
+- **两份内置指令规则**：client-core 不能依赖引擎（`docs/ARCHITECTURE.md`），`script_pack::BUILTIN_COMMAND_TRIGGERS`、`BUILTIN_COMMAND_TITLES` 复制了引擎 `local::command::builtin_triggers`、`builtin_titles` 的全集；host-api 同时依赖两边，`the_manifest_check_knows_exactly_the_engines_builtin_commands` 核对两份完全相同。清单的标题规则比引擎的下限更严（还拒禁用字符和内置标题），引擎接受清单接受的一切。
+- **作者工具**：`msime-pack run` 的夹具写 `{"event":"command","trigger":"uuid","argument":"","random":"<128 位十六进制>"}`：`local_mode` 固定是 `command`，触发词必须是清单声明过的、2–16 个小写字母，参数只收小写字母，`random` 不写是全 0。输出的 `command` 行多一个 `rows`（每行 `[文本, 注释]`，没有正常返回时为空），其余事件没有这个键，旧金样不变。`plugins/script/tools/check_run.py` 的 `command` 上限是 50 000，不授权时 `rows` 必须为空。SDK 两个文件加上三个 import、`MSIME_COMMAND_TRIGGER`/`MSIME_COMMAND_ARGUMENT`（Rust 绑定的 `command` 和 `random` 模块）和 `MSIME_HOOK_COMMAND`，由 `crates/pack-tool/tests/sdk.rs` 按 `abi::imports()` 和 ABI 常量核对。
+- **设置页文案（审查意见 M3）**：共享页（`plugin-script-view.tsx` 的 `capabilityLabels`）和 Windows 原生页（`PluginPageModel.h` 的 `capability_label`）都加「提供 / 指令」，两处一字不差，分支 C 写 `docs/plugins.md` 时照抄：「你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；按回车或切到别的窗口时只输入你打的原文（例如 /uuid）。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。」回车那半句逐个宿主核对过：macOS（`InputController.mm` 的 Return 分支）、Windows（`KeyEvent.h` 的 `0x0D`）、IBus（`ClientEngine.cpp`）和 Fcitx5（`FcitxEngine.cpp`）在 `/` 指令里都发 `MSIME_COMMIT_RAW`，只有韩文汉字表、注音表打开时改发选中命令，上屏的是原文。钩子的白话名是「你在 / 指令里输入它的触发词时（给出候选）」。共享页的 `ScriptCapability` 和 Windows 的 `script_capabilities` 各多一项；没有这些，导入一个申请了 `provide_commands` 的包会让共享授权页取文案时抛错，Windows 页把它当成不认识的能力丢掉。脚本包摘要的 `commands` 在 TypeScript 里和指令表共用一个字段，类型是 `(PluginCommand | ScriptCommand)[]`。
+- **数据文件不做**：设计里给拆字准备的 `[script].data`、MSTB 和三个查表 import，唯一的消费者改成了内置模式，见 [脚本插件的只读数据文件](../../rejected/architecture/2026-10-13-script-plugin-data-files.md)。
+
 ## Alternatives considered
 
 - **插件行插进普通组字的主候选窗**（设计里的方案 B：错音提示、行内拆字）。最强的理由是用户价值更高，不用先进 `/`。不用：全拼、双拼、五笔下 `READING` 是空串，插件拿不到读音；插行要同时改 `mixed_candidates` 和 `ranking_candidates`，否则 `ranking_index` 回退成显示下标、`learn_candidate` 会调到另一个词库词的词频；每个按键都要多跑一次脚本、多取一次快照，时延没量过；五笔四码唯一的判断看的是整个列表的长度。`/` 模式复用 `/fy` 的现成路径，只有本地模式受影响。
@@ -77,6 +94,11 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - **最长匹配，允许插件触发词之间互为前缀**。最强的理由是插件作者有更多触发词可选。不用：`czh` 会截走 `cz` 的输入，后装的插件能抢走先装插件的用户输入；禁止互为前缀之后至多一个匹配，谁拥有输入一目了然。
 - **把 `/fy` 的 `'` 分隔推广到插件触发词**。最强的理由是插件可以收多个单词。不用：唯一需要它的是拆字，而拆字已经做成内置的 C 模式（见 [内置拆字反查](../feature/2026-10-13-builtin-chaizi-mode.md)）；插件参数只收小写字母。
 - **`CapabilitySet` 先从 u8 扩成 u16**。最强的理由是第 8 项能力正好占满 bit 7，再加一项时 `1 << 8` 会出错。不用：现在只需要 8 项，授权文件存的是能力名，以后扩不影响格式；分支 B 加一条 `Capability::ALL.len() <= 8` 的编译期断言，第 9 项加入时编译失败、在那时再扩。
+- **`command` 跑在持久实例上，再加一对互斥**（设计原来的写法，审查意见 B1 的另一种修法：申请 `provide_commands` 就不能申请任何读文本的能力）。最强的理由是不用每次复位（dev 构建实测 53–343 µs），插件还能在两次 `command` 之间缓存算好的表。不用：互斥要在 `check_rules` 和三处界面加第二对、改掉单对的写法；而且即使不读别的文本，持久实例也能记住同一个字段里用户先前打过的参数，再夹带进后来的行。快照让「输出只是这一次输入的函数」按构造成立，复位的代价远低于 4 ms 的慢熔断线。
+- **在清单解析里先拒绝 `provide_commands`，只在测试特性下放开**（审查意见 M3 的另一种修法）。最强的理由是分支 B 不碰共享页和 Windows 页，改动面更小。不用：测试特性下放开意味着 `msime-pack validate` 和导入按两套规则解析，作者工具接受的包产品拒收；文案反正要写，放在 B 里让设置页从第一天就认得这项能力。
+- **参数超长时给 `Outcome` 加一个变体**。最强的理由是语义比借用 `NotSubscribed` 准确。不用：`Outcome` 被 host-api 和 `msime-pack run` 穷举匹配，宿主对这种投递只需要知道「没运行、没花 fuel」，`NotSubscribed` 就是这个意思；宿主本来也不该这样投递。
+- **`random_fill` 归到 `provide_commands` 名下**。最强的理由是每个 import 都对应一项能力，更像最小权限。不用：随机数和用户输入无关，又只在 `command` 里有内容，而声明 `command` 钩子必须申请 `provide_commands`，归过去拦不住任何多出来的东西。
+- **用 `unicode-general-category` 拦连续的组合附加符号（Mn/Me 超过 2 个）**（设计 5.2）。最强的理由是能挡住把一个字叠得很高、盖住相邻行的文本。不用：它对 script-runtime 是一条新的依赖边，没有获批；`MAX_COMMAND_ROW_UTF16 = 64` 的硬上限已经限制了能叠多少，获批后在 `valid_command_row_text` 里加一条规则即可。
 - **宿主的注释过滤跟着追加新的禁用字符**。见 [脚本插件改写上屏与重排、注释、过滤候选](2026-10-12-script-plugins-modify-commit-and-candidates.md) 里禁用字符那一段：宿主那一道只防断行和方向翻转，runtime 是插件文本的唯一权威。
 
 ## Consequences
@@ -84,7 +106,9 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - **收益**：插件可以在自己的 `/` 指令里给出能选中的行，选中的就是显示的那一行；插件行不学习、不计统计、不进 AI 上文、不请求释义和翻译、不转全角，失焦时不替用户上屏；旁路调用不运行脚本；没有插件指令时引擎和 runtime 的行为不变（有一条测试逐个比较视图）。
 - **代价**：`/` 模式多一份缓存和一次匹配；每份预编辑串第一次出现时同步跑一次插件，耗时由 fuel 上限兜住，真机时延要在投递接上之后量。
 - **只在 macOS 上验证过失焦路径的来源**：命令 20 只有 macOS 发（`commitComposition:`）。Windows Server 和 Linux 失焦时调 `msime_client_focus(false)`，`Runtime::focus` 在本地模式里丢弃组字、不提交任何行，所以插件行不会被替用户上屏；文档里最后留下什么由各自的框架决定。IBus 对不属于 `commits_on_blur` 的组字用 `IBUS_ENGINE_PREEDIT_CLEAR` 画预编辑（`platforms/linux/src/core/ClientEngine.cpp` 的 `render`），失焦时清掉，什么都不写；Fcitx5 的客户端预编辑是用户打的 `/xxx`，失焦时写不写进文档看 Fcitx5 和客户端，Windows 看 TSF 结束组字时组字范围里的文字，这两处都没有在设备上核实。Fcitx5 在快捷键等路径上发 `MSIME_FINISH_COMPOSITION`，提交的是高亮行，那属于用户主动按键，和标点同一类。
-- **触发词规则有两份**：引擎一份，client-core 一份（client-core 不能依赖引擎，见 `docs/ARCHITECTURE.md`），由分支 B、C 的一致性测试守着。
+- **触发词规则有两份**：引擎一份，client-core 一份（client-core 不能依赖引擎，见 `docs/ARCHITECTURE.md`）。内置触发词和标题由分支 B 的一致性测试守着；长度和字符的规则两边各写一份常量，分支 C 的有效触发词计算还要再对一次。
+- **每个插件每轮最多用三份 fuel 之和**（其余钩子 125 000、`before_commit` 100 000、`command` 100 000）。三份互不挤占，代价是一个插件一轮的最坏工作量比 v2 多了 100 000。
+- **B 单独合入时是惰性的**：能导入、能授权、设置页认得新能力，但输入法不投递 `command`，授权了也不出候选，PR 正文要写明。
 - **重访信号**：真要做「普通组字里插行」（错音、行内拆字）时，上面第一条备选的几个前提都要先解决；需要第 9 项能力时扩 `CapabilitySet`。
 
 ## Verification
@@ -96,5 +120,11 @@ v3 的做法是让插件在 `/` 指令模式里注册自己的触发词：用户
 - `crates/host-api/src/tests.rs`：页上有来源 14 时 `msime_client_translation_query` 为 `null`，在线翻译、英文释义、离线释义三种开法都一样，`/rq` 作对照照常请求；全角开着时插件行上屏半角、`plugin_row` 不出现在 JSON 里，同一会话的 `/rq` 照旧转全角。`tests/lifecycle_traces.rs`：命令 20 在插件行高亮时上屏 `/uuid`、记 `commit{FocusLoss}`，命令 9 上屏插件行。`lifecycle/tests.rs`：`FinishOnFocusLoss` 的类别。
 - `client-core` 的 `translation` 测试：`source_gets_no_gloss(14)`。
 - Windows `tests/input/candidate_completion_policy.cpp` 加 14，只经 CI 的 MinGW 交叉构建编译运行。
+- 分支 B，`crates/script-runtime/src/tests.rs`：能力和钩子的名字、编号、`ALL` 的长度和三个 import 的归属；`command_row` 没申请能力不能导入、`random_fill` 不需要能力；没授予时两个指令类 import 是 `DENIED`、别的钩子里 `command_text` 是 `ABSENT`、`command_row` 是 `DENIED`、`random_fill` 是 `LIMIT`（取 0 字节是 0）；触发词和参数的读取、错字段、放不下；`command` 事件里宿主误填的上屏和组字读不到；没有 `CommandEvent`、参数或触发词超长时不运行；行的各条规则（空串、首尾空白、全角空格、换行、零宽字符、新增的不可见字符、非 UTF-8、`://` 等片段、64 和 65 个码元、按码元算的 emoji、注释的 32 和 33 个码元与禁用字符）；第 10 行 `LIMIT`、行号依次返回；返回负数、trap、越界时暂存的行作废，持久实例照样可用；`random_fill` 按顺序取、不够时不写、每次事件重新给满；B1：三次投递给出同一行，在 `commit` 里存下的上屏文本进不了之后的行（把 `deliver` 里的快照条件临时改回只有 `before_commit`，这条和另外四条测试变红，行从 `2` 变成 `4`，已还原）；同一轮里其余钩子的配额烧到见底后 `command` 仍有完整的 100 000；被本轮配额截断的判定对 `command` 同样成立。
+- 分支 B，`crates/client-core/src/plugins/script_tests.rs`：两条指令的包摘要和 JSON；内置触发词相等或互为前缀（`rq`、`fan`、`riqix`、`dates`，以及每个内置触发词本身和加一个字母）、清单内重复和互为前缀、单字母、17 个字母、大写、带数字、标题 9 个字、空标题、等于内置标题（全部五个）、首尾空白、零宽字符、多余的键、缺标题、空表、5 条、不是表的数组、有指令缺能力、有能力缺钩子、有能力没指令、有钩子没指令，各自给出中文原因；没有 `commands` 的旧包摘要里没有这个键，内容哈希等于固定值（另用 Python 按公式独立算过一遍，相同）。`crates/host-api/src/tests/script_plugins.rs`：内置触发词和标题与引擎一致。
+- 分支 B，`crates/pack-tool/tests/run.rs`：WAT 写的指令插件的金样（授予时的 `rows` 和随机数换成的字母、不授予时 `denied` 和空 `rows`，其余事件没有 `rows`）；夹具里 `command` 缺触发词、别的事件带触发词、大写触发词、参数带数字、`random` 长度不对、`local_mode` 不是 `command` 的报错；经命令行：`validate` 接受带指令的包、拒绝和 `/fy` 冲突的触发词，`run` 拒绝清单没声明的触发词。`tests/sdk.rs` 的两条一致性测试覆盖新的常量和 import。
+- 分支 B，界面：`apps/desktop/tests/settings/script-plugins.test.tsx` 加两条（授权对话框里「提供 / 指令」能勾、没有依赖和互斥提示、交出去的是 `["provide_commands"]`；详情页列出这项能力和 `command` 钩子的白话名），`pnpm --filter @msime/desktop typecheck` 通过。Windows `tests/ui/plugin_page_model.cpp` 加第 8 项能力的排序、依赖、互斥、勾选、文案和钩子名，用 Studio 上的 `clang++ -std=c++17 -Wall -Wextra -Werror` 编过并运行通过；MinGW 交叉构建只在 CI 上跑。
+
+分支 B 的当场分类：[脚本插件进入插件包体系](2026-10-12-script-plugin-kind-and-grants.md)、[作者工具](../feature/2026-10-12-script-plugin-author-tools.md)、[Windows 授权页](2026-10-12-windows-script-grants-page.md) 部分重叠，各自就地更新了键数、轮配额份数、import 数和能力表的事实并链到这里；[脚本插件合集](2026-10-12-script-plugin-collection.md) 讲编进模块的数据和 `check_run.py`，部分重叠（`command` 的 fuel 上限），无冲突；新建的 [脚本插件的只读数据文件](../../rejected/architecture/2026-10-13-script-plugin-data-files.md) 记下没做的那一块。
 
 相关笔记的当场分类：[脚本插件改写上屏与重排、注释、过滤候选](2026-10-12-script-plugins-modify-commit-and-candidates.md) 部分重叠（禁用字符的事实在那篇就地更新，互链）；[日文混输候选](../feature/2026-10-12-mixed-japanese-candidates.md) 是新来源值不属于任何学习谓词、跳过繁体转换的先例，无冲突；[内置拆字反查](../feature/2026-10-13-builtin-chaizi-mode.md) 解释了拆字为什么不是插件，无冲突；[插件表刷新从不让聚焦失败](../bug-fix/2026-10-11-plugin-table-refresh-never-fails-focus.md) 的规则由分支 C 下发有效触发词时遵守，现在无关。
