@@ -5369,3 +5369,51 @@ fn cloud_clipboard_relay_is_both_or_nothing_and_left_out_until_configured() {
     );
     assert!(back.cloud_clipboard_relay.is_configured());
 }
+
+// 引号样式与方头括号样式缺省是弯引号、实心，等于缺省时不写进文档；三种引号样式和两种括号样式都能保存读回，不认识的取值让整份文档解析失败。
+#[test]
+fn punctuation_styles_default_omitted_roundtrip_and_reject_unknown_values() {
+    let defaults = Preferences::default();
+    assert_eq!(defaults.quote_style, QuoteStyle::Curly);
+    assert_eq!(defaults.bracket_style, BracketStyle::Solid);
+    let written = serde_json::to_value(&defaults).unwrap();
+    assert!(written.get("quote_style").is_none());
+    assert!(written.get("bracket_style").is_none());
+    let read = serde_json::from_value::<Preferences>(written.clone()).unwrap();
+    assert_eq!(read.quote_style, QuoteStyle::Curly);
+    assert_eq!(read.bracket_style, BracketStyle::Solid);
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = PreferencesStore::new(dir.path());
+    let mut revision = 0;
+    for (quote_style, quote_value) in [
+        (QuoteStyle::Corner, "corner"),
+        (QuoteStyle::CornerWhenTraditional, "corner_when_traditional"),
+    ] {
+        let saved = store
+            .save(
+                revision,
+                Preferences {
+                    quote_style,
+                    bracket_style: BracketStyle::Hollow,
+                    ..Preferences::default()
+                },
+            )
+            .unwrap();
+        revision = saved.revision;
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(on_disk["preferences"]["quote_style"], quote_value);
+        assert_eq!(on_disk["preferences"]["bracket_style"], "hollow");
+        assert_eq!(store.load().unwrap(), saved);
+    }
+
+    for (key, value) in [("quote_style", "semantic"), ("bracket_style", "round")] {
+        let mut document = written.clone();
+        document[key] = serde_json::Value::String(value.into());
+        assert!(
+            serde_json::from_value::<Preferences>(document).is_err(),
+            "{key}={value}"
+        );
+    }
+}
