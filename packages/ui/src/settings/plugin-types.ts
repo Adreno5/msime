@@ -20,9 +20,13 @@ export type ScriptCapability =
   | "rewrite_commit"
   | "rerank_candidates"
   | "annotate_candidates"
-  | "filter_candidates";
+  | "filter_candidates"
+  | "provide_commands";
 
 export type PluginCommand = { trigger: string; title: string; template: string };
+
+/** 脚本插件在 `/` 指令里声明的一条指令：`client-core::plugins::script_pack::ScriptCommand`。和指令表的一条不同，它没有模板，候选由插件给出。 */
+export type ScriptCommand = { trigger: string; title: string };
 
 /** 辅助码表的一条：`client-core::plugins::helpcode_pack::HelpcodeEntry`。 */
 export type PluginHelpcodeEntry = { character: string; code: string };
@@ -54,8 +58,8 @@ export type PluginPackage = {
   mode?: "keys" | "sequence";
   /** Music packs. */
   tracks?: string[];
-  /** Command tables. */
-  commands?: PluginCommand[];
+  /** Command tables; script packs that provide `/` commands list theirs here too, without a template. */
+  commands?: (PluginCommand | ScriptCommand)[];
   /** 短语表。 */
   phrases?: PluginPhrase[];
   /** 辅助码表：码表文件名、条数和前几条。 */

@@ -699,9 +699,9 @@ inline std::wstring imported_notice(Package const &pack) {
 // 「脚本插件（实验）」分组、详情和授权对话框，照 `plugin-script-view.tsx` 和 `plugin-list-view.tsx` 的脚本分组移植。规则（依赖、互斥、哈希绑定、准入）的权威在 client-core 的 `script_grants`，这里只是让页面先按同样的规则勾选和说明，宿主还会再查一遍。
 
 // 脚本插件的能力，按 `msime_script_runtime::Capability::ALL` 的顺序（`SCRIPT_CAPABILITIES`）。
-inline constexpr std::array<std::wstring_view, 7> script_capabilities{
-    L"read_composition",  L"read_commit",         L"read_candidates",  L"rewrite_commit",
-    L"rerank_candidates", L"annotate_candidates", L"filter_candidates"};
+inline constexpr std::array<std::wstring_view, 8> script_capabilities{
+    L"read_composition",  L"read_commit",         L"read_candidates",   L"rewrite_commit",
+    L"rerank_candidates", L"annotate_candidates", L"filter_candidates", L"provide_commands"};
 
 // 输入法同时运行的脚本插件个数上限（`limits::MAX_ENABLED_SCRIPTS`）。
 inline constexpr std::size_t max_enabled_scripts = 8;
@@ -745,6 +745,10 @@ inline CapabilityLabel capability_label(std::wstring_view capability) {
     return {L"给候选加注释", L"能在候选旁边显示一小段说明。"};
   if (capability == L"filter_candidates")
     return {L"隐藏候选", L"能把某些候选移到末尾并隐藏起来。"};
+  // 和共享页的 `capabilityLabels`、`docs/plugins.md` 一字不差。
+  if (capability == L"provide_commands")
+    return {L"提供 / 指令",
+            L"你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；按回车或切到别的窗口时只输入你打的原文（例如 /uuid）。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。"};
   return {std::wstring(capability), {}};
 }
 
@@ -776,6 +780,8 @@ inline std::wstring hook_label(std::wstring_view hook) {
     return L"候选窗口消失时";
   if (hook == L"candidates")
     return L"生成候选时（可以调整候选）";
+  if (hook == L"command")
+    return L"你在 / 指令里输入它的触发词时（给出候选）";
   return std::wstring(hook);
 }
 

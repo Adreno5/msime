@@ -28,6 +28,7 @@ export const SCRIPT_CAPABILITIES: readonly ScriptCapability[] = [
   "rerank_candidates",
   "annotate_candidates",
   "filter_candidates",
+  "provide_commands",
 ];
 
 /** 授予一项之前必须一起授予的能力：`Capability::requires`。 */
@@ -74,6 +75,12 @@ export const capabilityLabels: Record<ScriptCapability, { title: string; descrip
     title: "隐藏候选",
     description: "能把某些候选移到末尾并隐藏起来。",
   },
+  // 授权文案和 Windows 原生页（`PluginPageModel.h` 的 `capability_label`）、`docs/plugins.md` 一字不差。回车在 `/` 指令里各桌面宿主都发 `MSIME_COMMIT_RAW`，上屏的是原文。
+  provide_commands: {
+    title: "提供 / 指令",
+    description:
+      "你在 / 指令里输入它声明的触发词（例如 /uuid）之后打的字母会交给这个插件，它据此给出候选；给出的候选只取决于这些字母和随机数，带不走你之前打过的内容。你按序号、点选、按空格选中某一行，或者打标点结束输入时，高亮的那一行会输入；按回车或切到别的窗口时只输入你打的原文（例如 /uuid）。它看不到你平时打的字、其他指令和别的插件的内容；它给出的文字不进入词库、不计入打字统计、不会作为上文发给 AI 候选，也不会拿去查释义或翻译。",
+  },
 };
 
 /** 清单里钩子的白话名字：插件在什么时候运行。不认识的名字原样显示。 */
@@ -91,6 +98,7 @@ export const hookLabels: Record<string, string> = {
   candidates_shown: "候选窗口出现时",
   candidates_hidden: "候选窗口消失时",
   candidates: "生成候选时（可以调整候选）",
+  command: "你在 / 指令里输入它的触发词时（给出候选）",
 };
 
 /** 输入法停用一个插件的原因：`script-health.json` 的四个类别。 */

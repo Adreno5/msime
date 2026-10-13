@@ -514,3 +514,54 @@ test("an IME stop is reported only while the pack is enabled", async () => {
   await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已停用"));
   expect(screen.getByRole("status").textContent).not.toContain("输入法已停用它");
 });
+
+const uuidPack = script({
+  id: "uuid",
+  name: "UUID 样板",
+  hooks: ["command"],
+  permissions: ["provide_commands"],
+  commands: [
+    { trigger: "uuid", title: "UUID" },
+    { trigger: "guid", title: "GUID" },
+  ],
+});
+
+test("a pack that provides slash commands can be granted without any dependency or exclusion", async () => {
+  // 没有依赖、不和任何一项互斥：和读写文字的能力一起勾也不互相影响。
+  expect(
+    toggleCapability(["read_commit"], "provide_commands", true, [
+      "read_commit",
+      "provide_commands",
+    ]),
+  ).toEqual(["read_commit", "provide_commands"]);
+  expect(
+    toggleCapability(["read_commit", "provide_commands"], "read_commit", false, [
+      "read_commit",
+      "provide_commands",
+    ]),
+  ).toEqual(["provide_commands"]);
+
+  const { onConfirm } = renderDialog(uuidPack);
+  const box = check("提供 / 指令") as HTMLInputElement;
+  expect(box.disabled).toBe(false);
+  const label = box.closest("label")?.textContent ?? "";
+  expect(label).toContain("给出的候选只取决于这些字母和随机数");
+  expect(label).toContain("按回车或切到别的窗口时只输入你打的原文（例如 /uuid）");
+  expect(label).not.toContain("需要同时授予");
+  expect(label).not.toContain("不能和");
+  fireEvent.click(box);
+  expect(box.checked).toBe(true);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "授权并启用" }));
+  });
+  expect(onConfirm).toHaveBeenCalledWith(["provide_commands"]);
+});
+
+test("the detail of a pack that provides slash commands names its capability and when it runs", async () => {
+  renderSection(fakeClient({ catalog: vi.fn(async () => ({ packages: [uuidPack], issues: [] })) }));
+  await openScript("UUID 样板");
+  expect(screen.getByText("你在 / 指令里输入它的触发词时（给出候选）")).toBeTruthy();
+  const requested = screen.getByRole("region", { name: "申请的权限" });
+  expect(within(requested).getByText("提供 / 指令")).toBeTruthy();
+  expect(within(requested).getByText("未授予")).toBeTruthy();
+});

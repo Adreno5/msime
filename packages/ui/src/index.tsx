@@ -741,6 +741,7 @@ export {
   scriptResidualRisk,
   toggleCapability,
   type ScriptCapability,
+  type ScriptCommand,
   type ScriptGrant,
   type ScriptGrantDialogProps,
   type ScriptGrantsResult,

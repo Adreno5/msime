@@ -41,6 +41,7 @@ export type {
   PluginSettingsPage,
   PluginSymbolGroup,
   ScriptCapability,
+  ScriptCommand,
   ScriptGrant,
   ScriptGrantsResult,
   ScriptHealth,

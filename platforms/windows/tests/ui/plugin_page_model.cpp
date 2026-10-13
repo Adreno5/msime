@@ -222,6 +222,16 @@ int main() {
   check((sort_capabilities({L"filter_candidates", L"x", L"read_composition", L"read_composition"}) ==
          Caps{L"read_composition", L"filter_candidates"}),
         "capabilities sort in the runtime's order");
+  // provide_commands 是第 8 项：排在最后，没有依赖、不和任何一项互斥，页面认得它，不会把它当成不认识的能力丢掉。
+  check(script_capabilities.size() == 8 && script_capabilities.back() == L"provide_commands",
+        "provide_commands is the eighth capability");
+  check((sort_capabilities({L"provide_commands", L"read_commit"}) == Caps{L"read_commit", L"provide_commands"}),
+        "provide_commands sorts last");
+  check(capability_requires(L"provide_commands").empty() && exclusive_partner(L"provide_commands").empty(),
+        "provide_commands needs nothing and excludes nothing");
+  check((toggle_capability({L"read_commit"}, L"provide_commands", true, all) ==
+         Caps{L"read_commit", L"provide_commands"}),
+        "checking provide_commands keeps the rest");
 
   // 对话框：依赖和互斥的说明，互斥的那一项勾着时禁用；新版本不再申请的一项不算勾着。
   auto items = grant_items({L"rewrite_commit", L"read_commit", L"read_composition"},
@@ -303,8 +313,19 @@ int main() {
   check(grant_dialog_initial(scripts[0], nullptr).empty(), "a new grant starts with nothing checked");
 
   // 文案：钩子、停用原因、指纹、残余风险。
-  check(hook_label(L"before_commit") == L"文字输入到应用之前（可以改写）" && hook_label(L"x") == L"x",
+  check(hook_label(L"before_commit") == L"文字输入到应用之前（可以改写）" && hook_label(L"x") == L"x" &&
+            hook_label(L"command") == L"你在 / 指令里输入它的触发词时（给出候选）",
         "hook labels");
+  {
+    const auto label = capability_label(L"provide_commands");
+    check(label.title == L"提供 / 指令" &&
+              label.description.find(L"按回车或切到别的窗口时只输入你打的原文（例如 /uuid）") != std::wstring::npos,
+          "the provide_commands label");
+    auto commands = grant_items({L"provide_commands"}, {}, false);
+    check(commands.size() == 1 && commands[0].title == L"提供 / 指令" && !commands[0].disabled &&
+              commands[0].description == label.description,
+          "the grant dialog offers provide_commands without notes");
+  }
   check(health_label(L"init") == L"初始化失败，输入法已停用它", "health labels");
   check(short_hash(L"0123456789abcdef") == L"0123456789ab" && short_hash(L"ab") == L"ab", "short hash");
   check(std::wstring(script_residual_risk).find(L"以管理员身份运行的窗口里不会运行脚本插件") !=
