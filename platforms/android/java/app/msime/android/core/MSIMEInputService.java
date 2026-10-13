@@ -161,10 +161,8 @@ public final class MSIMEInputService extends InputMethodService {
     /** 漢 in the candidate header: converts the composing Korean syllable to Hanja, or closes its list. */
     Button hanjaButton;
     LinearLayout nineKeySpellings;
-    /** 拼音选择条的滚动容器：拼音九键侧栏里是纵向的 ScrollView，注音 9 键候选行上和 14 键读音行右侧是横向的 HorizontalScrollView，由 ImeLayoutRows.attachSpellings 按位置换。 */
+    /** 拼音九键与 14 键的侧栏纵向滚动，注音 9 键候选行横向滚动。 */
     FrameLayout nineKeySpellingScroll;
-    /** 读音行里读音右边的位置，14 键的拼音选择条挂在这里；其他布局下收起。 */
-    FrameLayout readingSpellingSlot;
     final java.util.List<Button> nineKeySpellingButtons = new java.util.ArrayList<>();
     java.util.List<Integer> nineKeySpellingIndices = java.util.List.of();
     long nineKeySpellingGeneration = -1;
