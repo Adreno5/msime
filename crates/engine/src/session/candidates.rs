@@ -6,7 +6,9 @@ use super::input::InputSession;
 use crate::assets;
 use crate::diagnostics;
 use crate::ime::personal_rerank::personal_context_rerank_order;
-use crate::ime::queries::{MixedJapaneseRow, MODE_ENGLISH_LIMIT};
+use crate::ime::queries::{
+    keep_expressive_rows_off_the_lead, MixedJapaneseRow, MODE_ENGLISH_LIMIT,
+};
 use crate::ime::MixedJapaneseConversion;
 use crate::local::date_time::{inline_date_time_keyword, insert_inline_date_time, LocalDateTime};
 use crate::local::jianpin::jianpin_ranking_context;
@@ -556,6 +558,8 @@ impl InputSession {
         let japanese = japanese.map(|conversion| self.mixed_japanese_row(&decoded, conversion));
         // 拼音拆不开时完全匹配的英文可以占首位，但有两种情况不行：光标前缀解码时选英文会扔掉光标后的输入（`commit_selection` 整段结束组字）；辅助码激活时大写的辅助码被转成小写拼进了查英文的输入，那串字母不是用户要的英文词。
         let english_may_lead = !self.prefix_active && !self.has_active_helpcode();
+        // 符号行要整段组字正好是符号的名称，条件和上面相同但语义不同：光标前缀解码时查的是光标前那段，辅助码激活时输入里混着辅助码字母，两种情况下整段都不是用户打的名称。
+        let symbols_allowed = !self.prefix_active && !self.has_active_helpcode();
         let association_input = if self.prefix_active {
             self.prefix_query_input.as_str()
         } else {
@@ -571,6 +575,7 @@ impl InputSession {
             self.dedicated_english,
             self.local_mode,
             english_may_lead,
+            symbols_allowed,
             japanese,
         );
         self.insert_inline_date_time(&mut mixed);
@@ -578,6 +583,10 @@ impl InputSession {
         // 放在固定位置之后：单字母输入时固定位置会补回列表里没有的词。
         if self.single_character_only && scheme.filters_to_single_characters() {
             mixed.retain(|item| !is_han_phrase(&item.word));
+        }
+        // 本地模式不混排，列表里的 emoji、颜文字是模式自己查的，可以领头。
+        if self.local_mode == LocalInputMode::None {
+            keep_expressive_rows_off_the_lead(&mut mixed);
         }
         mixed
     }
