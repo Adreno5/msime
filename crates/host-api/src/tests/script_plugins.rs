@@ -2824,6 +2824,50 @@ fn a_pack_back_in_place_under_unchanged_grants_brings_its_trigger_back() {
     assert_eq!(take_log(), [command_log("uuid")]);
 }
 
+/// 先聚焦、后选择加入生命周期的会话：聚焦时还没有脚本集合，插件指令在选择加入时交给引擎，不等下一次聚焦。
+#[test]
+fn opting_in_after_focus_hands_the_plugin_commands_over_at_once() {
+    let fixture = fixture_with(command_preferences());
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    assert_eq!(read(msime_client_focus(fixture.handle, true))["ok"], true);
+    assert_eq!(msime_client_set_lifecycle(fixture.handle, 0), 0);
+    msime_client_set_field_traits(fixture.handle, TRAIT_KNOWN);
+    let view = slash(fixture.handle, b"/uuid");
+    assert_eq!(plugin_rows(&view)[0].0, "uuid-", "{view}");
+    assert_eq!(take_log(), [command_log("uuid")]);
+}
+
+/// 脚本集合正借给别处时刷新插件指令：引擎和 `options` 里现有的那一份原样保留，不被换成空表。
+#[test]
+fn refreshing_while_the_scripts_are_borrowed_keeps_the_engines_plugin_commands() {
+    let fixture = fixture_with(command_preferences());
+    install(
+        &fixture,
+        &[Script::new("uuid", commander("one"), &[Hook::Command])
+            .commanding(&[("uuid", "UUID")], true)],
+        1,
+    );
+    opt_in(&fixture, TRAIT_KNOWN);
+    SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        let session = sessions.get_mut(&fixture.handle).unwrap();
+        let before = session.options.plugin_commands.clone();
+        assert_eq!(before.len(), 1);
+        let scripts = session.lifecycle.as_deref().unwrap().scripts_handle();
+        let _borrowed = scripts.borrow_mut();
+        session.refresh_plugin_commands();
+        assert_eq!(session.options.plugin_commands, before);
+    });
+    let view = slash(fixture.handle, b"/uuid");
+    assert_eq!(plugin_rows(&view)[0].0, "uuid-", "{view}");
+    assert_eq!(take_log(), [command_log("uuid")]);
+}
+
 #[test]
 fn a_failing_plugin_gives_no_rows_and_trips_the_breaker_as_usual() {
     for ending in ["unreachable", "(loop $forever (br $forever))"] {

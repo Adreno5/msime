@@ -628,6 +628,19 @@ impl LifecycleState {
         self.scripts.borrow_mut()
     }
 
+    /// 测试在别处借着脚本集合时调用会话的方法，借用不能经过会话本身。只有桌面上有这些测试。
+    #[cfg(all(
+        test,
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
+    ))]
+    pub(crate) fn scripts_handle(&self) -> Rc<RefCell<ScriptSet>> {
+        self.scripts.clone()
+    }
+
     /// 借脚本集合用一次。它只在会话线程上、一次调用之内被借；万一已经借着（runtime 的候选变换正在用）就跳过，不 panic。
     fn with_scripts<R: Default>(&self, use_scripts: impl FnOnce(&mut ScriptSet) -> R) -> R {
         match self.scripts.try_borrow_mut() {
