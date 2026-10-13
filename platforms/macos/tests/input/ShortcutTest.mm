@@ -1455,16 +1455,40 @@ static void TestPairedPunctuationClosesThePair() {
     [controller apply:@{@"commit": @"’", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
     assert([client.committed isEqual:@"‘"] && [client.marked isEqual:@"’"]);
     [controller flushPendingPairedClosing];
-    // 直角引号与空心方头括号（quote_style、bracket_style）照样补全，后半个的引号同样改回前半个。
+    // 直角引号与空心方头括号（quote_style、bracket_style）照样补全，引号键出的后半个同样改回前半个。
+    [controller setValue:@('\'') forKey:@"punctuationKeyInFlight"];
     [controller apply:@{@"commit": @"」", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
     assert([client.committed isEqual:@"「"] && [client.marked isEqual:@"」"]);
     [controller flushPendingPairedClosing];
+    [controller setValue:@('"') forKey:@"punctuationKeyInFlight"];
     [controller apply:@{@"commit": @"』", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
     assert([client.committed isEqual:@"『"] && [client.marked isEqual:@"』"]);
     [controller flushPendingPairedClosing];
+    [controller setValue:@('[') forKey:@"punctuationKeyInFlight"];
     [controller apply:@{@"commit": @"〖", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
     assert([client.committed isEqual:@"〖"] && [client.marked isEqual:@"〗"]);
     [controller flushPendingPairedClosing];
+    // 注音的大千键位 `[` `]` `{` `}` 自己出「」『』：`]` 出的」是用户要打的后半个，原样上屏；`[` `{` 出的「『不补后半个，因为这个宿主只在 `'` `"` 上跨过」』。
+    client.marked = nil;
+    [controller setValue:@(']') forKey:@"punctuationKeyInFlight"];
+    [controller apply:@{@"commit": @"」", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"」"] && !client.marked.length);
+    [controller setValue:@('}') forKey:@"punctuationKeyInFlight"];
+    [controller apply:@{@"commit": @"』", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"』"] && !client.marked.length);
+    [controller setValue:@('[') forKey:@"punctuationKeyInFlight"];
+    [controller apply:@{@"commit": @"「", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"「"] && !client.marked.length);
+    [controller setValue:@('{') forKey:@"punctuationKeyInFlight"];
+    [controller apply:@{@"commit": @"你好『", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"你好『"] && !client.marked.length);
+    // 没有按键的整段上屏（例如候选）照旧按字补，后半个不改回前半个。
+    [controller apply:@{@"commit": @"「", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"「"] && [client.marked isEqual:@"」"]);
+    [controller flushPendingPairedClosing];
+    client.marked = nil;
+    [controller apply:@{@"commit": @"」", @"view": @{@"editing_text": @"", @"caret_position": @0}}];
+    assert([client.committed isEqual:@"」"] && !client.marked.length);
 
     // A punctuation key typed during a composition finishes it, and the Engine commits the candidate and the mark as one string. The pair is read from the last character of that commit, the way the reference reads `punctuationStr.back()`.
     [controller setValue:@('(') forKey:@"punctuationKeyInFlight"];

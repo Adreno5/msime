@@ -904,6 +904,15 @@ static unichar MSIMEASCIIForSmartChinesePunctuation(unichar character) {
     default: return 0;
     }
 }
+// 直角引号样式下出这个字的引号键：「」是 `'`，『』是 `"`；其他字为 0。
+static unichar MSIMECornerQuoteKey(id mark) {
+    if (![mark isKindOfClass:NSString.class] || [mark length] != 1) return 0;
+    switch ([mark characterAtIndex:0]) {
+    case 0x300C: case 0x300D: return '\''; // 「 」
+    case 0x300E: case 0x300F: return '"'; // 『 』
+    default: return 0;
+    }
+}
 // View 报告的引号与方头括号样式（host-api 已解析好 corner_when_traditional）；英文模式下的中文标点按它出字。
 static msime::input::PunctuationMarks MSIMEViewPunctuationMarks(NSDictionary *view) {
     NSDictionary *marks = [view isKindOfClass:NSDictionary.class] ? view[@"punctuation_marks"] : nil;
@@ -6569,9 +6578,11 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         }
     }
     const BOOL quoteKey = !markEndsLongerCommit || punctuationKey == '"' || punctuationKey == '\'';
-    // 直角引号（quote_style 为 corner）同理：」改回「，』改回『。
+    // 直角引号（quote_style 为 corner）同理：」改回「，』改回『，但只在按的正是出这个字的引号键（`'` 出「」，`"` 出『』）时改。注音的大千键位 `]` `}` 自己出」』（引擎的 `SHIFT_PUNCTUATION`），那是用户要打的后半个，改回前半个就成了再开一对。
     static NSDictionary<NSString *, NSString *> *const reopenings = @{@"”": @"“", @"’": @"‘", @"」": @"「", @"』": @"『"};
+    const unichar cornerQuoteKey = MSIMECornerQuoteKey(mark);
     if (_appearance.pairedPunctuation && [mark isKindOfClass:NSString.class] && quoteKey && reopenings[mark] &&
+        (!cornerQuoteKey || cornerQuoteKey == punctuationKey) &&
         !_pendingPairedClosing && !MSIMEPairedPunctuationExcludedHost()) {
         NSMutableDictionary *reopened = [transition mutableCopy];
         NSString *opening = reopenings[mark];
@@ -6581,7 +6592,9 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         transition = reopened;
     }
     NSString *openedClosing = nil;
-    if ([mark isKindOfClass:NSString.class] && mark.length &&
+    // 注音 `[` `{` 出的「『同样不补后半个：这个宿主只在 `'` `"` 上跨过」』，`]` `}` 到了引擎照样再出一个，补了就成了「内容」」。没有按键的整段上屏（例如候选）照旧按字补。
+    const BOOL cornerQuoteFromOtherKey = cornerQuoteKey && punctuationKey && cornerQuoteKey != punctuationKey;
+    if ([mark isKindOfClass:NSString.class] && mark.length && !cornerQuoteFromOtherKey &&
         _appearance.pairedPunctuation && !_pendingPairedClosing && !MSIMEPairedPunctuationExcludedHost()) {
         for (NSArray<NSString *> *pair in MSIMEPunctuationPairs())
             if ([mark isEqualToString:pair[0]]) { openedClosing = pair[1]; break; }
