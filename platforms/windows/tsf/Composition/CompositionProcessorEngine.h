@@ -197,6 +197,8 @@ class CCompositionProcessorEngine
     void SetupLanguageBar(_In_ ITfThreadMgr *pThreadMgr, TfClientId tfClientId, BOOL isSecureMode);
     void SetKeystrokeTable(_Inout_ CMetasequoiaImeArray<_KEYSTROKE> *pKeystroke);
     void SetupPunctuationPair();
+    // 标点表查到的字（含交替与嵌套），还没按引号与方头括号样式换字；GetPunctuation 在它之上换字。
+    const WCHAR *_GetContractPunctuation(WCHAR wch);
     void CreateLanguageBarButton(DWORD dwEnable, GUID guidLangBar, _In_z_ LPCWSTR pwszDescriptionValue,
                                  _In_z_ LPCWSTR pwszTooltipValue, DWORD dwOnIconIndex, DWORD dwOffIconIndex,
                                  _Outptr_result_maybenull_ CLangBarItemButton **ppLangBarItemButton, BOOL isSecureMode);
