@@ -1417,6 +1417,10 @@ std::optional<msime::settings::plugins::ScriptGrants> plugin_script_grants(Respo
     for (auto const &item : named_objects(value, L"health"))
       grants.health.push_back(
           {named_string(item, L"id"), named_string(item, L"hash"), named_string(item, L"disabled")});
+    for (auto const &item : named_objects(value, L"commands"))
+      grants.commands.push_back({named_string(item, L"id"), named_string(item, L"trigger"),
+                                 named_string(item, L"title"), named_string(item, L"status"),
+                                 named_string(item, L"conflict"), named_string(item, L"conflict_id")});
     return grants;
   } catch (...) {
     return std::nullopt;
@@ -15461,6 +15465,23 @@ private:
         pg::ScriptGrantState::stale)
       form.Children().Append(account_message(std::wstring(pg::grant_dialog_stale), InfoBarSeverity::Warning));
     form.Children().Append(make_text(pg::grant_dialog_intro, 14, palette_.sub));
+    // 提供 / 指令的插件：列出它的指令；调整授权时（已启用）每条后面接着现在的状态。
+    if (pack->kind == L"script" && !pack->commands.empty()) {
+      const bool enabled = pg::script_grant_state(*pack, pg::script_grant(plugin_grants(), pack->id)) ==
+                           pg::ScriptGrantState::enabled;
+      StackPanel commands;
+      commands.Spacing(2);
+      A11y::SetName(commands, L"它提供的 / 指令");
+      commands.Children().Append(make_text(L"它在 / 指令里提供：", 14, palette_.sub));
+      for (auto const &command : pack->commands)
+        commands.Children().Append(make_text(
+            pg::script_command_line(command, enabled ? pg::script_command_status(*pack, command.trigger,
+                                                                                   plugin_grants(),
+                                                                                   plugin_catalog_.packages)
+                                                     : std::wstring()),
+            14, palette_.sub));
+      form.Children().Append(commands);
+    }
     const auto requested = pg::sort_capabilities(pack->permissions);
     if (requested.empty()) {
       form.Children().Append(make_text(pg::grant_dialog_no_permissions, 14, palette_.sub));
@@ -15590,6 +15611,18 @@ private:
       const auto label = pg::capability_label(capability);
       plugin_summary_row(permissions, 0xE72E, label.title, label.description,
                          pg::contains(granted, capability) ? L"已授予" : L"未授予");
+    }
+
+    // 提供的 / 指令：每条一行，右边是现在的状态；/ 指令关着时说明并给「打开 / 指令」，授权本身从不改这个开关。
+    if (!pack.commands.empty()) {
+      auto commands = add_group(page, L"提供的 / 指令");
+      for (auto const &command : pack.commands)
+        plugin_summary_row(commands, 0xE756, L"/" + command.trigger, command.title,
+                           pg::script_command_status(pack, command.trigger, grants, plugin_catalog_.packages));
+      if (!document_.Boolean(L"local_modes.command", false))
+        plugin_action_block(
+            commands, std::wstring(pg::script_command_mode_note),
+            {button_control(L"打开 / 指令", [this] { enable_local_mode(L"command"); }, loaded_)});
     }
 
     auto status = add_group(page, L"状态");

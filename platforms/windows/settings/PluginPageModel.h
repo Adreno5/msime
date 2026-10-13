@@ -860,10 +860,16 @@ struct ScriptHealth {
   std::wstring id, hash, disabled;
 };
 
-// 授权页读到的全部（`ScriptGrantsView`）。`plugins` 的顺序就是执行顺序。
+// 一条插件 `/` 指令在输入法里的状态（client-core 的 `script_commands::ResolvedCommand`，`ScriptCommandState`）。`status` 是 `active`、`shadowed_by_user_table`（和用户指令表里的 `/conflict` 冲突）或 `shadowed_by_plugin`（和执行顺序在前的插件 `conflict_id` 的 `/conflict` 冲突）；用不到的字段是空串。
+struct ScriptCommandState {
+  std::wstring id, trigger, title, status, conflict, conflict_id;
+};
+
+// 授权页读到的全部（`ScriptGrantsView`）。`plugins` 的顺序就是执行顺序；`commands` 是启用、授予了「提供 / 指令」、清单能载入的插件声明的指令和状态。
 struct ScriptGrants {
   std::vector<ScriptGrant> plugins;
   std::vector<ScriptHealth> health;
+  std::vector<ScriptCommandState> commands;
 };
 
 inline ScriptGrant const *script_grant(ScriptGrants const *grants, std::wstring_view id) {
@@ -950,6 +956,50 @@ inline std::wstring script_row_description(Package const &pack) {
   if (!pack.author.empty())
     parts.push_back(L"作者 " + pack.author);
   return joined(parts, L" · ");
+}
+
+// / 指令关着时，提供指令的插件详情里的说明，后面跟着「打开 / 指令」按钮（`SCRIPT_COMMAND_MODE_NOTE`）。授权本身从不改这个开关。
+inline constexpr std::wstring_view script_command_mode_note =
+    L"需要先打开 / 指令，并使用中文标点；在全拼、双拼、五笔下没有输入时按 / 再输入触发词。";
+
+// 包里冲突说明要用的名字：已安装的脚本插件 `id` 的名字，找不到时用 id。
+inline std::wstring script_name(std::vector<Package> const &packages, std::wstring_view id) {
+  for (auto const &pack : packages)
+    if (pack.kind == L"script" && pack.id == id)
+      return pack.name;
+  return std::wstring(id);
+}
+
+// 一条插件指令现在的状态，白话（`scriptCommandStatus`）：没启用或没授予「提供 / 指令」时说要怎样才生效；输入法停用了插件时照实说；否则按宿主算出的状态说生效，或者和谁冲突、没生效。
+inline std::wstring script_command_status(Package const &pack, std::wstring_view trigger,
+                                          ScriptGrants const *grants,
+                                          std::vector<Package> const &packages) {
+  auto const *grant = script_grant(grants, pack.id);
+  if (script_grant_state(pack, grant) != ScriptGrantState::enabled)
+    return L"授权并启用后生效";
+  if (!contains(grant->granted, L"provide_commands"))
+    return L"没有授予「提供 / 指令」，不会生效";
+  if (script_health(grants, pack))
+    return L"插件已被输入法停用，不会给出候选";
+  for (auto const &command : grants->commands) {
+    if (command.id != pack.id || command.trigger != trigger)
+      continue;
+    if (command.status == L"active")
+      return L"生效";
+    if (command.status == L"shadowed_by_user_table")
+      return L"与你的指令 /" + command.conflict + L" 冲突，未生效";
+    if (command.status == L"shadowed_by_plugin")
+      return L"与插件 " + script_name(packages, command.conflict_id) + L" 的 /" + command.conflict +
+             L" 冲突，未生效";
+    break;
+  }
+  return L"未生效";
+}
+
+// 授权对话框里列出的一条指令（`ScriptGrantDialog` 的列表）：「/uuid UUID」，调整授权时后面接着「：」和状态。
+inline std::wstring script_command_line(Command const &command, std::wstring const &status) {
+  auto line = L"/" + command.trigger + L" " + command.title;
+  return status.empty() ? line : line + L"：" + status;
 }
 
 // 授权页上的平台说明（`scriptResidualRisk` 的 Windows 分支）。授权文件不签名，以同一用户身份运行的程序都能绕过授权页自己写授权，这是设计接受的残余风险，要写在用户做决定的地方：列表分组、详情和授权对话框。

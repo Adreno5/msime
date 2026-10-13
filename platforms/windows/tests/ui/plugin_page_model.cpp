@@ -337,6 +337,42 @@ int main() {
   check(script_row_description(authored) == L"1.0.0 · 作者 甲", "script row description");
   check(grant_dialog_title(authored) == L"授权「名a」", "dialog title");
 
+  // 插件 / 指令的状态（共享页的 scriptCommandStatus）：没启用、没授予、被停用、宿主算出的三种状态和没列出的。
+  {
+    auto uuid = script(L"uuid", h1);
+    uuid.permissions = {L"provide_commands"};
+    uuid.commands = {{L"uuid", L"UUID", L""}, {L"guid", L"GUID", L""}, {L"xid", L"X", L""}};
+    auto other = script(L"other", h1);
+    std::vector<Package> packages{uuid, other};
+    ScriptGrants granted;
+    check(script_command_status(uuid, L"uuid", &granted, packages) == L"授权并启用后生效" &&
+              script_command_status(uuid, L"uuid", nullptr, packages) == L"授权并启用后生效",
+          "a command of a pack not yet granted");
+    granted.plugins.push_back({L"uuid", h1, true, {}});
+    check(script_command_status(uuid, L"uuid", &granted, packages) == L"没有授予「提供 / 指令」，不会生效",
+          "enabled without provide_commands");
+    granted.plugins[0].granted = {L"provide_commands"};
+    granted.commands = {{L"other", L"uu", L"U", L"active", L"", L""},
+                        {L"uuid", L"uuid", L"UUID", L"shadowed_by_plugin", L"uu", L"other"},
+                        {L"uuid", L"guid", L"GUID", L"shadowed_by_user_table", L"gu", L""}};
+    check(script_command_status(uuid, L"uuid", &granted, packages) == L"与插件 名other 的 /uu 冲突，未生效",
+          "shadowed by another plugin, named");
+    check(script_command_status(uuid, L"guid", &granted, packages) == L"与你的指令 /gu 冲突，未生效",
+          "shadowed by the user's table");
+    check(script_command_status(uuid, L"xid", &granted, packages) == L"未生效", "not listed by the host");
+    granted.commands.push_back({L"uuid", L"xid", L"X", L"active", L"", L""});
+    check(script_command_status(uuid, L"xid", &granted, packages) == L"生效", "active");
+    granted.health.push_back({L"uuid", h1, L"failed"});
+    check(script_command_status(uuid, L"xid", &granted, packages) == L"插件已被输入法停用，不会给出候选",
+          "stopped by the input method");
+    check(script_command_line(uuid.commands[0], L"") == L"/uuid UUID" &&
+              script_command_line(uuid.commands[0], L"生效") == L"/uuid UUID：生效",
+          "dialog lines");
+    check(script_command_mode_note ==
+              L"需要先打开 / 指令，并使用中文标点；在全拼、双拼、五笔下没有输入时按 / 再输入触发词。",
+          "the slash mode note");
+  }
+
   if (failures == 0)
     std::puts("plugin page model: ok");
   return failures == 0 ? 0 : 1;
