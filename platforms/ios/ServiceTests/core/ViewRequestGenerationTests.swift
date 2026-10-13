@@ -1,5 +1,27 @@
 import XCTest
 
+final class OperationGenerationTests: XCTestCase {
+  @MainActor func testReplacementAndInvalidationRejectOldOperations() throws {
+    var generation = OperationGeneration()
+    let initial = generation.current()
+    XCTAssertTrue(generation.isCurrent(initial))
+
+    let first = generation.begin()
+    XCTAssertFalse(generation.isCurrent(initial))
+    XCTAssertNoThrow(try generation.checkCurrent(first))
+
+    let second = generation.begin()
+    XCTAssertFalse(generation.isCurrent(first))
+    XCTAssertThrowsError(try generation.checkCurrent(first))
+    XCTAssertTrue(generation.isCurrent(second))
+
+    generation.invalidate()
+    XCTAssertFalse(generation.isCurrent(second))
+    XCTAssertThrowsError(try generation.checkCurrent(second))
+    XCTAssertNoThrow(try generation.checkCurrent(generation.current()))
+  }
+}
+
 final class ViewRequestGenerationTests: XCTestCase {
   @MainActor func testOldRequestCannotWriteAfterReplacementOrDisappearance() throws {
     var generation = ViewRequestGeneration()
@@ -20,5 +42,23 @@ final class ViewRequestGenerationTests: XCTestCase {
     XCTAssertThrowsError(try generation.checkCurrent(second))
     let third = generation.begin()
     XCTAssertTrue(generation.isCurrent(third))
+  }
+
+  @MainActor func testInvalidationKeepsPageVisibleForTheNextRequest() throws {
+    var generation = ViewRequestGeneration()
+    XCTAssertNil(generation.current())
+    generation.appear()
+    let first = generation.begin()
+    XCTAssertEqual(generation.current(), first)
+
+    generation.invalidate()
+    XCTAssertTrue(generation.isVisible)
+    XCTAssertFalse(generation.isCurrent(first))
+    XCTAssertThrowsError(try generation.checkCurrent(first))
+    let replacement = try XCTUnwrap(generation.current())
+    XCTAssertNoThrow(try generation.checkCurrent(replacement))
+
+    generation.disappear()
+    XCTAssertNil(generation.current())
   }
 }
