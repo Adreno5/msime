@@ -2587,8 +2587,11 @@ public final class MSIMEInputService extends InputMethodService {
         defaultImeMode = nextDefaultImeMode;
         imeModeScope = nextImeModeScope;
         JSONObject nextView = result.getJSONObject("view");
+        // 引号与方头括号样式变了也重建键行：符号键、字母提示和 123 层的键面都跟着它画。
         boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(nextView)
-            || japaneseEmojiKeyChanged;
+            || japaneseEmojiKeyChanged
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(nextView));
         enabledSchemes = nextSchemeConfiguration.enabled();
         visibleSchemes = nextSchemeConfiguration.visible();
         selectedScheme = nextSchemeConfiguration.selected();
@@ -2643,7 +2646,10 @@ public final class MSIMEInputService extends InputMethodService {
     boolean apply(String response) throws JSONException {
         JSONObject result = value(response);
         JSONObject next = result.getJSONObject("view");
-        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next);
+        // 偏好改了样式时，引擎在空闲重建后的那次转换里才换样式，键面在这里跟上。
+        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next)
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(next));
         String commit = result.isNull("commit") ? null : result.getString("commit");
         if (commit != null) {
             // The runtime widened this already - it holds the character width now, and applies it
@@ -2975,7 +2981,9 @@ public final class MSIMEInputService extends InputMethodService {
         java.util.ArrayList<String> words = new java.util.ArrayList<>(candidateCount);
         for (int index = 0; index < candidateCount; index++) {
             JSONObject candidate = entries.optJSONObject(index);
-            if (candidate != null) words.add(InputViewValuePolicy.textOr(candidate, "text", ""));
+            if (candidate == null || !CandidateTranslationPolicy.userTranslationSourceAllowed(
+                    InputViewValuePolicy.integer(candidate, "source", -1))) continue;
+            words.add(InputViewValuePolicy.textOr(candidate, "text", ""));
         }
         verifyCandidateTranslationBinding(generation, same -> {
             if (same != null) {
@@ -3080,7 +3088,9 @@ public final class MSIMEInputService extends InputMethodService {
         java.util.LinkedHashSet<String> texts = new java.util.LinkedHashSet<>(textCapacity);
         for (int index = 0; entries != null && index < BoundsPolicy.atMost(entries.length(), 32); index++) {
             JSONObject candidate = entries.optJSONObject(index);
-            if (candidate != null) texts.add(InputViewValuePolicy.textOr(candidate, "text", ""));
+            if (candidate != null && CandidateTranslationPolicy.userTranslationSourceAllowed(
+                    InputViewValuePolicy.integer(candidate, "source", -1)))
+                texts.add(InputViewValuePolicy.textOr(candidate, "text", ""));
         }
         for (java.util.Map<String, String> glosses : offline.values()) texts.addAll(glosses.keySet());
         boolean account = includeAccount && candidateTranslationAccount && candidateTranslationStore != null
@@ -3972,6 +3982,11 @@ public final class MSIMEInputService extends InputMethodService {
             InputViewValuePolicy.scheme(view, -1), InputViewValuePolicy.textOr(view, "local_mode", "none"), chinesePunctuation);
     }
 
+    /** 当前 View 报告的引号与方头括号样式；画键面、提示和 123 层时用它，不自己解析偏好。 */
+    ChineseSymbolFaces.Marks punctuationMarks() {
+        return InputViewValuePolicy.punctuationMarks(view);
+    }
+
     private java.util.List<QuickPunctuationPolicy.Entry> quickPunctuationEntries() {
         return QuickPunctuationPolicy.entries(dedicatedEnglish,
             view == null ? -1 : InputViewValuePolicy.scheme(view, -1),
@@ -4024,7 +4039,8 @@ public final class MSIMEInputService extends InputMethodService {
     private void updateSymbolKeyFaces() {
         boolean chineseMode = sendsChinesePunctuation();
         for (int index = 0; index < symbolKeyButtons.size(); index++) {
-            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode);
+            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode,
+                punctuationMarks());
             Button button = symbolKeyButtons.get(index);
             button.setText(face);
             button.setContentDescription("按键 " + face);
@@ -4037,7 +4053,8 @@ public final class MSIMEInputService extends InputMethodService {
         for (int index = 0; index < shuangpinKeyButtons.size(); index++) {
             String input = shuangpinKeyInputs.get(index);
             if (";".equals(input)) continue;
-            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese));
+            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese,
+                punctuationMarks()));
         }
     }
 
@@ -6798,7 +6815,9 @@ public final class MSIMEInputService extends InputMethodService {
         int slot = eligible ? highlightedCandidateSlot(view) : -1;
         JSONObject candidate = slot < 0 ? null : visibleCandidate(slot);
         java.util.List<String> senses = java.util.List.of();
-        if (eligible && candidate != null && (candidateEnglishGloss || candidateTranslationsEnabled)) {
+        if (eligible && candidate != null && CandidateTranslationPolicy.userTranslationSourceAllowed(
+                InputViewValuePolicy.integer(candidate, "source", -1))
+                && (candidateEnglishGloss || candidateTranslationsEnabled)) {
             String translation = candidate.isNull("translation")
                 ? "" : JsonPolicy.strictStringOrEmpty(candidate.opt("translation"));
             senses = CandidateTranslationPolicy.insertionGlosses(translation);
@@ -6932,13 +6951,21 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     String candidateAnnotation(JSONObject candidate) {
+        String translation = candidateTranslation(candidate);
         if (koreanHanjaRows())
             return CandidateGlossPolicy.hanjaAnnotation(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                translation,
                 candidateEnglishGloss || candidateTranslationsEnabled);
         return CandidateGlossPolicy.annotation(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-            InputViewValuePolicy.textOr(candidate, "translation", ""),
+            translation,
             candidateEnglishGloss || candidateTranslationsEnabled);
+    }
+
+    /** 候选释义禁止来源即使因同词候选合并拿到译文，也不能在 Android 的候选条、读屏或菜单里出现。 */
+    private static String candidateTranslation(JSONObject candidate) {
+        if (candidate == null || !CandidateTranslationPolicy.userTranslationSourceAllowed(
+                InputViewValuePolicy.integer(candidate, "source", -1))) return "";
+        return InputViewValuePolicy.textOr(candidate, "translation", "");
     }
 
     private String wubiCodeHint(JSONObject candidate, JSONObject context, String typed) {
@@ -6952,17 +6979,17 @@ public final class MSIMEInputService extends InputMethodService {
         String hint = wubiCodeHint(candidate, view, typed);
         if (hint.isEmpty()) return candidateAnnotation(candidate);
         // 五笔剩余编码和双拼辅助码一样占提示位，释义跟在同一行后面，不再被它挤掉（#6997）。
-        return CandidateGlossPolicy.annotation(hint, InputViewValuePolicy.textOr(candidate, "translation", ""),
+        return CandidateGlossPolicy.annotation(hint, candidateTranslation(candidate),
             candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
     String candidateAccessibilitySuffix(JSONObject candidate) {
         if (koreanHanjaRows())
             return CandidateGlossPolicy.hanjaAccessibilitySuffix(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                candidateTranslation(candidate),
                 candidateEnglishGloss || candidateTranslationsEnabled);
         return CandidateGlossPolicy.accessibilitySuffix(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-            InputViewValuePolicy.textOr(candidate, "translation", ""),
+            candidateTranslation(candidate),
             candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
@@ -6970,7 +6997,7 @@ public final class MSIMEInputService extends InputMethodService {
         String hint = wubiCodeHint(candidate, view, typed);
         return hint.isEmpty() ? candidateAccessibilitySuffix(candidate)
             : "，还需输入 " + hint + CandidateGlossPolicy.glossAccessibilitySuffix(
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                candidateTranslation(candidate),
                 candidateEnglishGloss || candidateTranslationsEnabled);
     }
 

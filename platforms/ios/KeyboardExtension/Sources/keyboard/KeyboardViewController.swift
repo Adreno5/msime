@@ -372,6 +372,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   // received; asking the session again costs a full C ABI round trip per question, and the render
   // path asks several times for every keystroke.
   private var currentLocalMode = "none"
+  /// 最近一次快照报告的引号与方头括号样式（View 的 `punctuation_marks`）。
+  private var currentCornerQuotes = false
+  private var currentHollowBrackets = false
   private var currentNineKeySpellings: [String] = []
   private var currentNineKeySingleCharacter = false
   private var currentNineKeyStrokes = ""
@@ -531,6 +534,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     "<": "《", ">": "》", "'": "‘", "\"": "“", "_": "——",
   ]
 
+  /// 按引号与方头括号样式（View 的 `punctuation_marks`）取中文键面：直角引号下 `'` 画「、`"` 画『，空心括号下 `[` `]` 画〖〗，其余与 `chineseSymbolFaces` 相同。这些键经 Engine 上屏，键面与写出的字一致。不是 private：键面测试会固定它。
+  static func chineseSymbolFace(_ ascii: String, cornerQuotes: Bool, hollowBrackets: Bool) -> String? {
+    switch ascii {
+    case "'" where cornerQuotes: return "「"
+    case "\"" where cornerQuotes: return "『"
+    case "[" where hollowBrackets: return "〖"
+    case "]" where hollowBrackets: return "〗"
+    default: return chineseSymbolFaces[ascii]
+    }
+  }
+
   /// Whether Chinese punctuation is on for marks the keyboard writes itself rather than through the Engine (the Zhuyin symbol panel): a 中文 lock, or the 中文标点 switch under 跟随中英文; an 英文 lock turns it off. Not private: the scheme tests pin it.
   static func writesChinesePunctuation(switchOn: Bool, punctuationLock: String?) -> Bool {
     switch punctuationLock ?? "follow" {
@@ -549,8 +563,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   }
 
   /// What a Zhuyin symbol-panel key writes: the Chinese mark for an ASCII mark that has one while Chinese punctuation is on, else the key itself. Not private: the scheme tests pin it.
-  static func zhuyinSymbolText(_ symbol: String, chinesePunctuation: Bool) -> String {
-    chinesePunctuation ? chineseSymbolFaces[symbol] ?? symbol : symbol
+  static func zhuyinSymbolText(_ symbol: String, chinesePunctuation: Bool, cornerQuotes: Bool = false,
+                               hollowBrackets: Bool = false) -> String {
+    chinesePunctuation
+      ? chineseSymbolFace(symbol, cornerQuotes: cornerQuotes, hollowBrackets: hollowBrackets) ?? symbol : symbol
   }
 
   /// Whether the Zhuyin symbol panel writes Chinese marks now.
@@ -2586,7 +2602,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   private func typeSymbolLayerKey(row: Int, column: Int) {
     let chinese = symbolLayerIsChinese
-    let face = SymbolLayerLayout.characterRows(more: showsMoreSymbols, chinese: chinese)[row][column]
+    let face = SymbolLayerLayout.characterRows(more: showsMoreSymbols, chinese: chinese,
+                                               cornerQuotes: currentCornerQuotes)[row][column]
     switch SymbolLayerLayout.input(for: face, chinese: chinese, chinesePunctuation: symbolLayerEngineWritesChinesePunctuation) {
     case .symbol(let key):
       countKeyPress(TypingKeyID.character(key))
@@ -2622,7 +2639,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   }
 
   private func updateSymbolLayerFaces() {
-    let rows = SymbolLayerLayout.characterRows(more: showsMoreSymbols, chinese: symbolLayerIsChinese)
+    let rows = SymbolLayerLayout.characterRows(more: showsMoreSymbols, chinese: symbolLayerIsChinese,
+                                               cornerQuotes: currentCornerQuotes)
     for (keys, faces) in zip(symbolLayerKeys, rows) {
       for (key, face) in zip(keys, faces) where key.configuration?.title != face {
         key.configuration?.title = face
@@ -3094,7 +3112,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     // Zhuyin spells with the digit row and with , . / ; -, so the symbol panel cannot hand its keys to the Engine: they would type ㄅ or ㄝ or pick a list row. The panel commits the conversion and types the mark itself, as the key draws it: the Chinese face for an ASCII mark that has one while Chinese punctuation is on, the ASCII mark otherwise.
     if typesZhuyin {
       render(session.finishComposition())
-      insertDirectText(Self.zhuyinSymbolText(symbol, chinesePunctuation: zhuyinWritesChinesePunctuation))
+      insertDirectText(Self.zhuyinSymbolText(symbol, chinesePunctuation: zhuyinWritesChinesePunctuation,
+                                             cornerQuotes: currentCornerQuotes, hollowBrackets: currentHollowBrackets))
       return
     }
 
@@ -4726,7 +4745,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     // 日语的逗号写作 、，手机底行的逗号键就画 、，按下也发 、。
     let japaneseComma = writesJapaneseComma
     for face in symbolKeyFaces where face.key !== quickPunctuationButton || phoneBottomRowShown {
-      let chinese = japaneseComma && face.key === quickPunctuationButton ? "、" : face.chinese
+      let styled = Self.chineseSymbolFace(face.ascii, cornerQuotes: currentCornerQuotes,
+                                          hollowBrackets: currentHollowBrackets) ?? face.chinese
+      let chinese = japaneseComma && face.key === quickPunctuationButton ? "、" : styled
       let title = sendsChinesePunctuation ? chinese : face.ascii
       guard face.key.configuration?.title != title || face.key.accessibilityLabel != "符号 \(title)" else { continue }
       face.key.configuration?.title = title
@@ -5459,6 +5480,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       showsSymbols = false
     }
     currentLocalMode = snapshot.localMode
+    // 样式在偏好改动后空闲重建时才变；变了就重画受影响的键面。
+    if currentCornerQuotes != snapshot.cornerQuotes || currentHollowBrackets != snapshot.hollowBrackets {
+      currentCornerQuotes = snapshot.cornerQuotes
+      currentHollowBrackets = snapshot.hollowBrackets
+      updateSymbolKeyFaces()
+      if !symbolLayerKeys.isEmpty { updateSymbolLayerFaces() }
+    }
     currentNineKeySpellings = snapshot.nineKeySpellings
     currentNineKeySingleCharacter = snapshot.nineKeySingleCharacter
     currentNineKeyStrokes = snapshot.nineKeyStrokes

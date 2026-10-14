@@ -2220,11 +2220,30 @@ public:
                              {"candidates", candidates}};
     if (dictionary) glossRequest["target_language"] = query.at("target_language");
     const auto gloss = glossRequest.dump();
+    std::vector<bool> providerAllowed;
+    providerAllowed.reserve(query.at("candidates").size());
+    const bool bypassSourceGate = manual_sentence || commandTranslation(query);
+    const auto &viewCandidates = view_.value("candidates", Json::array());
+    for (size_t candidateIndex = 0; candidateIndex < query.at("candidates").size();
+         ++candidateIndex) {
+      bool allowed = true;
+      if (!bypassSourceGate && viewCandidates.is_array() &&
+          candidateIndex < viewCandidates.size()) {
+        const auto &viewCandidate = viewCandidates.at(candidateIndex);
+        if (viewCandidate.is_object() && viewCandidate.contains("source") &&
+            viewCandidate.at("source").is_number_unsigned()) {
+          allowed = msime::linux_host::candidate_translation_source_allowed(
+              viewCandidate.at("source").get<std::uint64_t>());
+        }
+      }
+      providerAllowed.push_back(allowed);
+    }
     const auto socket = (manual_sentence || commandTranslation(query) ||
                          preferences_.value("candidate_translations", true))
                             ? translation_socket_ : std::string{};
     translation_job_ = detachedJob(
-        [query, encoded, gloss, offline, local, socket, dictionary, resources = resources_] () mutable {
+        [query, encoded, gloss, offline, local, socket, dictionary, providerAllowed,
+         resources = resources_] () mutable {
           if (offline) {
             try {
               local = preferOnline(response(msime_client_candidate_gloss_request(
@@ -2235,11 +2254,15 @@ public:
           } else if (!socket.empty()) {
             auto transport = query;
             auto missing = Json::array();
+            size_t candidateIndex = 0;
             for (const auto &candidate : query.at("candidates")) {
               const auto &text = candidate.at("text");
-              if (dictionary || std::none_of(local.begin(), local.end(), [&](const Json &item) {
+              const bool sourceAllowed = candidateIndex >= providerAllowed.size() ||
+                  providerAllowed[candidateIndex];
+              if (sourceAllowed && (dictionary || std::none_of(local.begin(), local.end(), [&](const Json &item) {
                     return item.at("text") == text;
-                  })) missing.push_back(text);
+                  }))) missing.push_back(text);
+              ++candidateIndex;
             }
             transport["candidates"] = std::move(missing);
             if (!transport.at("candidates").empty()) {
@@ -3150,6 +3173,13 @@ public:
   bool fullwidthOutput() const {
     return view_.value("character_width", std::string{}) == "Fullwidth";
   }
+  // 英文模式下的中文标点按 View 报告的样式出字（host-api 已解析好 corner_when_traditional）。
+  msime::linux_host::PunctuationMarks viewPunctuationMarks() const {
+    const auto marks = view_.value("punctuation_marks", Json::object());
+    if (!marks.is_object()) return {};
+    return msime::linux_host::punctuation_marks_from_view(
+        marks.value("quotes", std::string{}), marks.value("brackets", std::string{}));
+  }
   // The session types Korean: jamo compose in the preedit, punctuation is always half-width ASCII and none of the Chinese punctuation helpers apply. The dedicated English mode keeps its own rules in every scheme.
   bool korean() const {
     return msime::linux_host::strict_json_value(view_, "scheme", 0u) == 4 && !view_.value("dedicated_english", false);
@@ -3328,7 +3358,8 @@ public:
     if (!pairedPunctuationEnabled()) return false;
     const auto typed = fcitx::Key::keySymToUTF8(sym);
     if (typed.size() != 1) return false;
-    const auto closing = msime::linux_host::paired_closing_for_key(typed[0], fullwidthOutput());
+    const auto closing =
+        msime::linux_host::paired_closing_for_key(typed[0], fullwidthOutput(), paired_tracker_);
     if (!closing) return false;
     using Modifier = msime::linux_host::PairedPunctuationModifier;
     std::uint32_t modifiers = 0;
@@ -7463,7 +7494,7 @@ bool FcitxState::key(fcitx::KeyEvent &event) {
     const auto text = msime::linux_host::english_mode_output(
         static_cast<char32_t>(fcitx::Key::keySymToUnicode(sym)), keypad,
         punctuation_lock_ == 1 || (punctuation_lock_ == 0 && english_chinese_punctuation_),
-        fullwidthOutput(), english_punctuation_);
+        fullwidthOutput(), english_punctuation_, viewPunctuationMarks());
     if (text.empty()) return false;
     commitText(text, msime::linux_host::TypingSource::English);
     return true;

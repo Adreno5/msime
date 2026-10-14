@@ -261,6 +261,11 @@ impl Session {
         self.input.punctuation.set_paired_enabled(enabled);
     }
 
+    /// 换引号和方头括号的样式；组字、光标和交替状态都不动。
+    pub fn set_punctuation_marks(&mut self, marks: crate::punctuation::PunctuationMarks) {
+        self.input.punctuation.set_marks(marks);
+    }
+
     /// The host emitted the closing half of a paired mark itself.
     pub fn balance_paired_punctuation_after_auto_close(&mut self, opening: u8) {
         self.input.punctuation.balance_after_auto_close(opening);
