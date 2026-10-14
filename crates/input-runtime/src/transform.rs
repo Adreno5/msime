@@ -109,6 +109,14 @@ mod desktop {
         occurrence: usize,
     }
 
+    #[derive(Default)]
+    struct ArrangementBuffers {
+        hidden: Vec<bool>,
+        free: Vec<(usize, usize)>,
+        order: Vec<usize>,
+        tail: Vec<usize>,
+    }
+
     impl Identity {
         fn occurrences(snapshot: &EngineSnapshot, engine_order: &[usize]) -> Vec<usize> {
             let count = snapshot.candidates.len();
@@ -168,6 +176,8 @@ mod desktop {
         command_notes: HashMap<String, String>,
         /// 插件指令提供者的回包行，调用之间清空并复用容量。
         command_rows: Vec<(String, String)>,
+        /// 候选排列的工作区，旁路重放之间清空并复用容量。
+        arrangement: ArrangementBuffers,
     }
 
     impl PluginState {
@@ -456,54 +466,70 @@ mod desktop {
                 list.iter()
                     .position(|id| id.matches(snapshot, seat, self.plugins.occurrences[seat]))
             };
-            let hidden: Vec<bool> = (0..count)
-                .map(|seat| {
-                    !locked(seat)
-                        && engine_index(seat) != 0
-                        && listed(&self.plugins.hidden, seat).is_some()
-                })
-                .collect();
-            let hidden_rows = hidden.iter().filter(|hidden| **hidden).count();
+            let mut buffers = std::mem::take(&mut self.plugins.arrangement);
+            buffers.hidden.clear();
+            buffers.hidden.extend((0..count).map(|seat| {
+                !locked(seat)
+                    && engine_index(seat) != 0
+                    && listed(&self.plugins.hidden, seat).is_some()
+            }));
+            let hidden_rows = buffers.hidden.iter().filter(|hidden| **hidden).count();
             let visible = count - hidden_rows;
             let stays = |seat: usize| seat < visible && locked(seat);
             // 不留在原座位上的可见行：点名的（锁定的行不认点名）按优先次序在前，其余按原来的座位。
-            let mut free: Vec<(usize, usize)> = (0..count)
-                .filter(|seat| !hidden[*seat] && !stays(*seat))
-                .map(|seat| {
-                    let rank = if locked(seat) {
-                        None
-                    } else {
-                        listed(&self.plugins.order, seat)
-                    };
-                    (rank.unwrap_or(usize::MAX), seat)
-                })
-                .collect();
-            free.sort_unstable();
-            let mut free = free.into_iter().map(|(_, seat)| seat);
-            let mut order = Vec::with_capacity(count);
+            buffers.free.clear();
+            buffers.free.extend(
+                (0..count)
+                    .filter(|seat| !buffers.hidden[*seat] && !stays(*seat))
+                    .map(|seat| {
+                        let rank = if locked(seat) {
+                            None
+                        } else {
+                            listed(&self.plugins.order, seat)
+                        };
+                        (rank.unwrap_or(usize::MAX), seat)
+                    }),
+            );
+            buffers.free.sort_unstable();
+            let mut free = buffers.free.iter().map(|(_, seat)| *seat);
+            buffers.order.clear();
+            buffers.order.reserve(count);
             for seat in 0..visible {
                 if stays(seat) {
-                    order.push(seat);
+                    buffers.order.push(seat);
                 } else if let Some(row) = free.next() {
-                    order.push(row);
+                    buffers.order.push(row);
                 }
             }
             // 隐藏的行按引擎原来的次序排：末尾里的位置变动（落定重排提上来一行隐藏行之类）不改变座位顺序，不会被当成可见行挪动过。
-            let mut tail: Vec<usize> = (0..count).filter(|seat| hidden[*seat]).collect();
-            tail.sort_unstable_by_key(|seat| engine_index(*seat));
-            order.extend(tail);
+            buffers.tail.clear();
+            buffers
+                .tail
+                .extend((0..count).filter(|seat| buffers.hidden[*seat]));
+            buffers
+                .tail
+                .sort_unstable_by_key(|seat| engine_index(*seat));
+            buffers.order.extend(buffers.tail.iter().copied());
             // 一个排列，否则什么都不动：缺一个或重一个下标都会悄悄丢掉候选。
-            debug_assert_eq!(order.len(), count);
-            if order.len() != count {
+            debug_assert_eq!(buffers.order.len(), count);
+            if buffers.order.len() != count {
                 self.plugins.hidden_rows = 0;
+                self.plugins.arrangement = buffers;
                 return;
             }
             self.plugins.hidden_rows = hidden_rows;
-            if order.iter().enumerate().all(|(seat, row)| seat == *row) {
+            if buffers
+                .order
+                .iter()
+                .enumerate()
+                .all(|(seat, row)| seat == *row)
+            {
+                self.plugins.arrangement = buffers;
                 return;
             }
-            self.apply_candidate_order(&order);
-            apply_order(&mut self.plugins.occurrences, &order);
+            self.apply_candidate_order(&buffers.order);
+            apply_order(&mut self.plugins.occurrences, &buffers.order);
+            self.plugins.arrangement = buffers;
         }
 
         /// `seat` 上可见的行的插件注释；没有、为空或者列表现在不做变换时为 `None`。插件指令行（来源 14）的注释是「标题 注释」，不经过候选变换。
