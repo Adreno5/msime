@@ -30,6 +30,7 @@ test("falls back to the legacy media query listener API", () => {
 const mediaQueryConsumers = import.meta.glob<string>(
   [
     "../../../../packages/ui/src/candidate/candidate-preview-theme.ts",
+    "../../../../packages/ui/src/skin/conditional-fonts.ts",
     "../../../../packages/ui/src/settings/use-settings-theme.ts",
     "../../../../packages/ui/src/theme/settings-platform.ts",
   ],
