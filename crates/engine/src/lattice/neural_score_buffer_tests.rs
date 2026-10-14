@@ -2,6 +2,17 @@ use super::*;
 use crate::ime::personal_rerank::allocations::count;
 
 #[test]
+fn bounded_rerank_order_writes_into_a_stack_buffer_without_allocating() {
+    let neural = [-3.0, -2.0, -4.0];
+    let statik = [-1.0, -1.2, -1.4];
+    let mut order = [usize::MAX; MAX_RERANK_PATHS];
+    let (counted, allocations) = count(|| rerank_order_into(&neural, &statik, &mut order));
+    assert_eq!(counted, Some(3));
+    assert_eq!(&order[..3], &[1, 0, 2]);
+    assert_eq!(allocations, 0);
+}
+
+#[test]
 fn capped_score_storage_saves_one_allocation_without_changing_full_order() {
     let values = [
         0.0,
@@ -97,7 +108,7 @@ fn storage(path: &SentencePath) -> PathStorage {
 }
 
 #[test]
-fn real_model_reranking_removes_four_temporary_buffers_and_keeps_the_tail_owned() {
+fn real_model_reranking_removes_five_temporary_buffers_and_keeps_the_tail_owned() {
     let path = match test_model_path(crate::assets::NEURAL_MODEL_KEYBOARD) {
         Ok(path) => path,
         Err(reason) => {
@@ -148,7 +159,7 @@ fn real_model_reranking_removes_four_temporary_buffers_and_keeps_the_tail_owned(
                 let saved = if n < 2 {
                     0
                 } else {
-                    4 + usize::from(n > 128 && moved)
+                    5 + usize::from(n > 128 && moved)
                 };
                 assert_eq!(
                     new_count + saved,

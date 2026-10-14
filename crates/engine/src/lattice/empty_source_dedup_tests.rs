@@ -257,7 +257,12 @@ fn absent_sentence_sources_skip_only_the_unused_large_dedup_table() {
                                                 && no_sources
                                                 && input.len() + n > SMALL_SENTENCE_MERGE,
                                         );
-                                        assert_eq!(after + saved, before, "路径={n}/占位={filler}/重复={duplicates}/字面={include_lattice_best}/继续={show_next_on_duplicate}/emit={emit}/模型={mode}/热={warm}/纠错={typo_enabled}");
+                                        let order_savings = if n < 2 {
+                                            0
+                                        } else {
+                                            usize::from(mode == 2) + 2 * usize::from(mode == 3)
+                                        };
+                                        assert_eq!(after + saved + order_savings, before, "路径={n}/占位={filler}/重复={duplicates}/字面={include_lattice_best}/继续={show_next_on_duplicate}/emit={emit}/模型={mode}/热={warm}/纠错={typo_enabled}");
                                         if n > 0 && no_sources {
                                             assert_eq!(new.0, input);
                                             if typo_enabled {
