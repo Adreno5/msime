@@ -10083,6 +10083,8 @@ int main(int argc, char **argv) {
         }
         TestCandidatePanel *panel = [TestCandidatePanel new];
         [controller setValue:panel forKey:@"panel"];
+        // 清掉前一组快捷键的上屏答复，光标命令的替身不返回上屏。
+        session.nextTransition = nil;
         // macOS 普通左右键编辑拼音，候选窗可见或隐藏时都不进入整句改字，也不上屏。
         const BOOL arrowVertical = appearance.vertical;
         appearance.vertical = YES;
