@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { trackAsyncSubscription } from "../../../packages/ui/src/core/async-subscription";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -637,18 +638,15 @@ function DesktopSettings() {
   // before mounting so the page never opens on one and then jumps.
   useEffect(() => {
     let active = true;
-    let unsubscribe: (() => void) | undefined;
-    if (isTauri()) {
-      void listen<string>("settings-route", (event) => {
-        // An entry with no section only brings the window forward; it keeps the page in view.
-        if (active && event.payload) requestSettingsPage(event.payload);
-      })
-        .then((stop) => {
-          if (active) unsubscribe = stop;
-          else stop();
-        })
-        .catch(() => {});
-    }
+    const disposeSubscription = isTauri()
+      ? trackAsyncSubscription(
+          listen<string>("settings-route", (event) => {
+            // 未指定分区的入口只将窗口带到前台，保留当前页面。
+            if (active && event.payload) requestSettingsPage(event.payload);
+          }),
+          () => active,
+        )
+      : undefined;
     const requested = isTauri()
       ? invoke<string | null>("initial_settings_page").catch(() => null)
       : Promise.resolve(null);
@@ -934,7 +932,7 @@ function DesktopSettings() {
     });
     return () => {
       active = false;
-      unsubscribe?.();
+      disposeSubscription?.();
     };
   }, []);
   const onboardingPlatform = settingsClient?.host?.platform;
