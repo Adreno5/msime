@@ -30,7 +30,10 @@ test("does not schedule when disabled", () => {
 });
 
 const timeoutConsumers = import.meta.glob<string>(
-  ["../../../../packages/ui/src/settings/handwriting-pad-preview.tsx"],
+  [
+    "../../../../packages/ui/src/settings/handwriting-pad-preview.tsx",
+    "../../../../packages/ui/src/account/macos-install-page.tsx",
+  ],
   { eager: true, query: "?raw", import: "default" },
 );
 
