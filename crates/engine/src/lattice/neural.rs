@@ -117,8 +117,21 @@ impl NeuralReranker {
 
     /// 按 `context` 最后64字的模型评分重排路径；返回 false 时保持原序。模型返回逐字平均对数概率，乘文本字数得到总分。
     pub fn rerank(&mut self, paths: &mut [SentencePath], context: &str) -> bool {
-        if paths.len() < 2 {
+        let Some(order) = self.score_order(paths, context) else {
             return false;
+        };
+        apply_order(&mut paths[..order.len()], &order);
+        true
+    }
+
+    /// 只读路径并返回评分前缀的排列；未评分尾部保持恒等映射，失败时不产生排列。
+    pub(super) fn score_order(
+        &mut self,
+        paths: &[SentencePath],
+        context: &str,
+    ) -> Option<Vec<usize>> {
+        if paths.len() < 2 {
+            return None;
         }
         let scored = paths.len().min(MAX_RERANK_PATHS);
         let mut texts = [""; MAX_RERANK_PATHS];
@@ -131,7 +144,7 @@ impl NeuralReranker {
         );
         // 模型评分数量不完整时保持原序，避免只重排部分结果。
         if means.len() != scored {
-            return false;
+            return None;
         }
         let mut neural = [0.0; MAX_RERANK_PATHS];
         let mut statik = [0.0; MAX_RERANK_PATHS];
@@ -139,11 +152,7 @@ impl NeuralReranker {
             neural[index] = f64::from(means[index]) * texts[index].chars().count() as f64;
             statik[index] = paths[index].log_prob;
         }
-        let Some(order) = rerank_order(&neural[..scored], &statik[..scored]) else {
-            return false;
-        };
-        apply_order(&mut paths[..scored], &order);
-        true
+        rerank_order(&neural[..scored], &statik[..scored])
     }
 }
 

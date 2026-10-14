@@ -82,21 +82,22 @@ pub fn merge_lattice_candidates(
             .iter_mut()
             .filter(|reranker| reranker.source == CandidateSource::NeuralKeyboard)
         {
-            let mut reranked = paths.clone();
-            if reranker.rerank(&mut reranked, rescoring_context) {
-                keyboard = Some(reranked);
+            if let Some(order) = reranker.score_order(&paths, rescoring_context) {
+                keyboard = Some(order);
             }
         }
+        // 各模型始终评分原始路径；最后成功的排列借用前缀，并接回恒等尾部。
+        let ranked = keyboard.as_deref().map(|order| {
+            order
+                .iter()
+                .copied()
+                .chain(order.len()..paths.len())
+                .map(|index| &paths[index])
+        });
         if let Some(already) = already.as_mut() {
-            reranked_block(&paths, keyboard.as_deref(), options, typed_pinyin, already)
+            reranked_block(&paths, ranked, options, typed_pinyin, already)
         } else {
-            reranked_block_linear(
-                candidates,
-                &paths,
-                keyboard.as_deref(),
-                options,
-                typed_pinyin,
-            )
+            reranked_block_linear(candidates, &paths, ranked, options, typed_pinyin)
         }
     };
     if !block.is_empty() {
@@ -145,10 +146,10 @@ fn generated_block_linear(
     block
 }
 
-fn take_linear_sentence(
+fn take_linear_sentence<'a>(
     candidates: &[WordItem],
     block: &[WordItem],
-    ranked: &[SentencePath],
+    ranked: impl IntoIterator<Item = &'a SentencePath>,
     source: CandidateSource,
     options: &LatticeOptions<'_>,
     typed_pinyin: &str,
@@ -164,10 +165,10 @@ fn take_linear_sentence(
     None
 }
 
-fn reranked_block_linear(
+fn reranked_block_linear<'a>(
     candidates: &[WordItem],
     paths: &[SentencePath],
-    keyboard: Option<&[SentencePath]>,
+    keyboard: Option<impl IntoIterator<Item = &'a SentencePath>>,
     options: &LatticeOptions<'_>,
     typed_pinyin: &str,
 ) -> Vec<WordItem> {
@@ -203,40 +204,52 @@ fn reranked_block_linear(
     block
 }
 
-/// One row per source when the keyboard reranker ran (overlays.md §1.6.2 rules 2-8): the unreranked best as Generated when `include_lattice_best`, then the keyboard model's first path not already listed. The reference's desktop row is gone: the desktop model runs only as the input runtime's settled reranker. The rows carry their words like every sentence row; selecting one stores the sentence as a user phrase (`CandidateSource::is_sentence_learning`), while the personal context chain, which reads Generated and Fallback rows only, starts afresh after it as in the reference.
+fn take_hashed_sentence<'a>(
+    ranked: impl IntoIterator<Item = &'a SentencePath>,
+    source: CandidateSource,
+    options: &LatticeOptions<'_>,
+    typed_pinyin: &str,
+    already: &mut HashSet<&'a str>,
+) -> Option<WordItem> {
+    for path in ranked {
+        if already.insert(path.sentence.as_str()) {
+            return Some(sentence_row(typed_pinyin, path, source));
+        }
+        if !options.show_next_on_duplicate {
+            return None;
+        }
+    }
+    None
+}
+
+/// 每个来源最多一行：按配置先给字面最优的 Generated，再给键盘模型的首条未重复路径。句子行保留词边界和既有学习规则，桌面模型仍由 runtime 承载。
 fn reranked_block<'a>(
     paths: &'a [SentencePath],
-    keyboard: Option<&'a [SentencePath]>,
+    keyboard: Option<impl IntoIterator<Item = &'a SentencePath>>,
     options: &LatticeOptions<'_>,
     typed_pinyin: &str,
     already: &mut HashSet<&'a str>,
 ) -> Vec<WordItem> {
-    let first_distinct =
-        |ranked: &'a [SentencePath], already: &HashSet<&'a str>| -> Option<usize> {
-            for (index, path) in ranked.iter().enumerate() {
-                if !already.contains(path.sentence.as_str()) {
-                    return Some(index);
-                }
-                if !options.show_next_on_duplicate {
-                    return None;
-                }
-            }
-            None
-        };
-    let take =
-        |ranked: &'a [SentencePath], source: CandidateSource, already: &mut HashSet<&'a str>| {
-            let path = &ranked[first_distinct(ranked, already)?];
-            already.insert(path.sentence.as_str());
-            Some(sentence_row(typed_pinyin, path, source))
-        };
-
     let lattice = if options.include_lattice_best {
-        take(paths, CandidateSource::Generated, already)
+        take_hashed_sentence(
+            paths,
+            CandidateSource::Generated,
+            options,
+            typed_pinyin,
+            already,
+        )
     } else {
         None
     };
-    let pick =
-        keyboard.and_then(|keyboard| take(keyboard, CandidateSource::NeuralKeyboard, already));
+    let pick = keyboard.and_then(|keyboard| {
+        take_hashed_sentence(
+            keyboard,
+            CandidateSource::NeuralKeyboard,
+            options,
+            typed_pinyin,
+            already,
+        )
+    });
     let mut block = if lattice.is_some() || pick.is_some() {
         Vec::with_capacity(2)
     } else {
@@ -783,3 +796,7 @@ mod block_frozen;
 #[cfg(test)]
 #[path = "merge_block_buffer_tests.rs"]
 mod block_buffer_tests;
+
+#[cfg(test)]
+#[path = "merge_borrowed_order_tests.rs"]
+mod borrowed_order_tests;
