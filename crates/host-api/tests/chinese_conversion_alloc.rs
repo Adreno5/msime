@@ -6,7 +6,8 @@ mod allocation_counter;
 
 use allocation_counter::{allocation_requests, allocations};
 use msime_client_core::chinese_conversion::{
-    simplified_to_traditional, traditional_to_simplified_characters,
+    convert_to_traditional, simplified_to_traditional, traditional_to_simplified_characters,
+    TraditionalVariant,
 };
 
 #[test]
@@ -15,6 +16,10 @@ fn chinese_conversion_does_not_allocate_for_each_prefix() {
     // 字典和逆表首次构建不属于稳态转换预算。
     drop(simplified_to_traditional("汉语输入法"));
     drop(traditional_to_simplified_characters("漢語輸入法"));
+    drop(convert_to_traditional(
+        "汉语输入法",
+        TraditionalVariant::TaiwanPhrases,
+    ));
     let ascii = "synthetic-001 ".repeat(256);
     let cases = [
         ("", "", "", 0, 0),
@@ -69,4 +74,31 @@ fn chinese_conversion_does_not_allocate_for_each_prefix() {
             .all(|(_, _, measured, budget)| measured.0 <= *budget),
         "未变化的扫描不应复制完整输入: {measurements:?}"
     );
+}
+
+#[test]
+fn taiwan_conversion_allocates_a_fixed_number_of_buffers() {
+    // 词表首次构建不属于稳态转换预算。
+    drop(convert_to_traditional(
+        "汉语输入法",
+        TraditionalVariant::TaiwanPhrases,
+    ));
+    let long = "软件里面的鼠标和打印机，".repeat(64);
+    for (input, variant) in [
+        ("软件里面", TraditionalVariant::Taiwan),
+        ("软件里面", TraditionalVariant::TaiwanPhrases),
+        (long.as_str(), TraditionalVariant::TaiwanPhrases),
+    ] {
+        let mut output = String::new();
+        let measured = allocation_requests(|| {
+            output = convert_to_traditional(std::hint::black_box(input), variant)
+        });
+        assert!(!output.is_empty());
+        // 规范化不改写时借用原文；之后只有输出和逐段暂存区两块缓冲，与分段数无关。
+        assert!(
+            measured.0 <= 2,
+            "{variant:?} {} {measured:?}",
+            input.chars().count()
+        );
+    }
 }

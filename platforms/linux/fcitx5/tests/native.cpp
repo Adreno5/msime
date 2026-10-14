@@ -74,6 +74,17 @@ void autocorrectMarker() {
           "marker comes before the cloud badge");
   require(shown(row(Json{{"text", "汉语"}, {"corrected", true}}, true)) == "漢語*",
           "marker follows the traditional-converted word");
+  // 候选行按会话的繁体变体转换；繁体关着时变体不起作用。
+  const auto variantRow = [](bool traditional, uint32_t variant) {
+    return FcitxCandidate(nullptr,
+                          Json{{"text", "软件里面"}, {"id", Json{{"session", 1}, {"generation", 1}, {"index", 0}}}},
+                          traditional, false, std::string(), variant);
+  };
+  require(shown(variantRow(true, 0)) == "軟件裏面", "s2t row");
+  require(shown(variantRow(true, 1)) == "軟件裡面", "s2tw row uses Taiwan glyphs");
+  require(shown(variantRow(true, 2)) == "軟體裡面", "s2twp row uses Taiwan phrases");
+  require(shown(variantRow(false, 2)) == "软件里面", "variant is ignored while traditional output is off");
+  require(variantRow(true, 2).text() == "软件里面", "the selected text stays the Engine's");
 }
 // A Hanja row's 훈음 is drawn as the row's secondary gloss: its own italic, uncommittable segment where a translation goes, shown whatever the annotation and translation settings say, with a translation after it. Any other annotation stays plain text gated by the annotation setting. Runs before the resource fixture.
 void koreanHanjaGlossRow() {

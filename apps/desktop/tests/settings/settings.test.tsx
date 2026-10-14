@@ -1197,11 +1197,12 @@ test("traditional Chinese output toggle persists", async () => {
   await settingsReady();
   fireEvent.click(screen.getByRole("button", { name: "输入" }));
   selectSettingsTab("输出");
-  const toggle = (await screen.findByRole("switch", {
-    name: "繁体输出",
+  const traditional = (await screen.findByRole("radio", {
+    name: "繁体",
   })) as HTMLInputElement;
-  expect(toggle.checked).toBe(false);
-  fireEvent.click(toggle);
+  expect(traditional.checked).toBe(false);
+  expect((screen.getByRole("radio", { name: "简体" }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(traditional);
   saveSettingsNow();
   await screen.findByText("已保存");
   expect(client.save).toHaveBeenCalledWith(7, {
@@ -6735,7 +6736,7 @@ const referenceSections: {
       "翻页方式",
       "默认中英文",
       "中英文状态",
-      "繁体输出",
+      "中文输出",
       "中英文之间加空格",
       "云候选",
       "中英混输",
@@ -7389,7 +7390,7 @@ test.each(optionHosts)(
       "以词定字",
       "翻页方式",
       "云候选",
-      "繁体输出",
+      "中文输出",
       "中英文之间加空格",
       "拼音方案调频",
     ];

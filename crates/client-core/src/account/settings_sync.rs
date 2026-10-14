@@ -12,7 +12,8 @@ use super::{AccountError, AccountPreferenceSchema, AccountPreferenceValue, Accou
 use crate::host_surface::HostPlatform;
 use crate::preferences::{
     BracketStyle, FrequencyMode, InputScheme, NumberKeypadOrder, Preferences, QuoteStyle,
-    ShuangpinProfile, ThemeMode, TouchKeyboardLayout, TwentySixKeyNumberLayout, WubiProfile,
+    ShuangpinProfile, ThemeMode, TouchKeyboardLayout, TraditionalVariant, TwentySixKeyNumberLayout,
+    WubiProfile,
 };
 use crate::skin::theme::GlobalTheme;
 use serde::{Deserialize, Serialize};
@@ -464,6 +465,16 @@ fn insert_input_settings(
             "simplified"
         },
     );
+    // 繁体变体单独成键，`input.character_set` 的取值不变，旧客户端照常读。服务端字段表没有这个键时，上传前的过滤会去掉它。
+    insert_string(
+        settings,
+        "input.traditional_variant",
+        match preferences.traditional_chinese_variant {
+            TraditionalVariant::Standard => "s2t",
+            TraditionalVariant::Taiwan => "s2tw",
+            TraditionalVariant::TaiwanPhrases => "s2twp",
+        },
+    );
     if let Some(schema) = shuangpin_schema(preferences.shuangpin_profile) {
         insert_string(settings, "input.shuangpin_schema", schema);
     }
@@ -759,6 +770,15 @@ fn apply_input_settings(applier: &mut Applier<'_>) -> Result<(), AccountError> {
         preferences.traditional_chinese_output = match value {
             "traditional" => true,
             "simplified" => false,
+            _ => return None,
+        };
+        Some(())
+    })?;
+    applier.set_string("input.traditional_variant", |preferences, value| {
+        preferences.traditional_chinese_variant = match value {
+            "s2t" => TraditionalVariant::Standard,
+            "s2tw" => TraditionalVariant::Taiwan,
+            "s2twp" => TraditionalVariant::TaiwanPhrases,
             _ => return None,
         };
         Some(())

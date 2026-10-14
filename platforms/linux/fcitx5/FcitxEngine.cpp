@@ -1774,6 +1774,8 @@ public:
     preferences_ = std::move(session_preferences);
     applyContextOverrides(preferences_);
     traditional_ = preferences_.value("traditional_chinese_output", false);
+    traditional_variant_ = msime_linux_traditional_variant(
+        preferences_.value("traditional_chinese_variant", std::string("s2t")));
     chinese_punctuation_ = preferences_.value("chinese_punctuation", true);
     paired_punctuation_ = preferences_.value("paired_punctuation", true);
     smart_punctuation_ = preferences_.value("smart_punctuation", true);
@@ -1955,6 +1957,8 @@ public:
             // A width chosen here that the store does not hold - its save failed, or a private window, which never saves - is not undone by the store, as a failed scheme choice is kept; the next session re-reads the store.
             if (!private_ && !unsavedChoice("", "character_width")) syncSessionCharacterWidth();
             traditional_ = preferences_.value("traditional_chinese_output", traditional_);
+            traditional_variant_ = msime_linux_traditional_variant(
+                preferences_.value("traditional_chinese_variant", std::string("s2t")));
             chinese_punctuation_ = preferences_.value("chinese_punctuation", chinese_punctuation_);
             syncSessionChinesePunctuation();
             paired_punctuation_ = preferences_.value("paired_punctuation", paired_punctuation_);
@@ -3105,7 +3109,7 @@ public:
     pair_inserted_ = false;
     if (result.contains("commit") && result["commit"].is_string()) {
       auto text = result["commit"].get<std::string>();
-      if (traditionalApplies()) text = msime_linux_simplified_to_traditional(text);
+      if (traditionalApplies()) text = msime_linux_simplified_to_traditional(text, traditional_variant_);
       const auto spaceConvertAscii =
           spaceConvertPreceding
               ? msime::linux_host::smart_punctuation_ascii_mark(text)
@@ -3736,6 +3740,8 @@ public:
   FcitxEngine *engine_;
   bool private_ = false;
   bool traditional_ = false;
+  // 偏好 `traditional_chinese_variant` 的编号（0 s2t、1 s2tw、2 s2twp）。
+  uint32_t traditional_variant_ = 0;
   bool chinese_punctuation_ = true;
   // What the session was last told; see syncSessionChinesePunctuation().
   bool session_chinese_punctuation_ = true;
@@ -3915,14 +3921,15 @@ public:
 };
 
 // The row as the panel draws it.
+// `variant` 是繁体变体的编号，只在 `traditional` 为真时用到。
 fcitx::Text candidateRowText(const Json &candidate, bool traditional, bool annotations,
-                             const std::string &hanjaGloss) {
+                             const std::string &hanjaGloss, uint32_t variant) {
   // Engine 候选来源 12 是 AI 座位上的占位行（「…」或「—」）：Fcitx5 的文本格式没有颜色，用斜体表示它是次要的，并标明不上屏（#6888）。
   if (msime::linux_host::strict_json_value(candidate, "source", uint64_t{}) == 12)
     return fcitx::Text(candidate.at("text").get<std::string>(),
                        fcitx::TextFormatFlags{fcitx::TextFormatFlag::Italic,
                                               fcitx::TextFormatFlag::DontCommit});
-  fcitx::Text row((traditional ? msime_linux_simplified_to_traditional(candidate.at("text").get<std::string>())
+  fcitx::Text row((traditional ? msime_linux_simplified_to_traditional(candidate.at("text").get<std::string>(), variant)
                                : candidate.at("text").get<std::string>()) +
       // Engine-corrected spellings carry the same light marker Windows and the IBus host draw. Only the displayed row gets it: selection goes by session/generation/index, and text_ below, which the candidate actions (dictionary removal) read, stays the Engine's text.
       (candidate.value("corrected", false) ? "*" : "") +
@@ -3947,8 +3954,8 @@ fcitx::Text candidateRowText(const Json &candidate, bool traditional, bool annot
 class FcitxCandidate : public fcitx::CandidateWord {
 public:
   FcitxCandidate(fcitx::FactoryFor<FcitxState> *factory, const Json &candidate, bool traditional,
-                 bool annotations, const std::string &hanjaGloss)
-      : CandidateWord(candidateRowText(candidate, traditional, annotations, hanjaGloss)), factory_(factory),
+                 bool annotations, const std::string &hanjaGloss, uint32_t variant = 0)
+      : CandidateWord(candidateRowText(candidate, traditional, annotations, hanjaGloss, variant)), factory_(factory),
         session_(msime::linux_host::strict_json_required_integer<uint64_t>(candidate.at("id").at("session"))),
         generation_(msime::linux_host::strict_json_required_integer<uint64_t>(candidate.at("id").at("generation"))),
         index_(msime::linux_host::strict_json_required_integer<size_t>(candidate.at("id").at("index"))),
@@ -4004,7 +4011,7 @@ public:
       if (candidate.value("highlighted", false)) cursor_ = words_.size();
       words_.push_back(std::make_unique<FcitxCandidate>(
           factory, candidate, state.traditionalApplies(), annotations,
-          msime::linux_host::korean_hanja_gloss(state.view_, candidate)));
+          msime::linux_host::korean_hanja_gloss(state.view_, candidate), state.traditional_variant_));
       // 序号与选它的数字键一致：第十个由 0 键选，标 0。
       labels_.emplace_back((words_.size() == 10 ? std::string("0") : std::to_string(words_.size())) + ". ");
     }

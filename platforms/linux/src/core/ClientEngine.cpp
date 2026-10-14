@@ -396,6 +396,8 @@ struct State {
   bool fullwidth = false;
   bool english_mode = false;
   bool traditional_output = false;
+  // 偏好 `traditional_chinese_variant` 的编号（0 s2t、1 s2tw、2 s2twp）。
+  uint32_t traditional_variant = 0;
   std::string candidate_preedit_style = "pinyin";
   bool show_candidate_page_number = true;
   bool learning = true;
@@ -818,6 +820,8 @@ struct State {
     japanese_toggle_enabled = keybindings.value("toggle_japanese_ctrl_shift_j", false);
     traditional_output = traditional_output_override.value_or(
         preferences.value("traditional_chinese_output", false));
+    traditional_variant = msime_linux_traditional_variant(
+        preferences.value("traditional_chinese_variant", std::string("s2t")));
     cloud_candidates = cloud_candidates_override.value_or(
         preferences.value("cloud_candidates", true));
     candidate_translations = candidate_translations_override.value_or(
@@ -988,6 +992,8 @@ struct State {
     }
     traditional_output = traditional_output_override.value_or(
         preferences.value("traditional_chinese_output", false));
+    traditional_variant = msime_linux_traditional_variant(
+        preferences.value("traditional_chinese_variant", std::string("s2t")));
     const bool next_cloud_candidates = cloud_candidates_override.value_or(
         preferences.value("cloud_candidates", true));
     if (next_cloud_candidates != cloud_candidates)
@@ -1198,7 +1204,7 @@ bool script_conversion_applies(const Json &context) {
 std::string traditional_display(const State &s, const Json &context,
                                 std::string text) {
   if (s.traditional_output && script_conversion_applies(context))
-    text = msime_linux_simplified_to_traditional(text);
+    text = msime_linux_simplified_to_traditional(text, s.traditional_variant);
   return text;
 }
 constexpr size_t kClipboardStoreBytes = 1024 * 1024;

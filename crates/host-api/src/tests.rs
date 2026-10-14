@@ -722,6 +722,48 @@ fn traditional_conversion_boundary_returns_text_or_null() {
 }
 
 #[test]
+fn traditional_variant_conversion_boundary_selects_the_configuration() {
+    let convert = |bytes: &[u8], variant: u32| {
+        // SAFETY: the slice outlives the call.
+        let raw =
+            unsafe { msime_client_convert_to_traditional(bytes.as_ptr(), bytes.len(), variant) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null result is an owned NUL-terminated string from this library.
+        let text = unsafe { std::ffi::CStr::from_ptr(raw) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: released exactly once.
+        unsafe { msime_client_string_free(raw) };
+        Some(text)
+    };
+    assert_eq!(
+        convert("软件里面".as_bytes(), 0).as_deref(),
+        Some("軟件裏面")
+    );
+    assert_eq!(
+        convert("软件里面".as_bytes(), 1).as_deref(),
+        Some("軟件裡面")
+    );
+    assert_eq!(
+        convert("软件里面".as_bytes(), 2).as_deref(),
+        Some("軟體裡面")
+    );
+    assert_eq!(convert("软件".as_bytes(), 3), None);
+    assert_eq!(convert(b"\xff\xfe", 1), None);
+    assert_eq!(convert(b"a\0b", 2), None);
+    // SAFETY: null is part of the documented contract.
+    assert!(unsafe { msime_client_convert_to_traditional(std::ptr::null(), 4, 1) }.is_null());
+    let fixture = b"fixture";
+    assert!(
+        unsafe { msime_client_convert_to_traditional(fixture.as_ptr(), (1 << 20) + 1, 2) }
+            .is_null()
+    );
+}
+
+#[test]
 fn font_catalog_boundary_lists_sorted_bounded_families() {
     let result = read(msime_client_list_font_families());
     if !system_fonts::supported() {

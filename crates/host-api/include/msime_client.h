@@ -936,6 +936,12 @@ char *msime_client_parse_surface_route(const uint8_t *value, size_t length);
  * string_free. The first call parses the tables (a few milliseconds in
  * release builds). */
 char *msime_client_simplified_to_traditional(const uint8_t *text, size_t length);
+/* 同上，但按 variant 选 OpenCC 配置：0 s2t、1 s2tw（臺灣字形）、2 s2twp
+ * （臺灣字形加惯用词），与偏好 traditional_chinese_variant 的 "s2t"、"s2tw"、
+ * "s2twp" 一一对应。未知的 variant 与其它非法输入一样返回 NULL。臺灣配置的
+ * 附加词表在第一次用到时解析。Free with string_free. */
+char *msime_client_convert_to_traditional(const uint8_t *text, size_t length,
+                                          uint32_t variant);
 /* Display-only font aliases. Input: JSON array, at most 33 names / 32 KiB.
  * Returns the standard response with an array value. Free with string_free.
  * Resolution failure retains the corresponding original family name. */
