@@ -186,6 +186,8 @@ pub struct HostCapabilities {
     pub candidate_page_number: bool,
     /// 宿主按 `show_app_logo` 显示或隐藏候选窗和悬浮工具栏左端的水杉 logo。
     pub app_logo: bool,
+    /// 宿主按 `traditional_chinese_variant` 选 OpenCC 配置（`s2t`、`s2tw`、`s2twp`）做繁体转换；其它宿主一律用 `s2t`，设置页只给简体和繁体两项。
+    pub traditional_chinese_variants: bool,
     /// The host can apply candidate foreground/background RGB row colors.
     /// Linux exposes these through IBusText attributes even though it cannot
     /// draw the native card geometry or hover state.
@@ -553,6 +555,8 @@ impl HostCapabilities {
             candidate_page_number: matches!(platform, HostPlatform::Linux | HostPlatform::Macos),
             // macOS 和 Windows 按这个开关画 logo；Linux 和鸿蒙的候选窗照常显示 logo，不提供这个开关。
             app_logo: matches!(platform, HostPlatform::Macos | HostPlatform::Windows),
+            // 目前只有 Linux 的 IBus 与 Fcitx5 宿主把变体交给 `msime_client_convert_to_traditional`。
+            traditional_chinese_variants: matches!(platform, HostPlatform::Linux),
             // The iOS strip scales its composition line by `candidate_preedit_font_size`.
             candidate_preedit_font: matches!(
                 platform,

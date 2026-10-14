@@ -272,6 +272,7 @@ export function InputSettingsPage() {
       <InputSharedSettingsSection
         renderGroup={panel}
         foldIntoMore={harmonyPhone}
+        traditionalChineseVariants={host?.traditional_chinese_variants === true}
         preferences={draft}
         wordCharacter={wordCharacter}
         navigation={navigation}

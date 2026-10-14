@@ -1,4 +1,5 @@
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
+import type { TraditionalChineseVariant } from "./settings/traditional-chinese-output-section";
 import type {
   BuiltinShuangpinProfile,
   ShuangpinCustomProblem,
@@ -891,7 +892,10 @@ export {
 } from "./settings/ime-mode-scope-section";
 export {
   TraditionalChineseOutputSection,
+  type ChineseOutputForm,
   type TraditionalChineseOutputSectionProps,
+  type TraditionalChineseOutputValue,
+  type TraditionalChineseVariant,
 } from "./settings/traditional-chinese-output-section";
 export {
   ChineseEnglishSpacingSection,
@@ -1704,6 +1708,8 @@ export interface HostCapabilities {
   candidate_page_number: boolean;
   /** 宿主按 `show_app_logo` 显示或隐藏候选窗和悬浮工具栏左端的水杉 logo（macOS 和 Windows）。 */
   app_logo?: boolean;
+  /** 宿主按 `traditional_chinese_variant` 选 OpenCC 的 s2t、s2tw 或 s2twp 做繁体转换（目前只有 Linux）；没有时设置页只给简体和繁体。 */
+  traditional_chinese_variants?: boolean;
   /** 宿主按 `expand_candidates` 让横排候选窗按 ↓ 展开成多行候选网格（目前只有 macOS）。 */
   expand_candidates?: boolean;
   candidate_row_colors: boolean;
@@ -1974,6 +1980,8 @@ export type Preferences = {
   /** 中文标点下方头括号键的样式；缺省为实心，等于缺省时文档里没有这个键。 */
   bracket_style?: "solid" | "hollow";
   traditional_chinese_output?: boolean;
+  /** 繁体输出用的 OpenCC 配置：标准繁体、台湾正体、台湾正体加惯用词。缺省为 `s2t`，等于缺省时文档里没有这个键。 */
+  traditional_chinese_variant?: TraditionalChineseVariant;
   /** 中英文之间加空格：上屏文本里汉字与 ASCII 字母、数字相邻处加一个半角空格。缺省为关，关着时文档里没有这个键。 */
   chinese_english_spacing?: boolean;
   /** Sound packs, music and command tables; the document leaves it out while every value is the default. */
