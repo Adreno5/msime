@@ -193,6 +193,24 @@ pub(crate) fn move_to_back<T>(items: &mut [T], moved: &[bool]) {
     }
 }
 
+/// 稀疏释义不为全候选列表建集合；任一侧最多 8 条时，比较次数仍受小侧上限约束。
+fn retain_candidate_translations(
+    translations: &mut HashMap<String, String>,
+    candidates: &[String],
+) {
+    if translations.is_empty() {
+        return;
+    }
+    if candidates.is_empty() {
+        translations.clear();
+    } else if translations.len() <= 8 || candidates.len() <= 8 {
+        translations.retain(|text, _| candidates.contains(text));
+    } else {
+        let candidates: HashSet<&str> = candidates.iter().map(String::as_str).collect();
+        translations.retain(|text, _| candidates.contains(text.as_str()));
+    }
+}
+
 /// 排序决策读取的候选行，借用快照里的并行数组。调用方先确认各数组等长。
 fn order_rows(snapshot: &EngineSnapshot) -> ParallelOrderRows<'_> {
     ParallelOrderRows::new(
@@ -1923,11 +1941,9 @@ impl<E: InputEngine> Runtime<E> {
     pub(crate) fn refresh_online_candidates(&mut self) -> Result<(), RuntimeError> {
         // 在线结果不改变组字，只保留前后都存在的词条释义；代次校验照旧。
         let mut translations = std::mem::take(&mut self.translations);
-        let before: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
-        translations.retain(|text, _| before.contains(text.as_str()));
+        retain_candidate_translations(&mut translations, &self.cached.candidates);
         self.refresh()?;
-        let after: HashSet<&str> = self.cached.candidates.iter().map(String::as_str).collect();
-        translations.retain(|text, _| after.contains(text.as_str()));
+        retain_candidate_translations(&mut translations, &self.cached.candidates);
         self.translations = translations;
         Ok(())
     }

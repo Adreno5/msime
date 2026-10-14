@@ -1,48 +1,6 @@
 use super::*;
 
-#[allow(unsafe_code)]
-mod allocations {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    thread_local! {
-        static COUNT: Cell<usize> = const { Cell::new(0) };
-    }
-
-    struct Counting;
-
-    fn record() {
-        let _ = COUNT.try_with(|count| count.set(count.get() + 1));
-    }
-
-    // 安全：指针和布局原样委托给 System，只在当前线程累计整数。
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            record();
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            record();
-            unsafe { System.alloc_zeroed(layout) }
-        }
-        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            record();
-            unsafe { System.realloc(pointer, layout, size) }
-        }
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(pointer, layout) }
-        }
-    }
-
-    #[global_allocator]
-    static GLOBAL: Counting = Counting;
-
-    pub(super) fn count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
-        let before = COUNT.with(Cell::get);
-        let result = operation();
-        (result, COUNT.with(Cell::get) - before)
-    }
-}
+use crate::tests::allocations;
 
 fn large_engine(count: usize) -> TransformEngine {
     TransformEngine {
