@@ -267,6 +267,8 @@ JVM 冒烟只覆盖无 Android 依赖的策略层；焦点、选区、编辑器�
 
 `EmptyEditorBackspaceDeviceSmoke` 使用独立合成引用编辑器检查删除键：空框交给应用移除艾特/引用，有文字按码位删除，组字与选区先处理，读取失败不当作空框。API 35 的 `smoke.sh` 默认注册它；API 28 可在安装原生宿主与 `editor-test.apk`、启用被测输入法后单独执行 `adb -s emulator-5566 shell am instrument -w app.msime.android.test/app.msime.android.test.EmptyEditorBackspaceDeviceSmoke`。它验证系统 InputConnection 契约，QQ 等第三方应用仍需各自验收。
 
+剪贴板编辑从外部应用进入宿主的回归用 `ANDROID_SDK_ROOT=<SDK绝对路径> bash platforms/android/tests/device/clipboard-edit.sh emulator-5566`（API 35 换 `emulator-5580`），默认验收已安装的拼音版，完整版在末尾加 `app.msime.android`。它在经典、林绿图标下长按真实历史卡片，检查长记录完整预填、页面保持十五秒、保存后返回外部编辑器、重新插入和取消；最后核对条目时间戳与固定状态，并恢复测试前的历史、偏好、图标、引导状态、系统剪贴板和默认输入法。准备阶段与页面操作分属宿主及独立编辑器 UID，避免宿主 instrumentation 绕过启动条件。
+
 ## 两个 APK 入口，不要选错
 
 `platforms/android` 有两个构建脚本，同一个版本的产物**同名同路径**（full 是 `target/android/msime-android.apk`，其他版本是 `target/android/msime-android-<id>.apk`，见上节），装到设备上也是同一个包名，但内容完全不同：
