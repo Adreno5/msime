@@ -90,6 +90,23 @@ fn explicit_segmentation_without_alternatives_does_not_allocate_a_result_buffer(
 }
 
 #[test]
+fn complete_segmentation_alternatives_do_not_clone_owned_graph_paths() {
+    let resolution = SeriesResolution {
+        segmentation: "xian".to_owned(),
+        ..SeriesResolution::default()
+    };
+    let segments = vec!["xian".to_owned()];
+    let (alternatives, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+        alternative_segmentations("xian", &segments, &resolution, NONE)
+    });
+    assert_eq!(alternatives, vec![vec!["xi".to_owned(), "an".to_owned()]]);
+    assert!(
+        allocations <= 15,
+        "完整音节图替代路径分配次数应不超过 15：{allocations}"
+    );
+}
+
+#[test]
 fn alternative_segmentation_key_state_uses_no_temporary_heap_allocation() {
     let keys = ["ni'hao", "ni'he", "ni'hao", "ni'men"]
         .into_iter()
