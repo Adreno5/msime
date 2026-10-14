@@ -62,7 +62,12 @@ fn assert_lazy_matches<S: AsRef<str>>(segments: &[S], options: FuzzyPinyinOption
         );
         assert_eq!(actual.capacity(), 0);
     } else {
-        assert_eq!(new_count, old_count, "实际分叉改变成本: limit={limit}");
+        let saved = super::deferred_string_tests::deferred_string_savings(segments, options, limit);
+        assert_eq!(
+            new_count + saved,
+            old_count,
+            "实际分叉改变成本: limit={limit}"
+        );
         assert_eq!(actual.capacity(), expected.capacity());
         for (actual, expected) in actual.iter().zip(&expected) {
             assert_eq!(actual.capacity(), expected.capacity());

@@ -1,5 +1,7 @@
 //! Fuzzy pinyin expansion (quanpin.md §6, `R/quanpin/fuzzy_pinyin.h`). The dictionary side (`fuzzy_candidates`) is in `quanpin::dictionary`.
 
+use std::borrow::Cow;
+
 use super::syllables::{intact_piece, is_intact, MAX_SYLLABLE_LENGTH};
 use crate::types::{fuzzy_rule, FuzzyPinyinOptions};
 
@@ -119,7 +121,7 @@ pub fn fuzzy_segmentations<S: AsRef<str>>(
         return Vec::new();
     }
     // 原组合始终在首位；真正分叉前只借用，避免为最终删掉的唯一原路径拥有字符串。
-    let mut paths: Vec<Vec<String>> = Vec::new();
+    let mut paths: Vec<Vec<Cow<'_, str>>> = Vec::new();
     for (index, syllable) in segments.iter().enumerate() {
         let variants = fuzzy_syllables(syllable.as_ref(), options);
         let alternatives = variants.as_slice();
@@ -127,17 +129,17 @@ pub fn fuzzy_segmentations<S: AsRef<str>>(
             if alternatives.len() == 1 {
                 continue;
             }
-            // 按原追加顺序恢复前缀，实际分叉保持原路径容量与分配策略。
+            // 按原追加顺序恢复前缀，实际分叉保持原路径向量容量策略。
             let mut prefix = Vec::new();
             for segment in &segments[..index] {
-                prefix.push(segment.as_ref().to_owned());
+                prefix.push(Cow::Borrowed(segment.as_ref()));
             }
             paths = vec![prefix];
         }
         // 单变体不会增加路径数，已有路径满足上限，直接复用当前层容器。
         if let [alternative] = alternatives {
             for path in &mut paths {
-                path.push((*alternative).to_owned());
+                path.push(Cow::Borrowed(*alternative));
             }
             continue;
         }
@@ -149,13 +151,13 @@ pub fn fuzzy_segmentations<S: AsRef<str>>(
             for alternative in alternatives.iter().take(take.saturating_sub(1)) {
                 let mut extended = Vec::with_capacity(path.len() + 1);
                 extended.extend_from_slice(&path);
-                extended.push((*alternative).to_owned());
+                extended.push(Cow::Borrowed(*alternative));
                 next.push(extended);
             }
             if take == 0 {
                 break 'beam;
             }
-            path.push(alternatives[take - 1].to_owned());
+            path.push(Cow::Borrowed(alternatives[take - 1]));
             next.push(path);
             if next.len() == limit {
                 break 'beam;
@@ -166,10 +168,14 @@ pub fn fuzzy_segmentations<S: AsRef<str>>(
     paths.retain(|path| {
         !path
             .iter()
-            .map(String::as_str)
+            .map(AsRef::as_ref)
             .eq(segments.iter().map(AsRef::as_ref))
     });
+    // 只为最终返回字段拥有字符串，消费式收集复用内外层路径容器。
     paths
+        .into_iter()
+        .map(|path| path.into_iter().map(Cow::into_owned).collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -357,7 +363,7 @@ mod tests {
         });
 
         assert_eq!(paths.len(), 7);
-        assert_eq!(allocations, 30);
+        assert_eq!(allocations, 28);
     }
 
     #[test]
@@ -365,7 +371,7 @@ mod tests {
         let options = rules(fuzzy_rule::ALL);
         let single = vec!["zan".to_owned()];
         let _ = fuzzy_segmentations(&single, options, FUZZY_SEGMENTATION_LIMIT);
-        for (limit, budget) in [(1, 0), (2, 6), (3, 8), (4, 10), (64, 10)] {
+        for (limit, budget) in [(1, 0), (2, 5), (3, 7), (4, 9), (64, 9)] {
             let (paths, allocations) = crate::ime::personal_rerank::allocations::count(|| {
                 fuzzy_segmentations(&single, options, limit)
             });
@@ -390,7 +396,7 @@ mod tests {
                 vec!["zhan", "fa"],
             ]
         );
-        assert_eq!(allocations, 23, "截断父路径仍分配未采用的变体");
+        assert_eq!(allocations, 20, "截断父路径仍分配未采用的变体");
     }
 
     #[test]
@@ -407,7 +413,7 @@ mod tests {
         }
 
         let typed = vec!["zan".to_owned(), "guo".to_owned()];
-        for (limit, budget) in [(1, 0), (2, 9), (3, 13), (4, 17), (64, 17)] {
+        for (limit, budget) in [(1, 0), (2, 7), (3, 11), (4, 15), (64, 15)] {
             let (paths, allocations) = crate::ime::personal_rerank::allocations::count(|| {
                 fuzzy_segmentations(&typed, options, limit)
             });
@@ -484,3 +490,7 @@ pub(crate) mod variant_view_tests;
 #[cfg(test)]
 #[path = "fuzzy/lazy_start_tests.rs"]
 mod lazy_start_tests;
+
+#[cfg(test)]
+#[path = "fuzzy/deferred_string_tests.rs"]
+pub(crate) mod deferred_string_tests;
