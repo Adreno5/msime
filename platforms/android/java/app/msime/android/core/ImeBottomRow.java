@@ -304,7 +304,7 @@ final class ImeBottomRow {
     /** 新设计的 123 / #+= 层自带底行，这时功能行整行不显示。 */
     boolean layerOwnsBottomRow() {
         return s.keyboardLayer == KeyboardLayout.Layer.SYMBOLS
-            && ImeLetterRows.drawsDesignLayer(s.displayedTouchLayout(s.view));
+            && ImeLetterRows.drawsDesignLayer(s.imeLetterRows.drawnTouchLayout());
     }
 
     /**
@@ -319,7 +319,7 @@ final class ImeBottomRow {
         ensureFaces();
         s.imeStyler.refreshSeasonIfNeeded();
         s.imeLetterRows.updateSecondRowIndent();
-        int layout = s.displayedTouchLayout(s.view);
+        int layout = s.imeLetterRows.drawnTouchLayout();
         boolean globe = s.offersGlobeKey();
         boolean ownBottom = layerOwnsBottomRow();
         boolean chinesePunctuation = s.sendsChinesePunctuation();

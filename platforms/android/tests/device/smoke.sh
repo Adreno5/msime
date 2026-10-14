@@ -26,6 +26,7 @@ avd_name=$("$adb" -s "$serial" emu avd name | tr -d '\r' | head -1)
 bash platforms/android/tests/device/build-editor.sh
 "$adb" -s "$serial" install --no-incremental -r target/android/msime-android.apk
 "$adb" -s "$serial" install --no-incremental -r target/android/editor-test.apk
+"$adb" -s "$serial" install --no-incremental -r target/android/first-frame-editor.apk
 mkdir -p target/android/device-test
 xml="$repo_root/target/android/device-test/window.xml"
 dump() {
@@ -104,6 +105,7 @@ for entry in \
     "KeyboardHeightDeviceSmoke|Keyboard height acceptance failed" \
     "FuzzyPinyinDeviceSmoke|Fuzzy pinyin acceptance failed" \
     "CandidateGlossDeviceSmoke|Candidate gloss acceptance failed" \
+    "InitialKeyboardRowDeviceSmoke|Initial keyboard row acceptance failed" \
     "NineKeyEnglishDeviceSmoke|Nine-key English acceptance failed" \
     "NineKeyPanelDeviceSmoke|Nine-key panel acceptance failed" \
     "FourteenKeyDeviceSmoke|Fourteen-key acceptance failed" \
