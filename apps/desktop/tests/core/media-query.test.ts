@@ -47,3 +47,20 @@ test.each(Object.entries(mediaQueryConsumers))(
     expect(source).not.toContain(".removeListener(");
   },
 );
+
+const harmonyMediaQueryConsumers = import.meta.glob<string>(
+  ["../../../../apps/harmony/src/main.tsx"],
+  { eager: true, query: "?raw", import: "default" },
+);
+
+test.each(Object.entries(harmonyMediaQueryConsumers))(
+  "%s 复用公共媒体查询订阅生命周期",
+  (_path, source) => {
+    expect(source).toContain('from "@msime/ui"');
+    expect(source).toContain("subscribeMediaQuery(media, apply)");
+    expect(source).not.toContain('media.addEventListener("change"');
+    expect(source).not.toContain('media.removeEventListener("change"');
+    expect(source).not.toContain("media.addListener(");
+    expect(source).not.toContain("media.removeListener(");
+  },
+);
