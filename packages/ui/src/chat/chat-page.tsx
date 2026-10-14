@@ -10,6 +10,7 @@ import { resizeChatComposer } from "./chat-composer-size";
 import { chatRequest } from "./chat-prompt";
 import { chatError } from "./chat-errors";
 import { useAsyncGeneration } from "../settings/use-async-generation";
+import { useDebouncedCallback } from "../core/use-debounced-callback";
 import { useTimeout } from "../core/use-timeout";
 import { useHostAction } from "../core/use-host-action";
 import { useMountedRef } from "../settings/use-mounted-ref";
@@ -195,6 +196,7 @@ export function ChatPage({
   const resizeField = () => {
     resizeChatComposer(composer.current);
   };
+  const { schedule: resizeAfterSend } = useDebouncedCallback(resizeField, 0);
   const newConversation = () => {
     if (!messages.length) {
       clear();
@@ -344,7 +346,7 @@ export function ChatPage({
             onStop={cancel}
             onSend={() => {
               send();
-              window.setTimeout(resizeField, 0);
+              resizeAfterSend();
             }}
           />
         </div>

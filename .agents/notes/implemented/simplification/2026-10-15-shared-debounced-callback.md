@@ -4,11 +4,11 @@ Status: implemented
 
 ## Problem
 
-自定义双拼校验、手写滑块保存和鸿蒙词库搜索都在依赖变化后延迟执行最后一次操作，并分别注册、替换和清理 `setTimeout`。它们的业务状态不同，但局部计时器生命周期重复；现有 `useTimeout` 只按延迟值变化重启，直接复用会漏掉这些依赖变化。
+自定义双拼校验、手写滑块保存、鸿蒙词库搜索和触屏聊天发送后的输入框调整都在延迟执行最后一次操作，并分别注册、替换和清理 `setTimeout`。它们的业务状态不同，但局部计时器生命周期重复；现有 `useTimeout` 只按延迟值变化重启，直接复用会漏掉这些依赖变化。
 
 ## Decision
 
-在 `packages/ui/src/core/use-debounced-callback.ts` 提供 `useDebouncedCallback`。Hook 返回稳定的 `schedule` 和 `cancel`：每次 `schedule` 先取消旧计时器，延迟后通过 `useLatestRef` 调用最新回调；组件卸载或延迟变化时清理待执行回调。自定义双拼校验、手写滑块保存和鸿蒙词库搜索复用这个生命周期，继续由各自调用方决定依赖、代次、请求参数和业务状态。
+在 `packages/ui/src/core/use-debounced-callback.ts` 提供 `useDebouncedCallback`。Hook 返回稳定的 `schedule` 和 `cancel`：每次 `schedule` 先取消旧计时器，延迟后通过 `useLatestRef` 调用最新回调；组件卸载或延迟变化时清理待执行回调。自定义双拼校验、手写滑块保存、鸿蒙词库搜索和聊天发送后的输入框调整复用这个生命周期，继续由各自调用方决定依赖、代次、请求参数和业务状态。
 
 ## Alternatives considered
 
@@ -18,11 +18,11 @@ Status: implemented
 
 ## Verification
 
-公共 Hook 测试覆盖重复调用只执行最后一次、手动取消、最新回调和卸载清理；自定义双拼、鸿蒙词库和相关共享 UI 回归测试通过。桌面类型检查、构建、lint、格式、笔记校验和 `verify-local.sh --quick` 覆盖共享 UI 及宿主边界。
+公共 Hook 测试覆盖重复调用只执行最后一次、手动取消、最新回调和卸载清理；自定义双拼、鸿蒙词库、聊天页和相关共享 UI 回归测试通过。桌面类型检查、构建、lint、格式、笔记校验和 `verify-local.sh --quick` 覆盖共享 UI 及宿主边界。
 
 ## Consequences
 
-三处 UI 共享同一套防抖计时器替换与清理规则，旧回调不会在组件卸载后执行。异步代次、请求取消边界、滑块保存条件和搜索分页顺序仍由调用方拥有；新的延迟执行 UI 应优先复用 `useDebouncedCallback`，不要把业务状态塞入公共 Hook。
+四处 UI 共享同一套防抖计时器替换与清理规则，旧回调不会在组件卸载后执行。异步代次、请求取消边界、滑块保存条件、搜索分页顺序和聊天输入框布局仍由调用方拥有；新的延迟执行 UI 应优先复用 `useDebouncedCallback`，不要把业务状态塞入公共 Hook。
 
 ## Existing notes audit
 
