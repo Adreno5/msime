@@ -17,27 +17,37 @@ fn chinese_conversion_does_not_allocate_for_each_prefix() {
     drop(traditional_to_simplified_characters("漢語輸入法"));
     let ascii = "synthetic-001 ".repeat(256);
     let cases = [
-        ("", "", ""),
-        ("synthetic-001", "synthetic-001", "synthetic-001"),
-        ("汉语输入法", "漢語輸入法", "汉语输入法"),
-        ("发展头发", "發展頭髮", "发展头发"),
-        ("兀", "兀", "兀"),
-        ("a漢😀𠀀かな", "a漢😀𠀀かな", "a汉😀𠀀かな"),
-        ("⿰发发", "⿰发发", "⿰发发"),
-        (ascii.as_str(), ascii.as_str(), ascii.as_str()),
+        ("", "", "", 0, 0),
+        ("synthetic-001", "synthetic-001", "synthetic-001", 1, 1),
+        ("汉语输入法", "漢語輸入法", "汉语输入法", 1, 1),
+        ("发展头发", "發展頭髮", "发展头发", 1, 1),
+        ("兀", "兀", "兀", 1, 2),
+        ("a漢😀𠀀かな", "a漢😀𠀀かな", "a汉😀𠀀かな", 1, 1),
+        ("⿰发发", "⿰发发", "⿰发发", 1, 1),
+        ("⿰發發", "⿰發發", "⿰发发", 1, 1),
+        (
+            "PN结 SQL注入攻击",
+            "PN結 SQL注入攻擊",
+            "PN结 SQL注入攻击",
+            1,
+            1,
+        ),
+        (ascii.as_str(), ascii.as_str(), ascii.as_str(), 1, 1),
     ];
     let mut measurements = Vec::new();
-    for (input, traditional, simplified) in cases {
-        for (direction, convert, expected) in [
+    for (input, traditional, simplified, s2t_budget, inverse_budget) in cases {
+        for (direction, convert, expected, budget) in [
             (
                 "s2t",
                 simplified_to_traditional as fn(&str) -> String,
                 traditional,
+                s2t_budget,
             ),
             (
                 "t2s-char",
                 traditional_to_simplified_characters as fn(&str) -> String,
                 simplified,
+                inverse_budget,
             ),
         ] {
             let mut output = String::new();
@@ -49,14 +59,14 @@ fn chinese_conversion_does_not_allocate_for_each_prefix() {
                 measured.0,
                 measured.1
             );
-            measurements.push((direction, input.chars().count(), measured));
+            measurements.push((direction, input.chars().count(), measured, budget));
         }
     }
-    // 所选文字不会使输出扩容；规范化和最终输出各预留一次，空串无需申请。
+    // 所选文字不会使输出扩容；未变化的中间扫描借用原文，兼容字逆转换仍需两个缓冲。
     assert!(
         measurements
             .iter()
-            .all(|(_, characters, measured)| measured.0 <= if *characters == 0 { 0 } else { 2 }),
-        "字符数增长不应增加临时端点申请: {measurements:?}"
+            .all(|(_, _, measured, budget)| measured.0 <= *budget),
+        "未变化的扫描不应复制完整输入: {measurements:?}"
     );
 }
