@@ -1214,7 +1214,7 @@ final class ImeLayoutRows {
             s.imeLetterRows.rebuildKeyRows();
             s.render();
         }), "SoftLayer");
-        // 左列：◀ 光标左移、→ 结束连点切换（或光标右移），再是 123、☺（工具栏没有表情时）、英、切换，各占一格。
+        // 左列：◀ 光标左移、→ 结束连点切换（或光标右移），再是 123、☺（工具栏没有表情时）、切换，各占一格。
         addJapaneseSideKey(modeColumn, s.iconKey(KeyboardIconKey.Kind.CURSOR_LEFT, "◀",
             "光标左移", this::moveJapaneseCaretLeft), 1);
         addJapaneseSideKey(modeColumn, s.iconKey(KeyboardIconKey.Kind.TOGGLE_NEXT, "→",
@@ -1225,11 +1225,10 @@ final class ImeLayoutRows {
             addJapaneseSideKey(modeColumn, s.keyId(s.keyboardKey("☺", "打开表情浏览", s.imePanels::showEmojiPicker),
                 "SoftEmoji"), 1);
         }
-        // 打开「中英键轮换其他语言」时这个键也按轮换走（日语之后是下一种其他语言或回到中文），键面写它要切到的语言；否则从日语只能到英文、英文再轮回日语，回不到中文。
+        // 打开「中英键轮换其他语言」时这个键也按轮换走（日语之后是下一种其他语言或回到中文），键面写它要切到的语言；否则从日语只能到英文、英文再轮回日语，回不到中文。它和新设计底行一样放在空格与回车之间。
         Button language = s.keyId(s.keyboardKey(s.japaneseLanguageKeyLabel(), s.japaneseLanguageKeyDescription(),
             s::languageKeyTapped), "SoftLanguage");
         s.bindInputMethodPicker(language);
-        addJapaneseSideKey(modeColumn, language, 1);
         if (s.offersGlobeKey()) {
             Button globe = s.keyId(s.keyboardKey("切换", "切换到下一个输入法",
                 s::switchToNextInputMethodAfterCommit), "SoftGlobe");
@@ -1266,6 +1265,7 @@ final class ImeLayoutRows {
         s.japaneseSpaceKey = s.keyId(s.keyboardKey("空白", "空白；左右滑动移动光标", s::space), "Space");
         s.imeBottomRow.bindSpaceCursor(s.japaneseSpaceKey);
         addJapaneseSideKey(side, s.japaneseSpaceKey, 1);
+        addJapaneseSideKey(side, language, 1);
         s.japaneseReturnKey = s.keyId(s.keyboardKey("改行", "改行", s::enter), "Enter");
         addJapaneseSideKey(side, s.japaneseReturnKey, 2);
         container.addView(side, LayoutPolicy.weightedMatchParentParams(0.19f));

@@ -417,7 +417,7 @@ public final class MSIMEInputService extends InputMethodService {
     private KeyboardScheme lastChineseScheme;
     private java.util.List<KeyboardScheme> enabledSchemes =
         KeyboardScheme.enabledFromPreferenceIds(null, edition);
-    // 「输入方式」面板列出的方案：词典已装好的全部方案，双拼只留用户设置的那一种（见 `schemeConfiguration` 和 `KeyboardScheme.pickerSchemes`）。`enabledSchemes` 仍是存下的列表，面板里的一次保存不会丢掉用户在词典到达之前打开的方案。
+    // 「输入方式」面板列出的方案：已启用且词典已装好的方案，双拼只留用户设置的那一种（见 `schemeConfiguration` 和 `KeyboardScheme.pickerSchemes`）。`enabledSchemes` 仍是存下的列表，面板里的一次保存不会丢掉用户在词典到达之前打开的方案。
     java.util.List<KeyboardScheme> visibleSchemes = enabledSchemes;
     // The runtime options' `language_dictionaries` directory, read with them in onStartInput; empty when the configuration names none.
     private String languageDictionaries = "";
@@ -482,6 +482,8 @@ public final class MSIMEInputService extends InputMethodService {
     Runnable diagnosticDismissTask;
     final EnglishLetterCaseState letterCase = new EnglishLetterCaseState();
     boolean dedicatedEnglish;
+    /** 方案异步保存完成前暂不绘制中间的中文视图。 */
+    private boolean renderingSuppressed;
     private boolean hardwareLanguageShift = true;
     private boolean hardwareLanguageCtrlAltSpace = true;
     private boolean hardwareCharacterSet = true;
@@ -744,9 +746,9 @@ public final class MSIMEInputService extends InputMethodService {
             }
         }
         java.util.List<KeyboardScheme> enabled = KeyboardScheme.enabledFromPreferenceIds(ids, edition);
-        // 切换器列出和设置 → 输入相同的方案：所有词典已安装的方案。Android 上没有启用开关，只按 `enabled` 过滤会让粤拼、注音、越南语这些默认不启用的方案在键盘上永远找不到。词典缺失的方案照旧不列，host-api 也会从它回退。
+        // 切换器只列已启用且词典已安装的方案；设置页另有「添加语言」入口。把所有已安装方案都放进来会让用户移除的外语仍被中英键轮换到。
         java.util.List<KeyboardScheme> visible =
-            KeyboardScheme.installedOf(java.util.List.of(KeyboardScheme.values()), languageDictionaries, resourcePacks, edition);
+            KeyboardScheme.installedOf(enabled, languageDictionaries, resourcePacks, edition);
         String selected = shared == null || shared.isNull("selected")
             ? null : shared.optString("selected", null);
         KeyboardScheme resolved = KeyboardScheme.resolveEnabledSelection(engineScheme, selected, visible, edition);
@@ -2668,7 +2670,7 @@ public final class MSIMEInputService extends InputMethodService {
         if (rebuildLayout || !KeyboardLayout.carriesLetterCase(displayedTouchLayout(view)))
             letterCase.reset();
         if (rebuildLayout) imeLetterRows.rebuildKeyRows();
-        render();
+        if (!renderingSuppressed) render();
         return strictBoolean(result, "handled");
     }
 
@@ -4105,6 +4107,11 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     private void updateAutomaticCapitalization() {
+        updateAutomaticCapitalization(true);
+    }
+
+    /** 切换方案前只更新英文大小写状态；调用方要把方案保存和最终渲染合成一次时暂不重画。 */
+    private void updateAutomaticCapitalization(boolean shouldRender) {
         if (!dedicatedEnglish) {
             // 韩语键面上 Shift 是用户选的双辅音而不是大写；越南语和藏文里它是下一个字母的大小写或 Caps Lock（威利转写区分大小写），所以编辑器的更新不能把它清掉。
             if (!letterCompositionActive()) letterCase.reset();
@@ -4123,7 +4130,7 @@ public final class MSIMEInputService extends InputMethodService {
             automaticEnabled, EditorPolicy.capitalizationMode(editorInputType), context);
         // 手动按下的单次大写留到下一个字母用掉为止，与 HarmonyOS 一致；否则按下 Shift 后编辑器回报一次光标位置就会把它冲掉。
         if (!letterCase.isPressedShift() && letterCase.applyAutomatic(next)) imeLetterRows.refreshLetterCase();
-        render();
+        if (shouldRender) render();
     }
 
     private void rememberChineseScheme() {
@@ -4146,7 +4153,7 @@ public final class MSIMEInputService extends InputMethodService {
         else toggleInputLanguage();
     }
 
-    /** 日语 9 键左列的语言键键面：轮换关着时是「英」（与原来相同），打开时是这一下要切到的语言。 */
+    /** 日语 9 键的语言键键面：轮换关着时是「英」（与原来相同），打开时是这一下要切到的语言。 */
     String japaneseLanguageKeyLabel() {
         return LanguageKeyCyclePolicy.targetLabel(nextLanguageTarget());
     }
@@ -4165,13 +4172,19 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     void toggleInputLanguage() {
+        toggleInputLanguage(true);
+    }
+
+    private void toggleInputLanguage(boolean shouldRender) {
         if (session == 0) return;
         boolean nextEnglish = !dedicatedEnglish;
-        if (dedicatedEnglish) command(3); else command(2);
-        if (session == 0) return;
-        int previousLayout = displayedTouchLayout(view);
-        boolean previousUppercase = letterCase.usesUppercase();
+        boolean previousSuppressed = renderingSuppressed;
+        renderingSuppressed = renderingSuppressed || !shouldRender;
         try {
+            if (dedicatedEnglish) command(3); else command(2);
+            if (session == 0) return;
+            int previousLayout = displayedTouchLayout(view);
+            boolean previousUppercase = letterCase.usesUppercase();
             JSONObject nextView = value(NativeClient.setEnglishMode(session, nextEnglish));
             dedicatedEnglish = nextEnglish;
             if (inputModeStore != null) {
@@ -4183,11 +4196,16 @@ public final class MSIMEInputService extends InputMethodService {
             // 布局变了时 refreshLetterCase 自己会整组重建；只是大写回到小写时就地改键面。
             if (previousLayout != displayedTouchLayout(view) || previousUppercase)
                 imeLetterRows.refreshLetterCase();
-            updateAutomaticCapitalization();
+            updateAutomaticCapitalization(shouldRender);
             if (directEnglishActive()) refreshEnglishSuggestions();
-            else { clearEnglishSuggestions(); render(); }
+            else {
+                clearEnglishSuggestions();
+                if (shouldRender) render();
+            }
         } catch (JSONException | LinkageError error) {
             fail();
+        } finally {
+            renderingSuppressed = previousSuppressed;
         }
     }
 
@@ -6146,14 +6164,12 @@ public final class MSIMEInputService extends InputMethodService {
         if (schemeSaving || touchGeometrySaving || traditionalOutputSaving
                 || session == 0 || preferencesSnapshot == null
                 || preferencesDirectory.isEmpty()) return;
-        // Match Apple's scheme picker: choosing a Chinese scheme from the English card
-        // returns to Chinese mode before applying the persisted Engine scheme.
-        if (dedicatedEnglish) {
-            toggleInputLanguage();
-            if (session == 0) return;
-        }
+        // 目标方案不变时只退出英文；更换方案时保留英文键盘到保存成功，避免异步等待期间显示中文中间帧。
         if (scheme == selectedScheme) {
+            if (dedicatedEnglish) toggleInputLanguage();
+            if (session == 0) return;
             closeSchemePicker();
+            render();
             return;
         }
         replyModel.resetResults();
@@ -6184,7 +6200,7 @@ public final class MSIMEInputService extends InputMethodService {
             for (KeyboardScheme candidate : enabledSchemes) {
                 enabled.put(candidate.preferenceId());
             }
-            // 切换器也列出未启用的方案，选中时把它加入启用列表；否则 `selected` 指向未启用的方案，下次读取会被回退掉。
+            // 调用方显式选中新方案时一并启用，保证 `selected` 始终指向启用列表内的方案。
             if (!enabledSchemes.contains(scheme)) enabled.put(scheme.preferenceId());
             preferences.put("touch_keyboard_schemes", new JSONObject()
                 .put("enabled", enabled).put("selected", scheme.preferenceId()));
@@ -6235,6 +6251,11 @@ public final class MSIMEInputService extends InputMethodService {
                         > savedRevision) {
                 preferencesNotice = "";
             } else {
+                // 英文模式和新方案在同一次主线程回调里应用，只让最终键盘进入下一帧。
+                if (dedicatedEnglish) {
+                    toggleInputLanguage(false);
+                    if (session != targetSession) return;
+                }
                 applyPreferencesSnapshot(saved);
                 preferencesNotice = " · 输入方案已切换";
             }
