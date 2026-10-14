@@ -14,6 +14,8 @@ Status: implemented
 
 按行缓存、`query_database`、`longer_phrase_candidates`、补全键检索活跃树。没有同一行投影决定。[词网格缓存借用键](../../implemented/testing/2026-10-10-pinyin-lattice-span-key-borrow.md)、[模糊缓存借用键](../../implemented/testing/2026-10-11-fuzzy-row-cache-key-borrow.md)只持有另一组缓存的键与失效边界，本篇不改变它们。[长词按页预留](../../implemented/testing/2026-10-10-pinyin-longer-rows-reserve.md)、[聚合页复用](../../implemented/testing/2026-10-10-pinyin-aggregate-page-reuse.md)部分重叠于冷页容量，保留各自 SQL 页决定，不吸收或归档。[会话行缓冲](../../implemented/testing/2026-10-08-session-candidate-buffer-reuse.md)处理更外层重复展示行，与本篇从原始行到输出候选的拥有边界不同。首座优先级与长词每页门槛笔记继续持有排序规则，其余插件与日文/注音借用笔记无关。
 
+首字母行查找的两字节临时键由[局部键借用](2026-10-14-quanpin-initial-row-key-stack.md)处理，本篇继续持有行迭代和候选字段的所有权策略。
+
 ## Alternatives considered
 
 - 冷页直接转移进缓存、再借用生成输出：还可以省去冷缓存行向量副本；不选，因为 SQLite 页可能按有限上限预留，原缓存克隆只有真实行数容量，直接接管会把大提示带进 512 槽常驻缓存。
