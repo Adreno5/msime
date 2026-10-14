@@ -2257,7 +2257,7 @@ static NSImage *MSIMECandidateLogoImage() {
         @"candidate_limit": config[@"candidate_limit"] ?: @3 } ];
     uint64_t epoch = _aiEpoch; MSIMEClientSession *session = _session; id client = _activeClient;
     __weak MSIMEInputController *weakSelf = self;
-    _aiTimer = [NSTimer scheduledTimerWithTimeInterval:0.65 repeats:NO block:^(NSTimer *timer) {
+    _aiTimer = [NSTimer timerWithTimeInterval:0.65 repeats:NO block:^(NSTimer *timer) {
         MSIMEInputController *owner = weakSelf;
         if (!owner || owner->_aiEpoch != epoch || owner->_aiTimer != timer || owner->_session != session || owner->_activeClient != client) return;
         owner->_aiTimer = nil;
@@ -2298,6 +2298,8 @@ static NSImage *MSIMECandidateLogoImage() {
         }];
         [owner->_aiBatch start];
     }];
+    // 输入法进入事件跟踪模式时仍启动请求，避免 AI 占位行一直等待一个未发出的请求。
+    [NSRunLoop.mainRunLoop addTimer:_aiTimer forMode:NSRunLoopCommonModes];
 }
 - (MSIMECustomTranslationBatch *)aiBatchForItems:(NSArray<NSDictionary *> *)items
                                        completion:(void (^)(NSArray<NSDictionary *> *))completion {
