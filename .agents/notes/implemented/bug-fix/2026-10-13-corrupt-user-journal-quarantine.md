@@ -15,7 +15,7 @@ Status: implemented
 `msime_engine::quarantine_corrupt_journal`（`user_dictionary/journal.rs`）在日志读不出是数据库时把它改名挪开：
 
 - 只认 SQLite 自己的判断：读 `sqlite_master` 失败且错误码是 `SQLITE_NOTADB` 或 `SQLITE_CORRUPT` 才挪。忙、加锁、没权限、文件不在、零字节的空库都不动。
-- 改名成 `msime_user.db.corrupt-<unix 秒>`，同名的 `-wal`、`-shm`、`-journal` 一起改成同样的名字，免得旧的 WAL 被套到新日志上。同一秒再坏一次时加 `-1`、`-2`，不覆盖前一份。什么都不删。
+- 改名成 `msime_user.db.corrupt-<unix 秒>`，同名的 `-wal`、`-shm`、`-journal` 一起改成同样的名字，免得旧的 WAL 被套到新日志上。先挪旁路文件，再挪主文件，进程中途退出时原路径不会留下会被新日志套用的旁路文件；目标名会同时避开主文件和旁路文件。同一秒再坏一次时加 `-1`、`-2`，不覆盖前一份。什么都不删。
 - 挪之前关掉本线程缓存的日志连接，Windows 不能改名打开着的文件。
 
 `prepare_runtime_paths_for` 在回放之前调用它，所以每条准备代次的路径（宿主准备、个人词库后端、学习）都受保护，挪了就往 stderr 写一行。宿主库的 `prepare_shipped_host_configuration` 在准备代次之前先调一次，挪了就经 `diagnostics::report` 报 `user dictionary journal moved aside`，到了引擎里再查一遍只是空操作。

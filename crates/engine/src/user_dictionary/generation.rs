@@ -72,7 +72,7 @@ pub fn prepare_runtime_paths_for(
     fs::create_dir_all(cache)?;
     reject_redirected_directory(user_data)?;
     reject_redirected_directory(cache)?;
-    // A journal that is not a database would fail the replay below on every start and keep the host from ever starting; set it aside and start from an empty one. The host API reports the move before it gets here; this covers every other caller.
+    // 不是数据库的日志会在下面的回放中每次启动都失败，让宿主永远无法启动；先把它挪开，从空日志开始。宿主 API 会在进入这里之前上报挪动结果；这里覆盖其余调用方。
     if let Some(moved) = quarantine_corrupt_journal(&result.user(assets::USER_JOURNAL))? {
         eprintln!(
             "msime: user dictionary journal is not a database, moved aside to {}",
@@ -511,7 +511,7 @@ mod tests {
             .filter(|name| name.starts_with("msime_user.db.corrupt-"))
             .collect();
         assert_eq!(moved.len(), 1, "{moved:?}");
-        // A journal written after that replays into the generation as usual.
+        // 之后写入的日志仍会按原流程回放到代次中。
         learn(&journal, "你", 1);
         prepare_runtime_paths(&resources, &user, &root.path().join("cache"), "v1").unwrap();
     }

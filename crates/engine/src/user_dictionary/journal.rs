@@ -154,15 +154,15 @@ pub(crate) fn open_existing_read_only(path: &Path) -> Result<Option<Connection>>
     open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map(Some)
 }
 
-/// Move a journal SQLite cannot read as a database out of the way, so the host starts with an empty one instead of refusing to start at all.
+/// 把 SQLite 无法读取为数据库的日志挪到旁边，让宿主从空日志启动，不再因为日志损坏而完全起不来。
 ///
-/// Every host prepares its dictionary generation before the first session, and that replays the journal: a journal that is not a database fails the replay, the preparation and so the whole host, on every start, with nothing the user can see or do. A journal overwritten with zeros was found on a Windows machine in October 2026; the input method stayed down until the file was moved by hand.
+/// 每个宿主都在第一个会话前准备词库代次，并在其中回放日志：不是数据库的日志会让回放、准备以及整个宿主在每次启动时都失败，用户没有可见的处理入口。2026 年 10 月在一台 Windows 机器上发现过被覆盖成零的日志；手动挪走文件后输入法才恢复。
 ///
-/// Only SQLite's own verdict counts: the file is renamed when reading its schema fails with `SQLITE_NOTADB` or `SQLITE_CORRUPT`. A journal that is merely busy, locked or unreadable for permissions is left alone, because moving it would throw away a good journal. The rename keeps the file beside the new one as `msime_user.db.corrupt-<unix seconds>`, with its `-wal`, `-shm` and `-journal` files under the same name, so nothing is deleted and a sidecar can never be applied to the new journal. Returns the new path when the journal was moved, `None` when there is nothing to move.
+/// 只采信 SQLite 自己的判断：读取 schema 失败且错误为 `SQLITE_NOTADB` 或 `SQLITE_CORRUPT` 时才改名。仅仅忙、被锁定或权限不足的日志保持不动，避免误挪正常日志。改名后的文件保留在原目录，名称为 `msime_user.db.corrupt-<unix seconds>`；`-wal`、`-shm` 和 `-journal` 旁路文件也使用同一名称前缀，因此不会删除数据，也不会让旧旁路文件套到新日志上。日志被挪动时返回新路径，否则返回 `None`。
 pub fn quarantine_corrupt_journal(path: &Path) -> std::io::Result<Option<PathBuf>> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() => {}
-        // Missing, or not a regular file: the opening paths already refuse the latter.
+        // 文件不存在或不是普通文件：打开路径已经会拒绝后者。
         _ => return Ok(None),
     }
     let verdict = open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(|connection| {
@@ -180,7 +180,7 @@ pub fn quarantine_corrupt_journal(path: &Path) -> std::io::Result<Option<PathBuf
     if !corrupt {
         return Ok(None);
     }
-    // This thread may still hold a connection to the file; Windows cannot rename an open file.
+    // 当前线程可能仍持有该文件的连接；Windows 不能改名移动已打开的文件。
     close_cached_journals();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -189,14 +189,23 @@ pub fn quarantine_corrupt_journal(path: &Path) -> std::io::Result<Option<PathBuf
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let suffixes = ["-wal", "-shm", "-journal"];
     let mut target = path.with_file_name(format!("{name}.corrupt-{stamp}"));
     let mut attempt = 1;
-    while std::fs::symlink_metadata(&target).is_ok() {
+    while std::fs::symlink_metadata(&target).is_ok()
+        || suffixes.iter().any(|suffix| {
+            std::fs::symlink_metadata(target.with_file_name(format!(
+                "{}{suffix}",
+                target.file_name().unwrap_or_default().to_string_lossy()
+            )))
+            .is_ok()
+        })
+    {
         target = path.with_file_name(format!("{name}.corrupt-{stamp}-{attempt}"));
         attempt += 1;
     }
-    std::fs::rename(path, &target)?;
-    for suffix in ["-wal", "-shm", "-journal"] {
+    // 先挪旁路文件，再挪主文件；这样中途退出时，原路径不会留下会被新数据库套用的旁路文件。
+    for suffix in suffixes {
         let sidecar = path.with_file_name(format!("{name}{suffix}"));
         if std::fs::symlink_metadata(&sidecar).is_ok() {
             let moved = target.with_file_name(format!(
@@ -206,6 +215,7 @@ pub fn quarantine_corrupt_journal(path: &Path) -> std::io::Result<Option<PathBuf
             std::fs::rename(&sidecar, moved)?;
         }
     }
+    std::fs::rename(path, &target)?;
     Ok(Some(target))
 }
 
@@ -827,7 +837,7 @@ mod tests {
         assert_eq!(count(&journal, "SELECT count(*) FROM personal_bigram"), 1);
     }
 
-    /// The shape found on a user's machine: every page zeroed but the last two, which were still a valid index page.
+    /// 模拟用户机器上发现的形状：除最后两页仍是有效索引页外，其余页面全部为零。
     fn write_zeroed_journal(path: &Path) {
         let mut bytes = vec![0u8; 23 * 4096];
         bytes[21 * 4096] = 0x0a;
@@ -853,13 +863,26 @@ mod tests {
             std::fs::read(moved.with_file_name(format!("{name}-wal"))).unwrap(),
             b"stale wal"
         );
-        // The next start finds no journal and creates a working one.
+        // 下一次启动找不到旧日志时会创建可用的新日志。
         assert!(upsert(&journal, PersonalDictionaryKind::Pinyin, "ni", "你", 1, "").is_ok());
         close_cached_journals();
-        // A second corrupt journal in the same second never overwrites the first one moved aside.
+        // 同一秒再次出现损坏日志时也不会覆盖第一次挪开的文件。
         write_zeroed_journal(&journal);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let occupied_sidecar = dir
+            .root
+            .path()
+            .join(format!("msime_user.db.corrupt-{stamp}-wal"));
+        std::fs::write(&occupied_sidecar, b"occupied target").unwrap();
         let again = quarantine_corrupt_journal(&journal).unwrap().unwrap();
         assert_ne!(again, moved);
+        assert_eq!(
+            std::fs::read(&occupied_sidecar).unwrap(),
+            b"occupied target"
+        );
         assert!(moved.exists() && again.exists());
     }
 
