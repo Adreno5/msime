@@ -9,6 +9,7 @@ import {
 import { deepEqual } from "../core/deep-equal";
 import { errorCode } from "../core/error-code";
 import { errorMessage } from "../core/error-message";
+import { trackAsyncSubscription } from "../core/async-subscription";
 import { validCandidateFonts } from "../candidate/candidate-font-family";
 import type { Preferences, SettingsClient, Snapshot } from "../index";
 import {
@@ -154,25 +155,16 @@ export function useSettingsPersistence({
   useEffect(() => {
     if (!client.onPreferencesChanged) return;
     const current = generation.current;
-    let unsubscribe: (() => void) | undefined;
-    void client
-      .onPreferencesChanged((value) => {
-        if (generation.current !== current) return;
-        if (savingRef.current) {
-          if (!heldChange.current || value.revision > heldChange.current.revision)
-            heldChange.current = value;
-          return;
-        }
-        applyPreferencesChangeRef.current(value);
-      })
-      .then((value) => {
-        if (generation.current === current) unsubscribe = value;
-        else value();
-      })
-      .catch(() => undefined);
-    return () => {
-      unsubscribe?.();
-    };
+    const pending = client.onPreferencesChanged((value) => {
+      if (generation.current !== current) return;
+      if (savingRef.current) {
+        if (!heldChange.current || value.revision > heldChange.current.revision)
+          heldChange.current = value;
+        return;
+      }
+      applyPreferencesChangeRef.current(value);
+    });
+    return trackAsyncSubscription(pending, () => generation.current === current);
   }, [client, generation]);
 
   useEffect(() => {
