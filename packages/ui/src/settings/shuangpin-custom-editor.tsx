@@ -6,6 +6,7 @@ import { GroupList, PageIntro, Row } from "../core/platform-controls";
 import { select as selectStyle, textInput } from "../core/platform-controls-style";
 import { StatusMessage } from "../core/status-message";
 import { useAsyncActionRunner } from "../core/use-async-action";
+import { useDebouncedCallback } from "../core/use-debounced-callback";
 import { readDictionaryFile } from "../dictionary/dictionary-file";
 import { ActionButton } from "./action-button";
 import { SettingsManagerActions } from "./settings-manager-actions";
@@ -100,6 +101,19 @@ export function ShuangpinCustomEditor({
   const back = useRef<HTMLButtonElement>(null);
   const { busy, mounted, run: runAsyncAction } = useAsyncActionRunner(setError, setNotice);
   const generation = useAsyncGeneration(client, draft);
+  const { schedule: validateLater } = useDebouncedCallback(
+    (validationClient: ShuangpinCustomProfileClient, profile: Draft, current: number) => {
+      validationClient
+        .validate(profile)
+        .then((result) => {
+          if (mounted.current && current === generation.current) setProblem(result ?? null);
+        })
+        .catch(() => {
+          if (mounted.current && current === generation.current) setCheckFailed(true);
+        });
+    },
+    VALIDATE_DELAY_MS,
+  );
   // 打开时焦点落在返回上，键盘用户不会停在一个已经消失的「编辑」行上。
   useLayoutEffect(() => {
     back.current?.focus();
@@ -110,18 +124,8 @@ export function ShuangpinCustomEditor({
     const current = ++generation.current;
     setProblem(undefined);
     setCheckFailed(false);
-    const timer = window.setTimeout(() => {
-      client
-        .validate(draft)
-        .then((result) => {
-          if (mounted.current && current === generation.current) setProblem(result ?? null);
-        })
-        .catch(() => {
-          if (mounted.current && current === generation.current) setCheckFailed(true);
-        });
-    }, VALIDATE_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [client, draft]);
+    validateLater(client, draft, current);
+  }, [client, draft, validateLater]);
 
   const dirty = !sameShuangpinCustomProfile(draft, saved);
   const valid = problem === null;
