@@ -1974,7 +1974,7 @@ static NSImage *MSIMECandidateLogoImage() {
     _expandedComposition = MSIMEExpandedComposition(_view);
     _expandedSourceView = _view;
     _expandedCursor = cursor;
-    // 当前这一页是网格的第一行，后面几页排在它下面；停在最后几页时由 ExpandedGridFirstRow 往上补满。
+    // 当前高亮所在页是网格的第一行，末页减少显示行数，不向前补行。
     _expandedFirstRow = cursor / columns;
     _expandedVisibleRows = msime::mac::kExpandedGridVisibleRows;
     [self renderCandidates];
@@ -3970,6 +3970,7 @@ static __weak MSIMEInputController *MSIMEFocusedController;
         [hud setSurfaceColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDSurface", light.surface, dark.surface)
                  borderColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDBorder", light.border, dark.border)
                    textColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDText", light.text, dark.text)];
+        [hud applySizingPreferences:@{@"show_app_logo": @(_appearance.showsAppLogo)}];
         [hud showEnglishInputMode:enabled nearCaretRect:caret];
     }
 }
@@ -5395,7 +5396,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     // The mode badge wears the toolbar's palette, so it is drawn in the toolbar's mode too; it is updated whether or not the toolbar is shown.
     [[MSIMEInputModeHUDPanel sharedPanel] applyThemePreferences:toolbarThemePreferences];
     [_toolbar applySizingPreferences:preferences];
-    // And it is the toolbar's size, from the same font size and scale.
+    // 提示尺寸独立于工具栏，并遵循显示图标设置。
     [[MSIMEInputModeHUDPanel sharedPanel] applySizingPreferences:preferences];
     // Typing effects follow preferences.plugins; a partial document without it leaves them as they are.
     [[MSIMETypingEffectPanel sharedPanel] applyPreferences:preferences];
@@ -6314,7 +6315,28 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     }
     // 「展开候选」打开时横排候选窗的 ↓ 展开多行网格（#7307）；只有一页、竖排、候选列表开着时 openExpandedCandidates 返回 NO，↓ 照下面的规则移高亮。注音组字时 ↓ 打开候选列表（MSIMECandidateListDownKey）在前面，优先于这里。
     if (_panel.isVisible && event.keyCode == 125 && !(event.modifierFlags & NSEventModifierFlagShift) && [self openExpandedCandidates]) return YES;
-    // 方向键在所有桌面平台上是同一套规则（与 Windows 的 korean_hanja_key、NavigationPolicy 和 Linux 前端一致），不看候选窗是横排还是竖排：组字时 ↑/↓ 移候选高亮（受「方向键选择候选」开关控制），←/→ 交给下面的 switch 移光标或进入整句改字；候选列表打开时（韩文汉字列表、注音列表）组字里没有光标，四个方向键都移高亮，←↑ 上一个、→↓ 下一个，与 Windows 一样不看导航开关。
+    // 拼音普通候选：首选的左键编辑光标，右键先回到拼音末尾，再选择候选。展开网格和已打开的候选列表先由各自的导航处理。
+    if (_panel.isVisible && (event.keyCode == 123 || event.keyCode == 124) &&
+        !(event.modifierFlags & (NSEventModifierFlagShift | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagCommand)) &&
+        !MSIMECandidateListOpen(_view) && MSIMESchemeTrait(_view, msime::mac::scheme::EditsSentence) &&
+        [_appearance navigationEnabled:@"arrows"]) {
+        NSArray *candidates = MSIMEReorderedPinnedCandidates(_view[@"candidates"], MSIMECandidatePinCode(_view));
+        NSUInteger highlighted = NSNotFound;
+        for (NSUInteger index = 0; index < candidates.count; ++index)
+            if ([candidates[index] isKindOfClass:NSDictionary.class] && MSIMEStrictBoolean(candidates[index][@"highlighted"])) { highlighted = index; break; }
+        NSUInteger caret = 0;
+        NSString *editing = [_view[@"editing_text"] isKindOfClass:NSString.class] ? _view[@"editing_text"] : nil;
+        const BOOL caretValid = editing.length && MSIMEStrictUnsignedIntegerValue(_view[@"caret_position"], &caret) && caret <= editing.length;
+        if (highlighted != NSNotFound && caretValid) {
+            const BOOL left = event.keyCode == 123;
+            const BOOL edit = left ? highlighted == 0 : caret < editing.length;
+            const uint32_t command = edit ? (left ? MSIME_MOVE_LEFT : MSIME_MOVE_RIGHT)
+                                         : (left ? MSIME_PREVIOUS_CANDIDATE : MSIME_NEXT_CANDIDATE);
+            [self apply:[_session command:command error:nil]];
+            return YES;
+        }
+    }
+    // 其它方案仍由上下选择、左右编辑；韩文汉字和注音列表的四个方向键都选择候选。
     if (_panel.isVisible && event.keyCode >= 123 && event.keyCode <= 126) {
         const BOOL horizontal = event.keyCode == 123 || event.keyCode == 124;
         if (MSIMECandidateListOpen(_view) || (!horizontal && [_appearance navigationEnabled:@"arrows"])) {
@@ -7195,9 +7217,10 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     [_keymapPanel orderOut:nil];
     _expandedCursor = MIN(_expandedCursor, count - 1);
     const NSUInteger cursorRow = _expandedCursor / columns;
-    const NSUInteger visibleRows = MIN(rows, msime::mac::kExpandedGridVisibleRows);
+    const NSUInteger windowRows = MIN(rows, msime::mac::kExpandedGridVisibleRows);
+    _expandedFirstRow = msime::mac::ExpandedGridFirstRow(_expandedFirstRow, cursorRow, rows, windowRows);
+    const NSUInteger visibleRows = MIN(windowRows, rows - _expandedFirstRow);
     _expandedVisibleRows = visibleRows;
-    _expandedFirstRow = msime::mac::ExpandedGridFirstRow(_expandedFirstRow, cursorRow, rows, visibleRows);
 
     // 首行：logo、拼音，右端是高亮所在的行「2 / 7」和收起按钮。
     NSFont *indicatorFont = [NSFont monospacedDigitSystemFontOfSize:MSIMECandidatePageIndicatorPointSize * scale weight:NSFontWeightRegular];
@@ -7646,9 +7669,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.numberColor = button.candidateHighlighted ? SkinColor(tokens.selectedNumber) : SkinColor(tokens.number);
         button.barColor = SkinColor(tokens.accent);
         button.showSelectedBar = tokens.showSelectedBar;
-        const BOOL first = button == candidateButtons.firstObject;
-        const BOOL last = button == candidateButtons.lastObject;
-        button.cornerRadius = msime::mac::CandidateRowRadius(tokens, button.candidateHighlighted, first, last);
+        button.cornerRadius = msime::mac::CandidateRowRadius(tokens, button.candidateHighlighted);
         button.selectionLeftInset = MSIMECandidateScale(_appearance);
         button.contentTintColor = SkinColor(tokens.text);
         button.needsDisplay = YES;

@@ -291,31 +291,44 @@ impl Search {
         if list.len() < 2 {
             return;
         }
-        list.sort_by_key(|hypothesis| {
+        let rank = |hypothesis: &Hypothesis| {
             (hypothesis.edge_count, hypothesis.weight, hypothesis.arrival)
-        });
-        // The same syllables reached over different raw spans: keep the best-ranked one.
-        if list.len() <= SMALL_FINALIZE_BEAM {
-            let mut write = 0;
-            for read in 0..list.len() {
-                if list[..write]
-                    .iter()
-                    .any(|hypothesis| hypothesis.sequence == list[read].sequence)
-                {
-                    continue;
-                }
-                if write != read {
-                    list.swap(write, read);
-                }
-                write += 1;
-            }
-            list.truncate(write);
-            list.truncate(self.k);
+        };
+        if self.k == 1 {
+            // 只取首选时直接扫描最低成本，省去排序和去重。
+            list[0] = *list
+                .iter()
+                .min_by_key(|hypothesis| rank(hypothesis))
+                .unwrap();
+            list.truncate(1);
             return;
         }
-        let mut seen = HashSet::with_capacity(list.len());
-        list.retain(|hypothesis| seen.insert(hypothesis.sequence));
-        list.truncate(self.k);
+        // arrival 全局唯一，完整排序键没有平局；原地排序保持原有排名且不分配。
+        list.sort_unstable_by_key(rank);
+        // 去重状态只保留最终需要的结果，常用 k=9 即使入束很大也无需哈希表。
+        let mut seen = (list.len().min(self.k) > SMALL_FINALIZE_BEAM)
+            .then(|| HashSet::with_capacity(list.len().min(self.k)));
+        let mut write = 0;
+        for read in 0..list.len() {
+            let sequence = list[read].sequence;
+            let duplicate = match &mut seen {
+                Some(seen) => !seen.insert(sequence),
+                None => list[..write]
+                    .iter()
+                    .any(|hypothesis| hypothesis.sequence == sequence),
+            };
+            if duplicate {
+                continue;
+            }
+            if write != read {
+                list.swap(write, read);
+            }
+            write += 1;
+            if write == self.k {
+                break;
+            }
+        }
+        list.truncate(write);
     }
 
     fn extend(
@@ -949,3 +962,7 @@ mod tests {
         assert_eq!(autocorrect_suppression_key("nihc", "nihC"), "nihc");
     }
 }
+
+#[cfg(test)]
+#[path = "autocorrect/finalize_tests.rs"]
+mod finalize_tests;
