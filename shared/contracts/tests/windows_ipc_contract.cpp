@@ -183,20 +183,20 @@ int main()
     reply.candidate_string[2] = 0;
     CHECK(!FanyImeProtocol::AcceptReply(reply, 19));
 
-    CHECK(FanyImeWorkerReplyType::SwitchToEn == FanyImeWorkerReplyType::SwitchToEnglish);
-    CHECK(FanyImeWorkerReplyType::CommitCandidate == FanyImeWorkerReplyType::CommitCurCandidate);
+    static_assert(FanyImeWorkerReplyType::SwitchToEn == FanyImeWorkerReplyType::SwitchToEnglish);
+    static_assert(FanyImeWorkerReplyType::CommitCandidate == FanyImeWorkerReplyType::CommitCurCandidate);
     // 新帧只能追加在最后：旧 TIP 丢掉大于它所知 MaxKnown 的类型，已有类型的编号不能动。
-    CHECK(FanyImeWorkerReplyType::SecondThirdCandidateChanged == 30);
-    CHECK(FanyImeWorkerReplyType::PunctuationMarksChanged == 31);
-    CHECK(FanyImeWorkerReplyType::MaxKnown == FanyImeWorkerReplyType::PunctuationMarksChanged);
-    CHECK(FanyImeVoiceControl::Start == 1);
-    CHECK(FanyImeVoiceControl::Stop == 2);
-    CHECK(FanyImeVoiceControl::Cancel == 3);
-    CHECK(FanyImeVoiceControl::MaxMessageChars == 96);
+    static_assert(FanyImeWorkerReplyType::SecondThirdCandidateChanged == 30);
+    static_assert(FanyImeWorkerReplyType::PunctuationMarksChanged == 31);
+    static_assert(FanyImeWorkerReplyType::MaxKnown == FanyImeWorkerReplyType::PunctuationMarksChanged);
+    static_assert(FanyImeVoiceControl::Start == 1);
+    static_assert(FanyImeVoiceControl::Stop == 2);
+    static_assert(FanyImeVoiceControl::Cancel == 3);
+    static_assert(FanyImeVoiceControl::MaxMessageChars == 96);
     FanyImeVoiceControlHello control_hello{};
     CHECK(control_hello.magic == 0x56434C31);
     CHECK(control_hello.version == 1);
-    CHECK(sizeof(control_hello) == 16);
+    static_assert(sizeof(control_hello) == 16);
     const std::wstring voice(1000, L'x');
     const auto frames = FanyImeVoiceCompositionPipe::EncodeSnapshot(voice, 7);
     CHECK(FanyImeVoiceCompositionPipe::AssembleFrames(frames) == voice);

@@ -51,6 +51,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   private let translations = CandidateTranslationStore()
   /// The translation service the shared document picks; `.none` means nothing was chosen or the chosen provider is incomplete, and no words leave the device.
   private var translationRoute: TranslationRoute = .none
+  /// Account glosses are tied to the login generation, not just to the provider name. The
+  /// keyboard can outlive the account screen, so this identity is refreshed asynchronously.
+  private var translationAccountScope: String?
+  private var translationAccountIdentityTask: Task<Void, Never>?
+  private var translationRouteGeneration = 0
   private lazy var onlineCandidates: OnlineCandidateProvider = {
     let provider = OnlineCandidateProvider(session: session)
     provider.onApplied = { [weak self] in self?.render($0) }
@@ -4331,7 +4336,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
           let entry = snapshot.entries[index]
           return candidateMenuElements(
             generation: snapshot.generation, globalIndex: entry.index, candidate: entry.text,
-            offlineGloss: entry.translation, fixedPosition: entry.fixedPosition)
+            offlineGloss: entry.translation, source: entry.source, fixedPosition: entry.fixedPosition)
         },
         onSelect: { [weak self] index in
           guard let self, let snapshot = candidatePanelSnapshot, snapshot.entries.indices.contains(index) else { return }
@@ -4371,7 +4376,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   private func candidatePanelAnnotations(_ snapshot: CandidatePanelSnapshot) -> [KeyboardCandidateAnnotation] {
     snapshot.entries.map {
       candidatePanelAnnotation(code: $0.code, gloss: $0.translation, word: $0.text, engine: $0.annotation,
-                               typed: snapshot.preedit)
+                               source: $0.source, typed: snapshot.preedit)
     }
   }
 
@@ -5691,7 +5696,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   /// The gloss and translation lines under a strip candidate. A Korean Hanja's 훈음 is not one of them: it is drawn above them by the strip and never offered for insertion.
   private func candidateGlosses(at index: Int) -> [String] {
-    guard CandidateGlossPreference.enabled, visibleCandidates.indices.contains(index) else { return [] }
+    guard CandidateGlossPreference.enabled, visibleCandidates.indices.contains(index),
+          CandidateTranslationStore.allowsGloss(sources: visibleCandidateSources, at: index) else { return [] }
     let word = visibleCandidates[index]
     var languages = [CandidateTranslationPreference.primary]
     if let secondary = CandidateTranslationPreference.secondary { languages.append(secondary) }
@@ -5709,7 +5715,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   static let pendingGlossPlaceholder = " "
 
-  private func glosses(word: String, offline: String) -> [String] {
+  private func glosses(word: String, offline: String, source: Int) -> [String] {
+    guard !CandidateTranslationStore.sourceGetsNoGloss(source) else { return [] }
     var lines: [String] = []
     if let value = gloss(word: word, language: CandidateTranslationPreference.primary, offline: offline) { lines.append(value) }
     if let secondary = CandidateTranslationPreference.secondary,
@@ -5718,8 +5725,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   }
 
   private func gloss(word: String, language: CandidateTranslationLanguage, at index: Int) -> String? {
-    gloss(word: word, language: language,
-          offline: visibleCandidateGlosses.indices.contains(index) ? visibleCandidateGlosses[index] : "")
+    guard CandidateTranslationStore.allowsGloss(sources: visibleCandidateSources, at: index) else { return nil }
+    return gloss(word: word, language: language,
+                 offline: visibleCandidateGlosses.indices.contains(index) ? visibleCandidateGlosses[index] : "")
   }
 
   private func gloss(word: String, language: CandidateTranslationLanguage, offline: String) -> String? {
@@ -5739,9 +5747,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   }
 
   private func candidatePanelAnnotation(code: String, gloss: String, word: String, engine: String,
-                                        typed: String) -> KeyboardCandidateAnnotation {
+                                        source: Int, typed: String) -> KeyboardCandidateAnnotation {
     let (hint, hintDescription) = codeHint(code: code, engine: engine, typed: typed)
-    let lines = glosses(word: word, offline: gloss)
+    let lines = glosses(word: word, offline: gloss, source: source)
     let text = ([hint] + lines).filter { !$0.isEmpty }.joined(separator: "\n")
     guard !text.isEmpty else { return .none }
     let description = ([hintDescription, lines.isEmpty ? "" : "英文释义：\(lines.joined(separator: "，"))"])
@@ -5751,23 +5759,61 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   private func synchronizeTranslationRoute() -> Bool {
     let route = TranslationProviderPreference.route(in: session.sharedPreferences)
-    guard route != translationRoute || route.cacheScope != translations.scope else { return false }
+    translationRouteGeneration &+= 1
+    let generation = translationRouteGeneration
+    if route == .account {
+      // Forget the previous login before the asynchronous keychain read. The keyboard may
+      // render between this call and its completion, so no old account gloss may survive here.
+      translationAccountScope = nil
+      let changed = applyTranslationRoute(route, scope: "account|pending=\(generation)")
+      synchronizeAccountTranslationIdentity(generation: generation)
+      return changed
+    }
+
+    translationAccountIdentityTask?.cancel()
+    translationAccountIdentityTask = nil
+    translationAccountScope = nil
+    return applyTranslationRoute(route, scope: route.cacheScope)
+  }
+
+  private func applyTranslationRoute(_ route: TranslationRoute, scope: String) -> Bool {
+    guard route != translationRoute || scope != translations.scope else { return false }
     translationRoute = route
     translations.use(route == .account ? BackendCandidateTranslationService() : ProviderCandidateTranslationService(route: route),
-                     scope: route.cacheScope)
+                     scope: scope)
     DiagnosticLog.shared.write("translation_route provider=\(route.provider?.rawValue ?? "none")")
     // Rows reserved for network-only languages follow whether any service is chosen.
     applyCandidateGlossLayout()
     return true
   }
 
+  private func synchronizeAccountTranslationIdentity(generation: Int) {
+    translationAccountIdentityTask?.cancel()
+    translationAccountIdentityTask = Task { [weak self] in
+      let identity = try? await BackendAccountSession.shared.login()
+      guard !Task.isCancelled, let self,
+            self.translationRouteGeneration == generation,
+            self.translationRoute == .account else { return }
+      let scope = identity.map { TranslationRoute.accountCacheScope(sessionID: $0.sessionID) }
+        ?? "account|anonymous"
+      self.translationAccountScope = scope
+      guard self.applyTranslationRoute(.account, scope: scope) else { return }
+      // A scope change clears the old cache. Refresh the visible strip immediately so an old
+      // account gloss cannot remain painted while the new request is in flight.
+      self.renderCandidateStrip()
+      self.requestCandidateTranslations()
+    }
+  }
+
   private func requestCandidateTranslations() {
     guard CandidateGlossPreference.enabled, CandidateTranslationPreference.onlineEnabled,
           translationRoute != .none, hasFullAccess, glossesCandidates, !isInLocalMode,
+          translationRoute != .account || translationAccountScope != nil,
           !visibleCandidates.isEmpty else { translations.cancel(); return }
     var codes = [CandidateTranslationPreference.primary.code]
     if let secondary = CandidateTranslationPreference.secondary { codes.append(secondary.code) }
-    translations.refresh(words: Array(visibleCandidates.prefix(candidatePageSize)), codes: codes)
+    let words = Array(visibleCandidates.prefix(candidatePageSize))
+    translations.refresh(words: words, sources: visibleCandidateSources, codes: codes)
   }
 
   private func wubiCodeHint(code: String, typed: String) -> String {
@@ -6235,10 +6281,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   }
 
   private func candidateMenuElements(
-    generation: UInt64, globalIndex: UInt64, candidate: String, offlineGloss: String, fixedPosition: Int
+    generation: UInt64, globalIndex: UInt64, candidate: String, offlineGloss: String, source: Int, fixedPosition: Int
   ) -> [UIMenuElement] {
     guard isChineseMode, inputScheme.writesChinese, !isInLocalMode else { return [] }
-    let glosses = glossMenuElements(glosses(word: candidate, offline: offlineGloss)) { [weak self] in
+    let glosses = glossMenuElements(glosses(word: candidate, offline: offlineGloss, source: source)) { [weak self] in
       guard let self else { return false }
       guard let snapshot = try? session.allCandidates(),
             let current = try? CandidatePanelSnapshot.decode(snapshot),

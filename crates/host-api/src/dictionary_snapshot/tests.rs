@@ -396,24 +396,6 @@ fn activation_swaps_all_state_roots_and_consumes_handle() {
 }
 
 #[test]
-fn activation_receipt_is_deferred_until_the_last_root_swap() {
-    use std::ffi::OsStr;
-
-    assert!(super::should_defer_activation_receipt(
-        0,
-        OsStr::new(super::ACTIVATION_RECEIPT_NAME),
-    ));
-    assert!(!super::should_defer_activation_receipt(
-        1,
-        OsStr::new(super::ACTIVATION_RECEIPT_NAME),
-    ));
-    assert!(!super::should_defer_activation_receipt(
-        0,
-        OsStr::new("other")
-    ));
-}
-
-#[test]
 fn activation_rejects_live_session_before_swapping() {
     // The registry is process-global; use a distinct fixture handle so this
     // test can run in parallel with the successful activation cases.
@@ -476,6 +458,7 @@ fn discard_does_not_require_maintenance_lock_for_live_paths() {
         english_minimum_prefix: 2,
         mixed_emoji: false,
         mixed_kaomoji: false,
+        mixed_symbols: false,
         mixed_japanese: false,
         local_unicode: true,
         local_date_time: true,
@@ -492,6 +475,7 @@ fn discard_does_not_require_maintenance_lock_for_live_paths() {
         local_shift_letter_entry: true,
         chaizi_traditional_output: false,
         command_table: Vec::new(),
+        plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
         helpcode_table: None,
@@ -591,6 +575,7 @@ fn activation_case(
         english_minimum_prefix: 2,
         mixed_emoji: false,
         mixed_kaomoji: false,
+        mixed_symbols: false,
         mixed_japanese: false,
         local_unicode: true,
         local_date_time: true,
@@ -607,6 +592,7 @@ fn activation_case(
         local_shift_letter_entry: true,
         chaizi_traditional_output: false,
         command_table: Vec::new(),
+        plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
         helpcode_table: None,
@@ -728,13 +714,29 @@ fn activation_case(
     let activated = loop {
         let result = if replace_live_user && !injected {
             injected = true;
-            activate_with_hook(handle, &expected, || {
-                fs::rename(active.join("user"), &moved_user).unwrap();
-                fs::create_dir(active.join("user")).unwrap();
-                fs::write(active.join("user").join("marker"), b"attacker").unwrap();
+            activate_with_hook(handle, &expected, |root| {
+                if root.is_none() {
+                    fs::rename(active.join("user"), &moved_user).unwrap();
+                    fs::create_dir(active.join("user")).unwrap();
+                    fs::write(active.join("user").join("marker"), b"attacker").unwrap();
+                }
             })
         } else {
-            activate(handle, &expected)
+            activate_with_hook(handle, &expected, |root| {
+                if root == Some(0) {
+                    assert!(
+                        !active
+                            .join("user")
+                            .join(super::ACTIVATION_RECEIPT_NAME)
+                            .exists(),
+                        "回执只能在缓存和词库根目录都完成交换后发布"
+                    );
+                    assert_eq!(
+                        fs::read(active.join("cache").join("marker")).unwrap(),
+                        b"old"
+                    );
+                }
+            })
         };
         match result {
             Err("snapshot access busy") => {
@@ -865,6 +867,7 @@ fn activation_reopens_the_personal_context_store_on_the_restored_journal() {
         english_minimum_prefix: 2,
         mixed_emoji: false,
         mixed_kaomoji: false,
+        mixed_symbols: false,
         mixed_japanese: false,
         local_unicode: true,
         local_date_time: true,
@@ -881,6 +884,7 @@ fn activation_reopens_the_personal_context_store_on_the_restored_journal() {
         local_shift_letter_entry: true,
         chaizi_traditional_output: false,
         command_table: Vec::new(),
+        plugin_commands: Vec::new(),
         mention_entries: Vec::new(),
         quick_phrase_table: Vec::new(),
         helpcode_table: None,
