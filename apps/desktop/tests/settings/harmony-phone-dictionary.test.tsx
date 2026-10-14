@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { CommunityResource } from "@msime/ui";
+import type { CommunityResource, DictionaryClient } from "@msime/ui";
 import { ToastProvider } from "../../../../packages/ui/src/core/toast";
 import { DictionarySettingsPage } from "../../../../packages/ui/src/settings/pages/dictionary-page";
 import {
@@ -166,6 +166,8 @@ function setup({ harmonyPhone = true, scel = false, importBytes = false } = {}) 
   /** 以外壳打开或关上本页上的社区图库后的模型重画。 */
   const showGallery = (communityGallery: SettingsFormModel["communityGallery"]) =>
     view.rerender(tree({ ...model, communityGallery }));
+  const changeDictionary = (dictionary: DictionaryClient) =>
+    view.rerender(tree({ ...model, client: { ...model.client, dictionary } }));
   return {
     collections,
     dictionary,
@@ -174,6 +176,7 @@ function setup({ harmonyPhone = true, scel = false, importBytes = false } = {}) 
     selectPage,
     openCommunityGallery,
     showGallery,
+    changeDictionary,
   };
 }
 
@@ -433,6 +436,120 @@ test("the built-in dictionary searches by pinyin and is always on", async () => 
       await vi.advanceTimersByTimeAsync(300);
     });
     expect(dictionary.list).toHaveBeenLastCalledWith(0, 100, "pinyin", "shui'shan");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each(["成功", "失败"])(
+  "更换词库客户端后，旧内置词库查询的%s不影响当前列表",
+  async (outcome) => {
+    const { dictionary, changeDictionary } = setup();
+    await screen.findByText("工作");
+    vi.useFakeTimers();
+    try {
+      let finishOld!: (value: Awaited<ReturnType<DictionaryClient["list"]>>) => void;
+      let failOld!: (reason: unknown) => void;
+      const oldRequest = new Promise<Awaited<ReturnType<DictionaryClient["list"]>>>(
+        (resolve, reject) => {
+          finishOld = resolve;
+          failOld = reject;
+        },
+      );
+      dictionary.list.mockReturnValueOnce(oldRequest);
+      const newDictionary = {
+        list: vi.fn(async () => ({
+          entries: [{ kind: "pinyin", key: "xin", value: "新词", weight: 10 }],
+          has_more: false,
+        })),
+        edit: vi.fn(),
+      } as unknown as DictionaryClient;
+      fireEvent.click(screen.getByText("拼音词库"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(dictionary.list).toHaveBeenCalledTimes(1);
+
+      changeDictionary(newDictionary);
+      await act(async () => {
+        if (outcome === "失败") failOld(new Error("synthetic stale query"));
+        else
+          finishOld({
+            entries: [{ kind: "pinyin", key: "jiu", value: "旧词", weight: 10 }],
+            has_more: false,
+          });
+      });
+      expect(screen.queryByText("旧词")).toBeNull();
+      expect(screen.queryByText("读取词条失败，请稍后重试。")).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(newDictionary.list).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("新词")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("搜索防抖期间，旧查询不能显示过期词条", async () => {
+  const { dictionary } = setup();
+  await screen.findByText("工作");
+  vi.useFakeTimers();
+  try {
+    let finishOld!: (value: Awaited<ReturnType<DictionaryClient["list"]>>) => void;
+    dictionary.list.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishOld = resolve;
+      }),
+    );
+    fireEvent.click(screen.getByText("拼音词库"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索词条" }), {
+      target: { value: "xin" },
+    });
+    await act(async () =>
+      finishOld({
+        entries: [{ kind: "pinyin", key: "jiu", value: "旧词", weight: 10 }],
+        has_more: true,
+      }),
+    );
+    expect(screen.queryByText("旧词")).toBeNull();
+    expect(dictionary.list).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(dictionary.list).toHaveBeenLastCalledWith(0, 100, "pinyin", "xin");
+    expect(screen.getByText("水杉")).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("离开内置词库详情后，旧查询失败不在列表上弹出提示", async () => {
+  const { dictionary } = setup();
+  await screen.findByText("工作");
+  vi.useFakeTimers();
+  try {
+    let fail!: (reason: unknown) => void;
+    dictionary.list.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    fireEvent.click(screen.getByText("拼音词库"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    act(() => {
+      window.history.replaceState(null, "");
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    });
+    expect(screen.getByText("工作")).toBeTruthy();
+    await act(async () => fail(new Error("synthetic closed query")));
+    expect(screen.queryByText("读取词条失败，请稍后重试。")).toBeNull();
   } finally {
     vi.useRealTimers();
   }
