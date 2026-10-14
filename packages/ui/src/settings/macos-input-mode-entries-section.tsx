@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import type { EditionInfo, InputScheme } from "../index";
 import { Row } from "../core/platform-controls";
 import { subscribeToWindowFocus } from "../core/window-focus";
+import { useInterval } from "../core/use-interval";
 import { ActionButton } from "./action-button";
 import { useAsyncGeneration } from "./use-async-generation";
 
@@ -89,17 +90,16 @@ function useEnabledInputModes(client: MacosInputModesClient | undefined) {
     };
   }, [client, refresh]);
 
-  useEffect(() => {
-    if (!watchingUntil || typeof window === "undefined") return;
-    const timer = window.setInterval(() => {
+  useInterval(
+    () => {
       if (Date.now() >= watchingUntil) {
         setWatchingUntil(0);
         return;
       }
       void refresh();
-    }, INPUT_MODE_RECHECK_MS);
-    return () => window.clearInterval(timer);
-  }, [watchingUntil, refresh]);
+    },
+    watchingUntil ? INPUT_MODE_RECHECK_MS : null,
+  );
 
   const watch = useCallback(() => setWatchingUntil(Date.now() + INPUT_MODE_RECHECK_WINDOW_MS), []);
   return { enabled, watch } as const;
