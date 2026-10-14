@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import * as windowEvents from "../../../../packages/ui/src/core/window-focus";
 import {
   subscribeToWindowBlur,
   subscribeToWindowFocus,
@@ -9,6 +10,46 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+test("文档可见性订阅转发隐藏与显示事件，分别清理订阅", () => {
+  const subscribe = windowEvents.subscribeToDocumentVisibilityChange;
+  expect(subscribe).toBeTypeOf("function");
+  const seen: DocumentVisibilityState[] = [];
+  const other = vi.fn();
+  const stop = subscribe(() => seen.push(document.visibilityState));
+  const stopOther = subscribe(other);
+  expect(seen).toEqual([]);
+
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  document.dispatchEvent(new Event("visibilitychange"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(seen).toEqual(["hidden", "visible"]);
+  expect(other).toHaveBeenCalledTimes(2);
+
+  stop();
+  stop();
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(seen).toEqual(["hidden", "visible"]);
+  expect(other).toHaveBeenCalledTimes(3);
+  stopOther();
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(other).toHaveBeenCalledTimes(3);
+});
+
+test("没有文档时可见性订阅返回可重复调用的空清理函数", () => {
+  const subscribe = windowEvents.subscribeToDocumentVisibilityChange;
+  expect(subscribe).toBeTypeOf("function");
+  const callback = vi.fn();
+  vi.stubGlobal("document", undefined);
+  const stop = subscribe(callback);
+  expect(() => {
+    stop();
+    stop();
+  }).not.toThrow();
+  expect(callback).not.toHaveBeenCalled();
 });
 
 test.each([

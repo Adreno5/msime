@@ -11,6 +11,7 @@ import { deepEqual } from "../core/deep-equal";
 import { errorCode } from "../core/error-code";
 import { errorMessage } from "../core/error-message";
 import { trackAsyncSubscription } from "../core/async-subscription";
+import { subscribeToDocumentVisibilityChange } from "../core/window-focus";
 import { validCandidateFonts } from "../candidate/candidate-font-family";
 import type { Preferences, SettingsClient, Snapshot } from "../index";
 import {
@@ -428,8 +429,7 @@ export function useSettingsPersistence({
       }
       void reload();
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    return subscribeToDocumentVisibilityChange(onVisibilityChange);
   }, [client, mobile]);
 
   return {

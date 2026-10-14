@@ -1,7 +1,7 @@
 import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
-import { subscribeToWindowBlur } from "../core/window-focus";
+import { subscribeToDocumentVisibilityChange, subscribeToWindowBlur } from "../core/window-focus";
 import {
   readOptionalJson,
   readOptionalStorage,
@@ -4199,6 +4199,7 @@ export function EmojiPanel({
     const generation = clipboardLifecycle.current;
     const isCurrent = () => generation === clipboardLifecycle.current;
     let poll: ReturnType<typeof setInterval> | undefined;
+    let stopVisibility: (() => void) | undefined;
     let inFlight = 0;
     let refreshPending = false;
     const refresh = () => {
@@ -4263,7 +4264,7 @@ export function EmojiPanel({
       if (stop && poll !== undefined) {
         clearInterval(poll);
         poll = undefined;
-        document.removeEventListener("visibilitychange", pollVisible);
+        stopVisibility?.();
       }
       return stop;
     };
@@ -4272,14 +4273,14 @@ export function EmojiPanel({
     refresh();
     if (page === "clipboard") {
       poll = setInterval(pollVisible, 400);
-      document.addEventListener("visibilitychange", pollVisible);
+      stopVisibility = subscribeToDocumentVisibilityChange(pollVisible);
     }
     const disposeSubscription = trackAsyncSubscription(start(), isCurrent);
     return () => {
       refreshPending = false;
       ++clipboardGeneration.current;
       if (poll !== undefined) clearInterval(poll);
-      document.removeEventListener("visibilitychange", pollVisible);
+      stopVisibility?.();
       disposeSubscription();
     };
   }, [client, page, clipboardLifecycle, clipboardRefresh]);

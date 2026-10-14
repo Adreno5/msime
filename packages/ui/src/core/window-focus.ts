@@ -2,6 +2,13 @@ export type WindowFocusListener = () => void;
 
 const noop = () => {};
 
+/** 订阅文档可见性变化；显示或隐藏的处理规则由调用方决定。 */
+export function subscribeToDocumentVisibilityChange(listener: () => void): () => void {
+  if (typeof document === "undefined") return noop;
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+}
+
 function subscribeToWindowEvent(
   event: "focus" | "blur",
   listener: WindowFocusListener,
@@ -28,9 +35,9 @@ export function subscribeToWindowResume(listener: WindowFocusListener): () => vo
     if (document.visibilityState === "visible") listener();
   };
   const stopFocus = subscribeToWindowFocus(listener);
-  document.addEventListener("visibilitychange", onVisibilityChange);
+  const stopVisibility = subscribeToDocumentVisibilityChange(onVisibilityChange);
   return () => {
     stopFocus();
-    document.removeEventListener("visibilitychange", onVisibilityChange);
+    stopVisibility();
   };
 }

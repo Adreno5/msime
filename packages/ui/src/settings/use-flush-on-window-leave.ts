@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useLatestRef } from "../core/use-latest-ref";
-import { subscribeToWindowBlur } from "../core/window-focus";
+import { subscribeToDocumentVisibilityChange, subscribeToWindowBlur } from "../core/window-focus";
 
 export type FlushOnWindowLeave = () => void | Promise<void>;
 
@@ -16,11 +16,11 @@ export function useFlushOnWindowLeave(flush: FlushOnWindowLeave): void {
     };
     const stopBlur = subscribeToWindowBlur(flushNow);
     window.addEventListener("pagehide", flushNow);
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    const stopVisibility = subscribeToDocumentVisibilityChange(onVisibilityChange);
     return () => {
       stopBlur();
       window.removeEventListener("pagehide", flushNow);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopVisibility();
     };
   }, []);
 }
