@@ -466,18 +466,22 @@ impl ShuangpinDictionary {
         if expanded.len() <= limited {
             return false;
         }
-        let mut merged = Vec::with_capacity(candidates.len() - limited + expanded.len());
-        let mut expanded = Some(expanded);
-        for item in candidates.drain(..) {
-            if is_limited(&item) {
-                if let Some(rows) = expanded.take() {
-                    merged.extend(rows);
-                }
-                continue;
+        let first_limited = candidates
+            .iter()
+            .position(is_limited)
+            .expect("limited count checked above");
+        candidates.reserve_exact(expanded.len() - limited);
+        let mut removed = 0;
+        candidates.retain(|item| {
+            if is_limited(item) {
+                removed += 1;
+                false
+            } else {
+                true
             }
-            merged.push(item);
-        }
-        *candidates = merged;
+        });
+        debug_assert_eq!(removed, limited);
+        candidates.splice(first_limited..first_limited, expanded.iter().cloned());
         if !series_key.is_empty() {
             let key = self.sentence_cache_key(series_key);
             self.series_cache.insert(key, candidates.clone());
