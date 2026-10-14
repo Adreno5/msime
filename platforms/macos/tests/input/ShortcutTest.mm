@@ -3038,7 +3038,7 @@ static void TestExpandedCandidateGrid() {
     // 页码隐藏仍能用鼠标展开；全隐藏首行时按钮留在候选行，不增加高度。
     prefs.showsCandidatePageNumber = NO;
     prefs.showsAppLogo = NO;
-    prefs.candidatePreeditStyle = 0;
+    prefs.showsCandidatePreedit = NO;
     assert(prefs.showsCandidateExpandButton);
     compose();
     MSIMECandidateButton *compactButton = ExpandedGridSubview(panel, -3);
@@ -3056,7 +3056,7 @@ static void TestExpandedCandidateGrid() {
     [controller closeExpandedCandidates];
     prefs.showsCandidateExpandButton = YES;
     prefs.showsCandidatePageNumber = YES;
-    prefs.candidatePreeditStyle = 1;
+    prefs.showsCandidatePreedit = YES;
 
     // ↓ 展开：读一次完整候选，不发任何 Engine 命令；23 个候选排成 5 行，高亮停在原来高亮的第一个。
     compose();
