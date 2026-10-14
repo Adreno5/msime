@@ -1202,7 +1202,7 @@ impl<E: InputEngine> Runtime<E> {
         if generation != self.generation {
             return false;
         }
-        let translations: HashMap<String, String> = translations.into_iter().collect();
+        let mut translations: HashMap<String, String> = translations.into_iter().collect();
         // The answer to a `/fy` request arrives through the same host path as candidate glosses, so a host forwarding `translation_query` needs nothing else: it becomes the row that commits the translation, not a gloss under the English.
         if let Some(query) = self.command_translation() {
             if let Some(translation) = translations.get(&query.text) {
@@ -1217,12 +1217,8 @@ impl<E: InputEngine> Runtime<E> {
             changed = !self.translations.is_empty();
             self.translations.clear();
         } else {
-            let candidates: HashSet<&str> =
-                self.cached.candidates.iter().map(String::as_str).collect();
-            for (text, translation) in translations
-                .into_iter()
-                .filter(|(text, _)| candidates.contains(text.as_str()))
-            {
+            retain_candidate_translations(&mut translations, &self.cached.candidates);
+            for (text, translation) in translations {
                 if self.translations.get(&text) != Some(&translation) {
                     self.translations.insert(text, translation);
                     changed = true;
