@@ -10508,8 +10508,9 @@ int main(int argc, char **argv) {
         assert(session.maintenanceCalls == deletionCalls && session.lastCommand == UINT32_MAX);
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
         assert(clickCandidate);
-        NSMenu *candidateMenu = clickCandidate.menu;
+        assert(clickCandidate.menu == nil);
         NSEvent *rightClick = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:1 pressure:1];
+        NSMenu *candidateMenu = [clickCandidate menuForEvent:rightClick];
         assert([clickCandidate menuForEvent:rightClick] == candidateMenu);
         // AppKit 把右键菜单开在来源窗口层级加一，候选窗开着菜单时必须留在原层级。降回弹出菜单层级会让候选窗和菜单一起掉到截图遮罩下面（#7326）。
         layoutPanel.level = MSIMECandidateWindowLevel();
@@ -10538,7 +10539,7 @@ int main(int argc, char **argv) {
         [NSUserDefaults.standardUserDefaults removeObjectForKey:@"MSIMEClientPinnedCandidates"];
         [controller renderCandidates];
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
-        candidateMenu = clickCandidate.menu;
+        candidateMenu = [clickCandidate menuForEvent:rightClick];
         positionMenu = [candidateMenu itemAtIndex:1].submenu;
         NSMutableArray *operations = [NSMutableArray arrayWithObjects:[candidateMenu itemAtIndex:0], [candidateMenu itemAtIndex:2], nil];
         [operations addObjectsFromArray:[positionMenu.itemArray subarrayWithRange:NSMakeRange(0, 5)]];
@@ -10559,7 +10560,7 @@ int main(int argc, char **argv) {
         [controller renderCandidates];
         // renderCandidates rebuilds the buttons, so everything captured from the previous panel is stale.
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
-        candidateMenu = clickCandidate.menu;
+        candidateMenu = [clickCandidate menuForEvent:rightClick];
         assert(clickCandidate && candidateMenu.numberOfItems == 3);
         NSMenuItem *retainedOperation = [candidateMenu itemAtIndex:0];
         NSDictionary *validContext = retainedOperation.representedObject;

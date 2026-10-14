@@ -7437,7 +7437,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
                 reusable = NO;
                 break;
             }
-            button.menu = [self menuForCandidate:candidate];
+            [self configureCandidateMenu:button candidate:candidate];
             button.frame = NSMakeRect(inset + row.x, headerBottom - row.y - row.height,
                                       row.width, row.height);
             button.toolTip = pageGeometry.tooltips[index];
@@ -7479,7 +7479,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
                                                          number:[NSString stringWithFormat:@"%lu", (unsigned long)(slot + 1)]
                                                            font:font numberFont:numberFont glossFont:glossFont scale:scale
                                                        vertical:vertical action:@selector(selectCandidate:)];
-        button.menu = [self menuForCandidate:candidate];
+        [self configureCandidateMenu:button candidate:candidate];
         button.tag = (NSInteger)slot;
         // The frame is the laid out row, so a wrapped line is inside the area that takes the click.
         button.frame = NSMakeRect(inset + row.x, rowsTop - row.y - row.height, row.width, row.height);
@@ -7680,6 +7680,22 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     if (!_activeClient || !_session || !_panel.isVisible || button.superview != _panel.contentView) return;
     if (_expandedCandidates) [self closeExpandedCandidates];
     else [self openExpandedCandidates];
+}
+
+// 候选菜单携带本帧身份，仅在右键请求时创建，避免每次打字构建整棵菜单树。
+- (void)configureCandidateMenu:(MSIMECandidateButton *)button candidate:(NSDictionary *)candidate {
+    button.menu = nil;
+    __weak MSIMEInputController *weakSelf = self;
+    __weak MSIMECandidateButton *weakButton = button;
+    id token = _candidateMenuToken;
+    button.candidateMenuProvider = ^NSMenu * {
+        MSIMEInputController *controller = weakSelf;
+        MSIMECandidateButton *row = weakButton;
+        if (!controller || !row || controller->_candidateMenuToken != token ||
+            !MSIMECurrentCandidateIdentity(candidate[@"id"], controller->_view)) return nil;
+        if (!row.menu) row.menu = [controller menuForCandidate:candidate];
+        return row.menu;
+    };
 }
 
 - (NSMenu *)menuForCandidate:(NSDictionary *)candidate {
