@@ -57,6 +57,12 @@ public final class KeyboardLayoutSmoke {
         float total = 0;
         for (KeyboardLayout.LayerKey key : bottom) total += key.weight();
         check(Math.abs(total - 10.2f) < 1e-4);
+        // 直角引号样式下中文 123 层的两个引号键是「」，其余不变；中文标点关着时仍是英文版。
+        List<List<KeyboardLayout.LayerKey>> corner = KeyboardLayout.numberLayer(true, true, true);
+        check(texts(corner.get(1)).equals(List.of("-", "/", "：", "；", "（", "）", "¥", "@", "「", "」")));
+        check(texts(corner.get(2)).equals(texts(number.get(2))));
+        check(texts(KeyboardLayout.numberLayer(true, false, true).get(1))
+            .equals(texts(KeyboardLayout.numberLayer(false).get(1))));
         // 英文 123 层是 ASCII 版，底行返回键为 ABC。
         List<List<KeyboardLayout.LayerKey>> english = KeyboardLayout.numberLayer(false);
         check(texts(english.get(1)).equals(List.of("-", "/", ":", ";", "(", ")", "$", "@", "\"", "'")));

@@ -697,6 +697,8 @@ Unicode 输入：进入 Unicode 本地模式后，`Shift++` 作为 Engine 的 `+
 
 成对标点：启用成对标点后，`(`、`[` 和 `<` 的中文开标点会由宿主追加对应闭标点，`{` 追加 ASCII `}`，并向编辑器转发一次左移以把光标留在标点中间；`<` 的嵌套层级仍由 Engine 决定，宿主自动补出 `》` 后通过专用接口通知 Engine 抵消本组深度，连续独立输入保持为 `《》《》`，显式嵌套仍为 `《〈〉》`。候选活动时先完成高亮候选再补成对标点；候选导航绑定优先于成对标点。宿主按焦点右侧的 surrounding text 校验闭标点，使用有界配对栈避免重复输入；带 Ctrl、Alt、Super、Meta、Hyper 或 Mod5 的组合不触发跳过，Shift 仍可作为 `)`、`}`、`>` 和引号的物理按键修饰键，且被拒绝的组合不会破坏配对栈。IBus 提供的表格客户端名为 `scalc`、`gnumeric` 或 `calligrasheets` 时跳过成对补全与闭标点移位，以适配表格单元格编辑；共享 `soffice.bin` 不列入排除，避免影响 Writer 等其他文档。
 
+引号样式与方头括号样式（共享偏好 `quote_style`、`bracket_style`，在共享设置页「标点」组）下 Engine 让 `'` 出「」、`"` 出『』，`[` `]` 出〖〗。两个宿主的补全（`normalize_punctuation_pair` 按提交末尾实际是哪一组补哪一组）、跨过（`paired_closing_for_key` 按配对栈栈顶在两组后半个里挑）、空格转换的反查（`SmartPunctuationSpace.h`）都认这两组字；英文模式下固定中文标点时的输出（`shared/input/EnglishModeOutput.h`）按 View 的 `punctuation_marks` 出字。IBus 属性菜单不列这两项，它们不是需要随手切换的开关。
+
 Fcitx5 现在也做同样的成对补全：此前它只有状态栏上的开关，不补闭标点、不回移光标，也不跳过已有的闭标点。补全、配对栈和表格客户端排除都来自共享的 `src/candidates/PairedPunctuation.h`，客户端名取 Fcitx5 输入上下文的程序名；光标移动通过 `InputContext::forwardKey` 转发左/右方向键，闭标点校验读 surrounding text。Fcitx5 的标点先经共享路由，智能标点决定保留 ASCII 时不会补对子。
 
 AI 联想请求可携带 `ai_context`：当前焦点会话最近经共享提交路径上屏的文本，最多 1024 个 UTF-8 字节，按字符边界截断。分段选词和整句候选各追加本次提交，不重复追加已提交前缀；使用最终简繁/全角转换后的文本。仅启用 AI 联想且查询符合条件时发送，私密字段不记录；private/no-spellcheck 输入框在 IBus 与 Fcitx5 中都不发云候选、AI 和候选翻译请求，切出私密框时会话重建，其中上屏的文字不会进入之后的 AI 上下文。上下文在失焦、reset 和会话关闭时清空；不落盘、不写日志。provider 应将该字段仅用于 AI 联想上下文。

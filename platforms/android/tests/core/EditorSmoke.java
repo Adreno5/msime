@@ -99,7 +99,8 @@ public final class EditorSmoke {
         // No-suggestion text, and Chrome's address bar (URI + no suggestions), still compose.
         check(EditorPolicy.useEngine(0x80001));
         check(EditorPolicy.useEngine(0x80011));
-        for (int type : new int[] {0, 2, 3, 0x81, 0x91, 0xe1}) check(!EditorPolicy.useEngine(type));
+        for (int type : new int[] {2, 3, 0x81, 0x91, 0xe1}) check(!EditorPolicy.useEngine(type));
+        check(EditorPolicy.useEngine(0));
         check(EditorPolicy.allowLearning(0));
         check(!EditorPolicy.allowLearning(0x1000000));
         // Key heatmap exclusion: text and numeric passwords, and fields that ask for no learning.

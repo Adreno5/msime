@@ -417,7 +417,7 @@ public final class MSIMEInputService extends InputMethodService {
     private KeyboardScheme lastChineseScheme;
     private java.util.List<KeyboardScheme> enabledSchemes =
         KeyboardScheme.enabledFromPreferenceIds(null, edition);
-    // 「输入方式」面板列出的方案：词典已装好的全部方案，双拼只留用户设置的那一种（见 `schemeConfiguration` 和 `KeyboardScheme.pickerSchemes`）。`enabledSchemes` 仍是存下的列表，面板里的一次保存不会丢掉用户在词典到达之前打开的方案。
+    // 「输入方式」面板列出的方案：已启用且词典已装好的方案，双拼只留用户设置的那一种（见 `schemeConfiguration` 和 `KeyboardScheme.pickerSchemes`）。`enabledSchemes` 仍是存下的列表，面板里的一次保存不会丢掉用户在词典到达之前打开的方案。
     java.util.List<KeyboardScheme> visibleSchemes = enabledSchemes;
     // The runtime options' `language_dictionaries` directory, read with them in onStartInput; empty when the configuration names none.
     private String languageDictionaries = "";
@@ -482,6 +482,8 @@ public final class MSIMEInputService extends InputMethodService {
     Runnable diagnosticDismissTask;
     final EnglishLetterCaseState letterCase = new EnglishLetterCaseState();
     boolean dedicatedEnglish;
+    /** 方案异步保存完成前暂不绘制中间的中文视图。 */
+    private boolean renderingSuppressed;
     private boolean hardwareLanguageShift = true;
     private boolean hardwareLanguageCtrlAltSpace = true;
     private boolean hardwareCharacterSet = true;
@@ -744,9 +746,9 @@ public final class MSIMEInputService extends InputMethodService {
             }
         }
         java.util.List<KeyboardScheme> enabled = KeyboardScheme.enabledFromPreferenceIds(ids, edition);
-        // 切换器列出和设置 → 输入相同的方案：所有词典已安装的方案。Android 上没有启用开关，只按 `enabled` 过滤会让粤拼、注音、越南语这些默认不启用的方案在键盘上永远找不到。词典缺失的方案照旧不列，host-api 也会从它回退。
+        // 切换器只列已启用且词典已安装的方案；设置页另有「添加语言」入口。把所有已安装方案都放进来会让用户移除的外语仍被中英键轮换到。
         java.util.List<KeyboardScheme> visible =
-            KeyboardScheme.installedOf(java.util.List.of(KeyboardScheme.values()), languageDictionaries, resourcePacks, edition);
+            KeyboardScheme.installedOf(enabled, languageDictionaries, resourcePacks, edition);
         String selected = shared == null || shared.isNull("selected")
             ? null : shared.optString("selected", null);
         KeyboardScheme resolved = KeyboardScheme.resolveEnabledSelection(engineScheme, selected, visible, edition);
@@ -1331,9 +1333,8 @@ public final class MSIMEInputService extends InputMethodService {
         statisticsFailureReported = false;
         message = "直接输入";
         // 外观和引擎是两件事。皮肤、方案角标和键高来自同一份偏好，但它们该跟着用户走，而不是跟着
-        // 这个输入框用不用引擎走：系统在冷启动后发来的第一个编辑器 inputType 是 0，密码框和数字
-        // 框也都不走引擎，把读偏好一起挡在外面，键盘就先按字段初始值画成默认绿的 26 键，等下一个
-        // 普通输入框到了才跳成用户自己的皮肤——那一跳看起来就像换了个输入法。
+        // 这个输入框用不用引擎走：密码框和数字框不走引擎，TYPE_NULL 的自定义聊天框仍要走引擎，
+        // 否则九键和 26 键会落入「直接输入」而无法组字。
         boolean engineWanted = info != null && connection != null
             && EditorPolicy.useEngine(info.inputType);
         String statisticsPreferences = "";
@@ -2587,8 +2588,11 @@ public final class MSIMEInputService extends InputMethodService {
         defaultImeMode = nextDefaultImeMode;
         imeModeScope = nextImeModeScope;
         JSONObject nextView = result.getJSONObject("view");
+        // 引号与方头括号样式变了也重建键行：符号键、字母提示和 123 层的键面都跟着它画。
         boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(nextView)
-            || japaneseEmojiKeyChanged;
+            || japaneseEmojiKeyChanged
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(nextView));
         enabledSchemes = nextSchemeConfiguration.enabled();
         visibleSchemes = nextSchemeConfiguration.visible();
         selectedScheme = nextSchemeConfiguration.selected();
@@ -2643,7 +2647,10 @@ public final class MSIMEInputService extends InputMethodService {
     boolean apply(String response) throws JSONException {
         JSONObject result = value(response);
         JSONObject next = result.getJSONObject("view");
-        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next);
+        // 偏好改了样式时，引擎在空闲重建后的那次转换里才换样式，键面在这里跟上。
+        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(next)
+            || !InputViewValuePolicy.punctuationMarks(view).equals(
+                InputViewValuePolicy.punctuationMarks(next));
         String commit = result.isNull("commit") ? null : result.getString("commit");
         if (commit != null) {
             // The runtime widened this already - it holds the character width now, and applies it
@@ -2662,7 +2669,7 @@ public final class MSIMEInputService extends InputMethodService {
         if (rebuildLayout || !KeyboardLayout.carriesLetterCase(displayedTouchLayout(view)))
             letterCase.reset();
         if (rebuildLayout) imeLetterRows.rebuildKeyRows();
-        render();
+        if (!renderingSuppressed) render();
         return strictBoolean(result, "handled");
     }
 
@@ -2975,7 +2982,9 @@ public final class MSIMEInputService extends InputMethodService {
         java.util.ArrayList<String> words = new java.util.ArrayList<>(candidateCount);
         for (int index = 0; index < candidateCount; index++) {
             JSONObject candidate = entries.optJSONObject(index);
-            if (candidate != null) words.add(InputViewValuePolicy.textOr(candidate, "text", ""));
+            if (candidate == null || !CandidateTranslationPolicy.userTranslationSourceAllowed(
+                    InputViewValuePolicy.integer(candidate, "source", -1))) continue;
+            words.add(InputViewValuePolicy.textOr(candidate, "text", ""));
         }
         verifyCandidateTranslationBinding(generation, same -> {
             if (same != null) {
@@ -3080,7 +3089,9 @@ public final class MSIMEInputService extends InputMethodService {
         java.util.LinkedHashSet<String> texts = new java.util.LinkedHashSet<>(textCapacity);
         for (int index = 0; entries != null && index < BoundsPolicy.atMost(entries.length(), 32); index++) {
             JSONObject candidate = entries.optJSONObject(index);
-            if (candidate != null) texts.add(InputViewValuePolicy.textOr(candidate, "text", ""));
+            if (candidate != null && CandidateTranslationPolicy.userTranslationSourceAllowed(
+                    InputViewValuePolicy.integer(candidate, "source", -1)))
+                texts.add(InputViewValuePolicy.textOr(candidate, "text", ""));
         }
         for (java.util.Map<String, String> glosses : offline.values()) texts.addAll(glosses.keySet());
         boolean account = includeAccount && candidateTranslationAccount && candidateTranslationStore != null
@@ -3972,6 +3983,11 @@ public final class MSIMEInputService extends InputMethodService {
             InputViewValuePolicy.scheme(view, -1), InputViewValuePolicy.textOr(view, "local_mode", "none"), chinesePunctuation);
     }
 
+    /** 当前 View 报告的引号与方头括号样式；画键面、提示和 123 层时用它，不自己解析偏好。 */
+    ChineseSymbolFaces.Marks punctuationMarks() {
+        return InputViewValuePolicy.punctuationMarks(view);
+    }
+
     private java.util.List<QuickPunctuationPolicy.Entry> quickPunctuationEntries() {
         return QuickPunctuationPolicy.entries(dedicatedEnglish,
             view == null ? -1 : InputViewValuePolicy.scheme(view, -1),
@@ -4024,7 +4040,8 @@ public final class MSIMEInputService extends InputMethodService {
     private void updateSymbolKeyFaces() {
         boolean chineseMode = sendsChinesePunctuation();
         for (int index = 0; index < symbolKeyButtons.size(); index++) {
-            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode);
+            String face = ChineseSymbolFaces.face(symbolKeyInputs.get(index), chineseMode,
+                punctuationMarks());
             Button button = symbolKeyButtons.get(index);
             button.setText(face);
             button.setContentDescription("按键 " + face);
@@ -4037,7 +4054,8 @@ public final class MSIMEInputService extends InputMethodService {
         for (int index = 0; index < shuangpinKeyButtons.size(); index++) {
             String input = shuangpinKeyInputs.get(index);
             if (";".equals(input)) continue;
-            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese));
+            shuangpinKeyButtons.get(index).setCornerHint(LetterHintTable.face(input, chinese,
+                punctuationMarks()));
         }
     }
 
@@ -4088,6 +4106,11 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     private void updateAutomaticCapitalization() {
+        updateAutomaticCapitalization(true);
+    }
+
+    /** 切换方案前只更新英文大小写状态；调用方要把方案保存和最终渲染合成一次时暂不重画。 */
+    private void updateAutomaticCapitalization(boolean shouldRender) {
         if (!dedicatedEnglish) {
             // 韩语键面上 Shift 是用户选的双辅音而不是大写；越南语和藏文里它是下一个字母的大小写或 Caps Lock（威利转写区分大小写），所以编辑器的更新不能把它清掉。
             if (!letterCompositionActive()) letterCase.reset();
@@ -4106,7 +4129,7 @@ public final class MSIMEInputService extends InputMethodService {
             automaticEnabled, EditorPolicy.capitalizationMode(editorInputType), context);
         // 手动按下的单次大写留到下一个字母用掉为止，与 HarmonyOS 一致；否则按下 Shift 后编辑器回报一次光标位置就会把它冲掉。
         if (!letterCase.isPressedShift() && letterCase.applyAutomatic(next)) imeLetterRows.refreshLetterCase();
-        render();
+        if (shouldRender) render();
     }
 
     private void rememberChineseScheme() {
@@ -4129,7 +4152,7 @@ public final class MSIMEInputService extends InputMethodService {
         else toggleInputLanguage();
     }
 
-    /** 日语 9 键左列的语言键键面：轮换关着时是「英」（与原来相同），打开时是这一下要切到的语言。 */
+    /** 日语 9 键的语言键键面：轮换关着时是「英」（与原来相同），打开时是这一下要切到的语言。 */
     String japaneseLanguageKeyLabel() {
         return LanguageKeyCyclePolicy.targetLabel(nextLanguageTarget());
     }
@@ -4148,13 +4171,19 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     void toggleInputLanguage() {
+        toggleInputLanguage(true);
+    }
+
+    private void toggleInputLanguage(boolean shouldRender) {
         if (session == 0) return;
         boolean nextEnglish = !dedicatedEnglish;
-        if (dedicatedEnglish) command(3); else command(2);
-        if (session == 0) return;
-        int previousLayout = displayedTouchLayout(view);
-        boolean previousUppercase = letterCase.usesUppercase();
+        boolean previousSuppressed = renderingSuppressed;
+        renderingSuppressed = renderingSuppressed || !shouldRender;
         try {
+            if (dedicatedEnglish) command(3); else command(2);
+            if (session == 0) return;
+            int previousLayout = displayedTouchLayout(view);
+            boolean previousUppercase = letterCase.usesUppercase();
             JSONObject nextView = value(NativeClient.setEnglishMode(session, nextEnglish));
             dedicatedEnglish = nextEnglish;
             if (inputModeStore != null) {
@@ -4166,11 +4195,16 @@ public final class MSIMEInputService extends InputMethodService {
             // 布局变了时 refreshLetterCase 自己会整组重建；只是大写回到小写时就地改键面。
             if (previousLayout != displayedTouchLayout(view) || previousUppercase)
                 imeLetterRows.refreshLetterCase();
-            updateAutomaticCapitalization();
+            updateAutomaticCapitalization(shouldRender);
             if (directEnglishActive()) refreshEnglishSuggestions();
-            else { clearEnglishSuggestions(); render(); }
+            else {
+                clearEnglishSuggestions();
+                if (shouldRender) render();
+            }
         } catch (JSONException | LinkageError error) {
             fail();
+        } finally {
+            renderingSuppressed = previousSuppressed;
         }
     }
 
@@ -6129,14 +6163,12 @@ public final class MSIMEInputService extends InputMethodService {
         if (schemeSaving || touchGeometrySaving || traditionalOutputSaving
                 || session == 0 || preferencesSnapshot == null
                 || preferencesDirectory.isEmpty()) return;
-        // Match Apple's scheme picker: choosing a Chinese scheme from the English card
-        // returns to Chinese mode before applying the persisted Engine scheme.
-        if (dedicatedEnglish) {
-            toggleInputLanguage();
-            if (session == 0) return;
-        }
+        // 目标方案不变时只退出英文；更换方案时保留英文键盘到保存成功，避免异步等待期间显示中文中间帧。
         if (scheme == selectedScheme) {
+            if (dedicatedEnglish) toggleInputLanguage();
+            if (session == 0) return;
             closeSchemePicker();
+            render();
             return;
         }
         replyModel.resetResults();
@@ -6167,7 +6199,7 @@ public final class MSIMEInputService extends InputMethodService {
             for (KeyboardScheme candidate : enabledSchemes) {
                 enabled.put(candidate.preferenceId());
             }
-            // 切换器也列出未启用的方案，选中时把它加入启用列表；否则 `selected` 指向未启用的方案，下次读取会被回退掉。
+            // 调用方显式选中新方案时一并启用，保证 `selected` 始终指向启用列表内的方案。
             if (!enabledSchemes.contains(scheme)) enabled.put(scheme.preferenceId());
             preferences.put("touch_keyboard_schemes", new JSONObject()
                 .put("enabled", enabled).put("selected", scheme.preferenceId()));
@@ -6218,6 +6250,11 @@ public final class MSIMEInputService extends InputMethodService {
                         > savedRevision) {
                 preferencesNotice = "";
             } else {
+                // 英文模式和新方案在同一次主线程回调里应用，只让最终键盘进入下一帧。
+                if (dedicatedEnglish) {
+                    toggleInputLanguage(false);
+                    if (session != targetSession) return;
+                }
                 applyPreferencesSnapshot(saved);
                 preferencesNotice = " · 输入方案已切换";
             }
@@ -6798,7 +6835,9 @@ public final class MSIMEInputService extends InputMethodService {
         int slot = eligible ? highlightedCandidateSlot(view) : -1;
         JSONObject candidate = slot < 0 ? null : visibleCandidate(slot);
         java.util.List<String> senses = java.util.List.of();
-        if (eligible && candidate != null && (candidateEnglishGloss || candidateTranslationsEnabled)) {
+        if (eligible && candidate != null && CandidateTranslationPolicy.userTranslationSourceAllowed(
+                InputViewValuePolicy.integer(candidate, "source", -1))
+                && (candidateEnglishGloss || candidateTranslationsEnabled)) {
             String translation = candidate.isNull("translation")
                 ? "" : JsonPolicy.strictStringOrEmpty(candidate.opt("translation"));
             senses = CandidateTranslationPolicy.insertionGlosses(translation);
@@ -6932,13 +6971,21 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     String candidateAnnotation(JSONObject candidate) {
+        String translation = candidateTranslation(candidate);
         if (koreanHanjaRows())
             return CandidateGlossPolicy.hanjaAnnotation(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                translation,
                 candidateEnglishGloss || candidateTranslationsEnabled);
         return CandidateGlossPolicy.annotation(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-            InputViewValuePolicy.textOr(candidate, "translation", ""),
+            translation,
             candidateEnglishGloss || candidateTranslationsEnabled);
+    }
+
+    /** 候选释义禁止来源即使因同词候选合并拿到译文，也不能在 Android 的候选条、读屏或菜单里出现。 */
+    private static String candidateTranslation(JSONObject candidate) {
+        if (candidate == null || !CandidateTranslationPolicy.userTranslationSourceAllowed(
+                InputViewValuePolicy.integer(candidate, "source", -1))) return "";
+        return InputViewValuePolicy.textOr(candidate, "translation", "");
     }
 
     private String wubiCodeHint(JSONObject candidate, JSONObject context, String typed) {
@@ -6952,17 +6999,17 @@ public final class MSIMEInputService extends InputMethodService {
         String hint = wubiCodeHint(candidate, view, typed);
         if (hint.isEmpty()) return candidateAnnotation(candidate);
         // 五笔剩余编码和双拼辅助码一样占提示位，释义跟在同一行后面，不再被它挤掉（#6997）。
-        return CandidateGlossPolicy.annotation(hint, InputViewValuePolicy.textOr(candidate, "translation", ""),
+        return CandidateGlossPolicy.annotation(hint, candidateTranslation(candidate),
             candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
     String candidateAccessibilitySuffix(JSONObject candidate) {
         if (koreanHanjaRows())
             return CandidateGlossPolicy.hanjaAccessibilitySuffix(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                candidateTranslation(candidate),
                 candidateEnglishGloss || candidateTranslationsEnabled);
         return CandidateGlossPolicy.accessibilitySuffix(InputViewValuePolicy.textOr(candidate, "annotation", ""),
-            InputViewValuePolicy.textOr(candidate, "translation", ""),
+            candidateTranslation(candidate),
             candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
@@ -6970,7 +7017,7 @@ public final class MSIMEInputService extends InputMethodService {
         String hint = wubiCodeHint(candidate, view, typed);
         return hint.isEmpty() ? candidateAccessibilitySuffix(candidate)
             : "，还需输入 " + hint + CandidateGlossPolicy.glossAccessibilitySuffix(
-                InputViewValuePolicy.textOr(candidate, "translation", ""),
+                candidateTranslation(candidate),
                 candidateEnglishGloss || candidateTranslationsEnabled);
     }
 
