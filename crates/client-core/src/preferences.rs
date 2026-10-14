@@ -898,6 +898,9 @@ pub struct Preferences {
     /// 「展开候选」：横排候选窗组字时按 ↓ 展开成多行候选网格（一行一页，上下滚动），候选窗上也多一个展开按钮；竖排候选窗不受影响。默认关闭，缺字段的旧文档读成关闭。只有声明 `HostCapabilities::expand_candidates` 的宿主（目前只有 macOS）读它，其他宿主保留这个偏好但不用。
     #[serde(default)]
     pub expand_candidates: bool,
+    /// macOS 展开候选的鼠标按钮，独立于页码开关；默认显示，关闭后仍可用下键展开。
+    #[serde(default = "enabled_by_default")]
+    pub show_candidate_expand_button: bool,
     pub scheme: InputScheme,
     /// Show the Wubi code suffix that remains after the typed prefix.
     #[serde(default = "enabled_by_default")]
@@ -2147,6 +2150,7 @@ impl Default for Preferences {
             input_mode_status_item: false,
             show_app_logo: false,
             expand_candidates: false,
+            show_candidate_expand_button: true,
             scheme: InputScheme::default(),
             wubi_code_hint: true,
             wubi_auto_commit_unique: true,

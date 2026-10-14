@@ -3035,6 +3035,29 @@ static void TestExpandedCandidateGrid() {
     assert([[controller valueForKey:@"expandedFirstRow"] unsignedIntegerValue] == 3);
     [controller closeExpandedCandidates];
 
+    // 页码隐藏仍能用鼠标展开；全隐藏首行时按钮留在候选行，不增加高度。
+    prefs.showsCandidatePageNumber = NO;
+    prefs.showsAppLogo = NO;
+    prefs.candidatePreeditStyle = 0;
+    assert(prefs.showsCandidateExpandButton);
+    compose();
+    MSIMECandidateButton *compactButton = ExpandedGridSubview(panel, -3);
+    assert(compactButton && !PageButton(panel.contentView, -1) && !PageButton(panel.contentView, -2));
+    MSIMECandidateButton *first = ExpandedGridSubview(panel, 0);
+    assert(first && NSMinY(compactButton.frame) >= NSMinY(first.frame) && NSMaxY(compactButton.frame) <= NSMaxY(first.frame));
+    const CGFloat compactHeight = panel.frame.size.height;
+    [controller toggleExpandedCandidates:compactButton];
+    assert(expanded());
+    [controller closeExpandedCandidates];
+    prefs.showsCandidateExpandButton = NO;
+    compose();
+    assert(!ExpandedGridSubview(panel, -3) && panel.frame.size.height == compactHeight);
+    assert(press(125) && expanded());
+    [controller closeExpandedCandidates];
+    prefs.showsCandidateExpandButton = YES;
+    prefs.showsCandidatePageNumber = YES;
+    prefs.candidatePreeditStyle = 1;
+
     // ↓ 展开：读一次完整候选，不发任何 Engine 命令；23 个候选排成 5 行，高亮停在原来高亮的第一个。
     compose();
     session.lastCommand = UINT32_MAX;
