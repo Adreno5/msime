@@ -270,14 +270,6 @@ impl QuanpinDictionary {
         result
     }
 
-    /// `tbl_1_<c>` rows for a one-letter code, as `WordItem(key, value, weight, Database, key)` with `pinyin = code`.
-    pub fn query_initial(&self, code: &str, limit: usize) -> Vec<WordItem> {
-        if code.len() != 1 {
-            return Vec::new();
-        }
-        initial_items(self.database.query_initial(code, limit))
-    }
-
     /// 个人上下文模型的只读视图（与同一份用户日志上的输入会话共用）。九键查一次简拼时取一次，按 `PersonalNgram::word_count` 把用户用过的简拼词排到前面（#6185）；拿着它时不要记录新的使用，记录要写锁。
     pub fn personal_model(&self) -> RwLockReadGuard<'_, PersonalNgram> {
         self.personal.model()
@@ -305,7 +297,7 @@ impl QuanpinDictionary {
         )
     }
 
-    /// Replace the capped 24-row run with every row of the initial (QD:506-558); updates the row cache and the series slot of the query `(raw, segmentation, autocorrect_types)` that produced `candidates`.
+    /// 首字母的 24 行候选展开为全部行（QD:506-558），同时更新行缓存与产生该列表的查询槽。
     pub fn expand_initial_candidates(
         &mut self,
         raw: &str,
@@ -327,14 +319,10 @@ impl QuanpinDictionary {
         if limited_count != INITIAL_CANDIDATE_LIMIT {
             return false;
         }
-        let mut expanded = self.query_initial(code, UNLIMITED_ROWS);
+        let expanded = matched_items(self.database.query_initial(code, UNLIMITED_ROWS), code);
         if expanded.len() <= limited_count {
             return false;
         }
-        for item in &mut expanded {
-            item.canonical_pinyin = std::mem::replace(&mut item.pinyin, code.to_string());
-        }
-
         let mut merged = Vec::with_capacity(candidates.len() - limited_count + expanded.len());
         let mut inserted = false;
         for item in candidates.drain(..) {
@@ -1414,3 +1402,7 @@ mod lattice_span_cache_tests;
 #[cfg(test)]
 #[path = "dictionary/row_projection_tests.rs"]
 mod row_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/initial_expansion_projection_tests.rs"]
+mod initial_expansion_projection_tests;
