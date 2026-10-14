@@ -1,9 +1,9 @@
+import { createCommunityResourceClient } from "./community-resource-host";
+
 import type {
   AccountClient,
   AiSkinProposal,
   ChatClient,
-  CommunityResourceApplication,
-  CommunityResourcePage,
   CommunitySkin,
   CommunitySkinDownload,
   CommunitySkinPage,
@@ -120,27 +120,7 @@ export function createMobileHostServices(
           listener(event.payload),
         ),
     },
-    communityResources: {
-      list: (kind, scope, search, offset) =>
-        invoke<CommunityResourcePage>("community_resource_list", { kind, scope, search, offset }),
-      detail: (id) => invoke("community_resource_detail", { id }),
-      publish: (id, kind, name, description, content, revision) =>
-        invoke("community_resource_publish", { id, kind, name, description, content, revision }),
-      apply: (id, resourceRevision) =>
-        invoke<CommunityResourceApplication>("community_resource_apply", { id, resourceRevision }),
-      save: (id, saved) => invoke("community_resource_save", { id, saved }),
-      rate: (id, stars) => invoke("community_resource_rate", { id, stars }),
-      unpublish: (id) => invoke("community_resource_unpublish", { id }),
-      storeReply: (item) => invoke("community_resource_store_reply", { item }),
-      removeReply: (id) => invoke("community_resource_remove_reply", { id }),
-      report: (kind, id, reason, detail) =>
-        invoke("community_report", {
-          kind: kind === "dictionary" ? "dictionaries" : "replies",
-          id,
-          reason,
-          detail,
-        }),
-    },
+    communityResources: createCommunityResourceClient(invoke, { includeReplyActions: true }),
     openSystemKeyboardSettings,
     ...(platform === "android"
       ? { openScreenKeyboard: () => invoke("android_open_keyboard_tryout").then(() => undefined) }
