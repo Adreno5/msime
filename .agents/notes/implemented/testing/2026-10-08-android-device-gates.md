@@ -22,6 +22,7 @@ CI 的 Android job 只做 `check-host.sh`、各版本 Gradle 编译和 NewApi li
 - `release-android.yml` 的 `publish` 依赖新的 `device` job，用同一个提交跑同一套，失败就不发。这个 job 不接触发版密钥。
 - 设备脚本：`start-emulator.sh` 接受 API 级别，按主机架构选 arm64-v8a 或 x86_64 镜像，每个级别一台独立 AVD、固定端口（`5580 - 2 × (35 - API)`）；`run-core-test.sh` 用 `MSIME_ANDROID_TEST_SERIAL` 选设备；新增 `build-core-test.sh`。
 - 设备测试统一用 `ime list` 给出的短写 id `app.msime.android/.MSIMEInputService`。
+- `DeviceSmoke.restartIme` 不把三条 `ime` 命令返回加固定睡眠当成切换完成：禁用当前输入法后，系统的异步回退可能覆盖随后的选择。它读取默认输入法标识，连续四次确认水杉被选中；回退覆盖时重新选择，十五秒内不能稳定就报告测试准备失败，不再把系统键盘误报为产品空窗口。第二次 nightly 的高度重启用例等待水杉节点超时，设备没有崩溃，日志中的编辑器实际绑定了 `LatinIME`，因此需要确认选择状态，而非放宽高度断言或跳过套件。
 - 设备测试读控件状态走 `DeviceSmoke.state()`/`switchState()`：API 30 起读状态描述，更早的系统按应用实际暴露的 `isSelected`/`isEnabled` 折算。
 - `DeviceSmoke.await` 超时时附上输入法窗口里看得见的文字（最多 30 条，只读输入法自己的节点），失败信息直接说明界面停在哪里。
 - 无障碍点击（`DeviceSmoke.tap` 和 `HandwritingDeviceSmoke.accessibleClick`）在 `performAction(ACTION_CLICK)` 返回 false 时重新查节点再点，最多三次。查到节点和点下去之间面板可能已经重新绑定（开关刷新状态、翻页动画收尾），过期节点上的点击返回 false、并没有发生，所以重试不会把开关点两次；真不接受点击的控件三次后照样失败。2026-10-08 起 API 35 上这一处间歇失败，一天里落在四个互不相关的 PR 上（三次是「更多」面板的按键音开关），重跑即过。同理，`smoke.sh` 启动轮询里跳过引导页时直接用这一拍的 dump 去点，不另取一份：另取的那份可能赶上引导页开关中途，返回空树（`null root node`），找不到按钮就会让冒烟在第一条用例前退出（#6074 的 API 28 上出现过）；点不到就当作还没就绪，下一拍再看。
@@ -44,6 +45,7 @@ CI 的 Android job 只做 `check-host.sh`、各版本 Gradle 编译和 NewApi li
 
 ## Alternatives considered
 
+- **延长输入法重启后的固定睡眠**：改动最少，较慢的 CI runner 可能因此等到回退结束。但时间本身不能证明最终选中了水杉；发生回退覆盖时等多久都还是系统键盘，因此检查实际选择状态并有界重新选择。
 - **只在发版前跑，不在 PR 上跑**：最强的理由是省 CI 时间，每个 PR 少两个各几十分钟的 job。不用它是因为 0.3.0 的两个回归都是发版当天才合入的，发版门禁拦下时离用户要更新只差一步，修的人还得回头找是哪个 PR；在 PR 上失败，责任和上下文都还在。
 - **用 `reactivecircus/android-emulator-runner` 这类 action 起模拟器**：省掉 KVM 规则、等开机这些样板。不用是因为本机和 CI 应该走同一套 `start-emulator.sh`，否则 CI 绿而本机复现不了（或反过来）；而且要多引入一个第三方 action。
 - **只跑 client-core 单测，不装 APK**：快得多，也能抓住前两个问题。但 Android 9 的启动崩溃是资源加载问题，只有装包启动才看得见。
