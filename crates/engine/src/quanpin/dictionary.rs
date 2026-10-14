@@ -367,13 +367,16 @@ impl QuanpinDictionary {
         let segments = split_segments(segmentation);
         let mut result = Vec::new();
         let mut budget = FUZZY_PATH_BUDGET;
+        let mut typed = segmentation;
         for count in (1..=segments.len()).rev() {
             if budget <= 1 {
                 break;
             }
+            if count < segments.len() {
+                typed = typed.rsplit_once('\'').map_or("", |(prefix, _)| prefix);
+            }
             let prefix = &segments[..count];
             let limit = FUZZY_SEGMENTATION_LIMIT.min(budget);
-            let typed = join_segments(prefix);
             // 路径照样算出来（纯计算，不查库），预算照旧按路径数扣；只有查库这一步走缓存。
             let paths = fuzzy_segmentations(prefix, options, limit);
             if paths.is_empty() {
@@ -1301,15 +1304,16 @@ fn fuzzy_cache_key_matches(cached: &CachedFuzzyCandidates, rules: u32, segmentat
 }
 
 /// 热页直接投影，冷页保留原缓存副本与 SQLite 页容量策略。
-fn append_cached_fuzzy_rows(
+fn append_cached_fuzzy_rows<'a>(
     database: &PinyinDatabase,
     cache: &mut FifoCache<u64, CachedFuzzyRows>,
     paths: &[Vec<String>],
     rules: u32,
     limit: usize,
-    typed: String,
+    typed: impl Into<Cow<'a, str>>,
     result: &mut Vec<WordItem>,
 ) {
+    let typed = typed.into();
     let hash = fuzzy_row_cache_hash(rules, limit, &typed);
     if let Some(cached) = cache.get_ref(&hash) {
         if fuzzy_row_cache_key_matches(cached, rules, limit, &typed) {
@@ -1323,23 +1327,23 @@ fn append_cached_fuzzy_rows(
         CachedFuzzyRows {
             rules,
             limit,
-            typed: typed.clone(),
+            typed: typed.as_ref().to_owned(),
             rows: rows.clone(),
         },
     );
     append_fuzzy_items(rows.into_iter(), typed, result);
 }
 
-/// 首行接管已分配的匹配码，其余行沿用同一读法，结果继续独立拥有全部字段。
+/// 取得首行才拥有匹配码，已有拥有值直接接管；其余行复制同一读法。
 fn append_fuzzy_items(
     mut rows: impl ExactSizeIterator<Item = DictRow>,
-    typed: String,
+    typed: Cow<'_, str>,
     result: &mut Vec<WordItem>,
 ) {
     result.reserve(rows.len());
     if let Some(row) = rows.next() {
         let mut item = WordItem::new(
-            typed,
+            typed.into_owned(),
             row.value,
             row.weight,
             CandidateSource::Database,
@@ -1586,3 +1590,7 @@ mod series_prefix_borrow_tests;
 #[cfg(test)]
 #[path = "dictionary/initial_row_key_tests.rs"]
 mod initial_row_key_tests;
+
+#[cfg(test)]
+#[path = "dictionary/fuzzy_typed_borrow_tests.rs"]
+mod fuzzy_typed_borrow_tests;
