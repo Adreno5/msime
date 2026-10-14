@@ -394,6 +394,24 @@ int main(void)
         assert(!panel.isVisible);
         [controller renderCandidates];
         assert(panel.alphaValue == 1.0);
+        // 使用有效的合成候选身份，验证按需创建、帧内复用和旧按钮拒绝菜单。
+        NSDictionary *menuView = @{@"session": @1, @"generation": @7, @"focused": @YES,
+                                  @"editing_text": @"d", @"page": @0, @"page_count": @1,
+                                  @"candidates": @[@{@"id": @{@"session": @1, @"generation": @7, @"index": @0},
+                                                     @"text": @"合成", @"highlighted": @YES}]};
+        [controller setValue:menuView forKey:@"view"];
+        [controller renderCandidates];
+        MSIMECandidateButton *menuRow = CandidateButton(panel.contentView, 0);
+        assert(menuRow.menu == nil);
+        NSEvent *rightClick = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:NSZeroPoint modifierFlags:0
+                                               timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:1 pressure:1];
+        NSMenu *menu = [menuRow menuForEvent:rightClick];
+        assert(menu && menu.numberOfItems == 3);
+        assert([menuRow menuForEvent:rightClick] == menu);
+        [controller renderCandidates];
+        assert([menuRow menuForEvent:rightClick] == nil);
+        assert(CandidateButton(panel.contentView, 0).menu == nil);
+
         // 可选的合成显隐样本，仅输出耗时与菜单构建次数，不输出输入内容。
         if (getenv("MSIME_CANDIDATE_BENCHMARK")) {
             NSMutableArray *sample = [NSMutableArray array];
