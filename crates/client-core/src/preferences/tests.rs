@@ -3266,6 +3266,38 @@ fn chinese_english_spacing_defaults_off_is_omitted_and_roundtrips() {
 }
 
 #[test]
+fn traditional_variant_defaults_to_s2t_is_omitted_and_roundtrips() {
+    let defaults = Preferences::default();
+    assert_eq!(
+        defaults.traditional_chinese_variant,
+        TraditionalVariant::Standard
+    );
+    let written = serde_json::to_value(&defaults).unwrap();
+    assert!(written.get("traditional_chinese_variant").is_none());
+
+    for (variant, name) in [
+        (TraditionalVariant::Taiwan, "s2tw"),
+        (TraditionalVariant::TaiwanPhrases, "s2twp"),
+    ] {
+        let preferences = Preferences {
+            traditional_chinese_output: true,
+            traditional_chinese_variant: variant,
+            ..Preferences::default()
+        };
+        let written = serde_json::to_value(&preferences).unwrap();
+        assert_eq!(written["traditional_chinese_variant"], name);
+        assert_eq!(
+            serde_json::from_value::<Preferences>(written).unwrap(),
+            preferences
+        );
+    }
+
+    let mut unknown = serde_json::to_value(&defaults).unwrap();
+    unknown["traditional_chinese_variant"] = "s2hk".into();
+    assert!(serde_json::from_value::<Preferences>(unknown).is_err());
+}
+
+#[test]
 fn shuangpin_profiles_preserve_legacy_files_and_reject_unknown_values() {
     let dir = tempfile::tempdir().unwrap();
     let store = PreferencesStore::new(dir.path());

@@ -127,6 +127,7 @@ fn settings_sync_export_is_exactly_the_shared_android_keys() {
             "input.schema",
             "input.shuangpin_schema",
             "input.smart_punctuation",
+            "input.traditional_variant",
             "input.wubi_auto_commit_unique",
             "input.wubi_code_hint",
             "input.wubi_schema",
@@ -410,6 +411,7 @@ fn settings_sync_unknown_enum_values_skip_only_their_key() {
         ("input.wubi_schema", "wubi06"),
         ("input.frequency_mode", "random"),
         ("input.quote_style", "semantic"),
+        ("input.traditional_variant", "s2hk"),
         ("input.bracket_style", "round"),
         ("platform.android.keyboard_layout", "future_layout"),
         ("platform.android.theme", "sepia"),
@@ -998,6 +1000,27 @@ fn settings_sync_punctuation_styles_round_trip() {
             assert_eq!(applied.preferences, expected);
             assert!(applied.skipped.is_empty());
         }
+    }
+    for (variant, value) in [
+        (TraditionalVariant::Standard, "s2t"),
+        (TraditionalVariant::Taiwan, "s2tw"),
+        (TraditionalVariant::TaiwanPhrases, "s2twp"),
+    ] {
+        let expected = Preferences {
+            traditional_chinese_output: true,
+            traditional_chinese_variant: variant,
+            ..Preferences::default()
+        };
+        let exported = export_desktop_settings(&expected);
+        assert_eq!(
+            exported.get("input.traditional_variant"),
+            Some(&AccountPreferenceValue::String(value.into()))
+        );
+        let applied =
+            apply_desktop_settings(&Preferences::default(), &document(exported), &full_schema())
+                .unwrap();
+        assert_eq!(applied.preferences, expected);
+        assert!(applied.skipped.is_empty());
     }
     // 字段表没有这两个键时不应用，也不算跳过。
     let mut exported = export_desktop_settings(&Preferences {

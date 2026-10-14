@@ -1,4 +1,4 @@
-//! Word-level Simplified-to-Traditional conversion, matching OpenCC's `s2t.json`.
+//! Word-level Simplified-to-Traditional conversion, matching OpenCC's `s2t.json`, `s2tw.json` and `s2twp.json`.
 //!
 //! The reference Windows server converts committed text and candidates with OpenCC's standard `s2t` configuration. Character-by-character platform tables (`LCMapStringEx`, ICU's transliterator) cannot resolve one-to-many characters such as 发 (發/髮), 干 (乾/幹/干) or 面 (面/麵); OpenCC resolves them with a phrase table first. This module reproduces that configuration from the same OpenCC data, pinned to the commit the reference vendors, so a host gets the reference's output without linking OpenCC's C++ library.
 //!
@@ -6,6 +6,8 @@
 //!
 //! - normalization: one maximum-forward-match pass over `CJK_Compatibility_Ideographs`;
 //! - conversion: one maximum-forward-match pass over a short-circuit group whose first member is the union of `STPhrases` and `STPhrases_GeneratedFromRegionalPhrases` and whose second member is `STCharacters`.
+//!
+//! 臺灣字形 `s2tw.json` 与臺灣惯用词 `s2twp.json` 在同样的规范化之后，先按 `STPhrases` 与地区词组的并集做最大正向匹配分段（命中的词组各成一段，连续未命中的字并成一段），再逐段先做上面的 `s2t` 转换、然后在同一段内做第二遍最大正向匹配：`s2tw` 依次查 `TWVariantsPhrases`、`TWVariants`，`s2twp` 在它们前面再加 `TWPhrases`，组内先命中的词典优先。第二遍不跨段，所以臺灣词组只在 `s2t` 的词组边界之内生效，与 OpenCC 相同。
 //!
 //! Where a dictionary lists several values the first is taken, as OpenCC does. Text no dictionary matches passes through unchanged; a complete ideographic description sequence (`⿰女尔`) passes through as one unit, so its components are never converted on their own.
 
@@ -19,6 +21,38 @@ const ST_PHRASES: &str = include_str!("../data/opencc/STPhrases.txt");
 const ST_PHRASES_REGIONAL: &str =
     include_str!("../data/opencc/STPhrases_GeneratedFromRegionalPhrases.txt");
 const ST_CHARACTERS: &str = include_str!("../data/opencc/STCharacters.txt");
+const TW_PHRASES: &str = include_str!("../data/opencc/TWPhrases.txt");
+const TW_VARIANTS_PHRASES: &str = include_str!("../data/opencc/TWVariantsPhrases.txt");
+const TW_VARIANTS: &str = include_str!("../data/opencc/TWVariants.txt");
+
+/// 繁体输出用哪套 OpenCC 配置；偏好里存成配置名。
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum TraditionalVariant {
+    /// `s2t.json`：OpenCC 标准繁体。
+    #[default]
+    #[serde(rename = "s2t")]
+    Standard,
+    /// `s2tw.json`：臺灣正体字形。
+    #[serde(rename = "s2tw")]
+    Taiwan,
+    /// `s2twp.json`：臺灣正体字形加臺灣惯用词。
+    #[serde(rename = "s2twp")]
+    TaiwanPhrases,
+}
+
+impl TraditionalVariant {
+    /// C 接口里的编号：0 `s2t`、1 `s2tw`、2 `s2twp`。
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Standard),
+            1 => Some(Self::Taiwan),
+            2 => Some(Self::TaiwanPhrases),
+            _ => None,
+        }
+    }
+}
 
 /// Bounds from OpenCC's `UTF8Util::NextIdeographicDescriptionSequenceLength`.
 const MAX_IDS_DEPTH: usize = 16;
@@ -99,20 +133,123 @@ fn tables() -> &'static Tables {
     })
 }
 
+/// 臺灣配置第二遍用的三张表；只在第一次选用臺灣变体时解析。
+struct TaiwanTables {
+    phrases: Table,
+    variants_phrases: Table,
+    variants: Table,
+}
+
+fn taiwan_tables() -> &'static TaiwanTables {
+    static TABLES: OnceLock<TaiwanTables> = OnceLock::new();
+    TABLES.get_or_init(|| TaiwanTables {
+        phrases: Table::parse(&[TW_PHRASES]),
+        variants_phrases: Table::parse(&[TW_VARIANTS_PHRASES]),
+        variants: Table::parse(&[TW_VARIANTS]),
+    })
+}
+
 /// Convert Simplified Chinese to Traditional Chinese the way OpenCC's `s2t.json` does.
 ///
 /// Characters with no Traditional form (ASCII, kana, emoji, already-Traditional text) are returned unchanged.
 pub fn simplified_to_traditional(text: &str) -> String {
+    convert_to_traditional(text, TraditionalVariant::Standard)
+}
+
+/// 按所选 OpenCC 配置把简体转换成繁体；规则见模块说明。
+pub fn convert_to_traditional(text: &str, variant: TraditionalVariant) -> String {
     let tables = tables();
     let normalized = convert_pass(text, |rest| tables.normalization.longest_prefix(rest));
-    match convert_pass(&normalized, |rest| {
+    let standard = |rest: &str| {
         tables
             .phrases
             .longest_prefix(rest)
             .or_else(|| tables.characters.longest_prefix(rest))
-    }) {
-        Cow::Borrowed(_) => normalized.into_owned(),
-        Cow::Owned(converted) => converted,
+    };
+    let taiwan = taiwan_tables();
+    let regional = |rest: &str| match variant {
+        TraditionalVariant::Standard => None,
+        TraditionalVariant::Taiwan => taiwan
+            .variants_phrases
+            .longest_prefix(rest)
+            .or_else(|| taiwan.variants.longest_prefix(rest)),
+        TraditionalVariant::TaiwanPhrases => taiwan
+            .phrases
+            .longest_prefix(rest)
+            .or_else(|| taiwan.variants_phrases.longest_prefix(rest))
+            .or_else(|| taiwan.variants.longest_prefix(rest)),
+    };
+    if variant == TraditionalVariant::Standard {
+        return match convert_pass(&normalized, standard) {
+            Cow::Borrowed(_) => normalized.into_owned(),
+            Cow::Owned(converted) => converted,
+        };
+    }
+    let capacity = normalized.len() + normalized.len() / 5;
+    let mut output = String::with_capacity(capacity);
+    // 每段的 `s2t` 结果写进同一块暂存区再做第二遍，整次转换只申请这两块缓冲。
+    let mut stage = String::with_capacity(capacity);
+    for_each_segment(
+        &normalized,
+        |rest| tables.phrases.longest_prefix(rest),
+        |segment| {
+            stage.clear();
+            append_pass(segment, standard, &mut stage);
+            append_pass(&stage, regional, &mut output);
+        },
+    );
+    output
+}
+
+/// OpenCC 的 `MaxMatchSegmentation`：词典命中的前缀各成一段，相邻的未命中部分并成一段。
+fn for_each_segment<'a>(
+    text: &'a str,
+    matcher: impl Fn(&str) -> Option<(usize, &'static str)>,
+    mut segment: impl FnMut(&'a str),
+) {
+    let mut start = 0;
+    let mut position = 0;
+    while position < text.len() {
+        let rest = &text[position..];
+        if let Some((length, _)) = matcher(rest) {
+            if start < position {
+                segment(&text[start..position]);
+            }
+            segment(&rest[..length]);
+            position += length;
+            start = position;
+            continue;
+        }
+        position += unmatched_length(rest);
+    }
+    if start < text.len() {
+        segment(&text[start..]);
+    }
+}
+
+/// 未命中词典时前进的长度：一个完整的表意文字描述序列，否则一个字符。
+fn unmatched_length(rest: &str) -> usize {
+    ideographic_description_sequence_length(rest)
+        .unwrap_or_else(|| rest.chars().next().map_or(rest.len(), char::len_utf8))
+}
+
+/// 与 `convert_pass` 相同的扫描，结果追加到 `output`。
+fn append_pass(
+    text: &str,
+    matcher: impl Fn(&str) -> Option<(usize, &'static str)>,
+    output: &mut String,
+) {
+    let mut position = 0;
+    while position < text.len() {
+        let rest = &text[position..];
+        if let Some((length, value)) = matcher(rest) {
+            output.push_str(value);
+            position += length;
+            continue;
+        }
+        let length = unmatched_length(rest);
+        output.push_str(&rest[..length]);
+        position += length;
     }
 }
 
@@ -173,8 +310,7 @@ fn convert_pass(
             position += length;
             continue;
         }
-        let length = ideographic_description_sequence_length(rest)
-            .unwrap_or_else(|| rest.chars().next().map_or(rest.len(), char::len_utf8));
+        let length = unmatched_length(rest);
         if let Some(output) = output.as_mut() {
             output.push_str(&rest[..length]);
         }
@@ -272,6 +408,89 @@ mod tests {
                 "{simplified}"
             );
         }
+    }
+
+    #[test]
+    fn taiwan_variants_follow_opencc_configurations() {
+        // 期望值是 OpenCC 用本目录这几份词典按 `s2t.json`、`s2tw.json`、`s2twp.json` 转换的结果。
+        for (simplified, standard, taiwan, taiwan_phrases) in [
+            ("头发", "頭髮", "頭髮", "頭髮"),
+            ("里面", "裏面", "裡面", "裡面"),
+            ("着急", "着急", "著急", "著急"),
+            ("为什么", "爲什麼", "為什麼", "為什麼"),
+            ("干面", "乾麪", "乾麵", "乾麵"),
+            ("软件", "軟件", "軟件", "軟體"),
+            ("鼠标", "鼠標", "鼠標", "滑鼠"),
+            ("代码", "代碼", "代碼", "程式碼"),
+            ("网络", "網絡", "網絡", "網路"),
+            ("打印机", "打印機", "打印機", "印表機"),
+            ("内存", "內存", "內存", "記憶體"),
+            ("信息", "信息", "信息", "資訊"),
+            ("出租车", "出租車", "出租車", "計程車"),
+            ("视频", "視頻", "視頻", "影片"),
+            (
+                "以太网路由器",
+                "以太網路由器",
+                "以太網路由器",
+                "乙太網路路由器",
+            ),
+            ("汉语输入法", "漢語輸入法", "漢語輸入法", "漢語輸入法"),
+            ("⿰发发", "⿰发发", "⿰发发", "⿰发发"),
+            ("", "", "", ""),
+            ("hello 😀", "hello 😀", "hello 😀", "hello 😀"),
+        ] {
+            assert_eq!(
+                convert_to_traditional(simplified, TraditionalVariant::Standard),
+                standard,
+                "s2t {simplified}"
+            );
+            assert_eq!(
+                convert_to_traditional(simplified, TraditionalVariant::Taiwan),
+                taiwan,
+                "s2tw {simplified}"
+            );
+            assert_eq!(
+                convert_to_traditional(simplified, TraditionalVariant::TaiwanPhrases),
+                taiwan_phrases,
+                "s2twp {simplified}"
+            );
+        }
+    }
+
+    #[test]
+    fn segmentation_splits_like_opencc_max_match() {
+        let table = Table::parse(&["甲乙\t甲乙\n"]);
+        let segments = |text| {
+            let mut segments = Vec::new();
+            for_each_segment(
+                text,
+                |rest| table.longest_prefix(rest),
+                |segment| segments.push(segment),
+            );
+            segments
+        };
+        assert_eq!(segments("丙甲乙丁戊"), ["丙", "甲乙", "丁戊"]);
+        assert_eq!(segments("甲乙甲乙"), ["甲乙", "甲乙"]);
+        assert_eq!(segments(""), Vec::<&str>::new());
+        // 完整的描述序列整体并进未命中段，其中的部件不会被当成词组起点。
+        assert_eq!(segments("⿰甲乙"), ["⿰甲乙"]);
+    }
+
+    #[test]
+    fn variant_codes_and_names_round_trip() {
+        for (code, name, variant) in [
+            (0, "\"s2t\"", TraditionalVariant::Standard),
+            (1, "\"s2tw\"", TraditionalVariant::Taiwan),
+            (2, "\"s2twp\"", TraditionalVariant::TaiwanPhrases),
+        ] {
+            assert_eq!(TraditionalVariant::from_code(code), Some(variant));
+            assert_eq!(serde_json::to_string(&variant).unwrap(), name);
+            assert_eq!(
+                serde_json::from_str::<TraditionalVariant>(name).unwrap(),
+                variant
+            );
+        }
+        assert_eq!(TraditionalVariant::from_code(3), None);
     }
 
     #[test]
