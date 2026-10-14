@@ -51,6 +51,26 @@ fn replay_of_one_annotation_has_a_bounded_identity_allocation_budget() {
 }
 
 #[test]
+fn repeated_plugin_replays_reuse_arrangement_buffers() {
+    let mut harness = Harness::new(
+        large_engine(128),
+        vec![ops(&[127, 2, 64], &[3, 65], &[(1, "合成注释")])],
+    );
+    harness.key(b'a');
+
+    let (_, first_allocations) = allocations::count(|| harness.runtime.transform_candidates());
+    let (_, second_allocations) = allocations::count(|| harness.runtime.transform_candidates());
+
+    eprintln!(
+        "repeated plugin replay allocations: first={first_allocations}, second={second_allocations}"
+    );
+    assert!(
+        first_allocations == 9 && second_allocations == 9,
+        "重复候选变换重放仍重复申请排列缓冲：first={first_allocations}, second={second_allocations}"
+    );
+}
+
+#[test]
 fn duplicate_identity_follows_engine_order_across_the_plugin_window() {
     let mut engine = large_engine(40);
     engine.words[1] = "重复候选".into();
