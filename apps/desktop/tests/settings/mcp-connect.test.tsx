@@ -417,6 +417,35 @@ test("a write response from a replaced host cannot update the new MCP section", 
   ).toBe(false);
 });
 
+test("旧宿主迟到的条目冲突不能在新 MCP 面板打开替换确认", async () => {
+  readOnly();
+  const pending = deferred<McpInstallOutcome>();
+  const oldInstall = vi.fn(() => pending.promise);
+  const nextInstall = vi.fn().mockResolvedValue("added" as const);
+  const view = render(
+    <McpConnectSection status={() => Promise.resolve(status())} install={oldInstall} />,
+  );
+  const group = await screen.findByRole("group", { name: "连接 AI 助手" });
+  fireEvent.click(within(group).getByRole("radio", { name: "Cursor" }));
+  fireEvent.click(within(group).getByRole("button", { name: "写入 Cursor" }));
+  expect(oldInstall).toHaveBeenCalledWith("cursor", false, []);
+
+  view.rerender(
+    <McpConnectSection status={() => Promise.resolve(status())} install={nextInstall} />,
+  );
+  await act(async () => {
+    pending.reject({ code: "mcp_entry_exists" });
+    await Promise.resolve();
+  });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(oldInstall).toHaveBeenCalledOnce();
+
+  fireEvent.click(screen.getByRole("button", { name: "写入 Cursor" }));
+  await screen.findByText("已写入 Cursor 的配置。重新启动 Cursor 后生效。");
+  expect(nextInstall).toHaveBeenCalledOnce();
+  expect(nextInstall).toHaveBeenCalledWith("cursor", false, []);
+});
+
 test("a copy response from a replaced host cannot mark the new MCP section copied", async () => {
   readOnly();
   const pending = deferred<void>();
@@ -426,7 +455,7 @@ test("a copy response from a replaced host cannot mark the new MCP section copie
     <McpConnectSection status={() => Promise.resolve(status())} copyText={oldCopy} />,
   );
   const group = await screen.findByRole("group", { name: "连接 AI 助手" });
-  fireEvent.click(within(group).getByRole("radio", { name: "其他" }));
+  fireEvent.click(await within(group).findByRole("radio", { name: "其他" }));
   fireEvent.click(within(group).getByRole("button", { name: "复制配置" }));
   expect(oldCopy).toHaveBeenCalledWith(config);
   view.rerender(<McpConnectSection status={() => Promise.resolve(status())} copyText={nextCopy} />);
