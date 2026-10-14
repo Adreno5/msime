@@ -7,6 +7,7 @@ import { GroupList, NavRow } from "../core/platform-controls";
 import * as controls from "../core/platform-controls-style";
 import { useToast } from "../core/toast";
 import { useAsyncActionRunner } from "../core/use-async-action";
+import { useDebouncedCallback } from "../core/use-debounced-callback";
 import * as dialog from "../community/community-style";
 import type { CommunityResource, CommunityResourceClient } from "../community/community-resources";
 import { communityResourceSubtitle } from "../community/community-resources";
@@ -716,10 +717,13 @@ function BuiltinDictionaryDetail({
       if (current === generation.current) setLoading(false);
     }
   };
+  const { schedule: loadLater } = useDebouncedCallback(
+    (search: string) => void load(search, 0),
+    query ? 250 : 0,
+  );
   useEffect(() => {
-    const timer = setTimeout(() => void load(query, 0), query ? 250 : 0);
-    return () => clearTimeout(timer);
-  }, [query, dictionary]);
+    loadLater(query);
+  }, [loadLater, query, dictionary]);
 
   return (
     <>

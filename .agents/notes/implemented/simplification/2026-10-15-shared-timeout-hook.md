@@ -14,7 +14,7 @@ Status: implemented
 
 - 保留局部 `useEffect` 和 `window.setTimeout`：改动最小，但会继续复制公共 Hook 已经固定的注册、最新回调和清理规则。
 - 把手写动画阶段也抽进通用动画 Hook：可以隐藏更多代码，但会把笔画时长、候选展示和皮肤状态绑定到无关的共享 API，扩大这次只做生命周期复用的范围。
-- 把自定义双拼校验、手写滑块保存和词库查询的定时器一并迁移：这些 effect 还依赖 `draft`、`value` 或 `dictionary` 变化来重启；现有 `useTimeout` 只按延迟值重启，直接迁移会改变防抖边界，因此留给需要扩展 API 的独立改动。
+- 把自定义双拼校验、手写滑块保存和词库查询的定时器一并迁移：这些 effect 还依赖 `draft`、`value` 或 `dictionary` 变化来重启；现有 `useTimeout` 只按延迟值重启，直接迁移会改变防抖边界，因此留给[防抖回调生命周期笔记](./2026-10-15-shared-debounced-callback.md)的独立 API 扩展。
 
 ## Verification
 
