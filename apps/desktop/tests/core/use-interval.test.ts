@@ -43,3 +43,20 @@ test("does not schedule when disabled", () => {
   act(() => vi.advanceTimersByTime(3000));
   expect(callback).not.toHaveBeenCalled();
 });
+
+const macosIntervalConsumers = import.meta.glob<string>(
+  [
+    "../../../../packages/ui/src/settings/use-macos-settings.ts",
+    "../../../../packages/ui/src/account/macos-install-page.tsx",
+  ],
+  { eager: true, query: "?raw", import: "default" },
+);
+
+test.each(Object.entries(macosIntervalConsumers))(
+  "%s 复用公共间隔定时器生命周期",
+  (_path, source) => {
+    expect(source).toContain('from "../core/use-interval"');
+    expect(source).not.toContain("window.setInterval");
+    expect(source).not.toContain("window.clearInterval");
+  },
+);
