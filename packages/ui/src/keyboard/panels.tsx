@@ -445,26 +445,29 @@ export function KeyboardPanel({
   const sourceRows = activeLayout === "nine_key" ? nineKeyRows : keyboardRows;
   const rows =
     platform === "macos"
-      ? sourceRows.map((row) =>
-          row
-            // macOS has no PC application/Menu key. The native panel omits it and
-            // host-macos deliberately rejects the Windows VK_MENU (0x5d) contract
-            // value rather than guessing at a Command/Option equivalent. Keep the
-            // shared layout's other keypad/navigation keys because CoreGraphics has
-            // stable ANSI mappings for those values.
-            .filter((item) => ![0x2c, 0x91, 0x13, 0x2d, 0x5d].includes(item.virtualKey))
-            .map((item) => ({
-              ...item,
-              label:
-                item.label === "Win"
-                  ? "Command"
-                  : item.label === "Alt"
-                    ? "Option"
-                    : item.label === "Num Lock"
-                      ? "Clear"
-                      : item.label,
-            })),
-        )
+      ? sourceRows.map((row) => {
+          // PC 底行左侧 Ctrl/Win/Alt 改为 Control/Option/Command，右侧按相反方向镜像。
+          const ordered =
+            row[0]?.virtualKey === 0x11 && row[3]?.virtualKey === 0x20
+              ? [row[0], row[2], row[1], row[3], row[5], row[4], ...row.slice(6)]
+              : row;
+          return (
+            ordered
+              // macOS 没有这些 PC 专用键；保留有稳定 ANSI 映射的数字小键盘和导航键。
+              .filter((item) => ![0x2c, 0x91, 0x13, 0x2d, 0x5d].includes(item.virtualKey))
+              .map((item) => ({
+                ...item,
+                label:
+                  item.label === "Win"
+                    ? "Command"
+                    : item.label === "Alt"
+                      ? "Option"
+                      : item.label === "Num Lock"
+                        ? "Clear"
+                        : item.label,
+              }))
+          );
+        })
       : sourceRows;
   const [, setActiveModifiers] = useState<Set<Modifier>>(new Set());
   const modifiersRef = useRef<Set<Modifier>>(new Set());
