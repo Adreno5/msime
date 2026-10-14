@@ -90,14 +90,13 @@ pub fn rerank_order(neural: &[f64], static_nats: &[f64]) -> Option<Vec<usize>> {
     if n < 2 || (neural.len() != n && neural.len() != scored) {
         return None;
     }
-    let combined: Vec<f64> = (0..scored)
-        .map(|index| {
-            let statik = static_nats[index];
-            statik + RERANK_LAMBDA * (neural[index] - statik)
-        })
-        .collect();
+    let mut combined = [0.0; MAX_RERANK_PATHS];
+    for index in 0..scored {
+        let statik = static_nats[index];
+        combined[index] = statik + RERANK_LAMBDA * (neural[index] - statik);
+    }
     let mut order: Vec<usize> = (0..n).collect();
-    // Stable so that sentences the two models score identically keep the lattice's order, and the unscored tail past the cap stays as it was.
+    // 同分保留词网格顺序，评分上限后的尾部保持原序。
     order[..scored].sort_by(|&a, &b| combined[b].total_cmp(&combined[a]));
     Some(order)
 }
@@ -116,33 +115,34 @@ impl NeuralReranker {
         }
     }
 
-    /// Reorder `paths` by `rerank_order` conditioned on the last 64 characters of `context`; false leaves them untouched. The crate returns mean per-character log-probabilities; the sum is that times the character count.
+    /// 按 `context` 最后64字的模型评分重排路径；返回 false 时保持原序。模型返回逐字平均对数概率，乘文本字数得到总分。
     pub fn rerank(&mut self, paths: &mut [SentencePath], context: &str) -> bool {
         if paths.len() < 2 {
             return false;
         }
         let scored = paths.len().min(MAX_RERANK_PATHS);
-        let texts: Vec<&str> = paths[..scored]
-            .iter()
-            .map(|path| path.sentence.as_str())
-            .collect();
-        let means = self
-            .reranker
-            .log_probabilities(last_characters(context, CONTEXT_CHARACTERS), &texts);
-        // A model that answered for some sentences only is inconsistent; half a reranking is worse than none, so the lattice order stays.
+        let mut texts = [""; MAX_RERANK_PATHS];
+        for (text, path) in texts[..scored].iter_mut().zip(&paths[..scored]) {
+            *text = path.sentence.as_str();
+        }
+        let means = self.reranker.log_probabilities(
+            last_characters(context, CONTEXT_CHARACTERS),
+            &texts[..scored],
+        );
+        // 模型评分数量不完整时保持原序，避免只重排部分结果。
         if means.len() != scored {
             return false;
         }
-        let neural: Vec<f64> = means
-            .iter()
-            .zip(&texts)
-            .map(|(mean, text)| f64::from(*mean) * text.chars().count() as f64)
-            .collect();
-        let statik: Vec<f64> = paths.iter().map(|path| path.log_prob).collect();
-        let Some(order) = rerank_order(&neural, &statik) else {
+        let mut neural = [0.0; MAX_RERANK_PATHS];
+        let mut statik = [0.0; MAX_RERANK_PATHS];
+        for index in 0..scored {
+            neural[index] = f64::from(means[index]) * texts[index].chars().count() as f64;
+            statik[index] = paths[index].log_prob;
+        }
+        let Some(order) = rerank_order(&neural[..scored], &statik[..scored]) else {
             return false;
         };
-        apply_order(paths, &order);
+        apply_order(&mut paths[..scored], &order);
         true
     }
 }
@@ -151,6 +151,10 @@ impl NeuralReranker {
 fn reorder_paths(paths: &mut [SentencePath], order: &[usize]) {
     apply_order(paths, order);
 }
+
+#[cfg(test)]
+#[path = "neural_score_buffer_tests.rs"]
+mod score_buffer_tests;
 
 #[cfg(test)]
 mod tests {
