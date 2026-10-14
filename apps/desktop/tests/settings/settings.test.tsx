@@ -7605,10 +7605,17 @@ test("the expand candidates switch is macOS only, starts off and saves expand_ca
   const toggle = screen.getByLabelText("展开候选") as HTMLInputElement;
   // 默认关闭，缺字段也按关显示。
   expect(toggle.checked).toBe(false);
+  expect(screen.queryByLabelText("显示展开键")).toBeNull();
   fireEvent.click(toggle);
+  const expandButton = screen.getByLabelText("显示展开键") as HTMLInputElement;
+  expect(expandButton.checked).toBe(true);
+  fireEvent.click(expandButton);
   saveSettingsNow();
   await screen.findByText("已保存");
-  expect(save).toHaveBeenLastCalledWith(7, expect.objectContaining({ expand_candidates: true }));
+  expect(save).toHaveBeenLastCalledWith(
+    7,
+    expect.objectContaining({ expand_candidates: true, show_candidate_expand_button: false }),
+  );
 });
 
 test("中英混输 sits on the input page's 候选与联想 group, not on 标点与翻译", async () => {
