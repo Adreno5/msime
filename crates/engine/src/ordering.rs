@@ -25,6 +25,9 @@ const MIXED_JAPANESE_SOURCE: u8 = 13;
 /// 候选列表通常不超过一页；短列表的文本引用放在栈上，较大列表继续走堆缓冲。
 const SMALL_RERANK_TEXTS: usize = 128;
 
+/// 静态证据分支只比较前九条真正回答按键的候选。
+const STATIC_RERANK_LIMIT: usize = 9;
+
 /// The traits of the scheme behind `scheme`, which the Engine reports as its `SchemeType` ordinal. Only the placeholder snapshot of a failed refresh carries an ordinal no scheme has; each caller decides what that placeholder means, the way the ordinal comparisons this replaces did.
 fn scheme_type(scheme: u8) -> Option<SchemeType> {
     SchemeType::from_u8(scheme)
@@ -318,22 +321,23 @@ pub fn rerank_pick<'a, R: OrderRowSource<'a> + ?Sized>(
         let leader = rows.get(0);
         let trusted_leader = DICTIONARY_SOURCES.contains(&leader.source) && !corrected_key;
         if !trusted_leader && answers_key(leader) && rows.static_evidence(0).is_some() {
-            let considered: Vec<usize> = (0..rows.len())
-                .filter(|&index| answers_key(rows.get(index)))
-                .take(9)
-                .collect();
-            let statik: Option<Vec<f64>> = considered
-                .iter()
-                .map(|&index| rows.static_evidence(index)?.mean())
-                .collect();
-            if let Some(statik) = statik.filter(|_| considered.len() >= 2) {
-                let subset: Vec<&str> = considered.iter().map(|&index| texts[index]).collect();
-                let neural = reranker.log_probabilities(context, &subset);
-                if neural.len() == statik.len() {
+            let mut considered = [0; STATIC_RERANK_LIMIT];
+            let mut statik = [0.0; STATIC_RERANK_LIMIT];
+            let mut subset = [""; STATIC_RERANK_LIMIT];
+            if let Some(count) = fill_static_rerank_inputs(
+                rows,
+                texts,
+                answers_key,
+                &mut considered,
+                &mut statik,
+                &mut subset,
+            ) {
+                let neural = reranker.log_probabilities(context, &subset[..count]);
+                if neural.len() == count {
                     // 模型逐字分与词网格逐字分等权混合，两侧均为自然对数。
                     let combined = |index: usize| (statik[index] + f64::from(neural[index])) * 0.5;
                     let mut best = 0;
-                    for index in 1..considered.len() {
+                    for index in 1..count {
                         if combined(index) > combined(best) {
                             best = index;
                         }
@@ -348,6 +352,35 @@ pub fn rerank_pick<'a, R: OrderRowSource<'a> + ?Sized>(
                 && !corrected_key,
         })
     })
+}
+
+fn fill_static_rerank_inputs<'a, R, F>(
+    rows: &'a R,
+    texts: &[&'a str],
+    answers_key: F,
+    considered: &mut [usize; STATIC_RERANK_LIMIT],
+    statik: &mut [f64; STATIC_RERANK_LIMIT],
+    subset: &mut [&'a str; STATIC_RERANK_LIMIT],
+) -> Option<usize>
+where
+    R: OrderRowSource<'a> + ?Sized,
+    F: Fn(OrderRow<'a>) -> bool,
+{
+    debug_assert_eq!(rows.len(), texts.len());
+    let mut count = 0;
+    for (index, text) in texts.iter().enumerate().take(rows.len()) {
+        if !answers_key(rows.get(index)) {
+            continue;
+        }
+        if count == STATIC_RERANK_LIMIT {
+            break;
+        }
+        considered[count] = index;
+        statik[count] = rows.static_evidence(index)?.mean()?;
+        subset[count] = text;
+        count += 1;
+    }
+    (count >= 2).then_some(count)
 }
 
 fn with_row_texts<'a, R, T>(rows: &'a R, operation: impl FnOnce(&[&'a str]) -> T) -> T
@@ -666,6 +699,40 @@ mod tests {
             with_row_texts(&rows, |texts| (texts.len(), texts[0], texts[1]))
         });
         assert_eq!(summary, (2, "你好", "倪好"));
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn static_rerank_inputs_need_no_temporary_heap_state() {
+        let rows = [row("甲", LATTICE_SOURCE), row("乙", LATTICE_SOURCE)];
+        let scores = [
+            Some(StaticEvidence {
+                log_prob_milli_nats: -1000,
+                characters: 1,
+            }),
+            Some(StaticEvidence {
+                log_prob_milli_nats: -2000,
+                characters: 1,
+            }),
+        ];
+        let scored = ScoredOrderRows::new(&rows, &scores);
+        let (summary, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+            with_row_texts(&scored, |texts| {
+                let mut considered = [0; STATIC_RERANK_LIMIT];
+                let mut statik = [0.0; STATIC_RERANK_LIMIT];
+                let mut subset = [""; STATIC_RERANK_LIMIT];
+                let count = fill_static_rerank_inputs(
+                    &scored,
+                    texts,
+                    |row| row.answers_key,
+                    &mut considered,
+                    &mut statik,
+                    &mut subset,
+                );
+                (count, considered[0], considered[1], statik[0], subset[1])
+            })
+        });
+        assert_eq!(summary, (Some(2), 0, 1, -1.0, "乙"));
         assert_eq!(allocations, 0);
     }
 
