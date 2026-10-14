@@ -117,6 +117,33 @@ fn successful_expansion_saves_one_discarded_key_per_row() {
 }
 
 #[test]
+fn warm_expansion_reuses_the_candidate_outer_buffer() {
+    let fixture = fixture(32);
+    let mut before = QuanpinDictionary::new(&fixture.paths);
+    let mut after = QuanpinDictionary::new(&fixture.paths);
+    let mut expected = query(&mut before, "n", NONE);
+    let mut actual = query(&mut after, "n", NONE);
+    expected.reserve(256);
+    actual.reserve(256);
+    drop(before.database.query_initial("n", UNLIMITED_ROWS));
+    drop(after.database.query_initial("n", UNLIMITED_ROWS));
+
+    let (old_result, old_count) =
+        count(|| before.legacy_expand_initial_candidates("n", "n", NONE, "n", &mut expected));
+    let (new_result, new_count) =
+        count(|| after.expand_initial_candidates("n", "n", NONE, "n", &mut actual));
+
+    assert_eq!(new_result, old_result);
+    assert!(new_result);
+    assert_eq!(actual, expected);
+    assert!(actual.capacity() >= 256);
+    assert!(
+        new_count < old_count,
+        "预留候选容量后，合并仍申请 {new_count} 次，旧实现为 {old_count} 次"
+    );
+}
+
+#[test]
 fn expansion_preserves_foreign_rows_slots_order_and_owned_fields() {
     let fixture = fixture(32);
     for segmentation in ["", "n"] {
