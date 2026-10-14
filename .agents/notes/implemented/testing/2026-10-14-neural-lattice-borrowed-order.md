@@ -39,3 +39,5 @@ Status: implemented
 保留拥有的评分索引；最终字段复制由[神经输出字段移交](2026-10-15-neural-lattice-row-ownership.md)取代；不宣称模型推理、设备端延迟或RSS收益。私有合并助手接受来源索引迭代器，完整尾部通过恒等映射访问，不引入动态派发、unsafe、依赖、生产文件读写或Android资源变更。参照同仓 `rerank_order` 索引接口和上游锁定模型的借用评分接口；`IntoIterator` 契约依据[Rust官方文档](https://doc.rust-lang.org/std/iter/trait.IntoIterator.html)，已有切片调用和新的排列迭代器共用助手。
 
 [默认整句行所有权转移](2026-10-14-generated-lattice-row-ownership.md)直接把默认分支路径字段交给候选，沿用解码唯一性、去重和块容量规则；神经分支的评分继续借用，实际输出字段随后由[神经行移交](2026-10-15-neural-lattice-row-ownership.md)接管。
+
+[无整句来源跳过去重表](2026-10-15-lattice-empty-source-dedup.md)在全部模型评分完成后确认没有输出来源时省掉候选集合，评分、纠错、64条分流与非空输出容量规则继续沿用。
