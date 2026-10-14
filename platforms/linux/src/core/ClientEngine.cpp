@@ -1734,6 +1734,14 @@ const char *smart_punctuation_pair(char value) {
   const auto mark = msime::linux_host::chinese_punctuation_mark(value);
   return mark.empty() ? nullptr : mark.data();
 }
+// 英文模式下的中文标点按最近一次 View 报告的样式出字（`punctuation_marks`，host-api 已解析好 corner_when_traditional）。
+msime::linux_host::PunctuationMarks view_punctuation_marks(const Json &view) {
+  if (!view.is_object()) return {};
+  const auto marks = view.value("punctuation_marks", Json::object());
+  if (!marks.is_object()) return {};
+  return msime::linux_host::punctuation_marks_from_view(
+      marks.value("quotes", std::string{}), marks.value("brackets", std::string{}));
+}
 using msime::linux_host::normalize_punctuation_pair;
 using msime::linux_host::paired_closing_from_text;
 using msime::linux_host::PunctuationPairMode;
@@ -1894,7 +1902,7 @@ bool try_skip_paired_closing(IBusEngine *engine, guint key, guint flags) {
     paired_modifiers |= static_cast<std::uint32_t>(
         msime::linux_host::PairedPunctuationModifier::Mod5);
   const auto closing = msime::linux_host::paired_closing_for_key(
-      static_cast<char>(key), s.fullwidth);
+      static_cast<char>(key), s.fullwidth, s.paired_tracker);
   if (!closing) return false;
   const auto following = surrounding_following_character(s);
   const bool modifiers_allowed =
@@ -6484,7 +6492,7 @@ gboolean process_key(IBusEngine *engine, guint key, guint keycode, guint flags) 
         ibus_keyval_to_unicode(key), keypad,
         s.punctuation_lock == "chinese" ||
             (s.punctuation_lock == "follow" && s.english_chinese_punctuation),
-        s.fullwidth, s.english_punctuation);
+        s.fullwidth, s.english_punctuation, view_punctuation_marks(s.view));
     if (!text.empty()) {
       commit_text(engine, text, msime::linux_host::TypingSource::English);
       return TRUE;

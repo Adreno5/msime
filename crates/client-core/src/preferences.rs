@@ -739,6 +739,37 @@ pub enum PunctuationLock {
     English,
 }
 
+/// 中文标点下 `'` 和 `"` 键出哪种引号。`Corner` 按键对应：`'` 出「」，`"`（Shift+'）出『』。`CornerWhenTraditional` 在 `traditional_chinese_output` 打开时等于 `Corner`，否则等于 `Curly`；解析见 `crate::punctuation::punctuation_marks`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QuoteStyle {
+    #[default]
+    Curly,
+    Corner,
+    CornerWhenTraditional,
+}
+
+impl QuoteStyle {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// 中文标点下 `[` `]` 键出实心【】还是空心〖〗。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BracketStyle {
+    #[default]
+    Solid,
+    Hollow,
+}
+
+impl BracketStyle {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationTargetLanguage {
@@ -1015,6 +1046,12 @@ pub struct Preferences {
     /// 大写锁定打开时，中文模式下没有组字时的标点按英文标点输出，和切到英文模式时一样（`punctuation_lock` 为 `chinese` 时仍是中文标点）。只有向会话报告大写锁定状态的宿主（`HostCapabilities::caps_lock_punctuation`）会用到它。默认关，打开前的行为不变。
     #[serde(default)]
     pub caps_lock_ascii_punctuation: bool,
+    /// 中文标点下引号键的样式（W#474、W#54）。等于默认值（弯引号）时不写进文档，没有这个键的旧版本照样能读。
+    #[serde(default, skip_serializing_if = "QuoteStyle::is_default")]
+    pub quote_style: QuoteStyle,
+    /// 中文标点下方头括号键的样式（W#24）。等于默认值（实心）时不写进文档。
+    #[serde(default, skip_serializing_if = "BracketStyle::is_default")]
+    pub bracket_style: BracketStyle,
     #[serde(default)]
     pub navigation: NavigationPreferences,
     #[serde(default)]
@@ -2161,6 +2198,8 @@ impl Default for Preferences {
             paired_punctuation: true,
             punctuation_lock: PunctuationLock::Follow,
             caps_lock_ascii_punctuation: false,
+            quote_style: QuoteStyle::Curly,
+            bracket_style: BracketStyle::Solid,
             navigation: NavigationPreferences::default(),
             keybindings: KeybindingPreferences::default(),
             word_character: WordCharacterPreferences::default(),

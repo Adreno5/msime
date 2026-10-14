@@ -118,6 +118,7 @@ import { SmartPunctuationSpacePolicy, SmartPunctuationSpaceSnapshot, SpaceConver
 import { SmartPunctuationContext } from './input/SmartPunctuationContext';
 import { PairedPunctuationPolicy, PairedPunctuationCompletion } from
   './input/PairedPunctuationPolicy';
+import { ChineseSymbolFaces, PunctuationMarksView } from './input/ChineseSymbolFaces';
 import { CandidateTextPolicy, CandidateTextEdge } from './input/CandidateTextPolicy';
 import { ReplyKeyboardPolicy, ReplyRequest } from './ReplyKeyboardPolicy';
 import { ReplyContextPolicy } from './ReplyContextPolicy';
@@ -230,6 +231,8 @@ interface EngineView extends EngineViewNumericFields {
   dedicated_english: boolean;
   /** The scheme's openable candidate list is showing: the Korean Hanja list, the Zhuyin list. */
   candidate_list_open: boolean;
+  /** 引号与方头括号样式（`quote_style`、`bracket_style`），host-api 已按繁体输出开关解析好。 */
+  punctuation_marks?: PunctuationMarksView;
 }
 
 // The stored preferences, read and written whole. Only the fields the keyboard changes are named;
@@ -569,6 +572,9 @@ export interface KeyboardState {
   /** 九宫格候选筛选的当前状态，展开面板的「全部/单字」和笔画栏照它画。 */
   readonly nineKeySingleCharacter: boolean;
   readonly nineKeyStrokes: string;
+  /** View 报告的引号与方头括号样式，键盘画符号键和 123 层键面时用。 */
+  readonly cornerQuotes: boolean;
+  readonly hollowBrackets: boolean;
 }
 
 interface EngineValue {
@@ -3522,7 +3528,7 @@ export class KeyboardSession implements HardwareKeyTarget {
       }
       completion = EngineViewValuePolicy.isObject(response) && response.ok === true
         && EngineViewValuePolicy.isObject(response.value)
-        ? PairedPunctuationPolicy.completion(response.value.commit,
+        ? PairedPunctuationPolicy.completion(response.value.commit, ascii,
           this.appearance.pairedPunctuation) : null;
     } catch (error) {
       KeyboardLog.error(`paired punctuation response unavailable: ${describeError(error)}`);
@@ -4121,7 +4127,9 @@ export class KeyboardSession implements HardwareKeyTarget {
         pageCount: view.page_count,
         candidateListOpen: this.candidateListOpen(),
         nineKeySingleCharacter: view.nine_key_single_character === true,
-        nineKeyStrokes: view.nine_key_strokes ?? ''
+        nineKeyStrokes: view.nine_key_strokes ?? '',
+        cornerQuotes: ChineseSymbolFaces.cornerQuotes(view.punctuation_marks),
+        hollowBrackets: ChineseSymbolFaces.hollowBrackets(view.punctuation_marks)
       });
     }
     if (this.onCandidateWidth !== undefined) {
@@ -4172,7 +4180,9 @@ export class KeyboardSession implements HardwareKeyTarget {
       english: view.dedicated_english, diagnostic: this.diagnostic,
       page: view.page, pageCount: view.page_count, candidateListOpen: this.candidateListOpen(),
       nineKeySingleCharacter: view.nine_key_single_character === true,
-      nineKeyStrokes: view.nine_key_strokes ?? ''
+      nineKeyStrokes: view.nine_key_strokes ?? '',
+      cornerQuotes: ChineseSymbolFaces.cornerQuotes(view.punctuation_marks),
+      hollowBrackets: ChineseSymbolFaces.hollowBrackets(view.punctuation_marks)
     });
     if (this.onCandidateWidth !== undefined) {
       this.onCandidateWidth(this.candidateWidthVp(entries, reading, view.page, view.page_count));
@@ -4233,7 +4243,9 @@ export class KeyboardSession implements HardwareKeyTarget {
       english: view?.dedicated_english ?? this.englishMode, diagnostic: this.diagnostic,
       page: 0, pageCount: 1, candidateListOpen: false,
       nineKeySingleCharacter: view?.nine_key_single_character === true,
-      nineKeyStrokes: view?.nine_key_strokes ?? ''
+      nineKeyStrokes: view?.nine_key_strokes ?? '',
+      cornerQuotes: ChineseSymbolFaces.cornerQuotes(view?.punctuation_marks),
+      hollowBrackets: ChineseSymbolFaces.hollowBrackets(view?.punctuation_marks)
     });
     if (this.onCandidateWidth !== undefined) {
       this.onCandidateWidth(this.candidateWidthVp(entries, view?.editing_text ?? this.editing, 0, 1));

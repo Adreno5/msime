@@ -11,8 +11,8 @@
 use super::{AccountError, AccountPreferenceSchema, AccountPreferenceValue, AccountPreferences};
 use crate::host_surface::HostPlatform;
 use crate::preferences::{
-    FrequencyMode, InputScheme, NumberKeypadOrder, Preferences, ShuangpinProfile, ThemeMode,
-    TouchKeyboardLayout, TwentySixKeyNumberLayout, WubiProfile,
+    BracketStyle, FrequencyMode, InputScheme, NumberKeypadOrder, Preferences, QuoteStyle,
+    ShuangpinProfile, ThemeMode, TouchKeyboardLayout, TwentySixKeyNumberLayout, WubiProfile,
 };
 use crate::skin::theme::GlobalTheme;
 use serde::{Deserialize, Serialize};
@@ -506,6 +506,24 @@ fn insert_input_settings(
         "input.paired_punctuation",
         preferences.paired_punctuation,
     );
+    // 取值与偏好文档里的写法相同。服务端字段表没有这两个键时，上传前的过滤会去掉它们。
+    insert_string(
+        settings,
+        "input.quote_style",
+        match preferences.quote_style {
+            QuoteStyle::Curly => "curly",
+            QuoteStyle::Corner => "corner",
+            QuoteStyle::CornerWhenTraditional => "corner_when_traditional",
+        },
+    );
+    insert_string(
+        settings,
+        "input.bracket_style",
+        match preferences.bracket_style {
+            BracketStyle::Solid => "solid",
+            BracketStyle::Hollow => "hollow",
+        },
+    );
     insert_bool(settings, "input.wubi_code_hint", preferences.wubi_code_hint);
     insert_bool(
         settings,
@@ -797,6 +815,23 @@ fn apply_input_settings(applier: &mut Applier<'_>) -> Result<(), AccountError> {
     })?;
     applier.set_bool("input.paired_punctuation", |preferences, value| {
         preferences.paired_punctuation = value
+    })?;
+    applier.set_string("input.quote_style", |preferences, value| {
+        preferences.quote_style = match value {
+            "curly" => QuoteStyle::Curly,
+            "corner" => QuoteStyle::Corner,
+            "corner_when_traditional" => QuoteStyle::CornerWhenTraditional,
+            _ => return None,
+        };
+        Some(())
+    })?;
+    applier.set_string("input.bracket_style", |preferences, value| {
+        preferences.bracket_style = match value {
+            "solid" => BracketStyle::Solid,
+            "hollow" => BracketStyle::Hollow,
+            _ => return None,
+        };
+        Some(())
     })?;
     applier.set_bool("input.wubi_code_hint", |preferences, value| {
         preferences.wubi_code_hint = value

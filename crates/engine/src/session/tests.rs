@@ -8401,3 +8401,83 @@ fn a_zero_first_page_rows_reads_as_one_row() {
         words(&one)
     );
 }
+
+// ---- 引号与方头括号样式 ----
+
+const CORNER_HOLLOW: crate::punctuation::PunctuationMarks = crate::punctuation::PunctuationMarks {
+    quotes: crate::punctuation::QuoteMarks::Corner,
+    brackets: crate::punctuation::BracketMarks::Hollow,
+};
+
+#[test]
+fn punctuation_marks_reach_the_bare_prefix_route() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.punctuation_marks = CORNER_HOLLOW;
+        options.local_modes.command = true;
+    });
+    session.character(b'/', false);
+    assert_eq!(session.punctuation(b'\'').commit.as_deref(), Some("/「"));
+    assert_eq!(session.snapshot().local_mode, LocalInputMode::None);
+    assert_eq!(session.punctuation(b'\'').commit.as_deref(), Some("」"));
+    assert_eq!(session.punctuation(b'[').commit.as_deref(), Some("〖"));
+    // 组字后带标点也按样式出字。
+    type_text(&mut session, "nihao");
+    assert_eq!(session.punctuation(b'"').commit.as_deref(), Some("你好『"));
+}
+
+#[test]
+fn punctuation_marks_follow_every_scheme_with_chinese_punctuation() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut japanese = fixture.session_with(|options| options.punctuation_marks = CORNER_HOLLOW);
+    japanese.switch_scheme(SchemeType::JapaneseRomaji).unwrap();
+    assert_eq!(japanese.punctuation(b'\'').commit.as_deref(), Some("「"));
+    assert_eq!(japanese.punctuation(b']').commit.as_deref(), Some("〗"));
+
+    let mut cantonese = fixture.session_with(|options| {
+        options.punctuation_marks = CORNER_HOLLOW;
+        options.scheme = SchemeType::Cantonese;
+        options.cantonese_dictionary = cantonese_dictionary(fixture.path());
+    });
+    // 粤拼空闲时 `'` 是标点，不是音节分隔。
+    assert_eq!(cantonese.punctuation(b'\'').commit.as_deref(), Some("「"));
+    assert_eq!(cantonese.punctuation(b'"').commit.as_deref(), Some("『"));
+
+    // 韩文写半角 ASCII，样式不起作用。
+    let mut korean = fixture.session_with(|options| {
+        options.punctuation_marks = CORNER_HOLLOW;
+        options.scheme = SchemeType::Korean;
+    });
+    for mark in *b"'\"[]" {
+        let idle = korean.punctuation(mark);
+        assert!(!idle.handled && idle.commit.is_none());
+    }
+}
+
+#[test]
+fn zhuyin_square_keys_keep_their_own_corner_quotes() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.scheme = SchemeType::Zhuyin;
+        options.zhuyin_dictionary = zhuyin_dictionary(fixture.path());
+        options.punctuation_marks = CORNER_HOLLOW;
+    });
+    // 大千键位自己占着 `[` `]`，出「」，不经过标点样式。
+    assert_eq!(session.character(b'[', false).commit.as_deref(), Some("「"));
+    assert_eq!(session.character(b']', false).commit.as_deref(), Some("」"));
+    // `'` 不是注音键，照样按样式出字。
+    assert_eq!(session.punctuation(b'"').commit.as_deref(), Some("『"));
+}
+
+#[test]
+fn set_punctuation_marks_applies_live_without_resetting_alternation() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session();
+    assert_eq!(session.punctuation(b'"').commit.as_deref(), Some("“"));
+    session.set_punctuation_marks(CORNER_HOLLOW);
+    assert_eq!(session.punctuation(b'"').commit.as_deref(), Some("』"));
+    assert_eq!(session.punctuation(b'[').commit.as_deref(), Some("〖"));
+    session.set_punctuation_marks(crate::punctuation::PunctuationMarks::default());
+    assert_eq!(session.punctuation(b'"').commit.as_deref(), Some("“"));
+    assert_eq!(session.punctuation(b'[').commit.as_deref(), Some("【"));
+}
