@@ -110,26 +110,37 @@ mod desktop {
     }
 
     impl Identity {
-        fn all(snapshot: &EngineSnapshot, engine_order: &[usize]) -> Vec<Self> {
+        fn occurrences(snapshot: &EngineSnapshot, engine_order: &[usize]) -> Vec<usize> {
             let count = snapshot.candidates.len();
             let mut seats: Vec<usize> = (0..count).collect();
             seats.sort_unstable_by_key(|seat| engine_order.get(*seat).copied().unwrap_or(*seat));
-            let mut occurrences: HashMap<(&str, u8, &str), usize> = HashMap::new();
-            let mut identities = vec![None; count];
+            let mut counts: HashMap<(&str, u8, &str), usize> = HashMap::new();
+            let mut occurrences = vec![0; count];
             for seat in seats {
                 let text = snapshot.candidates[seat].as_str();
                 let source = snapshot.candidate_sources[seat];
                 let code = snapshot.candidate_codes[seat].as_str();
-                let occurrence = occurrences.entry((text, source, code)).or_default();
-                identities[seat] = Some(Self {
-                    text: text.to_owned(),
-                    source,
-                    code: code.to_owned(),
-                    occurrence: *occurrence,
-                });
+                let occurrence = counts.entry((text, source, code)).or_default();
+                occurrences[seat] = *occurrence;
                 *occurrence += 1;
             }
-            identities.into_iter().map(Option::unwrap).collect()
+            occurrences
+        }
+
+        fn at(snapshot: &EngineSnapshot, seat: usize, occurrence: usize) -> Self {
+            Self {
+                text: snapshot.candidates[seat].clone(),
+                source: snapshot.candidate_sources[seat],
+                code: snapshot.candidate_codes[seat].clone(),
+                occurrence,
+            }
+        }
+
+        fn matches(&self, snapshot: &EngineSnapshot, seat: usize, occurrence: usize) -> bool {
+            self.occurrence == occurrence
+                && self.source == snapshot.candidate_sources[seat]
+                && self.text == snapshot.candidates[seat]
+                && self.code == snapshot.candidate_codes[seat]
         }
     }
 
@@ -145,8 +156,8 @@ mod desktop {
         order: Vec<Identity>,
         hidden: Vec<Identity>,
         annotations: Vec<(Identity, String)>,
-        /// 与当前缓存座位平行；排列后仍能把注释对应回原始候选。
-        identities: Vec<Identity>,
+        /// 与当前缓存座位平行的同组出现序号；文本和编码借用快照，仅被点名的行保存完整身份。
+        occurrences: Vec<usize>,
         /// 降到末尾、不显示的行数。
         hidden_rows: usize,
         /// 宿主暂停了候选变换：不运行、不重放。插件指令同样不调用。
@@ -303,17 +314,14 @@ mod desktop {
         pub(crate) fn transform_candidates(&mut self) -> bool {
             let hidden_before = self.plugins.hidden_rows;
             let ready = self.transform_ready();
-            if ready && (self.plugins.transform.is_some() || self.plugins.has_recorded()) {
-                self.plugins.identities = Identity::all(&self.cached, &self.engine_order);
-            } else {
-                self.plugins.identities.clear();
-            }
             let mut annotations_changed = false;
             // 暂停时和没有候选时一样把记下的操作清掉：恢复之后的旁路调用不能把暂停之前的操作重放到新列表上。
             if self.cached.candidates.is_empty() || self.plugins.suspended {
+                self.plugins.occurrences.clear();
                 annotations_changed = !self.plugins.annotations.is_empty();
                 self.plugins.clear_recorded();
             } else if self.plugins.live {
+                self.plugins.occurrences.clear();
                 let previous = std::mem::take(&mut self.plugins.annotations);
                 self.plugins.order.clear();
                 self.plugins.hidden.clear();
@@ -321,6 +329,10 @@ mod desktop {
                     self.run_transform();
                 }
                 annotations_changed = previous != self.plugins.annotations;
+            } else if ready && self.plugins.has_recorded() {
+                self.plugins.occurrences = Identity::occurrences(&self.cached, &self.engine_order);
+            } else {
+                self.plugins.occurrences.clear();
             }
             self.arrange_candidates(ready);
             // 高亮只能落在可见前缀里：派发里的展开会重新运行插件，插件这次可以多藏几行，而翻页填满当前页时高亮原地不动；落进被隐藏的末尾时，空格、结束组字和标点按高亮交给引擎的就是一行被隐藏的候选。
@@ -351,39 +363,59 @@ mod desktop {
             self.plugins.ops.clear();
             transform.transform(window, &snapshot.local_mode, &mut self.plugins.ops);
             let plugins = &mut self.plugins;
+            // 没有操作时不建立全列表元数据；插件仍收到原来的窗口并照常运行。
+            if !plugins.ops.iter().any(|ops| {
+                !ops.order.is_empty() || !ops.hidden.is_empty() || !ops.annotations.is_empty()
+            }) {
+                return;
+            }
+            plugins.occurrences = Identity::occurrences(snapshot, &self.engine_order);
             // 重排：后面的插件优先，所以倒着收，同一行只收第一次。
             for ops in plugins.ops.iter().rev() {
-                for id in ops
-                    .order
-                    .iter()
-                    .filter_map(|index| plugins.identities.get(*index as usize))
-                {
-                    if !plugins.order.contains(id) {
-                        plugins.order.push(id.clone());
+                for &index in &ops.order {
+                    let seat = index as usize;
+                    let Some(&occurrence) = plugins.occurrences.get(seat) else {
+                        continue;
+                    };
+                    if !plugins
+                        .order
+                        .iter()
+                        .any(|id| id.matches(snapshot, seat, occurrence))
+                    {
+                        plugins.order.push(Identity::at(snapshot, seat, occurrence));
                     }
                 }
             }
             for ops in &plugins.ops {
-                for id in ops
-                    .hidden
-                    .iter()
-                    .filter_map(|index| plugins.identities.get(*index as usize))
-                {
-                    if !plugins.hidden.contains(id) {
-                        plugins.hidden.push(id.clone());
+                for &index in &ops.hidden {
+                    let seat = index as usize;
+                    let Some(&occurrence) = plugins.occurrences.get(seat) else {
+                        continue;
+                    };
+                    if !plugins
+                        .hidden
+                        .iter()
+                        .any(|id| id.matches(snapshot, seat, occurrence))
+                    {
+                        plugins
+                            .hidden
+                            .push(Identity::at(snapshot, seat, occurrence));
                     }
                 }
                 for (index, text) in &ops.annotations {
-                    let Some(id) = plugins.identities.get(*index as usize) else {
+                    let seat = *index as usize;
+                    let Some(&occurrence) = plugins.occurrences.get(seat) else {
                         continue;
                     };
                     match plugins
                         .annotations
                         .iter_mut()
-                        .find(|(existing, _)| existing == id)
+                        .find(|(id, _)| id.matches(snapshot, seat, occurrence))
                     {
                         Some((_, annotation)) => annotation.clone_from(text),
-                        None => plugins.annotations.push((id.clone(), text.clone())),
+                        None => plugins
+                            .annotations
+                            .push((Identity::at(snapshot, seat, occurrence), text.clone())),
                     }
                 }
             }
@@ -411,7 +443,7 @@ mod desktop {
             };
             let listed = |list: &[Identity], seat: usize| {
                 list.iter()
-                    .position(|id| id == &self.plugins.identities[seat])
+                    .position(|id| id.matches(snapshot, seat, self.plugins.occurrences[seat]))
             };
             let hidden: Vec<bool> = (0..count)
                 .map(|seat| {
@@ -460,7 +492,7 @@ mod desktop {
                 return;
             }
             self.apply_candidate_order(&order);
-            apply_order(&mut self.plugins.identities, &order);
+            apply_order(&mut self.plugins.occurrences, &order);
         }
 
         /// `seat` 上可见的行的插件注释；没有、为空或者列表现在不做变换时为 `None`。插件指令行（来源 14）的注释是「标题 注释」，不经过候选变换。
@@ -477,11 +509,11 @@ mod desktop {
             {
                 return None;
             }
-            let identity = self.plugins.identities.get(seat)?;
+            let occurrence = *self.plugins.occurrences.get(seat)?;
             self.plugins
                 .annotations
                 .iter()
-                .find(|(id, _)| id == identity)
+                .find(|(id, _)| id.matches(&self.cached, seat, occurrence))
                 .map(|(_, annotation)| annotation)
                 .filter(|annotation| !annotation.is_empty())
                 .cloned()
