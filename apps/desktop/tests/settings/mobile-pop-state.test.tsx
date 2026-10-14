@@ -43,3 +43,17 @@ test("does not listen on desktop and removes the listener on unmount", () => {
   window.dispatchEvent(new PopStateEvent("popstate"));
   expect(onPopState).not.toHaveBeenCalled();
 });
+
+test("settings navigation reuses the shared mobile popstate lifecycle", () => {
+  const source = Object.values(
+    import.meta.glob<string>("../../../../packages/ui/src/settings/use-settings-navigation.ts", {
+      eager: true,
+      query: "?raw",
+      import: "default",
+    }),
+  )[0];
+
+  expect(source).toContain('from "./use-mobile-pop-state"');
+  expect(source).toContain("useMobilePopState");
+  expect(source).not.toContain('window.addEventListener("popstate"');
+});
