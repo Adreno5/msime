@@ -4172,6 +4172,8 @@ public final class MSIMEInputService extends InputMethodService {
         JSONObject preferences = preferencesSnapshot == null ? null : preferencesSnapshot.optJSONObject("preferences");
         KeyboardScheme chineseReturn = LanguageKeyCyclePolicy.chineseReturn(lastChineseScheme,
             InputViewValuePolicy.textOr(preferences, "last_chinese_scheme", edition.defaultScheme()),
+            selectedScheme != null && selectedScheme.otherLanguage()
+                ? selectedScheme.touchKeyboardLayout() : null,
             visibleSchemes, edition, KeyboardScheme.fallback(edition));
         return LanguageKeyCyclePolicy.next(languageKeyCycles(), schemeSaving, selectedScheme, dedicatedEnglish,
             visibleSchemes, chineseReturn);
