@@ -28,6 +28,7 @@ import {
 import { useMountedRef } from "./use-mounted-ref";
 import { useAsyncGeneration } from "./use-async-generation";
 import { subscribeToWindowResume } from "../core/window-focus";
+import { subscribeToInterval } from "../core/use-interval";
 import { MobileStatistics, statisticsCardClass, type StatisticsLook } from "./mobile-statistics";
 import { StatisticsNote } from "./statistics-note";
 import type { TypingSummary } from "./typing-summary";
@@ -1520,9 +1521,9 @@ export function TypingStatisticsPage({
     };
     refreshWhenVisible();
     const stopResume = subscribeToWindowResume(refreshWhenVisible);
-    const poll = window.setInterval(refreshWhenVisible, overviewPollMs);
+    const stopPoll = subscribeToInterval(refreshWhenVisible, overviewPollMs);
     return () => {
-      window.clearInterval(poll);
+      stopPoll();
       stopResume();
     };
   }, [client, clientGeneration, look]);

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import * as intervals from "../../../../packages/ui/src/core/use-interval";
 import { useInterval } from "../../../../packages/ui/src/core/use-interval";
 
 afterEach(() => {
@@ -60,3 +61,19 @@ test.each(Object.entries(macosIntervalConsumers))(
     expect(source).not.toContain("window.clearInterval");
   },
 );
+
+test("同步间隔订阅只在约定时间触发，清理后停止", () => {
+  expect(intervals.subscribeToInterval).toBeTypeOf("function");
+  vi.useFakeTimers();
+  const callback = vi.fn();
+  const stop = intervals.subscribeToInterval(callback, 400);
+  expect(callback).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(399));
+  expect(callback).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(1));
+  expect(callback).toHaveBeenCalledOnce();
+  stop();
+  stop();
+  act(() => vi.advanceTimersByTime(800));
+  expect(callback).toHaveBeenCalledOnce();
+});
