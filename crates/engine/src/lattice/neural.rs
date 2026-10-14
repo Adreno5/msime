@@ -84,21 +84,38 @@ fn load_model(path: &Path) -> Option<Arc<SentenceModel>> {
 /// 对前 `min(n, 12)` 条路径按 `static + lambda * (neural - static)` 降序稳定排序，尾部保留原顺序。路径不足两条或评分长度不匹配时返回 `None`。两侧都使用自然对数：`neural` 是逐字评分的总和，`static_nats` 是词网格的 `SentencePath.log_prob`。
 ///
 /// `neural` 按相同路径顺序评分，只读取前 `min(n, 12)` 项，调用方可以只计算并传入这些评分。
+#[cfg(test)]
 pub fn rerank_order(neural: &[f64], static_nats: &[f64]) -> Option<Vec<usize>> {
     let n = static_nats.len();
     let scored = n.min(MAX_RERANK_PATHS);
     if n < 2 || (neural.len() != n && neural.len() != scored) {
         return None;
     }
+    let mut order: Vec<usize> = (0..n).collect();
+    rerank_order_into(neural, static_nats, &mut order[..scored]);
+    Some(order)
+}
+
+/// 把最多12条评分前缀写入调用方缓冲；尾部路径保持恒等映射，由调用方按 `scored` 接回。
+pub(super) fn rerank_order_into(
+    neural: &[f64],
+    static_nats: &[f64],
+    order: &mut [usize],
+) -> Option<usize> {
+    let n = static_nats.len();
+    let scored = n.min(MAX_RERANK_PATHS);
+    if n < 2 || (neural.len() != n && neural.len() != scored) || order.len() < scored {
+        return None;
+    }
     let mut combined = [0.0; MAX_RERANK_PATHS];
     for index in 0..scored {
         let statik = static_nats[index];
         combined[index] = statik + RERANK_LAMBDA * (neural[index] - statik);
+        order[index] = index;
     }
-    let mut order: Vec<usize> = (0..n).collect();
-    // 同分保留词网格顺序，评分上限后的尾部保持原序。
+    // 同分保留词网格顺序；评分上限后的尾部不写入此缓冲，调用方接回恒等尾部。
     order[..scored].sort_by(|&a, &b| combined[b].total_cmp(&combined[a]));
-    Some(order)
+    Some(scored)
 }
 
 pub struct NeuralReranker {
@@ -117,19 +134,37 @@ impl NeuralReranker {
 
     /// 按 `context` 最后64字的模型评分重排路径；返回 false 时保持原序。模型返回逐字平均对数概率，乘文本字数得到总分。
     pub fn rerank(&mut self, paths: &mut [SentencePath], context: &str) -> bool {
-        let Some(order) = self.score_order(paths, context) else {
+        let mut order = [0; MAX_RERANK_PATHS];
+        let Some(scored) = self.score_order_into(paths, context, &mut order) else {
             return false;
         };
-        apply_order(&mut paths[..order.len()], &order);
+        apply_order(&mut paths[..scored], &order[..scored]);
         true
     }
 
     /// 只读路径并返回评分前缀的排列；未评分尾部保持恒等映射，失败时不产生排列。
+    #[cfg(test)]
     pub(super) fn score_order(
         &mut self,
         paths: &[SentencePath],
         context: &str,
     ) -> Option<Vec<usize>> {
+        if paths.len() < 2 {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..paths.len()).collect();
+        let scored = paths.len().min(MAX_RERANK_PATHS);
+        self.score_order_into(paths, context, &mut order[..scored])?;
+        Some(order)
+    }
+
+    /// 只读路径并把评分前缀排列写入调用方的固定缓冲；不为索引向量申请堆内存。
+    pub(super) fn score_order_into(
+        &mut self,
+        paths: &[SentencePath],
+        context: &str,
+        order: &mut [usize],
+    ) -> Option<usize> {
         if paths.len() < 2 {
             return None;
         }
@@ -152,7 +187,7 @@ impl NeuralReranker {
             neural[index] = f64::from(means[index]) * texts[index].chars().count() as f64;
             statik[index] = paths[index].log_prob;
         }
-        rerank_order(&neural[..scored], &statik[..scored])
+        rerank_order_into(&neural[..scored], &statik[..scored], order)
     }
 }
 

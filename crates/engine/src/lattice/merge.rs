@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use super::decode::{
     build_graph, decode_graph, decode_typo_on_graph, LatticeOptions, SentencePath, TypoSentence,
 };
-use super::neural::NeuralReranker;
+use super::neural::{NeuralReranker, MAX_RERANK_PATHS};
 use super::{LatticeLookup, TypoEdgeSource};
 use crate::pinyin::syllables::has_only_complete_pinyin_segments;
 use crate::types::{CandidateSource, WordItem};
@@ -77,13 +77,16 @@ pub fn merge_lattice_candidates(
             generated_block_linear(candidates, paths, typed_pinyin)
         }
     } else {
+        let mut keyboard_order = [0; MAX_RERANK_PATHS];
         let mut keyboard = None;
         for reranker in rerankers
             .iter_mut()
             .filter(|reranker| reranker.source == CandidateSource::NeuralKeyboard)
         {
-            if let Some(order) = reranker.score_order(&paths, rescoring_context) {
-                keyboard = Some(order);
+            if let Some(scored) =
+                reranker.score_order_into(&paths, rescoring_context, &mut keyboard_order)
+            {
+                keyboard = Some(scored);
             }
         }
         // 所有模型处理完后确认没有可输出来源，保留已完成的纠错结果。
@@ -93,9 +96,12 @@ pub fn merge_lattice_candidates(
         let already = existing_sentence_set(candidates, paths.len());
         // 各模型始终评分原始路径；最后成功的排列接回恒等尾部，再移交选中字段。
         let path_count = paths.len();
-        let ranked = keyboard
-            .as_deref()
-            .map(|order| order.iter().copied().chain(order.len()..path_count));
+        let ranked = keyboard.map(|scored| {
+            keyboard_order[..scored]
+                .iter()
+                .copied()
+                .chain(scored..path_count)
+        });
         if let Some(already) = already.as_ref() {
             reranked_block(
                 paths,
