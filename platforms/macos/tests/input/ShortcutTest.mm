@@ -5559,6 +5559,18 @@ static void TestRealSessionComposition() {
     assert(![controller handleEvent:comma client:client]);
     assert(client.insertions.count == 0);
 
+    // Shift+首字母也属于拼音组字：真实宿主不能先把 `O` 交给应用，再把剩下的字母送进引擎。
+    [client.insertions removeAllObjects];
+    client.marked = nil;
+    assert([controller handleEvent:KeypadKey(31, @"O", NSEventModifierFlagShift, NO) client:client]);
+    assert([client.marked isEqual:@"O"] && client.insertions.count == 0);
+    for (NSArray *stroke in @[@[@11, @"b"], @[@1, @"s"], @[@14, @"e"], @[@15, @"r"], @[@9, @"v"], @[@0, @"a"], @[@11, @"b"], @[@37, @"l"], @[@14, @"e"]]) {
+        assert([controller handleEvent:KeypadKey([stroke[0] unsignedShortValue], stroke[1], 0, NO) client:client]);
+    }
+    assert([client.marked isEqual:@"Observable"] && client.insertions.count == 0);
+    assert([controller handleEvent:enter client:client]);
+    assert(client.insertions.count == 1 && [client.insertions[0] isEqual:@"Observable"] && client.marked.length == 0);
+
     assert([session closeWithError:&error] && !error);
 
     // The reference reserves the physical ANSI minus key for Japanese: it must pass through this
