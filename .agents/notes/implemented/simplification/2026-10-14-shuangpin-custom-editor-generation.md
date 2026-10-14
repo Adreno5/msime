@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-键位校验使用 `useAsyncGeneration(client, draft)`，按客户端和草稿变化隔离延迟校验及其异步回答。导入、导出和内置方案操作使用 `useAsyncActionRunner`，由共享 runner 提供 `busy` 和挂载状态；操作本身保留原有的具体错误文案与结果处理。校验触发时机、文件格式、提示文案和保存条件保持不变。
+键位校验使用 `useAsyncGeneration(client, draft)`，按客户端和草稿变化隔离延迟校验及其异步回答。导入、导出和内置方案操作使用 `useAsyncActionRunner`，由共享 runner 提供 `busy` 和挂载状态；操作本身保留原有的具体错误文案与结果处理。共享挂载守卫在 StrictMode 的 effect 重放后重新生效，避免校验和操作结果永远无法更新界面。runner 同步阻止重复操作，并为原先未捕获的异常提供兜底提示。校验触发时机、文件格式和保存条件保持不变。
 
 ## Alternatives considered
 
@@ -18,4 +18,4 @@ Status: implemented
 
 ## Consequences
 
-编辑器与其他设置页共用异步请求和操作生命周期守卫，旧校验回答以及卸载后的操作收尾不会更新界面。文件操作 runner 的 owner 保持组件生命周期，不因编辑键位变化中断正在进行的导入或导出；校验仍单独按草稿代次隔离。增加源码契约测试，防止局部 `useRef` 守卫回流。
+编辑器与其他设置页共用异步请求和操作生命周期守卫，旧校验回答以及卸载后的操作收尾不会更新界面。文件操作 runner 的 owner 保持组件生命周期，不因编辑键位变化中断正在进行的导入或导出；校验仍单独按草稿代次隔离。行为测试覆盖 StrictMode 下校验、填入方案和解除忙碌，以及旧草稿校验成功、失败迟到；StrictMode 用例在旧实现上因保存按钮始终禁用而失败，共享守卫版本通过。
