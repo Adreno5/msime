@@ -166,6 +166,8 @@ mod desktop {
         commands: Option<Box<dyn CommandProvider>>,
         /// 最近一次写进引擎的插件行的注释，按行文本；同文的行引擎只留第一行，这里也只记第一条。
         command_notes: HashMap<String, String>,
+        /// 插件指令提供者的回包行，调用之间清空并复用容量。
+        command_rows: Vec<(String, String)>,
     }
 
     impl PluginState {
@@ -208,18 +210,27 @@ mod desktop {
             let Some(query) = self.engine.plugin_command_query() else {
                 return;
             };
-            let mut rows = Vec::new();
-            if provider.provide(&query.trigger, &query.argument, &mut rows)
-                == CommandOutcome::NotRun
-            {
+            self.plugins.command_rows.clear();
+            let outcome = provider.provide(
+                &query.trigger,
+                &query.argument,
+                &mut self.plugins.command_rows,
+            );
+            if outcome == CommandOutcome::NotRun {
+                self.plugins.command_rows.clear();
                 return;
             }
-            if self.engine.apply_plugin_command_rows(&query, &rows) {
+            if self
+                .engine
+                .apply_plugin_command_rows(&query, &self.plugins.command_rows)
+            {
                 let notes = &mut self.plugins.command_notes;
                 notes.clear();
-                for (text, note) in rows {
+                for (text, note) in self.plugins.command_rows.drain(..) {
                     notes.entry(text).or_insert(note);
                 }
+            } else {
+                self.plugins.command_rows.clear();
             }
         }
 
