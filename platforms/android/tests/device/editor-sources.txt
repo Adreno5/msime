@@ -103,3 +103,6 @@ platforms/android/tests/device/settings/HostLaunchDeviceSmoke.java
 
 platforms/android/tests/device/core/QuoteEditorActivity.java
 platforms/android/tests/device/keyboard/EmptyEditorBackspaceDeviceSmoke.java
+platforms/android/tests/device/clipboard/ClipboardEditPreparation.java
+platforms/android/tests/device/clipboard/PinyinClipboardEditPreparation.java
+platforms/android/tests/device/clipboard/ClipboardEditDeviceSmoke.java
