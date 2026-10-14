@@ -621,17 +621,23 @@ impl QuanpinDictionary {
                 self.personal_scored_keys.clear();
             }
         }
-        let segments = self.resolve_segments(raw, segmentation);
+        let mut segments = None;
+        let segmentation_cache = &mut self.segmentation_cache;
         let association = self.sentence_association;
         let has_rerankers = !self.rerankers.is_empty();
         let context = &self.rescoring_context;
         let (resolution_hash, (resolution, pinyin_segmentation, marking_alternatives, slot)) =
-            project_cached_resolution(
+            project_cached_resolution_with(
                 &mut self.resolution_cache,
                 raw,
                 segmentation,
-                &segments,
                 types,
+                || {
+                    let segments = segments.get_or_insert_with(|| {
+                        resolve_cached_segments(segmentation_cache, raw, segmentation)
+                    });
+                    resolve_series_query(raw, segments, types)
+                },
                 |resolution| {
                     // 热命中也发布本次标记；高成本读法仍算纠错。
                     let pinyin_segmentation = resolution.segmentation.clone();
@@ -654,11 +660,17 @@ impl QuanpinDictionary {
         self.alternative_segmentations = marking_alternatives;
         self.drop_personal_scored_results();
         if self.series_cache.contains(&slot) {
-            self.reset_cache_if_database_changed();
+            if self.database.database_changed() {
+                // 清空切分备忘前取得重建需要的音节，保留原先的缓存复用与分配成本。
+                segments.get_or_insert_with(|| self.resolve_segments(raw, segmentation));
+                self.reset_cache();
+            }
             if let Some(cached) = self.series_cache.get(&slot) {
                 return cached;
             }
         }
+
+        let segments = segments.unwrap_or_else(|| self.resolve_segments(raw, segmentation));
 
         // 候选槽失效不会改解析备忘；复用已核对的索引，避免重复哈希和完整键校验。
         let resolution = resolution.unwrap_or_else(|| {
@@ -971,26 +983,9 @@ impl QuanpinDictionary {
         matched_items(rows, key)
     }
 
-    /// The single normalisation choke point (QD:767-775): an explicit segmentation and the automatic cut both pass here, so the segments entering the pipeline are alias-normalised exactly once.
+    /// 显式和自动切分共用一次别名规范化，进入查询管线的音节保持标准拼写（QD:767-775）。
     fn resolve_segments(&mut self, raw: &str, segmentation: &str) -> Vec<String> {
-        let mut segments = if segmentation.is_empty() {
-            self.computed_segments(raw)
-        } else {
-            split_segments(segmentation)
-        };
-        normalize_umlaut_aliases(&mut segments);
-        segments
-    }
-
-    /// The first correction-mode cut of the raw input, cached (QD:777-788).
-    fn computed_segments(&mut self, raw: &str) -> Vec<String> {
-        if let Some(cached) = lookup_cached_segments(&self.segmentation_cache, raw) {
-            return cached;
-        }
-        let segments = first_correction_cut(raw).unwrap_or_default();
-        let key = raw.to_owned();
-        self.segmentation_cache.insert(key, segments.clone());
-        segments
+        resolve_cached_segments(&mut self.segmentation_cache, raw, segmentation)
     }
 
     /// 拥有型解析入口只保留作旧查询的测试对照；产品按已核对的索引延迟取得副本。
@@ -1091,13 +1086,32 @@ fn project_cached_resolution<T>(
     types: u32,
     project: impl FnOnce(Cow<'_, SeriesResolution>) -> T,
 ) -> (u64, T) {
+    project_cached_resolution_with(
+        cache,
+        raw,
+        segmentation,
+        types,
+        || resolve_series_query(raw, segments, types),
+        project,
+    )
+}
+
+/// 解析热命中不调用构造闭包；常规查询因此可把音节拥有值延迟到真正未命中时。
+fn project_cached_resolution_with<T>(
+    cache: &mut FifoCache<u64, CachedResolution>,
+    raw: &str,
+    segmentation: &str,
+    types: u32,
+    resolve: impl FnOnce() -> SeriesResolution,
+    project: impl FnOnce(Cow<'_, SeriesResolution>) -> T,
+) -> (u64, T) {
     let hash = resolution_cache_hash(types, raw, segmentation);
     if let Some(cached) = cache.get_ref(&hash) {
         if resolution_cache_key_matches(&cached.key, types, raw, segmentation) {
             return (hash, project(Cow::Borrowed(&cached.resolution)));
         }
     }
-    let resolution = resolve_series_query(raw, segments, types);
+    let resolution = resolve();
     let key = format!("{types}\u{1f}{raw}\u{1f}{segmentation}");
     cache.insert(
         hash,
@@ -1340,6 +1354,27 @@ fn path_cache_key<'a>(raw: &'a str, segmentation: &'a str) -> &'a str {
     }
 }
 
+/// 自动切分的冷副本先写入备忘，别名规范化只修改返回值，保留原有缓存容量与内容。
+fn resolve_cached_segments(
+    cache: &mut FifoCache<String, Vec<String>>,
+    raw: &str,
+    segmentation: &str,
+) -> Vec<String> {
+    let mut segments = if segmentation.is_empty() {
+        if let Some(cached) = lookup_cached_segments(cache, raw) {
+            cached
+        } else {
+            let segments = first_correction_cut(raw).unwrap_or_default();
+            cache.insert(raw.to_owned(), segments.clone());
+            segments
+        }
+    } else {
+        split_segments(segmentation)
+    };
+    normalize_umlaut_aliases(&mut segments);
+    segments
+}
+
 fn lookup_cached_segments(
     cache: &FifoCache<String, Vec<String>>,
     key: &str,
@@ -1503,3 +1538,7 @@ mod primary_segmentation_tests;
 #[cfg(test)]
 #[path = "dictionary/series_hit_resolution_tests.rs"]
 mod series_hit_resolution_tests;
+
+#[cfg(test)]
+#[path = "dictionary/lazy_segments_tests.rs"]
+mod lazy_segments_tests;
