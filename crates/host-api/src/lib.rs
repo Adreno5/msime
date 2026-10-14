@@ -2022,6 +2022,19 @@ fn prepare_shipped_host_configuration(
     verify_resources_once(&resources, specification, &state_root, on_demand)?;
     // 偏好要在建 `user/dictionaries` 之前读：没有偏好文件时，以前的版本准备过的状态目录按升级前的默认方案，新装按现在的默认方案，建了代次目录就分不清了。
     let preferences = edition_preferences(&state_root, edition)?;
+    // 用户词库日志读不出是数据库时，代次准备会把它改名挪开、从空日志开始，否则回放每次都失败、宿主永远起不来。在这里先挪，好经诊断出口报出来；准备代次时再查一遍只是空操作。
+    let journal = state_root
+        .join("user")
+        .join(msime_engine::assets::USER_JOURNAL);
+    if let Some(moved) = msime_engine::quarantine_corrupt_journal(&journal)? {
+        crate::diagnostics::report(
+            "user dictionary journal moved aside",
+            &format!(
+                "{} is not a database; learning starts again from an empty journal",
+                moved.display()
+            ),
+        );
+    }
     // 代次按本版本的方案准备：不含全拼、双拼、五笔的版本（日文、越南文、藏文）随包不带 msime-pinyin.db，代次里也没有它；full 的方案是全部，与以前相同。
     let prepared = msime_engine::host::prepare_options_for(
         resources.to_str().ok_or("non-UTF-8 resource path")?,

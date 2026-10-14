@@ -9870,6 +9870,34 @@ fn preparing_tells_a_fresh_install_from_an_upgrade_without_preferences() {
     );
 }
 
+/// 用户词库日志被写成全零后，准备宿主仍然成功：日志改名挪到旁边，学习从空日志重新开始。以前这里回放失败，Windows Server 每次启动都在写日志之前退出，输入法一直起不来。
+#[test]
+#[cfg(not(target_os = "android"))]
+fn a_journal_that_is_not_a_database_does_not_stop_the_host_from_preparing() {
+    let root = tempfile::tempdir().unwrap();
+    let resources = root.path().join("resources");
+    let specification = synthetic_desktop_lock(&resources);
+    let state = root.path().join("state");
+    let full = Edition::full();
+    prepare_shipped_host_configuration(&resources, &state, &specification, &[], full).unwrap();
+    let journal = state.join("user").join(msime_engine::assets::USER_JOURNAL);
+    std::fs::write(&journal, vec![0u8; 23 * 4096]).unwrap();
+
+    prepare_shipped_host_configuration(&resources, &state, &specification, &[], full).unwrap();
+    assert!(!journal.exists());
+    let moved = std::fs::read_dir(state.join("user"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("msime_user.db.corrupt-")
+        })
+        .count();
+    assert_eq!(moved, 1);
+}
+
 /// 平台宿主经 C 接口只按目录读写偏好，不知道版本：五笔版的偏好文件损坏或被删掉之后，修复和读取回到的仍是五笔版的默认值（准备宿主时记在状态目录里的版本），不是 full 的。
 #[test]
 #[cfg(not(target_os = "android"))]
