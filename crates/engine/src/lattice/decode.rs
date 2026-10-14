@@ -26,7 +26,7 @@ pub type LatticeLexeme = DictRow;
 #[derive(Clone)]
 pub struct LatticeOptions<'a> {
     pub beam: usize,
-    /// Paths traced back from the final column. The default is 5; the product searches 6 (`make_sentence_lattice_options`) and 12 with neural rerankers.
+    /// 从末列回溯的路径数。默认5条；产品的 `SentenceNgramTables::options` 搜索6条，神经重排启用时搜索12条。
     pub nbest: usize,
     /// Cap on rows per span. The DB lookup already applies the same cap.
     pub span_limit: usize,
@@ -94,13 +94,39 @@ impl Default for LatticeOptions<'_> {
     }
 }
 
-/// The single configuration point quanpin and shuangpin share (WL:643-653): `nbest = 6`, `emit = 0` with alternatives else 1, and the generation's n-gram tables. The two paths used to build this block each themselves, which is how a ranking fix reached one and missed the other for weeks (engine PR #156).
+/// 活动词典持有构造时预热的 n 元表，按键查询不再构造路径或访问进程共享缓存。
+#[derive(Default)]
+pub(crate) struct SentenceNgramTables {
+    bigram: Option<Arc<NgramTable>>,
+    trigram: Option<Arc<NgramTable>>,
+}
+
+impl SentenceNgramTables {
+    pub(crate) fn load(paths: &RuntimePaths) -> Self {
+        Self {
+            bigram: NgramTable::shared(&paths.dictionary(assets::BIGRAM_TABLE)),
+            trigram: NgramTable::shared(&paths.dictionary(assets::TRIGRAM_TABLE)),
+        }
+    }
+
+    pub(crate) fn options<'a>(&self, sentence_alternatives: bool) -> LatticeOptions<'a> {
+        LatticeOptions {
+            nbest: 6,
+            emit: if sentence_alternatives { 0 } else { 1 },
+            bigram: self.bigram.clone(),
+            trigram: self.trigram.clone(),
+            ..LatticeOptions::default()
+        }
+    }
+}
+
+/// 固定 `87593cb4791e16297798f3542f817aa80da8be48` 的旧路径型配置入口，仅移除注释供测试对照。
+#[cfg(test)]
 pub fn make_sentence_lattice_options<'a>(
     paths: &RuntimePaths,
     sentence_alternatives: bool,
 ) -> LatticeOptions<'a> {
     LatticeOptions {
-        // Six are searched and rescored either way; `emit` only decides how many of them are handed back.
         nbest: 6,
         emit: if sentence_alternatives { 0 } else { 1 },
         bigram: NgramTable::shared(&paths.dictionary(assets::BIGRAM_TABLE)),

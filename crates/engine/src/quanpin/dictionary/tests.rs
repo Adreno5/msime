@@ -4,6 +4,22 @@ use rusqlite::params;
 use std::borrow::Cow;
 
 use super::*;
+
+#[test]
+fn active_dictionary_reuses_ngram_tables_after_shared_eviction() {
+    for bigram in [false, true] {
+        for trigram in [false, true] {
+            let fixture = crate::lattice::active_tables_tests::fixture(bigram, trigram);
+            let mut dictionary = QuanpinDictionary::new(&fixture.paths);
+            let segments = ["ni", "hao", "ma"].map(str::to_owned);
+            crate::lattice::active_tables_tests::assert_query_stable(&fixture.paths, || {
+                let mut result = Vec::new();
+                dictionary.merge_sentences(&mut result, "nihaoma", "ni'hao'ma", &segments);
+                result
+            });
+        }
+    }
+}
 use crate::quanpin::fixture::Fixture;
 use crate::types::{fuzzy_rule, FirstPageRows, DEFAULT_FIRST_PAGE_ROWS};
 
