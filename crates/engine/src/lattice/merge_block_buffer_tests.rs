@@ -97,22 +97,47 @@ fn reranked_blocks_preserve_options_and_allocate_only_for_rows() {
                         let (old, before) = measure(|| {
                             frozen_reranked_block_linear(&candidates, ranked, pick, &options, "aba")
                         });
+                        let mut owned_paths = ranked.to_vec();
+                        let keyboard_start = owned_paths.len();
+                        if let Some(pick) = pick {
+                            owned_paths.extend_from_slice(pick);
+                        }
+                        let keyboard_end = owned_paths.len();
                         let (new, after) = measure(|| {
-                            reranked_block_linear(&candidates, ranked, pick, &options, "aba")
+                            reranked_block(
+                                owned_paths,
+                                0..ranked.len(),
+                                pick.map(|_| keyboard_start..keyboard_end),
+                                &options,
+                                "aba",
+                                |sentence| candidates.iter().any(|item| item.word == sentence),
+                            )
                         });
                         assert_block_equivalent(&old, &new, before, after);
                         let mut old_seen: HashSet<_> = words.iter().copied().collect();
                         let mut new_seen = old_seen.clone();
-                        // 两个集合都在区间前创建；新增借用键不释放已有输入存储。
+                        // 两个集合都在区间前创建；旧助手登记路径，新助手只查询候选并比较待选行。
                         old_seen.reserve(2);
                         new_seen.reserve(2);
                         let (old, before) = measure(|| {
                             frozen_reranked_block(ranked, pick, &options, "aba", &mut old_seen)
                         });
+                        let mut owned_paths = ranked.to_vec();
+                        let keyboard_start = owned_paths.len();
+                        if let Some(pick) = pick {
+                            owned_paths.extend_from_slice(pick);
+                        }
+                        let keyboard_end = owned_paths.len();
                         let (new, after) = measure(|| {
-                            reranked_block(ranked, pick, &options, "aba", &mut new_seen)
+                            reranked_block(
+                                owned_paths,
+                                0..ranked.len(),
+                                pick.map(|_| keyboard_start..keyboard_end),
+                                &options,
+                                "aba",
+                                |sentence| new_seen.contains(sentence),
+                            )
                         });
-                        assert_eq!(old_seen, new_seen);
                         assert_block_equivalent(&old, &new, before, after);
                     }
                 }
@@ -133,11 +158,10 @@ fn assert_block_equivalent(
         assert_eq!(before.allocations, 1);
         assert_eq!(after.allocations, 0);
         assert_eq!(after.peak_bytes, 0);
-        assert_eq!(after.remaining_bytes, 0);
+        // 拥有输入在区间前创建并在区间内消耗，返回块存储只按容量核对。
     } else {
         assert_eq!(new.capacity(), old.capacity());
-        assert_eq!(after.allocations, before.allocations);
-        assert_eq!(after.remaining_bytes, before.remaining_bytes);
+        assert_eq!(after.allocations + 4 * new.len(), before.allocations);
     }
 }
 
@@ -293,21 +317,23 @@ fn real_merge_preserves_nonempty_and_neural_rows_with_typo_return() {
                         assert_eq!(typo.edges, 1);
                         assert!(typo.sentence.ends_with("叭嚓"));
                         let empty = new.0 == input;
-                        let transferred_allocations = if neural {
-                            0
-                        } else {
-                            new.0
-                                .iter()
-                                .filter(|item| item.source == CandidateSource::Generated)
-                                .map(|item| {
-                                    let path = decoded
-                                        .iter()
-                                        .find(|path| path.sentence == item.word)
-                                        .unwrap();
-                                    measure(|| path.clone()).1.allocations
-                                })
-                                .sum()
-                        };
+                        let transferred_allocations: usize = new
+                            .0
+                            .iter()
+                            .filter(|item| {
+                                matches!(
+                                    item.source,
+                                    CandidateSource::Generated | CandidateSource::NeuralKeyboard
+                                )
+                            })
+                            .map(|item| {
+                                let path = decoded
+                                    .iter()
+                                    .find(|path| path.sentence == item.word)
+                                    .unwrap();
+                                measure(|| path.clone()).1.allocations
+                            })
+                            .sum();
                         assert_eq!(
                             after.allocations
                                 + usize::from(empty)

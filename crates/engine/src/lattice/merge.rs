@@ -52,7 +52,7 @@ pub fn merge_lattice_candidates(
     if rerankers.is_empty() && options.emit > 0 {
         paths.truncate(options.emit);
     }
-    // 去重键借用活动候选；神经分支还借用路径，默认生成分支直接转移路径字段。
+    // 去重键只借用活动候选；两个来源的待选行直接比较路径句子。
     let dedup_size = candidates.len().saturating_add(paths.len());
     let mut already =
         (dedup_size > SMALL_SENTENCE_MERGE).then(|| HashSet::with_capacity(dedup_size));
@@ -92,18 +92,29 @@ pub fn merge_lattice_candidates(
                 keyboard = Some(order);
             }
         }
-        // 各模型始终评分原始路径；最后成功的排列借用前缀，并接回恒等尾部。
-        let ranked = keyboard.as_deref().map(|order| {
-            order
-                .iter()
-                .copied()
-                .chain(order.len()..paths.len())
-                .map(|index| &paths[index])
-        });
-        if let Some(already) = already.as_mut() {
-            reranked_block(&paths, ranked, options, typed_pinyin, already)
+        // 各模型始终评分原始路径；最后成功的排列接回恒等尾部，再移交选中字段。
+        let path_count = paths.len();
+        let ranked = keyboard
+            .as_deref()
+            .map(|order| order.iter().copied().chain(order.len()..path_count));
+        if let Some(already) = already.as_ref() {
+            reranked_block(
+                paths,
+                0..path_count,
+                ranked,
+                options,
+                typed_pinyin,
+                |sentence| already.contains(sentence),
+            )
         } else {
-            reranked_block_linear(candidates, &paths, ranked, options, typed_pinyin)
+            reranked_block(
+                paths,
+                0..path_count,
+                ranked,
+                options,
+                typed_pinyin,
+                |sentence| candidates.iter().any(|item| item.word == sentence),
+            )
         }
     };
     if !block.is_empty() {
@@ -111,10 +122,6 @@ pub fn merge_lattice_candidates(
         candidates.splice(at..at, block);
     }
     typo
-}
-
-fn sentence_row(typed_pinyin: &str, path: &SentencePath, source: CandidateSource) -> WordItem {
-    owned_sentence_row(typed_pinyin, path.clone(), source)
 }
 
 fn owned_sentence_row(typed_pinyin: &str, path: SentencePath, source: CandidateSource) -> WordItem {
@@ -161,74 +168,19 @@ fn generated_block_linear(
     block
 }
 
-fn take_linear_sentence<'a>(
-    candidates: &[WordItem],
-    block: &[WordItem],
-    ranked: impl IntoIterator<Item = &'a SentencePath>,
-    source: CandidateSource,
-    options: &LatticeOptions<'_>,
-    typed_pinyin: &str,
-) -> Option<WordItem> {
-    for path in ranked {
-        if !sentence_seen_linear(candidates, block, &path.sentence) {
-            return Some(sentence_row(typed_pinyin, path, source));
-        }
-        if !options.show_next_on_duplicate {
-            return None;
-        }
-    }
-    None
-}
-
-fn reranked_block_linear<'a>(
-    candidates: &[WordItem],
+fn take_sentence_index(
     paths: &[SentencePath],
-    keyboard: Option<impl IntoIterator<Item = &'a SentencePath>>,
+    ranked: impl IntoIterator<Item = usize>,
+    previous: Option<usize>,
     options: &LatticeOptions<'_>,
-    typed_pinyin: &str,
-) -> Vec<WordItem> {
-    let mut block = Vec::new();
-    if options.include_lattice_best {
-        if let Some(row) = take_linear_sentence(
-            candidates,
-            &block,
-            paths,
-            CandidateSource::Generated,
-            options,
-            typed_pinyin,
-        ) {
-            block = Vec::with_capacity(2);
-            block.push(row);
-        }
-    }
-    if let Some(keyboard) = keyboard {
-        if let Some(row) = take_linear_sentence(
-            candidates,
-            &block,
-            keyboard,
-            CandidateSource::NeuralKeyboard,
-            options,
-            typed_pinyin,
-        ) {
-            if block.is_empty() {
-                block = Vec::with_capacity(2);
-            }
-            block.push(row);
-        }
-    }
-    block
-}
-
-fn take_hashed_sentence<'a>(
-    ranked: impl IntoIterator<Item = &'a SentencePath>,
-    source: CandidateSource,
-    options: &LatticeOptions<'_>,
-    typed_pinyin: &str,
-    already: &mut HashSet<&'a str>,
-) -> Option<WordItem> {
-    for path in ranked {
-        if already.insert(path.sentence.as_str()) {
-            return Some(sentence_row(typed_pinyin, path, source));
+    is_listed: &impl Fn(&str) -> bool,
+) -> Option<usize> {
+    for index in ranked {
+        let sentence = &paths[index].sentence;
+        let seen = is_listed(sentence)
+            || previous.is_some_and(|selected| paths[selected].sentence == *sentence);
+        if !seen {
+            return Some(index);
         }
         if !options.show_next_on_duplicate {
             return None;
@@ -237,43 +189,42 @@ fn take_hashed_sentence<'a>(
     None
 }
 
-/// 每个来源最多一行：按配置先给字面最优的 Generated，再给键盘模型的首条未重复路径。句子行保留词边界和既有学习规则，桌面模型仍由 runtime 承载。
-fn reranked_block<'a>(
-    paths: &'a [SentencePath],
-    keyboard: Option<impl IntoIterator<Item = &'a SentencePath>>,
+/// 两个来源先按旧规则选索引，再把字段交给输出槽；槽顺序始终是字面、键盘。
+fn reranked_block(
+    paths: Vec<SentencePath>,
+    lattice: impl IntoIterator<Item = usize>,
+    keyboard: Option<impl IntoIterator<Item = usize>>,
     options: &LatticeOptions<'_>,
     typed_pinyin: &str,
-    already: &mut HashSet<&'a str>,
+    is_listed: impl Fn(&str) -> bool,
 ) -> Vec<WordItem> {
-    let lattice = if options.include_lattice_best {
-        take_hashed_sentence(
-            paths,
-            CandidateSource::Generated,
-            options,
-            typed_pinyin,
-            already,
-        )
-    } else {
-        None
-    };
-    let pick = keyboard.and_then(|keyboard| {
-        take_hashed_sentence(
-            keyboard,
-            CandidateSource::NeuralKeyboard,
-            options,
-            typed_pinyin,
-            already,
-        )
-    });
-    let mut block = if lattice.is_some() || pick.is_some() {
-        Vec::with_capacity(2)
-    } else {
-        Vec::new()
-    };
-    if let Some(row) = lattice {
-        block.push(row);
+    let literal = options
+        .include_lattice_best
+        .then(|| take_sentence_index(&paths, lattice, None, options, &is_listed))
+        .flatten();
+    let pick = keyboard
+        .and_then(|keyboard| take_sentence_index(&paths, keyboard, literal, options, &is_listed));
+    let mut rows = [None, None];
+    for (index, path) in paths.into_iter().enumerate() {
+        if literal == Some(index) {
+            rows[0] = Some(owned_sentence_row(
+                typed_pinyin,
+                path,
+                CandidateSource::Generated,
+            ));
+        } else if pick == Some(index) {
+            rows[1] = Some(owned_sentence_row(
+                typed_pinyin,
+                path,
+                CandidateSource::NeuralKeyboard,
+            ));
+        }
     }
-    if let Some(row) = pick {
+    let mut block = Vec::new();
+    for row in rows.into_iter().flatten() {
+        if block.is_empty() {
+            block = Vec::with_capacity(2);
+        }
         block.push(row);
     }
     block
@@ -739,15 +690,27 @@ mod tests {
         options: &LatticeOptions<'_>,
         listed: &[&str],
     ) -> Vec<(String, CandidateSource)> {
-        let mut already = listed.iter().copied().collect();
-        reranked_block(lattice, keyboard, options, "ab", &mut already)
-            .into_iter()
-            .map(|item| {
-                assert!(item.sentence_association);
-                assert_eq!(item.sentence_words, std::slice::from_ref(&item.word));
-                (item.word, item.source)
-            })
-            .collect()
+        let mut paths = lattice.to_vec();
+        let first_keyboard = paths.len();
+        if let Some(keyboard) = keyboard {
+            paths.extend_from_slice(keyboard);
+        }
+        let last_keyboard = paths.len();
+        reranked_block(
+            paths,
+            0..lattice.len(),
+            keyboard.map(|_| first_keyboard..last_keyboard),
+            options,
+            "ab",
+            |sentence| listed.contains(&sentence),
+        )
+        .into_iter()
+        .map(|item| {
+            assert!(item.sentence_association);
+            assert_eq!(item.sentence_words, std::slice::from_ref(&item.word));
+            (item.word, item.source)
+        })
+        .collect()
     }
 
     fn words(rows: &[(String, CandidateSource)]) -> Vec<(&str, CandidateSource)> {
@@ -819,3 +782,7 @@ mod borrowed_order_tests;
 #[cfg(test)]
 #[path = "generated_ownership_tests.rs"]
 mod generated_ownership_tests;
+
+#[cfg(test)]
+#[path = "neural_ownership_tests.rs"]
+mod neural_ownership_tests;
