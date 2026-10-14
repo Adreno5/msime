@@ -98,6 +98,20 @@ test("通用窗口事件订阅按事件类型注册并独立清理", () => {
   stopKeydown();
 });
 
+test("通用窗口事件订阅支持只触发一次", () => {
+  const callback = vi.fn();
+  const stop = subscribeToWindowEvent("popstate", callback, { once: true });
+  const first = new PopStateEvent("popstate");
+  const second = new PopStateEvent("popstate");
+
+  window.dispatchEvent(first);
+  window.dispatchEvent(second);
+
+  expect(callback).toHaveBeenCalledOnce();
+  expect(callback).toHaveBeenCalledWith(first);
+  stop();
+});
+
 test("resumes on focus and visible transitions, but ignores hidden transitions", () => {
   const refresh = vi.fn();
   const stop = subscribeToWindowResume(refresh);

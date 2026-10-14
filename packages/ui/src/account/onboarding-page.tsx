@@ -11,6 +11,7 @@ import { makeDefaultAction, useImeSetupState } from "../keyboard/setup-status-ca
 import { KeyboardSwitchGuideHost } from "../keyboard/keyboard-switch-guide";
 import { useSettingsPlatform } from "../theme/settings-platform";
 import { useHarmonyWelcomeSystemBars } from "../settings/use-settings-theme";
+import { subscribeToWindowEvent } from "../core/window-focus";
 import { useMobilePopState } from "../settings/use-mobile-pop-state";
 import { logo } from "../settings/app-resources";
 import type { EditionInfo, InputScheme, Preferences } from "../index";
@@ -385,12 +386,11 @@ export function WelcomeFlowPage({
     return new Promise<void>((resolve) => {
       rewinding.current = true;
       const landed = () => {
-        window.removeEventListener("popstate", landed);
         pushedEntries.current = 0;
         rewinding.current = false;
         resolve();
       };
-      window.addEventListener("popstate", landed);
+      subscribeToWindowEvent("popstate", landed, { once: true });
       window.history.go(-depth);
     });
   };

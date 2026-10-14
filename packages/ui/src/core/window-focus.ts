@@ -13,10 +13,11 @@ export function subscribeToDocumentVisibilityChange(listener: () => void): () =>
 export function subscribeToWindowEvent<K extends keyof WindowEventMap>(
   event: K,
   listener: (event: WindowEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
 ): () => void {
   if (typeof window === "undefined") return noop;
-  window.addEventListener(event, listener as EventListener);
-  return () => window.removeEventListener(event, listener as EventListener);
+  window.addEventListener(event, listener as EventListener, options);
+  return () => window.removeEventListener(event, listener as EventListener, options);
 }
 
 /** 订阅窗口获得焦点事件，并返回对称的清理函数。 */
