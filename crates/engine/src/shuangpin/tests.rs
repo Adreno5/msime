@@ -344,6 +344,32 @@ fn initial_letter_expands_past_the_cap() {
 }
 
 #[test]
+fn initial_letter_expansion_reuses_warm_candidate_buffer() {
+    let mut sql =
+        String::from("BEGIN;CREATE TABLE tbl_1_s(key TEXT, jp TEXT, value TEXT, weight INTEGER);");
+    for index in 0..30 {
+        sql.push_str(&format!(
+            "INSERT INTO tbl_1_s VALUES('shi', 's', '字{index:02}', {});",
+            1000 - index
+        ));
+    }
+    sql.push_str("COMMIT;");
+    let fixture = Fixture::new(&sql);
+    let mut engine = fixture.engine(ShuangpinProfileKind::Xiaohe);
+    let typed = request("u", false);
+    let mut candidates = engine.query(&typed, None);
+    candidates.reserve(256);
+
+    assert!(engine.expand_initial_candidates(&typed, &mut candidates));
+    assert_eq!(candidates.len(), 30);
+    assert!(
+        candidates.capacity() >= 256,
+        "预留候选容量不应在首字母展开时被丢弃：{}",
+        candidates.capacity()
+    );
+}
+
+#[test]
 fn fuzzy_rows_take_the_typed_keys() {
     let fixture = Fixture::new(
         "BEGIN;CREATE TABLE tbl_1_z(key TEXT, jp TEXT, value TEXT, weight INTEGER);INSERT INTO tbl_1_z VALUES('zi', 'z', '字', 50);INSERT INTO tbl_1_z VALUES('zhi', 'z', '之', 100);COMMIT;",
