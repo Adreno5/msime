@@ -25,7 +25,8 @@ fn generated_empty_block_keeps_no_heap_storage() {
     let paths = [path("甲乙", -1.1), path("甲丙", -2.2)];
     let candidates = existing(&["甲乙", "甲丙"]);
     let (old, before) = measure(|| frozen_generated_block_linear(&candidates, &paths, "aba"));
-    let (new, after) = measure(|| generated_block_linear(&candidates, &paths, "aba"));
+    let owned_paths = paths.to_vec();
+    let (new, after) = measure(|| generated_block_linear(&candidates, owned_paths, "aba"));
     assert_eq!(new, old);
     assert!(new.is_empty());
     assert_eq!(before.allocations, 1);
@@ -35,16 +36,19 @@ fn generated_empty_block_keeps_no_heap_storage() {
     );
     assert_eq!(after.allocations, 0);
     assert_eq!(after.peak_bytes, 0);
-    assert_eq!(after.remaining_bytes, 0);
+    // 输入存储在计量前创建并在计量中消耗，不把它的释放计为输出块收益。
     assert_eq!(new.capacity(), 0);
     eprintln!(
         "合成两路径空输出块 分配 {}→{} 返回存储 {}→{}",
-        before.allocations, after.allocations, before.remaining_bytes, after.remaining_bytes
+        before.allocations,
+        after.allocations,
+        before.remaining_bytes,
+        (new.capacity() * size_of::<WordItem>()) as i128
     );
 }
 
 #[test]
-fn generated_nonempty_blocks_preserve_fields_capacity_and_allocations() {
+fn generated_nonempty_blocks_preserve_fields_and_capacity_with_exact_copy_savings() {
     for count in [0, 1, 2, 5, 64, 65, 128] {
         let paths: Vec<_> = (0..count)
             .map(|index| path(&format!("合成{}", index % 5), -1.2345 - index as f64))
@@ -57,15 +61,15 @@ fn generated_nonempty_blocks_preserve_fields_capacity_and_allocations() {
             let candidates = existing(words);
             let (old, before) =
                 measure(|| frozen_generated_block_linear(&candidates, &paths, "aba"));
-            let (new, after) = measure(|| generated_block_linear(&candidates, &paths, "aba"));
+            let owned_paths = paths.to_vec();
+            let (new, after) = measure(|| generated_block_linear(&candidates, owned_paths, "aba"));
             assert_eq!(new, old);
             if new.is_empty() {
                 assert_eq!(new.capacity(), 0);
                 assert_eq!(after.allocations, 0);
             } else {
                 assert_eq!(new.capacity(), old.capacity());
-                assert_eq!(after.allocations, before.allocations);
-                assert_eq!(after.remaining_bytes, before.remaining_bytes);
+                assert_eq!(after.allocations + 4 * new.len(), before.allocations);
             }
         }
     }
@@ -289,9 +293,25 @@ fn real_merge_preserves_nonempty_and_neural_rows_with_typo_return() {
                         assert_eq!(typo.edges, 1);
                         assert!(typo.sentence.ends_with("叭嚓"));
                         let empty = new.0 == input;
+                        let transferred_allocations = if neural {
+                            0
+                        } else {
+                            new.0
+                                .iter()
+                                .filter(|item| item.source == CandidateSource::Generated)
+                                .map(|item| {
+                                    let path = decoded
+                                        .iter()
+                                        .find(|path| path.sentence == item.word)
+                                        .unwrap();
+                                    measure(|| path.clone()).1.allocations
+                                })
+                                .sum()
+                        };
                         assert_eq!(
                             after.allocations
                                 + usize::from(empty)
+                                + transferred_allocations
                                 + if neural { clone_allocations } else { 0 },
                             before.allocations
                         );
