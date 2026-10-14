@@ -67,6 +67,7 @@ import {
   type PluginPackage,
   UNBATCHED_DICTIONARY_FILE_BYTES,
   createCommunitySkinClient,
+  subscribeMediaQuery,
 } from "@msime/ui";
 import type {
   AiAssistantClient,
@@ -533,8 +534,7 @@ function followSystemTheme(): () => void {
   apply();
   if (typeof window.matchMedia !== "function") return () => undefined;
   const media = window.matchMedia("(prefers-color-scheme: light)");
-  media.addEventListener("change", apply);
-  return () => media.removeEventListener("change", apply);
+  return subscribeMediaQuery(media, apply);
 }
 
 /**

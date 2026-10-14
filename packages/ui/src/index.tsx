@@ -499,6 +499,7 @@ export { useConfirm, type ConfirmRequest } from "./core/confirm";
 export type * from "./core/host-contracts";
 export { resolveSettingsTheme } from "./settings/theme-helpers";
 export { ToastProvider, useToast } from "./core/toast";
+export { subscribeMediaQuery } from "./core/media-query";
 export {
   decodeDictionaryBytes,
   readDictionaryFile,
