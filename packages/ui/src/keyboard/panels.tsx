@@ -1,6 +1,7 @@
 import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
+import { subscribeToInterval } from "../core/use-interval";
 import { subscribeToDocumentVisibilityChange, subscribeToWindowBlur } from "../core/window-focus";
 import {
   readOptionalJson,
@@ -3166,12 +3167,12 @@ export function CloudDictionaryApplyPanel({ client }: { client: CloudDictionaryP
     setPreview(null);
     setPreviewToken(null);
     void refreshStatus();
-    const timer = window.setInterval(() => {
+    const stopPoll = subscribeToInterval(() => {
       void refreshStatus();
     }, 2000);
     return () => {
       invalidate();
-      window.clearInterval(timer);
+      stopPoll();
     };
   }, [client, invalidate]);
 

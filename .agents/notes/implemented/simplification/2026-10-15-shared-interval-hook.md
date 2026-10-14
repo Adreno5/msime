@@ -8,16 +8,19 @@ Status: implemented
 
 ## Decision
 
-在 `packages/ui/src/core/use-interval.ts` 提供 `useInterval(callback, delayMs)`，接口与现有 `useTimeout` 对齐：`delayMs` 为 `null` 时不注册，间隔变化时清理旧定时器，回调通过 `useLatestRef` 读取最新值。三个调用方继续各自决定何时启用、何时停止以及回调内部的代次和状态更新。
+在 `packages/ui/src/core/use-interval.ts` 提供 `useInterval(callback, delayMs)`，接口与现有 `useTimeout` 对齐：`delayMs` 为 `null` 时不注册，间隔变化时清理旧定时器，回调通过 `useLatestRef` 读取最新值。调用方继续各自决定何时启用、何时停止以及回调内部的代次和状态更新。
+
+统计总览和云词库应用页的轮询与客户端代次在同一个 effect 中重建，因此保留各自的 effect，并复用同模块的 `subscribeToInterval(callback, delayMs)`。它只注册 interval 并返回清理函数，`useInterval` 自身也复用此入口。统计页仍先读取，再订阅窗口恢复和轮询；云词库仍先使旧代次失效并读取，卸载时先使代次失效再停止轮询。`overviewPollMs` 与 2000 毫秒频率、effect 依赖和请求闭包不变。
 
 ## Alternatives considered
 
+- 两处有业务 effect 的轮询直接换成 `useInterval`：可以只保留 hook 调用，但该 hook 只在间隔变化时重建定时器，客户端变化后会沿用旧 tick 相位，改变原有时序，因此改为复用同步订阅入口。
 - 每个页面继续保留局部 `setInterval`：改动最小，但会继续复制注册和清理规则。
 - 把倒计时、输入法引导和列表重读的状态也收进一个业务 hook：可以减少页面代码，但会把互不相关的启用条件、宿主刷新和验证码代次绑定在一起，破坏各页面的状态边界。
 
 ## Verification
 
-新增 hook 测试覆盖正常 tick、卸载清理、最新回调和 `null` 停用；验证码、输入法切换引导及 macOS 输入法列表相关回归测试通过，桌面 TypeScript 检查通过。完整前端门禁和 CI 继续负责其余共享 UI 文件。
+同步订阅测试先失败后通过，覆盖 400 毫秒边界、订阅时不立即回调与重复清理；间隔 Hook、统计页及云词库生命周期共四文件四十八项通过。hook 测试覆盖正常 tick、卸载清理、最新回调和 `null` 停用；验证码、输入法切换引导及 macOS 输入法列表相关回归测试通过，桌面 TypeScript 检查通过。完整前端门禁和 CI 继续负责其余共享 UI 文件。
 
 ## Consequences
 
