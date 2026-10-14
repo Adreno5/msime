@@ -1751,7 +1751,7 @@ fn selecting_a_shuangpin_candidate_does_not_clone_the_full_request() {
         crate::ime::personal_rerank::allocations::count(|| session.select(index));
 
     assert_eq!(result.commit.as_deref(), Some("你好"));
-    assert_eq!(allocations, 23, "双拼候选选择分配次数：{allocations}");
+    assert_eq!(allocations, 19, "双拼候选选择分配次数：{allocations}");
 }
 
 #[test]
@@ -3412,7 +3412,7 @@ fn shuangpin_snapshot_does_not_build_unused_raw_preedit() {
 
     assert_eq!(snapshot.preedit, "ni'hao");
     assert_eq!(
-        allocations, 54,
+        allocations, 42,
         "shuangpin snapshot allocations: {allocations}"
     );
 }
