@@ -2915,6 +2915,7 @@ static void TestPinyinArrowCandidateNavigation() {
                                   @{@"text": @"乙", @"highlighted": @(selected == 1)}]} forKey:@"view"];
         panel.visible = YES;
         session.lastCommand = UINT32_MAX;
+        session.nextTransition = @{@"handled": @YES};
         client.committed = nil;
         assert([controller handleEvent:ModeKey(key, 0, NO) client:client]);
         assert(session.lastCommand == expected && !client.committed);
