@@ -42,4 +42,4 @@ Status: implemented
 
 `ShuangpinKeyHintPolicySmoke` 新增 `rememberedProfile` 和 `profileWithoutView` 的用例，改动前编译失败（方法不存在），改动后通过；`check-host.sh` 加了一道检查，`updateShuangpinKeyHints` 必须经 `profileWithoutView` 处理没有 view 的情况。没有在设备上测换应用时的第一帧，也没有用 systrace 量主线程耗时；HarmonyOS 是否有同样的空窗没有检查。
 
-首帧回归在 API 35 的修复前代码上没有重现截图中的短暂句号，因此它是持续的一致性检查，不作为已复现设备问题的证据。修复约束主键区与底行采用同一绘制布局，vivo API 30 的实际表现仍需报告者确认。
+API 28 与 API 35 的修复 APK 均通过安装、词库准备、核心打字删除和首帧专项（五次强停合成编辑器后重开）。API 28 专项暂时停用 AVD 自带的崩溃键盘，结束后恢复。首帧回归在 API 35 的修复前代码上没有重现截图中的短暂句号，因此它是持续的一致性检查，不作为已复现设备问题的证据。修复约束主键区与底行采用同一绘制布局，vivo API 30 的实际表现仍需报告者确认。
