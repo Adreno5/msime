@@ -6483,7 +6483,8 @@ gboolean process_key(IBusEngine *engine, guint key, guint keycode, guint flags) 
   if (s.focused && !s.blocked && !s.input_enabled && !release) {
     if (!voice_hotkey_match && (modifiers & ~(IBUS_SHIFT_MASK | IBUS_MOD5_MASK)) == 0) {
       if (const auto text = s.native_compose.feed(key)) {
-        if (!text->empty()) commit_text(engine, *text);
+        if (!text->empty())
+          commit_text(engine, *text, msime::linux_host::TypingSource::English);
         return TRUE;
       }
     } else {

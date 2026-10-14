@@ -14,11 +14,14 @@ Status: implemented
 
 对 #7694 的后续审计发现，崩溃面不只在 glib 定时器：IBus 的 `process_key_and_count` 直接调用 `process_key`，而 `process_key` 在进入内部 `guarded()` 处理段之前还有两个快捷键判断。会话关闭或词库维护期间，`State::view` 可能仍为 JSON null；Ctrl+Shift+J 判断和候选维护快捷键的代次比较会在这个状态直接调用 `value()`，同样抛出 `type_error.306`，而按键入口没有外层异常捕获。代码审计确认了未捕获读取点和防守位置，但没有把密码框或普通英文模式描述成这两个按键的直接触发条件。
 
+这次继续审计确认了同一生命周期的第三个入口：默认英文模式在 `focus_in()` 时不创建 Engine 会话，`State::view` 保持 null；禁用中文输入的 native Compose 分支却在 `NativeCompose::feed()` 完成时调用无来源覆盖的 `commit_text()`。`typing_source()` 随后对 null 视图调用 `value()`，真实 D-Bus `ProcessKeyEvent` 回归在宿主进程中复现 `type_error.306`。
+
 ## Decision
 
 - 组字判断收进 `platforms/linux/src/core/ViewComposition.h` 的 `view_is_composing()`：不是对象、键缺失或类型不对一律回答「没有组字」，用 `find()` 读取，不会抛异常。输入模式提示的回调改用它。null 视图意味着会话已经不在，没有候选页码需要保护，收起提示是对的行为。
 - 候选右键提示（1.5 秒）的回调同样没有 `guarded()`，在读 `s.view.value("generation", ...)` 之前补上 `s.view.is_object()`。按现有不变量（`session` 非零时 `view` 一定是对象，回调已先检查同一会话）它目前到不了 null，但这个保证来自条件求值顺序和别处的不变量，补一个判断比依赖它们稳。
 - `process_key` 的 Ctrl+Shift+J 判断和候选维护快捷键代次比较也先检查 `s.view.is_object()`。null 视图时把快捷键交还给应用，或直接拒绝候选维护动作，不进入后续读取；这样即使按键与会话关闭交错，也不会让未捕获的 `value()` 异常终止宿主。
+- Native Compose 在禁用中文输入时明确传入 `TypingSource::English`。Compose 是系统布局产生的英文直通文本，且这条路径允许没有会话；显式来源避免从 null 视图推导统计来源，同时保持英文模式与普通英文字符路径一致。
 - 新增 `scripts/test-linux-glib-callback-view-guard.py`：对每个以 lambda 注册的 `g_timeout_add*` / `g_idle_add*` 回调体，要求其中对 `s.view` / `state(...).view` 的 `value(` / `at(` 读取之前出现过 `s.view.is_object()`，或者位于回调体内的 `guarded(...)` 调用之中。它在修复前的源码上报出三处（输入模式提示两处、候选右键提示一处），修复后通过。
 - `platforms/linux/tests/runtime/mode_hint_lifecycle.cpp` 在私有 D-Bus 上实例化真实 IBus 宿主，走原生焦点与输入框属性入口，并实际运行 GLib 主循环。英文模式不创建 Engine 会话，因此不依赖词库；三个独立 ctest 用例分别覆盖 null 视图提示收起、提示等待中切到密码框执行 `close()`、提示等待中销毁上下文。提示收起后再获得焦点，确认宿主继续响应；销毁后不得再向辅助区域发信号。这些用例无条件进入 `BUILD_TESTING`，普通 Linux 容器门禁就会执行。
 
@@ -55,6 +58,8 @@ Fcitx5 插件的 `view_` 默认是 `Json::object()`、重置时也回到空对�
 - `scripts/test-linux-glib-callback-view-guard.py` 在修复前的 `ClientEngine.cpp` 上报出三处并以非零退出，修复后通过。
 - `scripts/test-linux-glib-callback-view-guard.py` 在加入按键入口契约后，先在未修复源码上因两个缺少 `is_object()` 的判断失败；补上两个守卫后通过。
 - `bash platforms/linux/build-container.sh` 在容器里编译 IBus engine、Fcitx5 插件与全部单测并跑 ctest。
+- `ibus-engine-smoke --ctrl-space` 在未修复代码上先以默认英文模式创建无会话宿主，输入 `dead_circumflex` + `e`，稳定退出并输出 `type_error.306`；修复后同一真实 D-Bus 路径提交 `ê` 并通过。
+- 无词库的 `ibus-native-compose-no-session` ctest 也完成红绿验证：恢复旧调用时失败并输出 `type_error.306`，显式来源修复后通过；因此普通 Linux 容器门禁会执行这条回归，而不依赖 `MSIME_ENGINE_RESOURCES`。
 - 原生 ctest `ibus-mode-hint-english`、`ibus-mode-hint-blocked`、`ibus-mode-hint-destroyed` 通过私有 D-Bus 观察提示显示与隐藏，并等待比提示晚到的 GLib 哨兵确认超时获得执行机会。
 - 反向验证只把输入模式提示回调的组字判断临时恢复为旧的两次 `s.view.value()` 读取：英文与密码框两项都在真实 GLib 超时执行时返回非零，输出 `[json.exception.type_error.306] cannot use value() with null`。恢复现有判断并重新构建后，三项全部通过。测试入口捕获异常以报告失败，生产入口没有这层捕获，因而同样的异常会进入 `std::terminate`。
 - `bash platforms/linux/build-container.sh` 在本次改动上退出 0，86 项测试全部通过，包含三项无词库回调用例；同时完成五笔版构建与安装路径隔离检查。
