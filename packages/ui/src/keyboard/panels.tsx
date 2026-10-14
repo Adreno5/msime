@@ -2,7 +2,11 @@ import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
 import { subscribeToInterval } from "../core/use-interval";
-import { subscribeToDocumentVisibilityChange, subscribeToWindowBlur } from "../core/window-focus";
+import {
+  subscribeToDocumentVisibilityChange,
+  subscribeToWindowBlur,
+  subscribeToWindowEvent,
+} from "../core/window-focus";
 import {
   readOptionalJson,
   readOptionalStorage,
@@ -843,8 +847,7 @@ function HandwritingCandidateButton({
       observer.observe(element);
       return () => observer.disconnect();
     }
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    return subscribeToWindowEvent("resize", resize);
   }, []);
   // Use Unicode code points so supplementary Han does not count as two glyphs.
   const length = Math.max(1, Array.from(candidate).length);
@@ -1778,8 +1781,7 @@ export function VoicePanel({
       event.stopPropagation();
       void cancel();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return subscribeToWindowEvent("keydown", onKeyDown);
   }, [client]);
 
   async function close() {

@@ -9,13 +9,14 @@ export function subscribeToDocumentVisibilityChange(listener: () => void): () =>
   return () => document.removeEventListener("visibilitychange", listener);
 }
 
-function subscribeToWindowEvent(
-  event: "focus" | "blur",
-  listener: WindowFocusListener,
+/** 订阅窗口事件并返回对称清理函数；没有窗口时返回空清理函数。 */
+export function subscribeToWindowEvent<K extends keyof WindowEventMap>(
+  event: K,
+  listener: (event: WindowEventMap[K]) => void,
 ): () => void {
   if (typeof window === "undefined") return noop;
-  window.addEventListener(event, listener);
-  return () => window.removeEventListener(event, listener);
+  window.addEventListener(event, listener as EventListener);
+  return () => window.removeEventListener(event, listener as EventListener);
 }
 
 /** 订阅窗口获得焦点事件，并返回对称的清理函数。 */
