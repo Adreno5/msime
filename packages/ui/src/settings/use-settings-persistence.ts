@@ -70,6 +70,7 @@ export function useSettingsPersistence({
   const [saveError, setSaveError] = useState("");
   const [loadFailed, setLoadFailed] = useState(false);
   const reloadInFlightRef = useRef<Promise<void> | undefined>(undefined);
+  const loadTokenRef = useRef(0);
   const generation = useAsyncGeneration(client);
 
   useEffect(() => {
@@ -172,6 +173,8 @@ export function useSettingsPersistence({
     saveTokenRef.current += 1;
     savingRef.current = false;
     heldChange.current = undefined;
+    reloadInFlightRef.current = undefined;
+    loadTokenRef.current += 1;
     loadingClientRef.current = client;
     snapshotRef.current = undefined;
     draftRef.current = undefined;
@@ -183,21 +186,22 @@ export function useSettingsPersistence({
 
   useEffect(() => {
     const current = generation.current;
+    const loadToken = ++loadTokenRef.current;
     client
       .load()
       .then((value) => {
-        if (generation.current !== current) return;
+        if (generation.current !== current || loadTokenRef.current !== loadToken) return;
         loadingClientRef.current = undefined;
         adoptSnapshot(value);
         setLoadFailed(false);
       })
       .catch((reason) => {
-        if (generation.current !== current) return;
+        if (generation.current !== current || loadTokenRef.current !== loadToken) return;
         setError(errorMessage(reason));
         setLoadFailed(true);
       })
       .finally(() => {
-        if (generation.current === current) setBusy(false);
+        if (generation.current === current && loadTokenRef.current === loadToken) setBusy(false);
       });
   }, [client, generation]);
 
@@ -205,6 +209,8 @@ export function useSettingsPersistence({
     if (!mounted.current) return;
     const inFlight = reloadInFlightRef.current;
     if (inFlight) return inFlight;
+    const current = generation.current;
+    const loadToken = ++loadTokenRef.current;
     const operation = (async () => {
       clearAutosave();
       setBusy(true);
@@ -213,18 +219,29 @@ export function useSettingsPersistence({
       setRecoveredBackup("");
       try {
         const value = await client.load();
-        if (!mounted.current) return;
+        if (
+          !mounted.current ||
+          generation.current !== current ||
+          loadTokenRef.current !== loadToken
+        )
+          return;
         loadingClientRef.current = undefined;
         adoptSnapshot(value);
         setLoadFailed(false);
         setSaveState("idle");
         setSaveError("");
       } catch (reason) {
-        if (!mounted.current) return;
+        if (
+          !mounted.current ||
+          generation.current !== current ||
+          loadTokenRef.current !== loadToken
+        )
+          return;
         setError(errorMessage(reason));
         setLoadFailed(true);
       } finally {
-        if (mounted.current) setBusy(false);
+        if (mounted.current && generation.current === current && loadTokenRef.current === loadToken)
+          setBusy(false);
       }
     })();
     reloadInFlightRef.current = operation;
