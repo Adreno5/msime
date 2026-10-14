@@ -10899,7 +10899,6 @@ int main(int argc, char **argv) {
         appearance.vertical = NO;
         appearance.globalTheme = @"system";
         [controller appearanceChanged:nil];
-        NSDictionary *beforeArrowNavigation = [controller valueForKey:@"view"];
         for (NSNumber *key in @[@123, @124, @125, @126]) {
             [controller setValue:@{@"focused": @YES, @"scheme": @0, @"editing_text": @"ceshi", @"caret_position": @5,
                                   @"candidates": @[@{@"text": @"甲", @"highlighted": @YES}]} forKey:@"view"];
@@ -10915,7 +10914,8 @@ int main(int argc, char **argv) {
             assert(session.lastCommand == expected);
         }
         session.nextTransition = nil;
-        [controller setValue:beforeArrowNavigation forKey:@"view"];
+        // 后面的字符翻页测试从普通空组字开始，不继承皮肤测试的本地模式。
+        [controller setValue:@{@"editing_text": @"", @"caret_position": @0, @"candidates": @[]} forKey:@"view"];
         {
             // 方向键与 Windows、Linux 同一套规则，不看方案和候选窗朝向：五笔的横排候选也是 ↑/↓ 移高亮、←/→ 移光标。
             NSDictionary *saved = [controller valueForKey:@"view"];
