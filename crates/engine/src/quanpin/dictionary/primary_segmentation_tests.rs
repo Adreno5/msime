@@ -84,7 +84,12 @@ fn series_misses_borrow_the_owned_primary_segmentation() {
             assert_eq!(after.series_cache.get_ref(&slot), Some(&actual));
             assert_eq!(before.series_cache.get_ref(&slot), Some(&expected));
             println!("主切分 {raw}/{types}/解析热={hot_resolution}：申请 {old_count}→{new_count}");
-            assert_eq!(new_count + 1, old_count, "非空主切分只读，不应另行复制");
+            let slot_copy = usize::from(!before.personal_scored_keys.contains(&slot));
+            assert_eq!(
+                new_count + 1 + slot_copy,
+                old_count,
+                "非空主切分借用，未登记的槽键直接转移"
+            );
         }
     }
 }
