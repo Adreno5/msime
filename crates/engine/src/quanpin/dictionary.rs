@@ -9,22 +9,17 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLockReadGuard};
 use std::time::Duration;
 
-use crate::assets::{
-    BIGRAM_TABLE, MAIN_DICTIONARY, NEURAL_MODEL_KEYBOARD, TRIGRAM_TABLE, USER_JOURNAL,
-};
+use crate::assets::{MAIN_DICTIONARY, NEURAL_MODEL_KEYBOARD, USER_JOURNAL};
 use crate::cache::FifoCache;
 use crate::dictionary::pinyin::{PinyinDatabase, INSERTED_WEIGHT};
 use crate::dictionary::DictRow;
 use crate::error::{EngineError, Result};
 use crate::ime::online_batch::replace_online_candidate_batch;
-use crate::lattice::decode::{
-    decode_pinned, make_sentence_lattice_options, BigramMemo, PinnedSpan,
-};
+use crate::lattice::decode::{decode_pinned, BigramMemo, PinnedSpan, SentenceNgramTables};
 use crate::lattice::merge::{merge_lattice_candidates, whole_sentence_insert_position};
 use crate::lattice::neural::{
     shared_sentence_model, NeuralReranker, CONTEXT_CHARACTERS, MAX_RERANK_PATHS,
 };
-use crate::lattice::ngram::NgramTable;
 use crate::lattice::personal::{PersonalNgram, PersonalTransition};
 use crate::lattice::{SentencePath, TypoEdgeSource};
 use crate::paths::RuntimePaths;
@@ -144,6 +139,7 @@ impl Drop for RowCacheBatch<'_> {
 pub struct QuanpinDictionary {
     database: PinyinDatabase,
     paths: RuntimePaths,
+    sentence_tables: SentenceNgramTables,
     typo_profile: Arc<PersonalTypoProfile>,
     /// The profile generation the cached lists were built under.
     typo_generation: u64,
@@ -195,9 +191,8 @@ impl QuanpinDictionary {
     pub fn new(paths: &RuntimePaths) -> Self {
         let database = PinyinDatabase::open(&paths.dictionary(MAIN_DICTIONARY));
         database.warm_up();
-        // Mapping the n-gram tables and checking they are sorted is a sequential pass over about fifteen megabytes. Left to the first query that wants them it lands on a keystroke; here it joins the work of opening the dictionary, which the host does off the typing path. The same goes for the personal counts.
-        NgramTable::shared(&paths.dictionary(BIGRAM_TABLE));
-        NgramTable::shared(&paths.dictionary(TRIGRAM_TABLE));
+        // 构造时预热并保留表；共享缓存淘汰不能让按键查询重新映射和检查整张表。
+        let sentence_tables = SentenceNgramTables::load(paths);
         let journal = paths.user(USER_JOURNAL);
         let personal = PersonalNgramStore::for_journal(&journal);
         drop(personal.model());
@@ -207,6 +202,7 @@ impl QuanpinDictionary {
         let mut dictionary = Self {
             database,
             paths: paths.clone(),
+            sentence_tables,
             typo_profile,
             typo_generation,
             personal,
@@ -478,7 +474,7 @@ impl QuanpinDictionary {
         self.validate_row_caches();
         let personal = Arc::clone(&self.personal);
         let model = personal.model();
-        let mut options = make_sentence_lattice_options(&self.paths, false);
+        let mut options = self.sentence_tables.options(false);
         options.personal = Some(&*model);
         options.bigram_memo = Some(&self.bigram_memo);
         let span_limit = options.span_limit;
@@ -855,7 +851,7 @@ impl QuanpinDictionary {
         // Held for the whole merge: the options borrow the model.
         let personal = Arc::clone(&self.personal);
         let model = personal.model();
-        let mut options = make_sentence_lattice_options(&self.paths, self.sentence_alternatives);
+        let mut options = self.sentence_tables.options(self.sentence_alternatives);
         if !self.rerankers.is_empty() {
             options.nbest = MAX_RERANK_PATHS;
         }

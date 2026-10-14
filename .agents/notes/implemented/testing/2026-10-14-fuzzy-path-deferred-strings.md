@@ -40,6 +40,8 @@ Status: implemented
 
 ## Consequences
 
+共享 n 元表淘汰的后续受控证据见[活动词典保留已预热表](2026-10-14-active-dictionary-ngram-tables.md)：它能稳定触发相同两次额外申请，活动词典改为保留构造句柄；本篇原失败的现场时序仍未被记录。
+
 `Cow<str>` 与 `String` 的等布局和消费式收集复用属于工具链实现细节，不是标准库永久 ABI 契约；固定 `1.97.1` 工具链在本机实测均24字节，消费式转换保留容量及底层分配。回归对照限制分配/容量，升级工具链时变化会被测出。引用只能来自输入或静态音节，不能借用六字节拼接缓冲；转换在返回前完成。不主张 CPU、RSS 或设备延迟收益。
 
 沿用标准库 [Cow::into_owned](https://doc.rust-lang.org/std/borrow/enum.Cow.html#method.into_owned) 的拥有结果及 [消费式收集实现](https://doc.rust-lang.org/src/alloc/vec/in_place_collect.rs.html) 的现有复用；无新依赖、unsafe、跨查询状态或 crate 对外接口变化。

@@ -15,12 +15,11 @@ use crate::helpcode::{
     match_single_helpcode, matches_double_helpcodes, HelpcodeKeymap, SingleHelpcodeMatch,
 };
 use crate::ime::online_batch::replace_online_candidate_batch;
-use crate::lattice::decode::make_sentence_lattice_options;
+use crate::lattice::decode::SentenceNgramTables;
 use crate::lattice::merge::{merge_lattice_candidates, whole_sentence_insert_position};
 use crate::lattice::neural::{
     shared_sentence_model, NeuralReranker, CONTEXT_CHARACTERS, MAX_RERANK_PATHS,
 };
-use crate::lattice::ngram::NgramTable;
 use crate::lattice::{SentencePath, TypoEdgeSource};
 use crate::ordering::apply_order;
 use crate::paths::RuntimePaths;
@@ -56,6 +55,7 @@ pub struct ShuangpinDictionary {
     profile: &'static ShuangpinProfile,
     database: PinyinDatabase,
     paths: RuntimePaths,
+    sentence_tables: SentenceNgramTables,
     personal: Arc<PersonalNgramStore>,
     rerankers: Vec<NeuralReranker>,
     sentence_alternatives: bool,
@@ -84,11 +84,11 @@ impl ShuangpinDictionary {
     pub fn new(profile: &'static ShuangpinProfile, paths: &RuntimePaths) -> Self {
         // READWRITE without CREATE: a missing dictionary stays missing and every query answers empty (SD:54-70).
         let mut database = PinyinDatabase::open(&paths.dictionary(assets::MAIN_DICTIONARY));
+        let mut sentence_tables = SentenceNgramTables::default();
         if database.is_open() {
             database.warm_up();
-            // Off the typing path: the first lattice decode would otherwise map the tables.
-            NgramTable::shared(&paths.dictionary(assets::BIGRAM_TABLE));
-            NgramTable::shared(&paths.dictionary(assets::TRIGRAM_TABLE));
+            // 在构造时加载并保留表，避免共享淘汰后在按键路径重新读表。
+            sentence_tables = SentenceNgramTables::load(paths);
             // Records the data version so the first cache hit has something to compare with.
             database.database_changed();
         }
@@ -100,6 +100,7 @@ impl ShuangpinDictionary {
             profile,
             database,
             paths: paths.clone(),
+            sentence_tables,
             personal,
             rerankers: Vec::new(),
             sentence_alternatives: false,
@@ -287,7 +288,7 @@ impl ShuangpinDictionary {
         if !word_lattice && self.rerankers.is_empty() {
             return;
         }
-        let mut options = make_sentence_lattice_options(&self.paths, self.sentence_alternatives);
+        let mut options = self.sentence_tables.options(self.sentence_alternatives);
         if !self.rerankers.is_empty() {
             options.nbest = MAX_RERANK_PATHS;
         }
@@ -806,6 +807,29 @@ fn fill_single_helpcode_order(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn active_dictionary_reuses_ngram_tables_after_shared_eviction() {
+        for bigram in [false, true] {
+            for trigram in [false, true] {
+                let fixture = crate::lattice::active_tables_tests::fixture(bigram, trigram);
+                let selected = profile(crate::types::ShuangpinProfileKind::Xiaohe).unwrap();
+                let mut dictionary = ShuangpinDictionary::new(selected, &fixture.paths);
+                let segments = ["ni", "hao", "ma"].map(str::to_owned);
+                crate::lattice::active_tables_tests::assert_query_stable(&fixture.paths, || {
+                    let mut result = Vec::new();
+                    dictionary.merge_sentences(
+                        &mut result,
+                        &segments,
+                        "ni'hc'ma",
+                        "nihcma",
+                        "ni'hc'ma",
+                    );
+                    result
+                });
+            }
+        }
+    }
+
     use super::append_helpcode_rows;
     use super::append_prefix_rows;
     use super::double_helpcode_cache_key;
