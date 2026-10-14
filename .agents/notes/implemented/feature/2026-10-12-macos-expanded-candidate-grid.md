@@ -10,6 +10,8 @@ Status: implemented
 
 ## Decision
 
+macOS 普通拼音候选的方向键分工及展开末页显示由[拼音与候选方向键分工](../bug-fix/2026-10-14-macos-arrow-candidate-navigation.md)部分取代，原有引擎契约和其它平台行为保留。
+
 **新的共享偏好 `expand_candidates`（设置页叫「展开候选」），默认关闭。** 字段在 `crates/client-core/src/preferences.rs`（`#[serde(default)]`，缺字段的旧文档读成关闭），能力位 `HostCapabilities::expand_candidates` 目前只在 macOS 为真；共享设置页只在这个能力下于「候选窗口 › 布局」组显示开关，原生设置窗口的候选窗口卡片里有同名开关，本机键 `MSIMEClientExpandCandidates` 在该分区的恢复列表里。Windows、Linux 以后接上同一个偏好时只需打开各自的能力位。
 
 **网格之外的方向键规则不变。** 偏好关闭、候选窗竖排、只有一页、候选列表（韩文汉字、注音）或释义页开着时，↓ 和以前一样移高亮；←/→ 无论偏好如何都照旧移光标或改字。只有偏好打开、横排、多页时，↓ 和候选窗首行 ‹ › 后面多出的展开按钮才打开网格。展开按钮跟着页码和翻页按钮按 `show_candidate_page_number` 显示：关掉它们的人要的是只剩候选行的卡片，↓ 照样能展开。注音组字时 ↓ 打开候选列表（`MSIMECandidateListDownKey`）排在前面，优先于展开。
