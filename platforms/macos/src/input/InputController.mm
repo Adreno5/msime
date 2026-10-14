@@ -3970,6 +3970,7 @@ static __weak MSIMEInputController *MSIMEFocusedController;
         [hud setSurfaceColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDSurface", light.surface, dark.surface)
                  borderColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDBorder", light.border, dark.border)
                    textColor:MSIMEThemedSkinColor(@"MSIMEInputModeHUDText", light.text, dark.text)];
+        [hud applySizingPreferences:@{@"show_app_logo": @(_appearance.showsAppLogo)}];
         [hud showEnglishInputMode:enabled nearCaretRect:caret];
     }
 }
@@ -5395,7 +5396,7 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
     // The mode badge wears the toolbar's palette, so it is drawn in the toolbar's mode too; it is updated whether or not the toolbar is shown.
     [[MSIMEInputModeHUDPanel sharedPanel] applyThemePreferences:toolbarThemePreferences];
     [_toolbar applySizingPreferences:preferences];
-    // And it is the toolbar's size, from the same font size and scale.
+    // 提示尺寸独立于工具栏，并遵循显示图标设置。
     [[MSIMEInputModeHUDPanel sharedPanel] applySizingPreferences:preferences];
     // Typing effects follow preferences.plugins; a partial document without it leaves them as they are.
     [[MSIMETypingEffectPanel sharedPanel] applyPreferences:preferences];
