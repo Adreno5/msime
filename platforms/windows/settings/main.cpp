@@ -12929,6 +12929,7 @@ private:
     stats_busy_ = true;
     stats_request_ = 0;
     stats_last_request_ = {};
+    stats_day_.reset();
     stats_selected_.reset();
     stats_tab_ = L"keys";
     stats_calendar_offset_ = 0;
@@ -13000,6 +13001,13 @@ private:
   void poll_statistics() {
     if (closed_ || current_page_ != "stats" || window_minimized())
       return;
+    const auto today = typing::day_key(local_civil_day());
+    const bool date_changed = typing::statistics_date_changed(stats_day_, today);
+    if (date_changed) {
+      stats_day_ = today;
+      if (stats_)
+        redraw_stats();
+    }
     const auto now = std::chrono::steady_clock::now();
     if ((stats_request_ != 0 && now - stats_request_started_ <= std::chrono::seconds(15)) ||
         now - stats_last_request_ < std::chrono::seconds(1))
@@ -19090,6 +19098,7 @@ private:
   std::wstring stats_error_;
   bool stats_busy_ = true;
   std::optional<std::string> stats_selected_;
+  std::optional<std::string> stats_day_;
   std::wstring stats_tab_ = L"keys";
   // 日历热力图和按日明细的横向滚动位置，跨重画保留。
   double stats_calendar_offset_ = 0;
