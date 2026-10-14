@@ -1,5 +1,6 @@
 import app.msime.android.EditorBridge;
 import app.msime.android.EditorPolicy;
+import app.msime.android.CompositionTextPolicy;
 import app.msime.android.EnglishCapitalizationPolicy;
 import android.text.InputType;
 import java.util.ArrayList;
@@ -78,6 +79,11 @@ public final class EditorSmoke {
         sink.calls.clear();
         check(bridge.apply(sink, null, ""));
         check(sink.calls.equals(List.of("begin", "end")));
+        // 长度过滤器可能把组字区截短；宿主读回光标前文字后应识别出这种情况，改为只在键盘上显示组字。
+        check(CompositionTextPolicy.matchesEditorSuffix("合成文字nihao", "nihao"));
+        check(!CompositionTextPolicy.matchesEditorSuffix("合成文字ni", "nihao"));
+        check(CompositionTextPolicy.matchesEditorSuffix(null, "nihao"));
+        check(CompositionTextPolicy.composingLength("合成文字ni", "nihao") == 2);
         sink.calls.clear();
         // 空的组字区同样算没有。
         check(bridge.apply(sink, null, "かn"));

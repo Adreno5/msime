@@ -125,6 +125,16 @@ public class DeviceSmoke extends Instrumentation {
             stage = "deletion";
             tap(key("⌫"));
             await(field("msime-test-plain").and(node -> equalsText("你", node.getText())));
+            stage = "limited composition focus";
+            final String limitedPrefix = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥天地玄黄";
+            tap(field("msime-test-limited"));
+            await(field("msime-test-limited").and(node -> equalsText(limitedPrefix, node.getText())));
+            stage = "limited composition typing";
+            for (String key : new String[] {"n", "i", "h", "a", "o"}) tap(key(key));
+            await(field("msime-test-limited").and(node -> equalsText(limitedPrefix, node.getText())));
+            stage = "limited composition commit";
+            tap(key("空格"));
+            await(field("msime-test-limited").and(node -> equalsText(limitedPrefix + "你好", node.getText())));
             // 安卓 11（API 30）以下到此为止：在 API 28 模拟器上，「更多」面板在屏幕上正常打开、点按也生效，但 UiAutomation 的无障碍树里拿不到面板和它的任何磁贴，后面的繁体输出流程没法在那里驱动。打开应用、准备词库、拼音上屏和删除这条主路径仍在 API 28 上检查。
             if (Build.VERSION.SDK_INT < 30) return;
             // 繁体输出 is a setting rather than a toolbar key, the way Apple has it: it moved out

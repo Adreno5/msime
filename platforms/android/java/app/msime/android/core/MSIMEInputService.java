@@ -927,9 +927,11 @@ public final class MSIMEInputService extends InputMethodService {
 
     private EditorBridge.Sink sink(TypingSource source) {
         final InputConnection target = connection;
+        final boolean[] compositionSuppressed = {false};
         return new EditorBridge.Sink() {
             public void begin() { target.beginBatchEdit(); }
             public boolean commit(String text) {
+                compositionSuppressed[0] = false;
                 boolean committed = target.commitText(text, 1);
                 if (committed) {
                     selectionEcho.commit(text.length());
@@ -940,13 +942,39 @@ public final class MSIMEInputService extends InputMethodService {
                 return committed;
             }
             public boolean compose(String text) {
+                if (text.isEmpty()) {
+                    if (compositionSuppressed[0]) return true;
+                    boolean cleared = target.setComposingText(text, 1);
+                    if (!cleared) selectionEcho.invalidate();
+                    return cleared;
+                }
+                if (compositionSuppressed[0]) return true;
                 boolean composed = target.setComposingText(text, 1);
-                if (composed) selectionEcho.compose(text.length());
-                else selectionEcho.invalidate();
-                return composed;
+                if (!composed) {
+                    selectionEcho.invalidate();
+                    return false;
+                }
+                CharSequence before;
+                try { before = target.getTextBeforeCursor(text.length(), 0); }
+                catch (RuntimeException error) { before = null; }
+                int actualLength = CompositionTextPolicy.composingLength(before, text);
+                if (actualLength >= 0 && actualLength < text.length()) {
+                    // LengthFilter 等编辑器限制会把拼音组字区截短，但仍返回成功；清掉这段截短文字，组字继续由键盘候选栏承载，候选上屏时再直接替换选区。
+                    if (!target.setComposingText("", 1)) {
+                        selectionEcho.invalidate();
+                        return false;
+                    }
+                    compositionSuppressed[0] = true;
+                    selectionEcho.compose(actualLength);
+                    selectionEcho.finish();
+                    return true;
+                }
+                selectionEcho.compose(text.length());
+                return true;
             }
             public boolean finish() {
                 boolean finished = target.finishComposingText();
+                compositionSuppressed[0] = false;
                 if (finished) selectionEcho.finish();
                 else selectionEcho.invalidate();
                 return finished;
