@@ -6431,8 +6431,8 @@ static BOOL MSIMEClaimPreferenceRecovery(NSString *directory) {
         case 36: case 76: command = MSIMECandidateListOpen(_view) ? MSIME_COMMIT_CANDIDATE : MSIME_COMMIT_RAW; break;
         case 53: [self flushPendingPairedClosing]; _pairedPunctuation.clear(); command = MSIME_CANCEL; break;
         case 49: if (!spaceIsSpelling) command = MSIME_COMMIT_CANDIDATE; break;
-        case 123: command = MSIMESchemeTrait(_view, msime::mac::scheme::EditsSentence) ? MSIME_CONVERSION_LEFT : MSIME_MOVE_LEFT; break;
-        case 124: command = MSIMESchemeTrait(_view, msime::mac::scheme::EditsSentence) ? MSIME_CONVERSION_RIGHT : MSIME_MOVE_RIGHT; break;
+        case 123: command = MSIME_MOVE_LEFT; break;
+        case 124: command = MSIME_MOVE_RIGHT; break;
         case 115: command = _panel.isVisible ? MSIME_FIRST_CANDIDATE : MSIME_MOVE_HOME; break;
         case 119: command = _panel.isVisible ? MSIME_LAST_CANDIDATE : MSIME_MOVE_END; break;
         case 117: command = MSIME_DELETE_FORWARD; break;

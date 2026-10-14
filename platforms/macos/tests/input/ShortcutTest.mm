@@ -10083,7 +10083,7 @@ int main(int argc, char **argv) {
         }
         TestCandidatePanel *panel = [TestCandidatePanel new];
         [controller setValue:panel forKey:@"panel"];
-        // Windows maps Left/Right to the composition caret while candidates are shown, so a visible vertical panel sends the same caret move as a hidden one does and still consumes the key.
+        // macOS 普通左右键编辑拼音，候选窗可见或隐藏时都不进入整句改字，也不上屏。
         const BOOL arrowVertical = appearance.vertical;
         appearance.vertical = YES;
         assert([appearance navigationEnabled:@"arrows"]);
@@ -10094,11 +10094,13 @@ int main(int argc, char **argv) {
             client.committed = nil;
             client.marked = @"ceshi";
             assert([controller handleEvent:event client:client]);
-            assert(session.lastCommand == (key.unsignedShortValue == 123 ? MSIME_CONVERSION_LEFT : MSIME_CONVERSION_RIGHT));
+            assert(session.lastCommand == (key.unsignedShortValue == 123 ? MSIME_MOVE_LEFT : MSIME_MOVE_RIGHT));
+            assert(client.committed == nil);
             panel.visible = NO;
             session.lastCommand = UINT32_MAX;
             assert([controller handleEvent:event client:client]);
-            assert(session.lastCommand == (key.unsignedShortValue == 123 ? MSIME_CONVERSION_LEFT : MSIME_CONVERSION_RIGHT));
+            assert(session.lastCommand == (key.unsignedShortValue == 123 ? MSIME_MOVE_LEFT : MSIME_MOVE_RIGHT));
+            assert(client.committed == nil);
         }
         appearance.vertical = arrowVertical;
         HiddenCandidatePanel *layoutPanel = [[HiddenCandidatePanel alloc] initWithContentRect:NSZeroRect styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
