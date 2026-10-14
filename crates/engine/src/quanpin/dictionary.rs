@@ -270,14 +270,6 @@ impl QuanpinDictionary {
         result
     }
 
-    /// `tbl_1_<c>` rows for a one-letter code, as `WordItem(key, value, weight, Database, key)` with `pinyin = code`.
-    pub fn query_initial(&self, code: &str, limit: usize) -> Vec<WordItem> {
-        if code.len() != 1 {
-            return Vec::new();
-        }
-        initial_items(self.database.query_initial(code, limit))
-    }
-
     /// 个人上下文模型的只读视图（与同一份用户日志上的输入会话共用）。九键查一次简拼时取一次，按 `PersonalNgram::word_count` 把用户用过的简拼词排到前面（#6185）；拿着它时不要记录新的使用，记录要写锁。
     pub fn personal_model(&self) -> RwLockReadGuard<'_, PersonalNgram> {
         self.personal.model()
@@ -305,7 +297,7 @@ impl QuanpinDictionary {
         )
     }
 
-    /// Replace the capped 24-row run with every row of the initial (QD:506-558); updates the row cache and the series slot of the query `(raw, segmentation, autocorrect_types)` that produced `candidates`.
+    /// 首字母的 24 行候选展开为全部行（QD:506-558），同时更新行缓存与产生该列表的查询槽。
     pub fn expand_initial_candidates(
         &mut self,
         raw: &str,
@@ -327,14 +319,10 @@ impl QuanpinDictionary {
         if limited_count != INITIAL_CANDIDATE_LIMIT {
             return false;
         }
-        let mut expanded = self.query_initial(code, UNLIMITED_ROWS);
+        let expanded = matched_items(self.database.query_initial(code, UNLIMITED_ROWS), code);
         if expanded.len() <= limited_count {
             return false;
         }
-        for item in &mut expanded {
-            item.canonical_pinyin = std::mem::replace(&mut item.pinyin, code.to_string());
-        }
-
         let mut merged = Vec::with_capacity(candidates.len() - limited_count + expanded.len());
         let mut inserted = false;
         for item in candidates.drain(..) {
@@ -361,7 +349,7 @@ impl QuanpinDictionary {
         true
     }
 
-    /// Fuzzy rows for a segmentation, cached under `fuzzy:<rules>:<segmentation>` (QD:1680-1709). Shuangpin reuses this.
+    /// 切分的模糊候选按规则与读法缓存（QD:1680-1709），双拼也复用该路径。
     pub fn fuzzy_candidates(
         &mut self,
         segmentation: &str,
@@ -394,42 +382,15 @@ impl QuanpinDictionary {
                 continue;
             }
             budget -= paths.len();
-            let rows = cached_fuzzy_rows(
+            append_cached_fuzzy_rows(
                 &self.database,
                 &mut self.fuzzy_row_cache,
                 &paths,
                 options.rules,
                 limit,
-                &typed,
+                typed,
+                &mut result,
             );
-            result.reserve(rows.len());
-            let mut rows = rows.into_iter();
-            if let Some(row) = rows.next() {
-                let mut item = WordItem::new(
-                    typed,
-                    row.value,
-                    row.weight,
-                    CandidateSource::Database,
-                    row.key,
-                );
-                item.fuzzy = true;
-                result.push(item);
-            }
-            for row in rows {
-                let mut item = WordItem::new(
-                    result
-                        .last()
-                        .expect("the first fuzzy row was inserted")
-                        .pinyin
-                        .clone(),
-                    row.value,
-                    row.weight,
-                    CandidateSource::Database,
-                    row.key,
-                );
-                item.fuzzy = true;
-                result.push(item);
-            }
         }
         self.fuzzy_cache.insert(
             hash,
@@ -1219,18 +1180,21 @@ fn fuzzy_cache_key_matches(cached: &CachedFuzzyCandidates, rules: u32, segmentat
     cached.rules == rules && cached.segmentation == segmentation
 }
 
-fn cached_fuzzy_rows(
+/// 热页直接投影，冷页保留原缓存副本与 SQLite 页容量策略。
+fn append_cached_fuzzy_rows(
     database: &PinyinDatabase,
     cache: &mut FifoCache<u64, CachedFuzzyRows>,
     paths: &[Vec<String>],
     rules: u32,
     limit: usize,
-    typed: &str,
-) -> Vec<DictRow> {
-    let hash = fuzzy_row_cache_hash(rules, limit, typed);
+    typed: String,
+    result: &mut Vec<WordItem>,
+) {
+    let hash = fuzzy_row_cache_hash(rules, limit, &typed);
     if let Some(cached) = cache.get_ref(&hash) {
-        if fuzzy_row_cache_key_matches(cached, rules, limit, typed) {
-            return cached.rows.clone();
+        if fuzzy_row_cache_key_matches(cached, rules, limit, &typed) {
+            append_fuzzy_items(cached.rows.iter().cloned(), typed, result);
+            return;
         }
     }
     let rows = database.query_exact_segmentations_keyed_flat(paths, FUZZY_ROW_LIMIT);
@@ -1239,11 +1203,42 @@ fn cached_fuzzy_rows(
         CachedFuzzyRows {
             rules,
             limit,
-            typed: typed.to_owned(),
+            typed: typed.clone(),
             rows: rows.clone(),
         },
     );
-    rows
+    append_fuzzy_items(rows.into_iter(), typed, result);
+}
+
+/// 首行接管已分配的匹配码，其余行沿用同一读法，结果继续独立拥有全部字段。
+fn append_fuzzy_items(
+    mut rows: impl ExactSizeIterator<Item = DictRow>,
+    typed: String,
+    result: &mut Vec<WordItem>,
+) {
+    result.reserve(rows.len());
+    if let Some(row) = rows.next() {
+        let mut item = WordItem::new(
+            typed,
+            row.value,
+            row.weight,
+            CandidateSource::Database,
+            row.key,
+        );
+        item.fuzzy = true;
+        result.push(item);
+    }
+    for row in rows {
+        let mut item = WordItem::new(
+            result.last().expect("首个模糊候选已插入").pinyin.clone(),
+            row.value,
+            row.weight,
+            CandidateSource::Database,
+            row.key,
+        );
+        item.fuzzy = true;
+        result.push(item);
+    }
 }
 
 fn fuzzy_row_cache_hash(rules: u32, limit: usize, typed: &str) -> u64 {
@@ -1414,3 +1409,11 @@ mod lattice_span_cache_tests;
 #[cfg(test)]
 #[path = "dictionary/row_projection_tests.rs"]
 mod row_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/initial_expansion_projection_tests.rs"]
+mod initial_expansion_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/fuzzy_row_projection_tests.rs"]
+mod fuzzy_row_projection_tests;

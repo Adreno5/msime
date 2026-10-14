@@ -12,9 +12,13 @@ Issue #7767 希望用户在正式版之间能下载新提交的可安装构建�
 
 为支持非发布构建，Android 只在 `publish=true` 时强制发布密钥，Windows 只在发布时调用 SignPath，macOS 只在发布时导入 Developer ID 和公证凭据。三个桌面发布 workflow 的官方插件 artifact 改用平台专属名称，避免六个 reusable workflow 在同一个 nightly run 中互相覆盖。iOS 构建号使用 2020 年起的 UTC 秒数，两条入口共用发布并发组，避免各 workflow 独立的 run_number 产生重复编号。
 
+nightly 的回归修复保留 iOS 词库页原有的发现加载、下拉刷新和个人词库导入 sheet。HarmonyOS 接线门禁要求三条候选路径的六个释义调用完整闭合并传入显示开关，忽略注释且允许换行，防止相同参数文本的注释掩盖真实接线错误。Android 模糊拼音验收以候选内容和关闭规则后的缺席为契约；词库排序或学习改变候选排名时，仍能验证模糊规则本身。macOS DMG 创建输出系统工具错误，最多重试三次，每次前后清理半成品；持续失败继续阻止签名和上传。
+
 ## Alternatives considered
 
 - **复制六套 nightly 构建步骤**：拒绝。依赖安装、资源锁、产物验证和版本矩阵会与正式链分叉，之后修复发布问题时容易漏改 nightly。
+- **继续要求模糊拼音结果排第一**：可以捕获排序变化，但规则只保证候选存在，排序属于词库和学习行为，因此门禁改为匹配完整候选内容并保留关闭规则的负向断言。
+- **macOS 磁盘映像首次失败立即退出**：失败路径最短，但磁盘映像服务的短暂故障会浪费已完成的 universal 构建；采用三次有界重试，持续失败仍返回工具退出码并清理输出。原始 CI 的 macOS 根因没有确认，这项恢复措施不作为根因已定位的证据。
 - **nightly 直接调用正式发布并创建六个版本标签**：拒绝。正式发布标签按语义版本工作，nightly 重跑会与正式版本冲突，也会触发应用内更新逻辑；滚动的独立 `nightly` prerelease 更适合试用构建。
 - **只上传 Actions artifact，不创建 Release**：拒绝。artifact 的保留期和入口受仓库设置影响，用户还要进入具体运行；滚动 Release 给出稳定下载地址，同时保留原始 artifact 供排查。
 
@@ -30,4 +34,6 @@ nightly 与正式发布共享每个平台的构建脚本和验证步骤，六个
 
 `actionlint` 检查新增和修改的 workflow 通过，`git diff --check` 通过，`pnpm run verify-notes` 通过；`scripts/run-checks.sh` 的全部契约检查通过或按环境跳过。本地 `scripts/verify-local.sh --quick` 通过；六个平台产物匹配规则用合成名称验证。首次远端运行是 `38520744229`：Windows 全部打包和安装验收、Linux 两架构的 DEB/RPM、Android 六版 APK 和 API 28 设备验收通过；iOS、HarmonyOS、Android API 35 和 macOS 失败，滚动发布被跳过，没有发布 nightly 或上传 TestFlight。
 
-补充修复在本地通过 iOS 原生模拟器构建、HarmonyOS 原生库及 HAP 构建、Android 带锁定词库的 APK 构建与含注音九键的语言键交换套件。十四键窄屏测试补回编辑器焦点并清掉旧节点后独立复测通过，键盘高度与其他后续套件也逐项通过；完整 API 35 验收重跑曾在不同阶段失败，尚未整套全绿，不能把逐项通过说成整套通过。macOS 失败根因尚未确定，行号诊断需要下次完整打包验证；用合成失败命令检查了函数和子 shell 的退出码传递，确认不打印合成凭据。
+补充修复在本地通过 iOS 原生模拟器 Release 构建、HarmonyOS 原生库及 HAP 构建、Android 带锁定词库的 APK 构建。独立 API 35 AVD 一次跑完全部 29 个默认 smoke 套件，包含注音九键、模糊拼音与禁用规则、十四键窄屏；测试后停止并移除该 AVD。共享 AVD 上同时有其它任务的 instrumentation，因此只采用独立设备结果。macOS 原生宿主的 bundle 内容和后端动态库加载 ctest 通过，藏文 universal 安装包完整构建并通过 SHA-256 校验；原始静默失败未复现，完整 nightly 与 TestFlight 仍未验证。原生构建与完整设备验收在原修复工作树完成，最终 quick 在包含 #7838 的新分支完成。
+
+DMG helper 的合成测试覆盖成功、一次失败后恢复、持续失败与半成品清理，HarmonyOS 门禁的缺参数变异在保留匹配注释时仍被拒绝。ERR 诊断的合成测试检查函数和子 shell 的退出码传递，确认不打印合成凭据。macOS 原始失败命令仍未确定，不能把增加重试或本地构建成功说成已定位根因。
