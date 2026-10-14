@@ -8019,3 +8019,5 @@ fn view_reports_the_applied_punctuation_marks() {
 #[allow(unsafe_code)]
 mod allocations;
 mod online_gloss_retention;
+
+mod online_slot_allocations;
