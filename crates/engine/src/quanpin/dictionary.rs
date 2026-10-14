@@ -339,12 +339,14 @@ impl QuanpinDictionary {
         self.cache.insert(code.to_string(), expanded);
         // Keyed without the `C:` prefix, as the reference writes it (QD:554): a one-letter input is never corrected, so the key is the one its query used. The reference read the last query's fields here; the key is recomputed from the caller's query instead, because a caret-prefix decode is a second query on this dictionary and would otherwise receive the whole input's expanded list in its own slot.
         let segments = self.resolve_segments(raw, segmentation);
-        let resolution = self.resolution(raw, segmentation, &segments, autocorrect_types);
-        let key = self.series_slot(&series_cache_key(
+        let cache_key = self.project_resolution(
             raw,
-            &resolution.segmentation,
+            segmentation,
+            &segments,
             autocorrect_types,
-        ));
+            |resolution| series_cache_key(raw, &resolution.segmentation, autocorrect_types),
+        );
+        let key = self.series_slot(&cache_key);
         self.series_cache.insert(key, candidates.clone());
         true
     }
@@ -417,8 +419,17 @@ impl QuanpinDictionary {
         }
         // The key is recomputed exactly as the query computed it, so the rows land in the slot the next refresh reads.
         let segments = self.resolve_segments(raw, segmentation);
-        let resolution = self.resolution(raw, segmentation, &segments, autocorrect_types);
-        let key = self.series_slot(&resolution.cache_key);
+        let cache_key = self.project_resolution(
+            raw,
+            segmentation,
+            &segments,
+            autocorrect_types,
+            |resolution| match resolution {
+                Cow::Borrowed(resolution) => resolution.cache_key.clone(),
+                Cow::Owned(resolution) => resolution.cache_key,
+            },
+        );
+        let key = self.series_slot(&cache_key);
         let mut list = self.series_cache.get(&key).unwrap_or_default();
         if !replace_online_candidate_batch(&mut list, raw, words, source) {
             return false;
@@ -954,7 +965,7 @@ impl QuanpinDictionary {
         segments
     }
 
-    /// `resolve_series_query` memoised on its whole input tuple (QD:354-364): the k-best search is the expensive part of a keystroke, and a re-typed or backspaced prefix reuses it.
+    /// 完整解析按输入元组缓存（QD:354-364），常规查询继续取得独立拥有的结果。
     fn resolution(
         &mut self,
         raw: &str,
@@ -962,10 +973,24 @@ impl QuanpinDictionary {
         segments: &[String],
         types: u32,
     ) -> SeriesResolution {
+        self.project_resolution(raw, segmentation, segments, types, |resolution| {
+            resolution.into_owned()
+        })
+    }
+
+    /// 热命中只借用到投影结束；冷未命中保留原缓存副本，并把计算结果的所有权交给调用方。
+    fn project_resolution<T>(
+        &mut self,
+        raw: &str,
+        segmentation: &str,
+        segments: &[String],
+        types: u32,
+        project: impl FnOnce(Cow<'_, SeriesResolution>) -> T,
+    ) -> T {
         let hash = resolution_cache_hash(types, raw, segmentation);
         if let Some(cached) = self.resolution_cache.get_ref(&hash) {
             if resolution_cache_key_matches(&cached.key, types, raw, segmentation) {
-                return cached.resolution.clone();
+                return project(Cow::Borrowed(&cached.resolution));
             }
         }
         let resolution = resolve_series_query(raw, segments, types);
@@ -977,7 +1002,7 @@ impl QuanpinDictionary {
                 resolution: resolution.clone(),
             },
         );
-        resolution
+        project(Cow::Owned(resolution))
     }
 
     /// Insert a row that is not there yet and journal it as the user's own (QD:1200-1212, QD:1234-1266). A row already present is success without a journal write.
@@ -1417,3 +1442,7 @@ mod initial_expansion_projection_tests;
 #[cfg(test)]
 #[path = "dictionary/fuzzy_row_projection_tests.rs"]
 mod fuzzy_row_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/resolution_projection_tests.rs"]
+mod resolution_projection_tests;

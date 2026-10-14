@@ -561,7 +561,7 @@ fn caret_prefix_expands_its_own_initial_list() {
     let (grew, allocations) =
         crate::ime::personal_rerank::allocations::count(|| session.expand_initial_candidates());
     assert!(grew);
-    assert_eq!(allocations, 323, "光标前缀展开申请次数：{allocations}");
+    assert_eq!(allocations, 321, "光标前缀展开申请次数：{allocations}");
     let widened = words(&session);
     assert_eq!(widened.len(), 30);
     assert!(widened.contains(&"丝".to_owned()), "{widened:?}");
