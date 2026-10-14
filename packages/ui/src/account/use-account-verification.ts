@@ -1,5 +1,6 @@
-import { useEffect, useState, type MutableRefObject } from "react";
+import { useState, type MutableRefObject } from "react";
 import type { AccountChallenge, AccountClient } from "./account-page";
+import { useInterval } from "../core/use-interval";
 
 export type AccountChannel = "email" | "phone";
 
@@ -25,11 +26,7 @@ export function useAccountVerification({
   // 清除挑战后仍要走完发送间隔，否则按钮会停在最后一次计时的秒数。
   const ticking = Boolean(challenge) || resendAt > now;
 
-  useEffect(() => {
-    if (!ticking) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [ticking]);
+  useInterval(() => setNow(Date.now()), ticking ? 1000 : null);
 
   const selectChannel = (value: AccountChannel) => {
     setChannel(value);

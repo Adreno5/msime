@@ -602,6 +602,7 @@ export {
   type AsyncActionOperation,
   type AsyncActionRunner,
 } from "./core/use-async-action";
+export { useInterval } from "./core/use-interval";
 export {
   subscribeToWindowFocus,
   subscribeToWindowResume,
