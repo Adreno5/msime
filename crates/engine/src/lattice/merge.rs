@@ -52,7 +52,7 @@ pub fn merge_lattice_candidates(
     if rerankers.is_empty() && options.emit > 0 {
         paths.truncate(options.emit);
     }
-    // Keep duplicate keys borrowed from the live candidates and paths; sentence rows clone their text only when built.
+    // 去重键借用活动候选；神经分支还借用路径，默认生成分支直接转移路径字段。
     let dedup_size = candidates.len().saturating_add(paths.len());
     let mut already =
         (dedup_size > SMALL_SENTENCE_MERGE).then(|| HashSet::with_capacity(dedup_size));
@@ -60,21 +60,27 @@ pub fn merge_lattice_candidates(
         already.extend(candidates.iter().map(|item| item.word.as_str()));
     }
     let block = if rerankers.is_empty() {
-        // Searching several paths and showing fewer is the point of `emit`: the alternatives exist so the trigram has something to reorder, not so the page fills with near-duplicate sentences.
-        if let Some(already) = already.as_mut() {
+        // `emit` 先截断，备选路径用于三元重排；只把实际显示的默认行转为拥有候选。
+        if let Some(already) = already.as_ref() {
             let mut block = Vec::new();
-            for path in &paths {
-                if !already.insert(path.sentence.as_str()) {
+            let capacity = paths.len();
+            // `decode_graph` 已消除同句的全部切分，此处只需过滤已有候选。
+            for path in paths {
+                if already.contains(path.sentence.as_str()) {
                     continue;
                 }
                 if block.is_empty() {
-                    block = Vec::with_capacity(paths.len());
+                    block = Vec::with_capacity(capacity);
                 }
-                block.push(sentence_row(typed_pinyin, path, CandidateSource::Generated));
+                block.push(owned_sentence_row(
+                    typed_pinyin,
+                    path,
+                    CandidateSource::Generated,
+                ));
             }
             block
         } else {
-            generated_block_linear(candidates, &paths, typed_pinyin)
+            generated_block_linear(candidates, paths, typed_pinyin)
         }
     } else {
         let mut keyboard = None;
@@ -108,15 +114,19 @@ pub fn merge_lattice_candidates(
 }
 
 fn sentence_row(typed_pinyin: &str, path: &SentencePath, source: CandidateSource) -> WordItem {
+    owned_sentence_row(typed_pinyin, path.clone(), source)
+}
+
+fn owned_sentence_row(typed_pinyin: &str, path: SentencePath, source: CandidateSource) -> WordItem {
     let mut item = WordItem::new(
         typed_pinyin,
-        path.sentence.clone(),
+        path.sentence,
         (path.log_prob * 1000.0) as i64,
         source,
-        path.key.clone(),
+        path.key,
     );
     item.sentence_association = true;
-    item.sentence_words = path.words.clone();
+    item.sentence_words = path.words;
     item
 }
 
@@ -129,19 +139,24 @@ fn sentence_seen_linear(candidates: &[WordItem], block: &[WordItem], sentence: &
 
 fn generated_block_linear(
     candidates: &[WordItem],
-    paths: &[SentencePath],
+    paths: Vec<SentencePath>,
     typed_pinyin: &str,
 ) -> Vec<WordItem> {
     let mut block = Vec::new();
+    let capacity = paths.len();
     for path in paths {
         if sentence_seen_linear(candidates, &block, &path.sentence) {
             continue;
         }
         // 全部重复时不分配；首条保留句子沿用原容量，避免非空块新增扩容。
         if block.is_empty() {
-            block = Vec::with_capacity(paths.len());
+            block = Vec::with_capacity(capacity);
         }
-        block.push(sentence_row(typed_pinyin, path, CandidateSource::Generated));
+        block.push(owned_sentence_row(
+            typed_pinyin,
+            path,
+            CandidateSource::Generated,
+        ));
     }
     block
 }
@@ -800,3 +815,7 @@ mod block_buffer_tests;
 #[cfg(test)]
 #[path = "merge_borrowed_order_tests.rs"]
 mod borrowed_order_tests;
+
+#[cfg(test)]
+#[path = "generated_ownership_tests.rs"]
+mod generated_ownership_tests;
