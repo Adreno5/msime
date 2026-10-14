@@ -90,7 +90,7 @@ fn series_misses_borrow_the_owned_primary_segmentation() {
 }
 
 #[test]
-fn series_hits_and_empty_input_keep_cost_and_owned_results() {
+fn series_hits_skip_resolution_copy_and_empty_input_keeps_owned_results() {
     let fixture = fixture();
     let mut before = QuanpinDictionary::new(&fixture.paths);
     let mut after = QuanpinDictionary::new(&fixture.paths);
@@ -113,7 +113,18 @@ fn series_hits_and_empty_input_keep_cost_and_owned_results() {
         let (mut actual, new_count) = count(|| after.query_exact(raw, segmentation, types));
         assert_eq!(actual, expected);
         assert_eq!(actual.capacity(), expected.capacity());
-        assert_eq!(new_count, old_count, "系列热命中与空输入不经过主切分复制");
+        let copies = if raw.is_empty() {
+            0
+        } else {
+            let segments = before.resolve_segments(raw, segmentation);
+            let (_, copies) = count(|| before.resolution(raw, segmentation, &segments, types));
+            copies
+        };
+        assert_eq!(
+            new_count + copies,
+            old_count,
+            "系列热命中省去完整解析复制，空输入保持原样"
+        );
         assert_state(&before, &after);
         if !actual.is_empty() {
             actual[0].word.push_str("修改副本");
