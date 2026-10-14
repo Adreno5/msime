@@ -2,9 +2,9 @@
 //! providers return asynchronously.
 
 use super::*;
-pub(crate) use msime_engine::ordering::apply_order;
 use msime_engine::ordering::{
-    ensure_engine_order, rerank_pick, rotate_to_front, runner_up_order, ParallelOrderRows,
+    apply_order_with, ensure_engine_order, rerank_pick, rotate_to_front, runner_up_order,
+    ParallelOrderRows,
 };
 // 排序决策搬进了 `msime_engine::ordering`；`tests.rs` 仍按原来的 crate 内名字引用这几项，这里为它们重新导出。
 #[cfg(test)]
@@ -570,19 +570,28 @@ impl<E: InputEngine> Runtime<E> {
         Ok(())
     }
 
-    /// Applies a candidate permutation to every parallel view and the Engine seat map.
-    /// Candidate text, code, annotations and source metadata must move together.
+    /// 一次遍历排列，同步交换候选字段和引擎座位映射，共用循环访问缓冲。
     pub(crate) fn apply_candidate_order(&mut self, order: &[usize]) {
         ensure_engine_order(&mut self.engine_order, order.len());
         let snapshot = &mut self.cached;
-        apply_order(&mut snapshot.candidates, order);
-        apply_order(&mut snapshot.candidate_codes, order);
-        apply_order(&mut snapshot.candidate_annotations, order);
-        apply_order(&mut snapshot.candidate_sources, order);
-        apply_order(&mut snapshot.candidate_positions, order);
-        apply_order(&mut snapshot.candidate_corrected, order);
-        apply_order(&mut snapshot.candidate_answers_key, order);
-        apply_order(&mut self.engine_order, order);
+        debug_assert_eq!(snapshot.candidates.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_codes.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_annotations.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_sources.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_positions.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_corrected.len(), order.len());
+        debug_assert_eq!(snapshot.candidate_answers_key.len(), order.len());
+        let engine_order = &mut self.engine_order;
+        apply_order_with(order, |left, right| {
+            snapshot.candidates.swap(left, right);
+            snapshot.candidate_codes.swap(left, right);
+            snapshot.candidate_annotations.swap(left, right);
+            snapshot.candidate_sources.swap(left, right);
+            snapshot.candidate_positions.swap(left, right);
+            snapshot.candidate_corrected.swap(left, right);
+            snapshot.candidate_answers_key.swap(left, right);
+            engine_order.swap(left, right);
+        });
     }
 
     pub fn set_dedicated_english(&mut self, enabled: bool) -> Result<(), RuntimeError> {

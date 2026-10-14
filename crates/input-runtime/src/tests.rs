@@ -8021,3 +8021,5 @@ mod allocations;
 mod online_gloss_retention;
 
 mod online_slot_allocations;
+
+mod parallel_order_allocations;
