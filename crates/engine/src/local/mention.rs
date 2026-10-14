@@ -28,12 +28,23 @@ fn collect_place_matches(
     if limit == 0 {
         return (exact, 0);
     }
+    // 仅剩一行时，源表首行的精确命中沿用立即返回，避免先构建前缀位图。
+    if limit == 1 {
+        if let Some((place, spellings)) = table.places.first().zip(table.spellings.first()) {
+            if spelling_match(spellings, code) == Some(true)
+                && !existing_names.contains(&place.name)
+            {
+                exact[0] = (place.key, place.name);
+                return (exact, 1);
+            }
+        }
+    }
     let mut exact_len = 0;
     let mut prefix = [("", ""); RESULT_LIMIT];
     let mut prefix_len = 0;
     let mut matched_names = [None; PLACE_MATCH_CAPACITY];
     let mut matched_names_len = 0;
-    for (place, spellings) in table.places.iter().zip(&table.spellings) {
+    for (place, spellings) in table.matching_entries(code) {
         let Some(is_exact) = spelling_match(spellings, code) else {
             continue;
         };
@@ -518,3 +529,7 @@ mod tests {
 #[cfg(test)]
 #[path = "mention/match_output_tests.rs"]
 mod match_output_tests;
+
+#[cfg(test)]
+#[path = "mention/place_index_tests.rs"]
+mod place_index_tests;
