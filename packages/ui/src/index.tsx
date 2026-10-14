@@ -95,13 +95,8 @@ import {
 export { useSettingsTheme } from "./settings/use-settings-theme";
 export { updateCandidateColor, updateCustomKeyboard } from "./settings/theme-selection-updates";
 import { useTouchKeyboardGeometryDrag } from "./settings/use-touch-keyboard-geometry-drag";
-import { defaultTouchKeyboardGeometry } from "./settings/touch-keyboard-geometry-defaults";
 import { touchKeyboardGeometryPreferences } from "./settings/touch-keyboard-geometry-preferences";
 export { defaultTouchKeyboardGeometry } from "./settings/touch-keyboard-geometry-defaults";
-export {
-  touchKeyboardGeometryPreferences,
-  type TouchKeyboardGeometryPreferencesSource,
-} from "./settings/touch-keyboard-geometry-preferences";
 export { useTouchKeyboardGeometryDrag } from "./settings/use-touch-keyboard-geometry-drag";
 import { useMobileKeyboardFeedback } from "./settings/use-mobile-keyboard-feedback";
 export {
