@@ -59,15 +59,14 @@ impl Table {
         Self { entries, longest }
     }
 
-    /// The longest key that prefixes `text`, as (key byte length, value).
+    /// 返回匹配 `text` 的最长前缀键及其首值，键长以字节计。
     fn longest_prefix(&self, text: &str) -> Option<(usize, &'static str)> {
-        let mut ends = Vec::with_capacity(self.longest);
-        for (offset, character) in text.char_indices().take(self.longest) {
-            ends.push(offset + character.len_utf8());
-        }
-        ends.into_iter()
-            .rev()
-            .find_map(|end| self.entries.get(&text[..end]).map(|value| (end, *value)))
+        let (offset, character) = text.char_indices().take(self.longest).last()?;
+        let prefix = &text[..offset + character.len_utf8()];
+        prefix.char_indices().rev().find_map(|(offset, character)| {
+            let end = offset + character.len_utf8();
+            self.entries.get(&prefix[..end]).map(|value| (end, *value))
+        })
     }
 }
 
@@ -278,5 +277,34 @@ mod tests {
     #[test]
     fn table_capacity_estimate_counts_source_lines() {
         assert_eq!(source_line_capacity(&["a\tb\nc\td\n", "e\tf\n"]), 3);
+    }
+
+    #[test]
+    fn longest_prefix_matches_table_keys_across_utf8_boundaries() {
+        let table = Table::parse(&[
+            "a\tfirst\nab\tpair\nabc\ttriple\na漢\tmixed\na漢😀\temoji\n😀\tface\n😀𠀀\tplane\né\taccent\né漢\taccent-pair\n漢\tcharacter\n漢字\tphrase\n𠀀\tsupplementary\n",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz\tlong\n",
+        ]);
+        let empty = Table::parse(&[]);
+        for text in [
+            "", "a", "abcd", "ab漢", "a漢😀!", "😀𠀀漢", "é漢字", "漢字😀", "𠀀x", "missing",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz!",
+        ] {
+            // 按词条选择最长前缀，独立于查找端点的遍历方式。
+            let expected = table.entries.iter()
+                .filter(|(key, _)| text.starts_with(**key))
+                .max_by_key(|(key, _)| key.len())
+                .map(|(key, value)| (key.len(), *value));
+            assert_eq!(table.longest_prefix(text), expected, "{text}");
+            assert_eq!(empty.longest_prefix(text), None);
+            for (end, _) in text.char_indices() {
+                let prefix = &text[..end];
+                let expected = table.entries.iter()
+                    .filter(|(key, _)| prefix.starts_with(**key))
+                    .max_by_key(|(key, _)| key.len())
+                    .map(|(key, value)| (key.len(), *value));
+                assert_eq!(table.longest_prefix(prefix), expected, "{prefix}");
+            }
+        }
     }
 }

@@ -61,7 +61,7 @@ fn offline_gloss_misses_only_pay_for_the_request_and_empty_reply() {
     let mut measurements = Vec::new();
     for rows in [1, 8, 32, 1024, 4096] {
         let request = request(rows);
-        // 用相同合成文字单独计数字形转换，排除它当前逐字符申请缓冲的成本。
+        // 用相同合成文字单独计数字形转换，让 JSON 预算独立于转换成本。
         let texts: Vec<String> = (0..rows)
             .map(|index| format!("synthetic-{index:04}"))
             .collect();
