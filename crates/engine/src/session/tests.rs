@@ -5338,6 +5338,22 @@ fn plugin_rows_replace_the_fallback_row() {
 }
 
 #[test]
+fn plugin_row_filter_does_not_allocate_a_second_text_index() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = plugin_session(&fixture, |_| {});
+    let query = open_uuid(&mut session);
+    let rows = plugin_rows(&[("甲", ""), ("乙", ""), ("甲", "重复")]);
+    let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+        assert!(session.apply_plugin_command_rows(&query, &rows));
+    });
+    assert_eq!(
+        allocations, 12,
+        "插件行过滤不应为临时文本索引多分配存储：{allocations}"
+    );
+    assert_eq!(words(&session), ["甲", "乙"]);
+}
+
+#[test]
 fn zero_plugin_rows_keep_the_fallback_and_are_not_asked_again() {
     let fixture = Fixture::new(QUANPIN_FIXTURE);
     let mut session = plugin_session(&fixture, |_| {});
