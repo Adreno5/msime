@@ -1251,6 +1251,11 @@ export {
   type CommunitySkinTrial,
 } from "./community/community-skins";
 export {
+  createCommunitySkinClient,
+  type CommunitySkinOperation,
+  type CommunitySkinRequest,
+} from "./community/community-skin-client";
+export {
   useCommunityGallery,
   type CommunityGalleryActionOptions,
   type CommunityGalleryClient,
