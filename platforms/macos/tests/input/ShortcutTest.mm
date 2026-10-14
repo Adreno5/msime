@@ -3042,7 +3042,7 @@ static void TestExpandedCandidateGrid() {
     assert(prefs.showsCandidateExpandButton);
     compose();
     MSIMECandidateButton *compactButton = ExpandedGridSubview(panel, -3);
-    assert(compactButton && !PageButton(panel.contentView, -1) && !PageButton(panel.contentView, -2));
+    assert(compactButton && !ExpandedGridSubview(panel, -1) && !ExpandedGridSubview(panel, -2));
     MSIMECandidateButton *first = ExpandedGridSubview(panel, 0);
     assert(first && NSMinY(compactButton.frame) >= NSMinY(first.frame) && NSMaxY(compactButton.frame) <= NSMaxY(first.frame));
     const CGFloat compactHeight = panel.frame.size.height;
