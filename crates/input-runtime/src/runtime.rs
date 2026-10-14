@@ -1049,9 +1049,19 @@ impl<E: InputEngine> Runtime<E> {
                 .copied()
                 .unwrap_or_default(),
             highlighted: index == self.highlighted,
-            translation: (!self.translations.is_empty())
-                .then(|| self.translations.get(text).cloned())
-                .flatten(),
+            // Translation answers are keyed by text for the host ABI. Keep
+            // rows whose source is explicitly ineligible from inheriting an
+            // answer for an ordinary row with the same text.
+            translation: (!self.translations.is_empty()
+                && !msime_client_core::translation::source_gets_no_gloss(
+                    self.cached
+                        .candidate_sources
+                        .get(index)
+                        .copied()
+                        .unwrap_or_default(),
+                ))
+            .then(|| self.translations.get(text).cloned())
+            .flatten(),
             #[cfg(any(
                 target_os = "macos",
                 target_os = "windows",

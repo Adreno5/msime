@@ -2750,6 +2750,21 @@ fn translations_are_generation_scoped_and_exposed_on_candidates() {
 }
 
 #[test]
+fn special_source_rows_do_not_inherit_a_translation_for_the_same_text() {
+    for source in [6, 7, 13, 14] {
+        let mut runtime = runtime();
+        runtime.engine.words = vec!["相同".into(), "相同".into()];
+        runtime.engine.sources = vec![0, source];
+        runtime.focus(true).unwrap();
+        let view = type_key(&mut runtime).view;
+        assert!(runtime.apply_translations(view.generation, [("相同".into(), "meaning".into())]));
+        let rows = runtime.view().candidates;
+        assert_eq!(rows[0].translation.as_deref(), Some("meaning"));
+        assert_eq!(rows[1].translation, None, "source {source}");
+    }
+}
+
+#[test]
 fn translation_merges_do_not_accumulate_non_candidates() {
     let mut runtime = runtime();
     runtime.focus(true).unwrap();
