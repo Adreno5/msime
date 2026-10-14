@@ -10899,17 +10899,23 @@ int main(int argc, char **argv) {
         appearance.vertical = NO;
         appearance.globalTheme = @"system";
         [controller appearanceChanged:nil];
+        NSDictionary *beforeArrowNavigation = [controller valueForKey:@"view"];
         for (NSNumber *key in @[@123, @124, @125, @126]) {
+            [controller setValue:@{@"focused": @YES, @"scheme": @0, @"editing_text": @"ceshi", @"caret_position": @5,
+                                  @"candidates": @[@{@"text": @"甲", @"highlighted": @YES}]} forKey:@"view"];
+            session.nextTransition = @{@"handled": @YES};
             layoutPanel.requestedVisible = YES;
             session.lastCommand = UINT32_MAX;
             NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:key.unsignedShortValue];
             assert([controller handleEvent:event client:client]);
-            // 全拼的横排候选：左右键是整句改字，上下键移动高亮。
+            // 首选左键编辑拼音，末尾右键选择下一候选；此处关闭展开，上下仍移动高亮。
             const unsigned short code = key.unsignedShortValue;
-            uint32_t expected = code == 123 ? MSIME_CONVERSION_LEFT : code == 124 ? MSIME_CONVERSION_RIGHT
+            uint32_t expected = code == 123 ? MSIME_MOVE_LEFT : code == 124 ? MSIME_NEXT_CANDIDATE
                                 : code == 126 ? MSIME_PREVIOUS_CANDIDATE : MSIME_NEXT_CANDIDATE;
             assert(session.lastCommand == expected);
         }
+        session.nextTransition = nil;
+        [controller setValue:beforeArrowNavigation forKey:@"view"];
         {
             // 方向键与 Windows、Linux 同一套规则，不看方案和候选窗朝向：五笔的横排候选也是 ↑/↓ 移高亮、←/→ 移光标。
             NSDictionary *saved = [controller valueForKey:@"view"];
