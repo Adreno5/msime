@@ -384,6 +384,16 @@ int main(void)
         assert([[controller valueForKey:@"announcedCandidate"] isEqual:@"3  AI 候选等待中"]);
         renderAccessible(2, @"—");
         assert([[controller valueForKey:@"announcedCandidate"] isEqual:@"3  AI 候选没有结果"]);
+        // 原生控制器立即显示与隐藏；皮肤不能让候选窗淡入或缩放。
+        assert(panel.alphaValue == 1.0);
+        assert(panel.animationBehavior == NSWindowAnimationBehaviorNone);
+        assert(CATransform3DIsIdentity(panel.contentView.layer.transform));
+        for (NSView *row in panel.contentView.subviews)
+            assert([row.layer animationForKey:@"msime-candidate-selection"] == nil);
+        [controller hideCandidatePanel:"empty"];
+        assert(!panel.isVisible);
+        [controller renderCandidates];
+        assert(panel.alphaValue == 1.0);
         MSIMERemoveTestPreferenceSuite(defaults, suite);
     }
     return 0;
