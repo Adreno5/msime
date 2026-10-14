@@ -644,11 +644,11 @@ impl QuanpinDictionary {
         // 下面每一次读词典都可能走行缓存，先确认它们还和库里一致。
         self.validate_row_caches();
         let alternatives = alternative_segmentations(raw, &segments, &resolution, types);
-        let primary_segmentation = resolution.segmentation.clone();
+        let primary_segmentation = resolution.segmentation.as_str();
         let mut result;
         if resolution.corrected_input {
             // The corrected reading is the primary key, so selection and weight updates land on the right rows; the literal reading stays behind it as a fallback tail.
-            result = self.query_series(raw, &primary_segmentation, &resolution.corrected);
+            result = self.query_series(raw, primary_segmentation, &resolution.corrected);
             let literal = if segmentation.is_empty() {
                 let literal_segmentation = join_segments(&segments);
                 self.query_series(raw, &literal_segmentation, &segments)
@@ -660,7 +660,7 @@ impl QuanpinDictionary {
             if !alternatives.is_empty() {
                 result = self.merge_alternatives(
                     raw,
-                    &primary_segmentation,
+                    primary_segmentation,
                     &resolution.corrected,
                     &alternatives,
                     result,
@@ -672,11 +672,11 @@ impl QuanpinDictionary {
                 append_unique_words(&mut result, rows);
             }
         } else {
-            result = self.query_series(raw, &primary_segmentation, &segments);
+            result = self.query_series(raw, primary_segmentation, &segments);
             if !alternatives.is_empty() {
                 result = self.merge_alternatives(
                     raw,
-                    &primary_segmentation,
+                    primary_segmentation,
                     &segments,
                     &alternatives,
                     result,
@@ -1446,3 +1446,7 @@ mod fuzzy_row_projection_tests;
 #[cfg(test)]
 #[path = "dictionary/resolution_projection_tests.rs"]
 mod resolution_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/primary_segmentation_tests.rs"]
+mod primary_segmentation_tests;
