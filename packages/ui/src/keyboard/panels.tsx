@@ -1,6 +1,7 @@
 import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { downloadBlob } from "../core/download-blob";
 import { trackAsyncSubscription } from "../core/async-subscription";
+import { subscribeToWindowBlur } from "../core/window-focus";
 import {
   readOptionalJson,
   readOptionalStorage,
@@ -507,10 +508,9 @@ export function KeyboardPanel({
       void client.rememberInputTarget().catch((error: unknown) => {
         if (queue.active) setNotice(keyboardDeliveryNotice(error, platformRef.current));
       });
-    const stopForBlur = () => stopKeyRepeat();
-    window.addEventListener("blur", stopForBlur);
+    const stopBlur = subscribeToWindowBlur(stopKeyRepeat);
     return () => {
-      window.removeEventListener("blur", stopForBlur);
+      stopBlur();
       stopKeyRepeat();
       queue.active = false;
       queue.pending = [];
