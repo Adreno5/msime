@@ -23,6 +23,8 @@ Host API 在 AI 请求真的发得出去时打开：AI 开着、接口地址有�
 
 ### 宿主契约
 
+macOS 的 AI 启动定时器加入主事件循环的 `NSRunLoopCommonModes`，与云候选一致：输入法处于事件跟踪模式时仍在停顿 0.65 秒后启动，不能只在默认模式等待。`MSIMECustomTranslationBatch` 的 AI 批次预算与传输的 8 秒一致，普通翻译仍为 6 秒；6 秒后、8 秒前返回的有效 AI 回答可以替换占位行，不能被普通翻译预算提前丢弃。正常等待仍显示「…」，失败或没有回答仍按本篇规则落到「—」，不在这次修复里翻转候选稳定位置的决定。
+
 | 宿主 | 画法 | 何时 resolve |
 |---|---|---|
 | macOS | 序号色 | 描述符建不出来；回答为空、失败或 apply 被拒（resolve 成功后同一组字不再重发） |
@@ -58,6 +60,8 @@ Android、iOS、HarmonyOS 都记下 resolve 过的那次请求的签名（`aiRes
 - 与 [英文、emoji 跟着它描绘的词](../feature/2026-10-08-expressive-rows-follow-their-word.md) 部分重叠：英文优先位「有 AI 候选时再往后一位」现在也包括占位行。
 
 ## Verification
+
+- macOS 定时器回归通过事件跟踪模式驱动真实事件循环，检查请求实际启动、空回答 resolve 以及同一组字不重发；不调用 `fire` 绕过调度。AI 批次测试用合成时钟验证第 7 秒的有效回答仍被接收，AI 无响应的 8 秒截止只完成一次并忽略迟到回包，普通翻译的 6 秒截止测试继续保留。本机独立复现里，事件跟踪模式下默认定时器不触发，common modes 定时器触发。修复前原生事件跟踪测试与第 7 秒回包测试均失败；最终 `scripts/verify-local.sh --quick` 通过，`shortcut`、`shortcut-translations`、`custom-translation-batch`、`cloud-candidate-request` 四套原生测试全部通过。本轮验证覆盖宿主调用与事件循环，不把合成测试当成真实编辑器验收。
 
 - `cargo test -p msime-engine`（含 golden）：`online_batch` 的占位行替换、空回答、云候选后到；`positions` 的座位归位；`queries` 的英文优先位；`session` 的占位行出现条件、不上屏、resolve 与代次、回答全是已有词。
 - `cargo test -p msime-input-runtime`：`several_candidates_from_one_provider_take_their_seat_as_a_group` 的座位与末尾、真 Engine 上回答前后同页候选不动、数字键不上屏、resolve 后组字变化回到「…」，以及重排模型不比较来源 3 和 12。

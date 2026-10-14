@@ -7735,6 +7735,36 @@ static void TestAiCandidateScheduling() {
     [controller cancelAITranslations];
 }
 
+// 输入法在事件跟踪模式中停留时也要启动 AI 请求，不能让已显示的占位行一直等待。
+static void TestAiCandidateTimerFiresWhileTracking() {
+    AIShortcutController *controller = [AIShortcutController alloc];
+    controller.aiBatches = [NSMutableArray array];
+    AIShortcutSession *session = [AIShortcutSession new];
+    session.query = @{ @"scheme": @0, @"generation": @1, @"identity": @"synthetic-ai-tracking",
+        @"query_text": @"nihao", @"cache_key": @"nihao-tracking", @"pinyin_segments": @[@"ni", @"hao"],
+        @"ai_context": @"", @"cloud_eligible": @NO, @"ai_eligible": @YES, @"cloud_candidates": @YES,
+        @"ai_assistant": @{ @"enabled": @YES, @"candidate_limit": @3 }, @"session_id": @1 };
+    session.resolveApplies = YES;
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:[ShortcutClient new] forKey:@"activeClient"];
+    [controller synchronizeAITranslations];
+    NSTimer *timer = [controller valueForKey:@"aiTimer"];
+    assert(timer);
+    timer.fireDate = [NSDate dateWithTimeIntervalSinceNow:0.01];
+    CFRunLoopAddCommonMode(CFRunLoopGetMain(), (__bridge CFStringRef)NSEventTrackingRunLoopMode);
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!controller.aiBatches.count && deadline.timeIntervalSinceNow > 0)
+        [NSRunLoop.mainRunLoop runMode:NSEventTrackingRunLoopMode beforeDate:deadline];
+    assert(controller.aiBatches.count == 1 && controller.aiBatches[0].started);
+    assert([controller valueForKey:@"aiTimer"] == nil);
+    controller.aiBatches[0].reply(@[]);
+    NSDictionary *view = [controller valueForKey:@"view"];
+    assert(session.resolutions == 1 && [view[@"candidates"][1][@"text"] isEqual:@"—"]);
+    [controller synchronizeAITranslations];
+    assert([controller valueForKey:@"aiTimer"] == nil && controller.aiBatches.count == 1);
+    [controller cancelAITranslations];
+}
+
 // The source gates AI suggestions on ai_assistant.enabled alone (ai_eligible / UpdateAiInput); the gloss switch only governs glosses and translations, so turning it off must neither block nor cancel an AI request.
 static void TestAiCandidatesIgnoreGlossSwitch() {
     NSString *suite = [@"msime.ai-gloss-off." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -9754,6 +9784,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestCloudCandidateRetryAfterRejectedResponse(); }
         @autoreleasepool { TestCloudCandidateEngineDelivery(); }
         @autoreleasepool { TestAiCandidateScheduling(); }
+        @autoreleasepool { TestAiCandidateTimerFiresWhileTracking(); }
         @autoreleasepool { TestAiCandidatesIgnoreGlossSwitch(); }
         @autoreleasepool { TestAiCandidateRetryAfterRejectedResponse(); }
         @autoreleasepool { TestAiPlaceholderResolvesAfterAnEmptyAnswer(); }
