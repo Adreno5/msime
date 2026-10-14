@@ -435,6 +435,19 @@ int main(void)
             std::sort(timings.begin(), timings.end());
             printf("candidate show/hide: median=%.3fms p95=%.3fms\n", timings[30], timings[57]);
         }
+        // 首选与悬停行按相同内边距推导圆角，覆盖极端设置和缩放。
+        appearance.candidateCornerRadius = @32;
+        appearance.candidatePadding = @0;
+        for (NSNumber *scale in @[@50, @100, @150, @200]) {
+            appearance.candidateScalePercent = scale.integerValue;
+            renderAccessible(0, @"…");
+            MSIMECandidateButton *selected = CandidateButton(panel.contentView, 0);
+            MSIMECandidateButton *hovered = CandidateButton(panel.contentView, 1);
+            hovered.candidateHovered = YES;
+            assert(selected.cornerRadius == 30.0 * scale.doubleValue / 100.0);
+            assert(hovered.cornerRadius == selected.cornerRadius);
+            assert(NSMinX(selected.frame) >= 2.0 * scale.doubleValue / 100.0);
+        }
         MSIMERemoveTestPreferenceSuite(defaults, suite);
     }
     return 0;
