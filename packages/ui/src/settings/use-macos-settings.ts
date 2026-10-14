@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { InputSourceStartupStatus, SettingsClient } from "../index";
 import { inputSourceNeedsAdding } from "./input-source-startup-notice";
 import { useAsyncGeneration } from "./use-async-generation";
+import { subscribeToWindowFocus } from "../core/window-focus";
 
 /** How often the settings page reads the input source list again while the notice waits for the user to act in System Settings or Finder; a focus change reads it at once. */
 export const INPUT_SOURCE_RECHECK_MS = 3000;
@@ -57,10 +58,10 @@ export function useMacosSettings({ client, macos, setError }: UseMacosSettingsOp
     }
     const refresh = () => void refreshInputSourceStartup();
     refresh();
-    window.addEventListener("focus", refresh);
+    const stopFocus = subscribeToWindowFocus(refresh);
     return () => {
       inputSourceRequest.current++;
-      window.removeEventListener("focus", refresh);
+      stopFocus();
     };
   }, [client, macos, refreshInputSourceStartup]);
 
@@ -97,9 +98,9 @@ export function useMacosSettings({ client, macos, setError }: UseMacosSettingsOp
         });
     };
     refresh();
-    window.addEventListener("focus", refresh);
+    const stopFocus = subscribeToWindowFocus(refresh);
     return () => {
-      window.removeEventListener("focus", refresh);
+      stopFocus();
     };
   }, [client, macos, onDeviceRequest]);
 

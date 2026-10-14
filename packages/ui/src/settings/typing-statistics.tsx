@@ -27,6 +27,7 @@ import {
 } from "./typing-speed";
 import { useMountedRef } from "./use-mounted-ref";
 import { useAsyncGeneration } from "./use-async-generation";
+import { subscribeToWindowResume } from "../core/window-focus";
 import { MobileStatistics, statisticsCardClass, type StatisticsLook } from "./mobile-statistics";
 import { StatisticsNote } from "./statistics-note";
 import type { TypingSummary } from "./typing-summary";
@@ -1518,13 +1519,11 @@ export function TypingStatisticsPage({
         });
     };
     refreshWhenVisible();
-    window.addEventListener("focus", refreshWhenVisible);
-    document.addEventListener("visibilitychange", refreshWhenVisible);
+    const stopResume = subscribeToWindowResume(refreshWhenVisible);
     const poll = window.setInterval(refreshWhenVisible, overviewPollMs);
     return () => {
       window.clearInterval(poll);
-      window.removeEventListener("focus", refreshWhenVisible);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      stopResume();
     };
   }, [client, clientGeneration, look]);
 
