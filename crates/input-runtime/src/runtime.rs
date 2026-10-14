@@ -1734,11 +1734,16 @@ impl<E: InputEngine> Runtime<E> {
                 .iter()
                 .position(|candidate_source| *candidate_source == source)
         };
-        let local_count = snapshot
+        let mut local_count = 0;
+        let mut fixed_english_count = 0;
+        for (source, position) in snapshot
             .candidate_sources
             .iter()
-            .filter(|source| is_local(**source))
-            .count();
+            .zip(&snapshot.candidate_positions)
+        {
+            local_count += usize::from(is_local(*source));
+            fixed_english_count += usize::from(*source == ENGLISH && *position > 0);
+        }
         let first_english = first_source(ENGLISH);
         let promoted_english = first_english == Some(0) && local_count != 0;
         let first_japanese = first_source(JAPANESE);
@@ -1831,20 +1836,22 @@ impl<E: InputEngine> Runtime<E> {
         append_group(&mut order, JAPANESE, 1, None);
         append_group(&mut order, EMOJI, 1, None);
         append_group(&mut order, KAOMOJI, 1, None);
-        // An English candidate the user fixed to a seat goes back to that seat after the seating, so a cloud or AI reply does not push it behind the online candidates (reference: server/src/ipc/candidate_selection_policy.h, the fixed-English pass at the end of NormalizeMixedCandidateOrder). Seats are 1-based and 0 means unfixed; a seat past the end clamps to the end, as the reference's `insert_at` does.
-        let mut fixed_english = Vec::with_capacity(count);
-        order.retain(|index| {
-            let fixed = snapshot.candidate_sources[*index] == ENGLISH
-                && snapshot.candidate_positions[*index] > 0;
-            if fixed {
-                fixed_english.push(*index);
+        // 固定英文行在在线座位排好后归位，云或 AI 不能把它挤离指定座位（参考 server/src/ipc/candidate_selection_policy.h 的 NormalizeMixedCandidateOrder）。位置从 1 开始，超出末尾时夹到末尾；来源统计给出实际行数，空缓冲不申请存储。
+        if fixed_english_count > 0 {
+            let mut fixed_english = Vec::with_capacity(fixed_english_count);
+            order.retain(|index| {
+                let fixed = snapshot.candidate_sources[*index] == ENGLISH
+                    && snapshot.candidate_positions[*index] > 0;
+                if fixed {
+                    fixed_english.push(*index);
+                }
+                !fixed
+            });
+            fixed_english.sort_by_key(|index| snapshot.candidate_positions[*index]);
+            for index in fixed_english {
+                let seat = usize::from(snapshot.candidate_positions[index] - 1).min(order.len());
+                order.insert(seat, index);
             }
-            !fixed
-        });
-        fixed_english.sort_by_key(|index| snapshot.candidate_positions[*index]);
-        for index in fixed_english {
-            let seat = usize::from(snapshot.candidate_positions[index] - 1).min(order.len());
-            order.insert(seat, index);
         }
         order.extend(ai_rows);
         // A permutation or nothing: a missing or repeated index would silently drop a candidate.
