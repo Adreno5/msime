@@ -4,11 +4,11 @@ Status: implemented
 
 ## Problem
 
-`query_database` 与 `longer_phrase_candidates` 命中原始行缓存后先 `Vec<DictRow>::clone`，再消费整页构造拥有型候选，重复申请临时行向量。单字母分支先把完整键放入两个读法字段，再替换显示读法，丢弃一次完整键副本。`expand_initial_candidates` 也先复制完整读法再替换为单字母，每个成功展开行丢弃一份完整键。已有合成预算中普通热命中为 5 次、自动切分为 6 次、长词两行页为 8 次申请。
+`query_database` 与 `longer_phrase_candidates` 命中原始行缓存后先 `Vec<DictRow>::clone`，再消费整页构造拥有型候选，重复申请临时行向量。单字母分支先把完整键放入两个读法字段，再替换显示读法，丢弃一次完整键副本。`expand_initial_candidates` 也先复制完整读法再替换为单字母，每个成功展开行丢弃一份完整键。模糊候选的共享前缀热页也先克隆完整 `Vec<DictRow>`，随后只消费一次。已有合成预算中普通热命中为 5 次、自动切分为 6 次、长词两行页为 8 次申请。
 
 ## Decision
 
-用共用的私有映射消费 `IntoIterator<Item=DictRow>`。热缓存用 `rows.iter().cloned()` 惰性提供行，只复制最终候选需要的字段，不建立完整的中间向量；冷页仍沿用原缓存页克隆和拥有型迭代。单字母分支直接以原匹配码构造 `pinyin`，完整键直接交给 `canonical_pinyin`，不经过被替换字段。`expand_initial_candidates` 同样直接消费 SQLite 页，以单字母构造最终显示读法。原 `QuanpinDictionary::query_initial` 包装只由展开调用，没有从 crate 导出；优化后移除该闲置内部入口。`PinyinDatabase::query_initial`、九键使用的简拼查询与 `initial_items` 的完整读法语义保持原样。最终候选继续拥有全部字符串；普通切分、长词与初始字母保持原键、顺序和默认元数据。
+用共用的私有映射消费 `IntoIterator<Item=DictRow>`。热缓存用 `rows.iter().cloned()` 惰性提供行，只复制最终候选需要的字段，不建立完整的中间向量；冷页仍沿用原缓存页克隆和拥有型迭代。单字母分支直接以原匹配码构造 `pinyin`，完整键直接交给 `canonical_pinyin`，不经过被替换字段。`expand_initial_candidates` 同样直接消费 SQLite 页，以单字母构造最终显示读法。原 `QuanpinDictionary::query_initial` 包装只由展开调用，没有从 crate 导出；优化后移除该闲置内部入口。`PinyinDatabase::query_initial`、九键使用的简拼查询与 `initial_items` 的完整读法语义保持原样。模糊行缓存辅助函数直接向结果追加候选，热页传入惰性克隆迭代，冷页仍克隆缓存后消费原 SQLite 页；首行接管已有匹配码，其余行复制该读法，保留原容量与路径预算。最终候选继续拥有全部字符串；普通切分、长词与初始字母保持原键、顺序和默认元数据。
 
 ## Existing decisions
 
@@ -17,6 +17,7 @@ Status: implemented
 ## Alternatives considered
 
 - 冷页直接转移进缓存、再借用生成输出：还可以省去冷缓存行向量副本；不选，因为 SQLite 页可能按有限上限预留，原缓存克隆只有真实行数容量，直接接管会把大提示带进 512 槽常驻缓存。
+- 模糊行辅助函数返回借用页：可以让投影留在调用方；不选，因为冷页还要同时写入缓存并保留原容量策略，借用返回会引入额外缓存查找或冷页字段复制，直接追加能在现有借用范围内保持同一套投影。
 - 返回候选视图或共享引用：可以避免所有字段克隆；不选，因为会跨越词典、会话和公开输出所有权，候选需要独立修改、学习和在失效后继续拥有内容。
 - 只保留热页克隆：所有路径的映射代码最短；不选，因为中间页只用于随后转换，流式迭代有同样的顺序与拥有语义。
 
@@ -27,6 +28,17 @@ Status: implemented
 惰性迭代保持准确长度提示，返回与缓存的字符串、向量容量与旧实现相同。借用只持续本次映射，不增加会话状态、依赖、公开 API，也不改变 SQL 查询、文件系统、权限或 Android 资源。
 
 ## Verification
+
+### 模糊共享前缀行投影
+
+固定 `db0b15772189fc9fe7ea7afadd2f3d64e9d89cc6` 的完整模糊候选与行缓存函数为对照，只改名、转接旧入口并移除注释。两个申请预算在旧生产代码上真实失败：两个热前缀页的完整查询为 41 次，目标 39 次；不同输入共享一个热前缀为 151 次，目标 150 次。冷页、整条答案缓存、字段/顺序/容量、空页与独立所有权对照在旧代码通过。
+
+改后三个新增测试全部通过，独立复核再次通过，无阻断或重要问题。两热页查询在每表 1/8/24/64/129 行夹具上的申请次数分别为 41→39、126→124、318→316、798→796、1,566→1,564；129 行夹具的单页仍受 128 行上限约束。真实不同输入共享前缀为 151→150，完整冷查询与整条答案缓存命中的申请次数均未增加。既有单非空热页预算从 35 收紧到 34，定向复跑通过。完整输出和缓存容量保持等价，最终候选与冷页副本仍拥有字符串。未测量本项 CPU 时间、峰值内存或设备输入延迟。
+
+- `cargo test -p msime-engine --locked`：1,998 项单测通过、15 项忽略；31 项 golden 通过，文档测试 0 项。
+- `cargo clippy -p msime-engine --locked --all-targets -- -D warnings`：通过。
+- `cargo fmt --all -- --check`、`git diff --check`、`pnpm run verify-notes`：通过，852 篇活跃笔记与 2 篇归档封印完成校验。
+- `CARGO_BUILD_JOBS=6 bash scripts/verify-local.sh --quick`：退出 0。仓库契约、actionlint、Rust workspace、Android/wasm target、Android Java、macOS 原生宿主与共享 Apple bridge 编译通过。Linux 外壳/原生因无 Docker，Windows 本机/交叉与 pipe-only 因无工具链，HarmonyOS 真打包因缺少 hvigor/产物/依赖而跳过；macOS workspace 的 `msime-desktop` 因原生资源 bundle 未预先生成跳过。未运行真实宿主输入或设备验收。
 
 ### 首字母展开
 

@@ -217,12 +217,20 @@ fn fuzzy_row_cache_hit_checks_the_full_key_without_allocating() {
         typed,
     ));
 
+    let typed = typed.to_owned();
+    let mut rows = Vec::new();
     let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
-        assert!(
-            cached_fuzzy_rows(&database, &mut cache, &paths, fuzzy_rule::Z_ZH, 32, typed,)
-                .is_empty()
+        append_cached_fuzzy_rows(
+            &database,
+            &mut cache,
+            &paths,
+            fuzzy_rule::Z_ZH,
+            32,
+            typed,
+            &mut rows,
         );
     });
+    assert!(rows.is_empty());
     assert_eq!(allocations, 0, "模糊行缓存热命中仍重建了查询键");
 }
 
@@ -248,11 +256,18 @@ fn fuzzy_row_cache_hash_collision_requeries_instead_of_returning_wrong_rows() {
         },
     );
 
-    let rows = cached_fuzzy_rows(&database, &mut cache, &paths, fuzzy_rule::Z_ZH, 32, typed);
+    let mut rows = Vec::new();
+    append_cached_fuzzy_rows(
+        &database,
+        &mut cache,
+        &paths,
+        fuzzy_rule::Z_ZH,
+        32,
+        typed.to_owned(),
+        &mut rows,
+    );
     assert_eq!(
-        rows.iter()
-            .map(|row| row.value.as_str())
-            .collect::<Vec<_>>(),
+        rows.iter().map(|row| row.word.as_str()).collect::<Vec<_>>(),
         ["战好"]
     );
 }
@@ -1414,7 +1429,7 @@ fn fuzzy_candidate_rows_reuse_the_first_typed_reading_string() {
         let _ = dictionary.fuzzy_candidates("zong'guo", options);
     });
     assert_eq!(
-        allocations, 35,
+        allocations, 34,
         "模糊候选重复复制了首个读音或查询键: {allocations}"
     );
 }
