@@ -178,9 +178,20 @@ fn misses_resolve_segments_once_and_keep_cold_cost() {
                 assert_eq!(actual.capacity(), expected.capacity());
                 assert_state(&before, &after);
                 if !word_lattice {
+                    let slot_copy = if matches!(mode, 0 | 1 | 4 | 5) {
+                        super::slot_key_ownership_tests::discarded_slot_copy_cost(
+                            &before,
+                            raw,
+                            segmentation,
+                            types,
+                        )
+                    } else {
+                        0
+                    };
                     assert_eq!(
-                        new_count, old_count,
-                        "未命中或哈希冲突时音节构造保持原成本：{raw}/{mode}"
+                        new_count + slot_copy,
+                        old_count,
+                        "音节成本不变，仅重建的未登记槽键省一次复制：{raw}/{mode}"
                     );
                 }
             }
@@ -216,9 +227,12 @@ fn database_change_resolves_segments_before_clearing_their_cache() {
             assert_eq!(actual.capacity(), expected.capacity());
             assert!(actual.iter().any(|item| item.word == "合成外部写入"));
             if !word_lattice {
+                let slot_copy =
+                    super::slot_key_ownership_tests::discarded_slot_copy_cost(&before, raw, "", 0);
                 assert_eq!(
-                    new_count, old_count,
-                    "版本变化须在清空前复用音节，避免重新计算"
+                    new_count + slot_copy,
+                    old_count,
+                    "版本变化清空前复用音节，未登记的槽键另省一次复制"
                 );
             }
             assert_state(&before, &after);
@@ -321,7 +335,12 @@ fn deferred_segment_memo_keeps_total_cost_lower_when_the_series_later_misses() {
             if !word_lattice {
                 println!("音节延迟序列 {raw}：热 {old_hot}→{new_hot}，随后未命中 {old_miss}→{new_miss}，原热音节 {warm_segments}");
                 assert_eq!(
-                    new_hot + new_miss + warm_segments,
+                    new_hot
+                        + new_miss
+                        + warm_segments
+                        + super::slot_key_ownership_tests::discarded_slot_copy_cost(
+                            &before, raw, "", types
+                        ),
                     old_hot + old_miss,
                     "首次实际消费才填切分备忘，累计分配不增加"
                 );

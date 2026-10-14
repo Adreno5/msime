@@ -125,7 +125,21 @@ fn cold_resolution_or_missing_series_keeps_original_cost() {
             assert_eq!(actual, expected);
             assert_eq!(actual.capacity(), expected.capacity());
             assert_state(&before, &after);
-            assert_eq!(new_count, old_count, "冷解析或系列未命中不得增加申请");
+            let slot_copy = if mode != 2 {
+                super::slot_key_ownership_tests::discarded_slot_copy_cost(
+                    &before,
+                    raw,
+                    segmentation,
+                    types,
+                )
+            } else {
+                0
+            };
+            assert_eq!(
+                new_count + slot_copy,
+                old_count,
+                "只有重建且未登记的槽键省一次复制"
+            );
         }
     }
 }
@@ -146,7 +160,11 @@ fn changed_sources_rebuild_a_previously_hot_series_and_keep_owned_output() {
     let (actual, new_count) = count(|| after.query_exact("ni", "", 0));
     assert_eq!(actual, expected);
     assert!(actual.iter().any(|item| item.word == "合成外部写入"));
-    assert_eq!(new_count, old_count, "版本失效后的重建不得多复制或重新解析");
+    assert_eq!(
+        new_count + 1,
+        old_count,
+        "单音节版本重建只省未登记槽键的副本"
+    );
     assert_state(&before, &after);
 
     assert_eq!(

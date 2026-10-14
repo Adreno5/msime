@@ -715,10 +715,12 @@ impl QuanpinDictionary {
                 );
             }
         }
-        self.series_cache.insert(slot.clone(), result.clone());
-        // Only keys long enough for the sentence lattice carry personal scores.
+        // 至少两音节的结果登记个人计分键；其余槽键只供缓存消费，直接转移。
         if segments.len() >= 2 || resolution.corrected.len() >= 2 {
+            self.series_cache.insert(slot.clone(), result.clone());
             self.remember_personal_scored_key(slot);
+        } else {
+            self.series_cache.insert(slot, result.clone());
         }
         result
     }
@@ -1544,3 +1546,7 @@ mod series_hit_resolution_tests;
 #[cfg(test)]
 #[path = "dictionary/lazy_segments_tests.rs"]
 mod lazy_segments_tests;
+
+#[cfg(test)]
+#[path = "dictionary/slot_key_ownership_tests.rs"]
+mod slot_key_ownership_tests;
