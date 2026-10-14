@@ -22,11 +22,11 @@ fn clone_cost(
     raw: &str,
     segmentation: &str,
     types: u32,
-) -> usize {
-    let segments = dictionary.resolve_segments(raw, segmentation);
+) -> (usize, usize) {
+    let (segments, segment_copies) = count(|| dictionary.resolve_segments(raw, segmentation));
     let (resolution, copies) = count(|| dictionary.resolution(raw, segmentation, &segments, types));
     assert!(!resolution.segmentation.is_empty());
-    copies
+    (copies, segment_copies)
 }
 
 fn assert_state(before: &QuanpinDictionary, after: &QuanpinDictionary) {
@@ -72,15 +72,19 @@ fn hot_series_answers_skip_the_unused_owned_resolution() {
             // 切换当前标记，确认再次热命中仍发布本次解析的标记状态。
             drop(before.legacy_hit_query_exact("ma", "ma", 0));
             drop(after.query_exact("ma", "ma", 0));
-            let copies = clone_cost(&mut before, raw, segmentation, types);
+            let (copies, segment_copies) = clone_cost(&mut before, raw, segmentation, types);
             let (expected, old_count) =
                 count(|| before.legacy_hit_query_exact(raw, segmentation, types));
             let (actual, new_count) = count(|| after.query_exact(raw, segmentation, types));
             assert_eq!(actual, expected);
             assert_eq!(actual.capacity(), expected.capacity());
             assert_state(&before, &after);
-            println!("系列热命中 {raw}/{types}/词网格={word_lattice}：申请 {old_count}→{new_count}，完整复制 {copies}");
-            assert_eq!(new_count + copies, old_count, "热候选只需要解析标记和槽");
+            println!("系列热命中 {raw}/{types}/词网格={word_lattice}：申请 {old_count}→{new_count}，完整解析复制 {copies}，音节复制 {segment_copies}");
+            assert_eq!(
+                new_count + copies + segment_copies,
+                old_count,
+                "热候选只需要解析标记和槽，不构造音节"
+            );
         }
     }
 }

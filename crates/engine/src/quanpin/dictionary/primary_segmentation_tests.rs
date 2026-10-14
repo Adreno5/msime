@@ -90,7 +90,7 @@ fn series_misses_borrow_the_owned_primary_segmentation() {
 }
 
 #[test]
-fn series_hits_skip_resolution_copy_and_empty_input_keeps_owned_results() {
+fn series_hits_skip_resolution_and_segment_copies_and_empty_input_keeps_owned_results() {
     let fixture = fixture();
     let mut before = QuanpinDictionary::new(&fixture.paths);
     let mut after = QuanpinDictionary::new(&fixture.paths);
@@ -116,14 +116,14 @@ fn series_hits_skip_resolution_copy_and_empty_input_keeps_owned_results() {
         let copies = if raw.is_empty() {
             0
         } else {
-            let segments = before.resolve_segments(raw, segmentation);
+            let (segments, segment_copies) = count(|| before.resolve_segments(raw, segmentation));
             let (_, copies) = count(|| before.resolution(raw, segmentation, &segments, types));
-            copies
+            copies + segment_copies
         };
         assert_eq!(
             new_count + copies,
             old_count,
-            "系列热命中省去完整解析复制，空输入保持原样"
+            "系列热命中省去完整解析与音节复制，空输入保持原样"
         );
         assert_state(&before, &after);
         if !actual.is_empty() {
