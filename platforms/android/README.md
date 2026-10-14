@@ -269,7 +269,13 @@ JVM 冒烟只覆盖无 Android 依赖的策略层；焦点、选区、编辑器�
 
 剪贴板编辑从外部应用进入宿主的回归用 `ANDROID_SDK_ROOT=<SDK绝对路径> bash platforms/android/tests/device/clipboard-edit.sh emulator-5566`（API 35 换 `emulator-5580`），默认验收已安装的拼音版，完整版在末尾加 `app.msime.android`。它在经典、林绿图标下长按真实历史卡片，检查长记录完整预填、页面保持十五秒、保存后返回外部编辑器、重新插入和取消；最后核对条目时间戳与固定状态，并恢复测试前的历史、偏好、图标、引导状态、系统剪贴板和默认输入法。准备阶段与页面操作分属宿主及独立编辑器 UID，避免宿主 instrumentation 绕过启动条件。
 
+`FeedbackInputStabilityDeviceSmoke` 在真实原生反馈页连续输入 50 次合成拼音短语，每组核对上屏文字、退格和字数计数，再收起并重开键盘；不点击提交，结束后恢复偏好、输入模式与默认输入法。通过 `smoke.sh emulator-5566 --core --feedback`（API 28）或 `smoke.sh emulator-5580 --feedback`（API 35）运行，也可安装原生宿主和 `editor-test.apk` 后单独执行 `adb -s <serial> shell am instrument -w app.msime.android.test/app.msime.android.test.FeedbackInputStabilityDeviceSmoke`。测试失败只输出固定阶段；本地成功不代表已经解释 #7837 的原设备崩溃或连接失败。
+
+`DiagnosticsBundleDeviceSmoke` 调用安装后的原生宿主生成合成诊断包，核对上传器读取与请求编码、旧格式、类别选择、隐私过滤和记录上限，不连接云端。通过 `smoke.sh emulator-5566 --core --diagnostics` 或单独执行 `adb -s <serial> shell am instrument -w app.msime.android.test/app.msime.android.test.DiagnosticsBundleDeviceSmoke` 运行；本轮诊断上传回归只验证 API 28。
+
 剪贴板保存期间的重建回归用 `ANDROID_SDK_ROOT=<SDK绝对路径> bash platforms/android/tests/device/clipboard-edit-lifecycle.sh emulator-5580 app.msime.android`（API 28 换 `emulator-5566`，拼音版换 `app.msime.android.pinyin`）。它阻塞真实共享存储队列，分别重建 Fragment 视图和 Activity，检查草稿、忙碌状态、成功返回及保存失败后的重试；最后核对条目数、时间戳和固定状态并恢复历史、偏好、图标和引导状态。`smoke.sh` 的普通及 `--core` 路径都会运行这条回归。
+
+`InputFailureCategoryDeviceSmoke` 从已安装产品调用真实响应解析与编辑器写入，用合成响应和拒绝组字的连接区分原生拒绝、响应损坏、编辑器拒写和 JNI 链接错误，检查异常原文不会进入诊断类别。`smoke.sh` 的普通与 `--core` 路径都运行。输入失败的 logcat 记录只包含 `input_failure reason=<固定类别>`，不包含异常说明、堆栈或输入内容；诊断 ZIP 的 P19 输入事件格式不变。
 
 ## 两个 APK 入口，不要选错
 

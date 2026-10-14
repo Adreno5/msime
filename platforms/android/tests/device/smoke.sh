@@ -9,6 +9,8 @@ settings=false
 handwriting=false
 statistics=false
 core=false
+feedback=false
+diagnostics=false
 for option in "${@:2}"; do
   case "$option" in
     # --core 跑安装、词库准备、打字主路径及剪贴板保存生命周期；其余键盘套件在 API 28 上仍不支持。
@@ -16,7 +18,9 @@ for option in "${@:2}"; do
     --settings) settings=true ;;
     --handwriting) handwriting=true ;;
     --statistics) statistics=true ;;
-    *) echo "usage: smoke.sh [emulator-5580] [--core] [--settings] [--handwriting] [--statistics]" >&2; exit 1 ;;
+    --feedback) feedback=true ;;
+    --diagnostics) diagnostics=true ;;
+    *) echo "usage: smoke.sh [emulator-5580] [--core] [--settings] [--handwriting] [--statistics] [--feedback] [--diagnostics]" >&2; exit 1 ;;
   esac
 done
 [[ "$serial" == emulator-* ]] || { echo "Only the dedicated emulator is supported" >&2; exit 1; }
@@ -91,6 +95,26 @@ run_instrumentation() {
 result=$(run_instrumentation app.msime.android.test/app.msime.android.test.DeviceSmoke)
 printf '%s\n' "$result"
 [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "System input acceptance failed" >&2; exit 1; }
+# 在安装产品中区分失败来源；只用合成响应和拒写连接，不读取实际输入。
+result=$(run_instrumentation app.msime.android.test/app.msime.android.test.InputFailureCategoryDeviceSmoke)
+printf '%s\n' "$result"
+[[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Input failure category acceptance failed" >&2; exit 1; }
+# 旧菜单、展开按钮和拼写回调只检查身份，不写编辑器、不停止当前会话。
+result=$(run_instrumentation app.msime.android.test/app.msime.android.test.StaleCandidateDeviceSmoke)
+printf '%s\n' "$result"
+[[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Stale candidate callback acceptance failed" >&2; exit 1; }
+if [[ "$feedback" == true ]]; then
+  # 使用真实反馈页连续输入合成文字，不点击提交；API 28 的 --core 也能单独带上此回归。
+  result=$(run_instrumentation app.msime.android.test/app.msime.android.test.FeedbackInputStabilityDeviceSmoke)
+  printf '%s\n' "$result"
+  [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Feedback input stability acceptance failed" >&2; exit 1; }
+fi
+if [[ "$diagnostics" == true ]]; then
+  # 只生成合成日志包，覆盖原生导出到上传请求的契约，不发网络请求。
+  result=$(run_instrumentation app.msime.android.test/app.msime.android.test.DiagnosticsBundleDeviceSmoke)
+  printf '%s\n' "$result"
+  [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Diagnostics bundle acceptance failed" >&2; exit 1; }
+fi
 if [[ "$core" == true ]]; then
   bash platforms/android/tests/device/clipboard-edit-lifecycle.sh "$serial" app.msime.android
   echo "Dedicated Android AVD: install, resource setup, core typing and clipboard save lifecycle acceptance passed"
