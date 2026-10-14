@@ -14,6 +14,8 @@ Status: implemented
 
 已检索活跃笔记的模糊路径、前缀和 `fuzzy_segmentations`。[模糊前缀延迟拥有](2026-10-14-quanpin-fuzzy-typed-prefix-borrow.md)曾明确将输入音节借用留给独立决定，本篇部分重叠并互链。[beam 复用父路径](2026-10-09-fuzzy-path-reuse.md)继续拥有父路径转移、单变体容器与字符串转移，完全保留。[行投影](2026-10-14-quanpin-row-cache-projection.md)及[行索引借用](2026-10-11-fuzzy-row-cache-key-borrow.md)属于查询后缓存策略，保持。拼音聚合页和切分键去重属于 SQL 层，与本次输入存储无关；没有完全吸收或过时提案。现有 `PinyinDatabase::batch_rows<K: AsRef<str>>` 是同仓库的拥有/借用切片参考。
 
+beam 的变体列表由[借用变体视图](2026-10-14-fuzzy-variant-views.md)处理；本篇继续持有输入音节借用。冻结 beam 的展开依赖转接固定旧展开，次数预算在计量外独立补偿后续的变体存储节省。
+
 ## Alternatives considered
 
 - 所有前缀都直接从字符串迭代：能消除输入向量；未采用，因为原路径过滤需要重放输入，每条输出路径都额外扫描分隔符，前缀循环也重复拆分。借用切片保留原索引遍历。

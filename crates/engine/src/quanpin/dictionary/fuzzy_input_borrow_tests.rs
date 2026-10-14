@@ -1,6 +1,8 @@
 use super::*;
 use crate::ime::personal_rerank::allocations::count;
-use crate::pinyin::fuzzy::fuzzy_syllables;
+use crate::pinyin::fuzzy::variant_view_tests::{
+    legacy_syllables as fuzzy_syllables, storage_savings,
+};
 use crate::quanpin::fixture::Fixture;
 use crate::types::fuzzy_rule;
 
@@ -196,6 +198,24 @@ fn assert_state(
     }
 }
 
+fn query_variant_savings(typed: &str, options: FuzzyPinyinOptions) -> usize {
+    if options.rules == 0 {
+        return 0;
+    }
+    let segments = split_segments(typed);
+    let mut budget = FUZZY_PATH_BUDGET;
+    let mut saved = 0;
+    for count in (1..=segments.len()).rev() {
+        if budget <= 1 {
+            break;
+        }
+        let limit = FUZZY_SEGMENTATION_LIMIT.min(budget);
+        saved += storage_savings(&segments[..count], options, limit);
+        budget -= legacy_input_segmentations(&segments[..count], options, limit).len();
+    }
+    saved
+}
+
 #[test]
 fn full_fuzzy_queries_borrow_each_nonempty_input_segment() {
     for rows in [0, 1, 129] {
@@ -241,6 +261,7 @@ fn full_fuzzy_queries_borrow_each_nonempty_input_segment() {
                         0
                     } else {
                         typed.split('\'').filter(|part| !part.is_empty()).count()
+                            + query_variant_savings(typed, options)
                     };
                     assert_eq!(
                         new_count + saved,
@@ -294,8 +315,9 @@ fn owned_and_borrowed_fuzzy_paths_keep_the_frozen_beam_cost_and_capacity() {
                     count(|| fuzzy_segmentations(&pieces, options, limit));
                 assert_eq!(actual, expected);
                 assert_eq!(borrowed, expected);
-                assert_eq!(new_count, old_count);
-                assert_eq!(borrowed_count, old_count);
+                let saved = storage_savings(&owned, options, limit);
+                assert_eq!(new_count + saved, old_count);
+                assert_eq!(borrowed_count + saved, old_count);
                 assert_eq!(actual.capacity(), expected.capacity());
                 assert_eq!(borrowed.capacity(), expected.capacity());
                 for (actual, expected) in actual.iter().zip(&expected) {
@@ -334,7 +356,10 @@ fn closed_database_skips_input_copy_and_external_invalidation_rebuilds_owned_row
     let (expected, old_count) = count(|| before.legacy_input_fuzzy_candidates(&typed, options));
     let (actual, new_count) = count(|| after.fuzzy_candidates(&typed, options));
     assert_items(&actual, &expected);
-    assert_eq!(new_count + 2, old_count);
+    assert_eq!(
+        new_count + 2 + query_variant_savings("zan'fa", options),
+        old_count
+    );
     assert!(actual.iter().any(|item| item.word == "合成外部写入"));
     typed.clear();
     assert_state(&before, &after, "zan'fa", options);
