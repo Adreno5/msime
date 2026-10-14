@@ -1331,9 +1331,8 @@ public final class MSIMEInputService extends InputMethodService {
         statisticsFailureReported = false;
         message = "直接输入";
         // 外观和引擎是两件事。皮肤、方案角标和键高来自同一份偏好，但它们该跟着用户走，而不是跟着
-        // 这个输入框用不用引擎走：系统在冷启动后发来的第一个编辑器 inputType 是 0，密码框和数字
-        // 框也都不走引擎，把读偏好一起挡在外面，键盘就先按字段初始值画成默认绿的 26 键，等下一个
-        // 普通输入框到了才跳成用户自己的皮肤——那一跳看起来就像换了个输入法。
+        // 这个输入框用不用引擎走：密码框和数字框不走引擎，TYPE_NULL 的自定义聊天框仍要走引擎，
+        // 否则九键和 26 键会落入「直接输入」而无法组字。
         boolean engineWanted = info != null && connection != null
             && EditorPolicy.useEngine(info.inputType);
         String statisticsPreferences = "";
