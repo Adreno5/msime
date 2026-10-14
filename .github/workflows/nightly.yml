@@ -89,7 +89,7 @@ jobs:
       - name: Download macOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: msime-macos-*-*
+          pattern: msime-macos-*
           path: nightly-assets/macos
           merge-multiple: false
       - name: Download Linux artifacts
@@ -101,7 +101,7 @@ jobs:
       - name: Download HarmonyOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: msime-harmony-*-*
+          pattern: msime-harmony-*
           path: nightly-assets/harmony
           merge-multiple: false
       - name: Download Windows artifacts
