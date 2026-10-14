@@ -2894,6 +2894,54 @@ static NSUInteger ExpandedGridHighlightedTag(NSPanel *panel) {
     return NSNotFound;
 }
 
+// 普通候选把拼音编辑与选择分开，网格、列表和修饰键各走已有的入口。
+static void TestPinyinArrowCandidateNavigation() {
+    NSString *suite = [@"msime.pinyin-arrows." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *prefs = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    prefs.englishMode = NO;
+    ModeController *controller = [ModeController alloc];
+    ShortcutSession *session = [ShortcutSession new];
+    ShortcutClient *client = [ShortcutClient new];
+    TestCandidatePanel *panel = [TestCandidatePanel new];
+    [controller setValue:prefs forKey:@"appearance"];
+    [controller setValue:session forKey:@"session"];
+    [controller setValue:client forKey:@"activeClient"];
+    [controller setValue:panel forKey:@"panel"];
+    auto check = [&](int scheme, NSUInteger caret, NSUInteger selected, unsigned short key, uint32_t expected, BOOL list = NO) {
+        [controller setValue:@{@"focused": @YES, @"scheme": @(scheme), @"editing_text": @"ceshi", @"caret_position": @(caret),
+                              @"candidate_list_open": @(list), @"candidates": @[
+                                  @{@"text": @"甲", @"highlighted": @(selected == 0)},
+                                  @{@"text": @"乙", @"highlighted": @(selected == 1)}]} forKey:@"view"];
+        panel.visible = YES;
+        session.lastCommand = UINT32_MAX;
+        session.nextTransition = @{@"handled": @YES};
+        client.committed = nil;
+        assert([controller handleEvent:ModeKey(key, 0, NO) client:client]);
+        assert(session.lastCommand == expected && !client.committed);
+    };
+    for (int scheme : {0, 1}) {
+        for (BOOL vertical : {NO, YES}) {
+            prefs.vertical = vertical;
+            for (BOOL expand : {NO, YES}) {
+                prefs.expandCandidates = expand;
+                check(scheme, 5, 0, 123, MSIME_MOVE_LEFT);
+                check(scheme, 5, 1, 123, MSIME_PREVIOUS_CANDIDATE);
+                check(scheme, 2, 0, 124, MSIME_MOVE_RIGHT);
+                check(scheme, 2, 1, 124, MSIME_MOVE_RIGHT);
+                check(scheme, 5, 0, 124, MSIME_NEXT_CANDIDATE);
+                check(scheme, 5, 1, 124, MSIME_NEXT_CANDIDATE);
+            }
+        }
+    }
+    // 五笔的左右键仍编辑光标；韩文汉字列表四方向都选择，不误用锁定的光标。
+    check(2, 5, 1, 123, MSIME_MOVE_LEFT);
+    check(2, 5, 0, 124, MSIME_MOVE_RIGHT);
+    check(4, 5, 0, 123, MSIME_PREVIOUS_CANDIDATE, YES);
+    check(4, 2, 0, 124, MSIME_NEXT_CANDIDATE, YES);
+    [defaults removePersistentDomainForName:suite];
+}
+
 // 「展开候选」（#7307）：横排候选窗按 ↓ 展开多行网格，网格里 ←/→ 行内、↑/↓ 行间、数字选高亮行、空格和回车选高亮、Esc 或第一行 ↑ 收起而组字保留，网格不认的键先收起再照常处理；偏好关闭、竖排、只有一页时 ↓ 和 ←/→ 和以前一样；选择带着复制时的一代，过期的一代什么也不选。
 static void TestExpandedCandidateGrid() {
     NSString *suite = [@"msime.expanded-grid." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -2937,7 +2985,7 @@ static void TestExpandedCandidateGrid() {
     NSUInteger (^cursor)(void) = ^NSUInteger { return [[controller valueForKey:@"expandedCursor"] unsignedIntegerValue]; };
     auto press = [&](unsigned short code) { return [controller handleEvent:ModeKey(code, 0, NO) client:client]; };
 
-    // 偏好关闭：↓ 照旧移高亮，←/→ 照旧整句改字，不读完整候选，候选窗上也没有展开按钮。
+    // 偏好关闭：↓ 照旧移高亮，←/→ 按拼音光标和候选位置分工，不读完整候选，候选窗上也没有展开按钮。
     compose();
     assert(!ExpandedGridSubview(panel, -3));
     session.lastCommand = UINT32_MAX;
@@ -2945,7 +2993,7 @@ static void TestExpandedCandidateGrid() {
     assert(session.lastCommand == MSIME_NEXT_CANDIDATE && session.allCandidateCalls == 0 && !expanded());
     compose();
     assert(press(123));
-    assert(session.lastCommand == MSIME_CONVERSION_LEFT && !expanded());
+    assert(session.lastCommand == MSIME_MOVE_LEFT && !expanded());
 
     // 打开偏好但候选窗是竖排：↓ 照旧，没有展开按钮。
     prefs.expandCandidates = YES;
@@ -2966,13 +3014,26 @@ static void TestExpandedCandidateGrid() {
     assert(session.lastCommand == MSIME_NEXT_CANDIDATE && !expanded());
     session.total = 23;
 
-    // 横排、多页：网格外 ←/→ 不变，首行有展开按钮。
+    // 横排、多页：光标在末尾时 → 选择下一个候选，首行有展开按钮。
     compose();
     MSIMECandidateButton *expandButton = ExpandedGridSubview(panel, -3);
     assert(expandButton && [expandButton.identifier isEqual:@"candidate-expand"] && [expandButton.accessibilityLabel isEqual:@"展开候选"]);
     session.lastCommand = UINT32_MAX;
     assert(press(124));
-    assert(session.lastCommand == MSIME_CONVERSION_RIGHT && !expanded());
+    assert(session.lastCommand == MSIME_NEXT_CANDIDATE && !expanded());
+
+    compose();
+    NSMutableDictionary *lastPage = [[session gridView] mutableCopy];
+    lastPage[@"page"] = @4;
+    lastPage[@"candidates"] = @[[session gridCandidate:20 highlighted:NO], [session gridCandidate:21 highlighted:YES], [session gridCandidate:22 highlighted:NO]];
+    [controller setValue:lastPage forKey:@"view"];
+    [controller renderCandidates];
+    assert(press(125) && expanded());
+    assert(cursor() == 21 && [[controller valueForKey:@"expandedFirstRow"] unsignedIntegerValue] == 4);
+    assert(ExpandedGridSubview(panel, 21) && !ExpandedGridSubview(panel, 19));
+    assert(press(126) && cursor() == 16);
+    assert([[controller valueForKey:@"expandedFirstRow"] unsignedIntegerValue] == 3);
+    [controller closeExpandedCandidates];
 
     // ↓ 展开：读一次完整候选，不发任何 Engine 命令；23 个候选排成 5 行，高亮停在原来高亮的第一个。
     compose();
@@ -10508,8 +10569,9 @@ int main(int argc, char **argv) {
         assert(session.maintenanceCalls == deletionCalls && session.lastCommand == UINT32_MAX);
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
         assert(clickCandidate);
-        NSMenu *candidateMenu = clickCandidate.menu;
+        assert(clickCandidate.menu == nil);
         NSEvent *rightClick = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:1 clickCount:1 pressure:1];
+        NSMenu *candidateMenu = [clickCandidate menuForEvent:rightClick];
         assert([clickCandidate menuForEvent:rightClick] == candidateMenu);
         // AppKit 把右键菜单开在来源窗口层级加一，候选窗开着菜单时必须留在原层级。降回弹出菜单层级会让候选窗和菜单一起掉到截图遮罩下面（#7326）。
         layoutPanel.level = MSIMECandidateWindowLevel();
@@ -10538,7 +10600,7 @@ int main(int argc, char **argv) {
         [NSUserDefaults.standardUserDefaults removeObjectForKey:@"MSIMEClientPinnedCandidates"];
         [controller renderCandidates];
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
-        candidateMenu = clickCandidate.menu;
+        candidateMenu = [clickCandidate menuForEvent:rightClick];
         positionMenu = [candidateMenu itemAtIndex:1].submenu;
         NSMutableArray *operations = [NSMutableArray arrayWithObjects:[candidateMenu itemAtIndex:0], [candidateMenu itemAtIndex:2], nil];
         [operations addObjectsFromArray:[positionMenu.itemArray subarrayWithRange:NSMakeRange(0, 5)]];
@@ -10559,7 +10621,7 @@ int main(int argc, char **argv) {
         [controller renderCandidates];
         // renderCandidates rebuilds the buttons, so everything captured from the previous panel is stale.
         clickCandidate = (id)PageButton(layoutPanel.contentView, 1);
-        candidateMenu = clickCandidate.menu;
+        candidateMenu = [clickCandidate menuForEvent:rightClick];
         assert(clickCandidate && candidateMenu.numberOfItems == 3);
         NSMenuItem *retainedOperation = [candidateMenu itemAtIndex:0];
         NSDictionary *validContext = retainedOperation.representedObject;
@@ -10838,17 +10900,24 @@ int main(int argc, char **argv) {
         appearance.vertical = NO;
         appearance.globalTheme = @"system";
         [controller appearanceChanged:nil];
+        NSDictionary *beforeArrowTransition = session.nextTransition;
         for (NSNumber *key in @[@123, @124, @125, @126]) {
+            [controller setValue:@{@"focused": @YES, @"scheme": @0, @"editing_text": @"ceshi", @"caret_position": @5,
+                                  @"candidates": @[@{@"text": @"甲", @"highlighted": @YES}]} forKey:@"view"];
+            session.nextTransition = @{@"handled": @YES};
             layoutPanel.requestedVisible = YES;
             session.lastCommand = UINT32_MAX;
             NSEvent *event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:key.unsignedShortValue];
             assert([controller handleEvent:event client:client]);
-            // 全拼的横排候选：左右键是整句改字，上下键移动高亮。
+            // 首选左键编辑拼音，末尾右键选择下一候选；此处关闭展开，上下仍移动高亮。
             const unsigned short code = key.unsignedShortValue;
-            uint32_t expected = code == 123 ? MSIME_CONVERSION_LEFT : code == 124 ? MSIME_CONVERSION_RIGHT
+            uint32_t expected = code == 123 ? MSIME_MOVE_LEFT : code == 124 ? MSIME_NEXT_CANDIDATE
                                 : code == 126 ? MSIME_PREVIOUS_CANDIDATE : MSIME_NEXT_CANDIDATE;
             assert(session.lastCommand == expected);
         }
+        session.nextTransition = beforeArrowTransition;
+        // 后面的字符翻页测试从普通空组字开始，不继承皮肤测试的本地模式。
+        [controller setValue:@{@"editing_text": @"", @"caret_position": @0, @"candidates": @[]} forKey:@"view"];
         {
             // 方向键与 Windows、Linux 同一套规则，不看方案和候选窗朝向：五笔的横排候选也是 ↑/↓ 移高亮、←/→ 移光标。
             NSDictionary *saved = [controller valueForKey:@"view"];
@@ -11482,6 +11551,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestJapaneseConversionKeys(appearance); }
         @autoreleasepool { TestGlossSensePage(appearance); }
         @autoreleasepool { TestGlossSenseTraditionalOutput(appearance); }
+        @autoreleasepool { TestPinyinArrowCandidateNavigation(); }
         @autoreleasepool { TestExpandedCandidateGrid(); }
         @autoreleasepool { TestExpandedCandidateGridGeneration(); }
         @autoreleasepool { TestSegmentEditingChords(appearance); }
