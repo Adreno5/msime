@@ -1,4 +1,5 @@
 import { createCommunityResourceClient } from "./community-resource-host";
+import { createSettingsSyncClient } from "./settings-sync-host";
 
 import type {
   AccountClient,
@@ -58,12 +59,7 @@ export function createMobileHostServices(
         (response) => response.content,
       ),
   };
-  const accountSettingsSync: SettingsSyncClient = {
-    schema: () => invoke("account_preferences_schema"),
-    load: () => invoke("account_preferences_load"),
-    upload: () => invoke("account_preferences_upload"),
-    apply: (userId, preferences) => invoke("account_preferences_apply", { userId, preferences }),
-  };
+  const accountSettingsSync: SettingsSyncClient = createSettingsSyncClient(invoke);
   const account: AccountClient =
     platform === "ios"
       ? {
