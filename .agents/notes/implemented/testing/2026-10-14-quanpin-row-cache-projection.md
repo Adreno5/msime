@@ -4,11 +4,11 @@ Status: implemented
 
 ## Problem
 
-`query_database` 与 `longer_phrase_candidates` 命中原始行缓存后先 `Vec<DictRow>::clone`，再消费整页构造拥有型候选，重复申请临时行向量。单字母分支先把完整键放入两个读法字段，再替换显示读法，丢弃一次完整键副本。已有合成预算中普通热命中为 5 次、自动切分为 6 次、长词两行页为 8 次申请。
+`query_database` 与 `longer_phrase_candidates` 命中原始行缓存后先 `Vec<DictRow>::clone`，再消费整页构造拥有型候选，重复申请临时行向量。单字母分支先把完整键放入两个读法字段，再替换显示读法，丢弃一次完整键副本。`expand_initial_candidates` 也先复制完整读法再替换为单字母，每个成功展开行丢弃一份完整键。已有合成预算中普通热命中为 5 次、自动切分为 6 次、长词两行页为 8 次申请。
 
 ## Decision
 
-用共用的私有映射消费 `IntoIterator<Item=DictRow>`。热缓存用 `rows.iter().cloned()` 惰性提供行，只复制最终候选需要的字段，不建立完整的中间向量；冷页仍沿用原缓存页克隆和拥有型迭代。单字母分支直接以原匹配码构造 `pinyin`，完整键直接交给 `canonical_pinyin`，不经过被替换字段。最终候选继续拥有全部字符串；普通切分、长词与初始字母保持原键、顺序和默认元数据。
+用共用的私有映射消费 `IntoIterator<Item=DictRow>`。热缓存用 `rows.iter().cloned()` 惰性提供行，只复制最终候选需要的字段，不建立完整的中间向量；冷页仍沿用原缓存页克隆和拥有型迭代。单字母分支直接以原匹配码构造 `pinyin`，完整键直接交给 `canonical_pinyin`，不经过被替换字段。`expand_initial_candidates` 同样直接消费 SQLite 页，以单字母构造最终显示读法。原 `QuanpinDictionary::query_initial` 包装只由展开调用，没有从 crate 导出；优化后移除该闲置内部入口。`PinyinDatabase::query_initial`、九键使用的简拼查询与 `initial_items` 的完整读法语义保持原样。最终候选继续拥有全部字符串；普通切分、长词与初始字母保持原键、顺序和默认元数据。
 
 ## Existing decisions
 
@@ -27,6 +27,19 @@ Status: implemented
 惰性迭代保持准确长度提示，返回与缓存的字符串、向量容量与旧实现相同。借用只持续本次映射，不增加会话状态、依赖、公开 API，也不改变 SQL 查询、文件系统、权限或 Android 资源。
 
 ## Verification
+
+### 首字母展开
+
+固定 `db43f05f0f1c067f65122376ebc0fc7dcf2376e9` 的完整旧展开及旧首字母包装作为测试基线，仅改名、转接旧入口并移除注释。新增测试覆盖 25/32/128 行真实展开的字段、顺序、容量和逐行分配预算，混合来源候选的插入位置与全部元数据，行缓存/系列槽、结果修改和清空后的独立所有权，空码/多字母/缺词/24 行以内等拒绝边界，以及简拼查询保持完整读法。
+
+分配预算在旧生产的 25 行展开上真实失败（267 次，目标 242 次）。三个新增测试通过，独立复核再次通过且无阻断或重要问题：预热实际完整展开 25 行 267→242 次，32 行 337→305 次，128 行 1,299→1,171 次。每个成功展开行恰好省去一次完整键复制；最终候选、行缓存与系列槽的拥有型副本继续存在。既有 `caret_prefix_expands_its_own_initial_list` 的 30 行展开精确申请预算从 353 收紧到 323，定向复跑通过。未测量此次完整展开的堆峰值或发布构建延迟，不把先前纯投影计时算作本次整条展开的改善。
+
+- `cargo test -p msime-engine --locked`：1,995 项单测通过、15 项忽略；31 项 golden 通过，文档测试 0 项。
+- `cargo clippy -p msime-engine --locked --all-targets -- -D warnings`：通过。
+- `cargo fmt --all -- --check`、`git diff --check`、`pnpm run verify-notes`：通过，851 篇活跃笔记与 2 篇归档封印完成校验。
+- `CARGO_BUILD_JOBS=6 bash scripts/verify-local.sh --quick`：退出 0。仓库契约、actionlint、Rust workspace、Android target、wasm target、Android Java、macOS 原生配置/编译和 shared Apple bridge 编译通过。macOS workspace 的 `msime-desktop` 因原生资源 bundle 未预先生成而跳过；Linux 外壳/原生因无 Docker，Windows 本机/交叉与 pipe-only 因无相应工具链，HarmonyOS 真打包因缺少 hvigor/产物/依赖而跳过。未运行真实宿主输入或设备验收。
+
+### 热行缓存投影
 
 三个既有热查询预算在旧实现上实际失败，改后分别为 4、5、7 次申请。新增固定旧函数与当前真实 SQLite 查询的对照覆盖冷/热、缺词/表、首字母 24 行上限、别名、不完整/无效/空输入、同权及负/宽权重，比较全部字段、顺序、返回与缓存容量，并检查 FIFO 年龄、清空与独立结果生命周期。四项新增测试中三项在旧实现失败，改后全部通过；独立复核再次运行四项测试通过，无阻断或重要问题。
 
