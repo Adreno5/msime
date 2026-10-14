@@ -471,8 +471,16 @@ final class ImeLetterRows {
         return true;
     }
 
+    private int drawnTouchLayout = -1;
+
+    /** 底行跟随已经构建的主键区，不提前采用尚未重建键区的会话快照。 */
+    int drawnTouchLayout() {
+        return drawnTouchLayout < 0 ? s.displayedTouchLayout(s.view) : drawnTouchLayout;
+    }
+
     void rebuildKeyRows() {
         if (s.keyRows == null) return;
+        drawnTouchLayout = s.displayedTouchLayout(s.view);
         builtLayerPunctuation = null;
         builtLetterLayout = -1;
         koreanKeyButtons.clear();
