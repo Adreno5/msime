@@ -1457,14 +1457,12 @@ impl NineKeySession {
         });
         let mut ranked = Vec::new();
         if let Some(keyboard) = keyboard.as_mut() {
-            let scored: Vec<&WordItem> = candidates
-                .iter()
-                .filter(|item| is_lattice_sentence(item))
-                .take(MAX_RERANK_PATHS)
-                .collect();
+            let (scored, scored_len) = collect_lattice_sentences(candidates);
+            let scored = &scored[..scored_len];
             // 模型的顺序只取决于上屏上下文、整句和它们的词网格分，三者都相同时直接用上次的结果。
             let signature: Vec<(String, i64)> = scored
                 .iter()
+                .flatten()
                 .map(|item| (item.word.clone(), comparable_weight(item)))
                 .collect();
             let context = &self.rescoring_context;
@@ -1477,6 +1475,7 @@ impl NineKeySession {
             } else {
                 let mut sentences: Vec<SentencePath> = scored
                     .iter()
+                    .flatten()
                     .map(|item| SentencePath {
                         sentence: item.word.clone(),
                         key: item.canonical_pinyin.clone(),
@@ -1963,6 +1962,25 @@ fn open_dictionary(paths: &RuntimePaths, options: DictionaryOptions) -> QuanpinD
 /// 词网格解出的整句行（`lattice::merge::sentence_row` 的 `Generated` 行）。
 fn is_lattice_sentence(item: &WordItem) -> bool {
     item.source == CandidateSource::Generated && item.sentence_association
+}
+
+/// 取候选列表中最多 `MAX_RERANK_PATHS` 条词网格整句，借用行本身而不建立临时索引向量。
+fn collect_lattice_sentences(
+    candidates: &[WordItem],
+) -> ([Option<&WordItem>; MAX_RERANK_PATHS], usize) {
+    let mut slots = [None; MAX_RERANK_PATHS];
+    let mut len = 0;
+    for item in candidates {
+        if !is_lattice_sentence(item) {
+            continue;
+        }
+        slots[len] = Some(item);
+        len += 1;
+        if len == MAX_RERANK_PATHS {
+            break;
+        }
+    }
+    (slots, len)
 }
 
 /// 把键盘模型重排后的整句顺序 `ranked` 落到候选上，规则同 `lattice::merge::reranked_block`。词网格开关开着时（`include_lattice_best`），模型排第一的整句若不是词网格最好的那一行，就把它改成 `NeuralKeyboard` 行，挪到词网格最好的整句后面；它就是那一行时，`show_next_on_duplicate` 打开才接着看模型的下一句，否则不出模型行。词网格开关关着时词网格最好的整句不显示，模型排第一的整句总是改成 `NeuralKeyboard` 行、占它的位置（与它相同也一样），随后去掉其余的词网格整句行。`ranked` 为空（模型没有重排）时只做去掉整句这一步。
@@ -5003,6 +5021,33 @@ mod tests {
         let mut item = item(word, "64426", weight, CandidateSource::Generated);
         item.sentence_association = true;
         item
+    }
+
+    #[test]
+    fn lattice_sentence_slots_filter_in_order_without_allocations() {
+        let mut candidates = Vec::new();
+        candidates.push(item("跳过来源", "64426", 0, CandidateSource::Database));
+        candidates.push(sentence("整句 0", 0));
+        candidates.push(sentence("整句 1", 0));
+        let mut non_sentence = sentence("跳过标记", 0);
+        non_sentence.sentence_association = false;
+        candidates.push(non_sentence);
+        for index in 2..14 {
+            candidates.push(sentence(&format!("整句 {index}"), 0));
+        }
+
+        let ((slots, len), allocations) = crate::ime::personal_rerank::allocations::count(|| {
+            collect_lattice_sentences(&candidates)
+        });
+
+        assert_eq!(len, MAX_RERANK_PATHS);
+        assert_eq!(slots[0].map(|item| item.word.as_str()), Some("整句 0"));
+        assert_eq!(slots[1].map(|item| item.word.as_str()), Some("整句 1"));
+        assert_eq!(
+            slots[MAX_RERANK_PATHS - 1].map(|item| item.word.as_str()),
+            Some("整句 11")
+        );
+        assert_eq!(allocations, 0);
     }
 
     fn row_sources(candidates: &[WordItem]) -> Vec<(&str, CandidateSource)> {
