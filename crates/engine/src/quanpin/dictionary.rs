@@ -337,15 +337,11 @@ impl QuanpinDictionary {
         }
         *candidates = merged;
         self.cache.insert(code.to_string(), expanded);
-        // Keyed without the `C:` prefix, as the reference writes it (QD:554): a one-letter input is never corrected, so the key is the one its query used. The reference read the last query's fields here; the key is recomputed from the caller's query instead, because a caret-prefix decode is a second query on this dictionary and would otherwise receive the whole input's expanded list in its own slot.
-        let segments = self.resolve_segments(raw, segmentation);
-        let cache_key = self.project_resolution(
-            raw,
-            segmentation,
-            &segments,
-            autocorrect_types,
-            |resolution| series_cache_key(raw, &resolution.segmentation, autocorrect_types),
-        );
+        // 按参考规则写入不带 `C:` 的槽（QD:554）：单字母不纠错。根据调用方查询重算键，避免第二次光标前缀查询把整段输入的展开列表写入自己的槽。
+        let cache_key =
+            self.project_resolution(raw, segmentation, autocorrect_types, |resolution| {
+                series_cache_key(raw, &resolution.segmentation, autocorrect_types)
+            });
         let key = self.series_slot(&cache_key);
         self.series_cache.insert(key, candidates.clone());
         true
@@ -417,18 +413,14 @@ impl QuanpinDictionary {
         if raw.is_empty() || words.is_empty() {
             return false;
         }
-        // The key is recomputed exactly as the query computed it, so the rows land in the slot the next refresh reads.
-        let segments = self.resolve_segments(raw, segmentation);
-        let cache_key = self.project_resolution(
-            raw,
-            segmentation,
-            &segments,
-            autocorrect_types,
-            |resolution| match resolution {
-                Cow::Borrowed(resolution) => resolution.cache_key.clone(),
-                Cow::Owned(resolution) => resolution.cache_key,
-            },
-        );
+        // 按查询原规则重算键，使候选写入下次刷新读取的槽。
+        let cache_key =
+            self.project_resolution(raw, segmentation, autocorrect_types, |resolution| {
+                match resolution {
+                    Cow::Borrowed(resolution) => resolution.cache_key.clone(),
+                    Cow::Owned(resolution) => resolution.cache_key,
+                }
+            });
         let key = self.series_slot(&cache_key);
         let mut list = self.series_cache.get(&key).unwrap_or_default();
         if !replace_online_candidate_batch(&mut list, raw, words, source) {
@@ -997,26 +989,35 @@ impl QuanpinDictionary {
         segments: &[String],
         types: u32,
     ) -> SeriesResolution {
-        self.project_resolution(raw, segmentation, segments, types, |resolution| {
-            resolution.into_owned()
-        })
-    }
-
-    /// 热命中只借用到投影结束；冷未命中保留原缓存副本，并把计算结果的所有权交给调用方。
-    fn project_resolution<T>(
-        &mut self,
-        raw: &str,
-        segmentation: &str,
-        segments: &[String],
-        types: u32,
-        project: impl FnOnce(Cow<'_, SeriesResolution>) -> T,
-    ) -> T {
         project_cached_resolution(
             &mut self.resolution_cache,
             raw,
             segmentation,
             segments,
             types,
+            |resolution| resolution.into_owned(),
+        )
+        .1
+    }
+
+    /// 热投影不构造音节；冷未命中保留原音节备忘和解析副本，并交出计算结果。
+    fn project_resolution<T>(
+        &mut self,
+        raw: &str,
+        segmentation: &str,
+        types: u32,
+        project: impl FnOnce(Cow<'_, SeriesResolution>) -> T,
+    ) -> T {
+        let segmentation_cache = &mut self.segmentation_cache;
+        project_cached_resolution_with(
+            &mut self.resolution_cache,
+            raw,
+            segmentation,
+            types,
+            || {
+                let segments = resolve_cached_segments(segmentation_cache, raw, segmentation);
+                resolve_series_query(raw, &segments, types)
+            },
             project,
         )
         .1
@@ -1078,6 +1079,7 @@ impl QuanpinDictionary {
 }
 
 /// 按缓存字段拆分借用，使调用方能同时读取系列槽配置；完整键核对和冷副本规则集中保留。
+#[cfg(test)]
 fn project_cached_resolution<T>(
     cache: &mut FifoCache<u64, CachedResolution>,
     raw: &str,
