@@ -71,3 +71,16 @@ test("onboarding reuses the shared mobile popstate lifecycle", () => {
   expect(source).toContain("useMobilePopState");
   expect(source.match(/window\.addEventListener\("popstate"/g)).toHaveLength(1);
 });
+
+test("设置外壳始终复用公共返回监听，与宿主能力发现时机无关", () => {
+  const source = Object.values(
+    import.meta.glob<string>("../../src/main.tsx", {
+      eager: true,
+      query: "?raw",
+      import: "default",
+    }),
+  )[0];
+
+  expect(source).toContain("useMobilePopState(true,");
+  expect(source).not.toContain('window.addEventListener("popstate"');
+});

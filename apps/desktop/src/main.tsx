@@ -26,6 +26,7 @@ import {
   VoicePanel,
   completeOnboardingPreferences,
   usePreferencesSnapshot,
+  useMobilePopState,
   SettingsPage,
   SettingsStartupPage,
   WelcomeFlowPage,
@@ -589,15 +590,15 @@ function DesktopSettings() {
     }),
     [closeMobilePanelAsync, iosHost],
   );
+  useMobilePopState(true, (event) => {
+    const state = event.state;
+    if (state?.msimeSettings === true && typeof state.panel === "string") {
+      setMobilePanel(state.panel as NonNullable<typeof mobilePanel>);
+    } else if (mobilePanelRef.current !== null) {
+      setMobilePanel(null);
+    }
+  });
   useEffect(() => {
-    const onPopState = (event: PopStateEvent) => {
-      const state = event.state;
-      if (state?.msimeSettings === true && typeof state.panel === "string") {
-        setMobilePanel(state.panel as NonNullable<typeof mobilePanel>);
-      } else if (mobilePanelRef.current !== null) {
-        setMobilePanel(null);
-      }
-    };
     const onNativePanel = (event: Event) => {
       const panel = (event as CustomEvent<unknown>).detail;
       if (
@@ -627,11 +628,9 @@ function DesktopSettings() {
         setMobilePanel(null);
       }
     };
-    window.addEventListener("popstate", onPopState);
     window.addEventListener("msime-mobile-panel", onNativePanel);
     window.addEventListener("msime-settings-page", onNativeSettingsPage);
     return () => {
-      window.removeEventListener("popstate", onPopState);
       window.removeEventListener("msime-mobile-panel", onNativePanel);
       window.removeEventListener("msime-settings-page", onNativeSettingsPage);
     };
