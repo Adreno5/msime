@@ -214,7 +214,14 @@ fn neural_merge_eliminates_path_copies_without_changing_candidates_or_typo() {
                                         count(|| path.clone()).1
                                     })
                                     .sum();
-                                assert_eq!(new_count + clone_count * keyboard_count + transferred_count, old_count, "路径={n}/来源模式={mode}/重复={duplicates}/占位={filler_count}/缓存热={warm}");
+                                let unused_dedup_count = usize::from(
+                                    n > 0
+                                        && mode > 0
+                                        && !include_lattice_best
+                                        && (mode == 1 || n < 2)
+                                        && input.len() + n > SMALL_SENTENCE_MERGE,
+                                );
+                                assert_eq!(new_count + clone_count * keyboard_count + transferred_count + unused_dedup_count, old_count, "路径={n}/来源模式={mode}/重复={duplicates}/占位={filler_count}/缓存热={warm}");
                             }
                         }
                     }

@@ -52,14 +52,8 @@ pub fn merge_lattice_candidates(
     if rerankers.is_empty() && options.emit > 0 {
         paths.truncate(options.emit);
     }
-    // 去重键只借用活动候选；两个来源的待选行直接比较路径句子。
-    let dedup_size = candidates.len().saturating_add(paths.len());
-    let mut already =
-        (dedup_size > SMALL_SENTENCE_MERGE).then(|| HashSet::with_capacity(dedup_size));
-    if let Some(already) = already.as_mut() {
-        already.extend(candidates.iter().map(|item| item.word.as_str()));
-    }
     let block = if rerankers.is_empty() {
+        let already = existing_sentence_set(candidates, paths.len());
         // `emit` 先截断，备选路径用于三元重排；只把实际显示的默认行转为拥有候选。
         if let Some(already) = already.as_ref() {
             let mut block = Vec::new();
@@ -92,6 +86,11 @@ pub fn merge_lattice_candidates(
                 keyboard = Some(order);
             }
         }
+        // 所有模型处理完后确认没有可输出来源，保留已完成的纠错结果。
+        if !options.include_lattice_best && keyboard.is_none() {
+            return typo;
+        }
+        let already = existing_sentence_set(candidates, paths.len());
         // 各模型始终评分原始路径；最后成功的排列接回恒等尾部，再移交选中字段。
         let path_count = paths.len();
         let ranked = keyboard
@@ -122,6 +121,16 @@ pub fn merge_lattice_candidates(
         candidates.splice(at..at, block);
     }
     typo
+}
+
+// 只在有来源参与选择时建立候选集合；边界和容量仍按候选加路径总数计算。
+fn existing_sentence_set(candidates: &[WordItem], path_count: usize) -> Option<HashSet<&str>> {
+    let dedup_size = candidates.len().saturating_add(path_count);
+    (dedup_size > SMALL_SENTENCE_MERGE).then(|| {
+        let mut already = HashSet::with_capacity(dedup_size);
+        already.extend(candidates.iter().map(|item| item.word.as_str()));
+        already
+    })
 }
 
 fn owned_sentence_row(typed_pinyin: &str, path: SentencePath, source: CandidateSource) -> WordItem {
@@ -786,3 +795,7 @@ mod generated_ownership_tests;
 #[cfg(test)]
 #[path = "neural_ownership_tests.rs"]
 mod neural_ownership_tests;
+
+#[cfg(test)]
+#[path = "empty_source_dedup_tests.rs"]
+mod empty_source_dedup_tests;

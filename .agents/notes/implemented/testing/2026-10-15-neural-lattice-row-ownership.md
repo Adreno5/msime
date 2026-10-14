@@ -37,3 +37,5 @@ Status: implemented
 ## Consequences
 
 移动字段继承路径原容量，可能大于旧克隆紧缩容量，不宣称留存字节、RSS或设备延迟降低。两项栈索引及两槽来源顺序取代字段副本；所有模型仍独立评分同一原始路径，纠错在移动前完成，不依赖生产路径批内唯一性，助手测试仍包含重复句子。私有助手接受拥有路径和来源索引迭代器，默认生成分支及公开API不变。无生产文件读写或Android资源改动。拥有转移依照[Rust IntoIter](https://doc.rust-lang.org/std/vec/struct.IntoIter.html)，来源索引沿用已经验证的score_order接口。
+
+[无整句来源跳过去重表](2026-10-15-lattice-empty-source-dedup.md)在全部模型评分完成后确认没有输出来源时省掉候选集合，评分、纠错、64条分流与非空输出容量规则继续沿用。
