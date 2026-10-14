@@ -904,35 +904,23 @@ impl QuanpinDictionary {
         result.insert(at, sentence);
     }
 
-    /// Whole-syllable continuations of complete segments (QD:732-749): typed segmentation as `pinyin`, the longer key as canonical.
+    /// 完整音节的长词续接（QD:732-749）：输入切分作为 `pinyin`，完整长键作为规范键。
     fn longer_phrase_candidates(
         &mut self,
         segmentation: &str,
         segments: &[String],
     ) -> Vec<WordItem> {
-        let rows = if let Some(rows) = self.longer_row_cache.get_ref_by(segmentation) {
-            rows.clone()
-        } else {
-            let rows = self.database.query_longer_phrases(
-                segments,
-                LONGER_PHRASE_EXTRA_SYLLABLES,
-                LONGER_PHRASE_LIMIT,
-            );
-            self.longer_row_cache
-                .insert(segmentation.to_owned(), rows.clone());
-            rows
-        };
-        rows.into_iter()
-            .map(|row| {
-                WordItem::new(
-                    segmentation,
-                    row.value,
-                    row.weight,
-                    CandidateSource::Database,
-                    row.key,
-                )
-            })
-            .collect()
+        if let Some(rows) = self.longer_row_cache.get_ref_by(segmentation) {
+            return matched_items(rows.iter().cloned(), segmentation);
+        }
+        let rows = self.database.query_longer_phrases(
+            segments,
+            LONGER_PHRASE_EXTRA_SYLLABLES,
+            LONGER_PHRASE_LIMIT,
+        );
+        self.longer_row_cache
+            .insert(segmentation.to_owned(), rows.clone());
+        matched_items(rows, segmentation)
     }
 
     /// Dictionary rows for one segmentation, cached by segmentation (QD:751-765). With the Google decoder gone an empty lookup stays empty.
@@ -951,7 +939,7 @@ impl QuanpinDictionary {
         result
     }
 
-    /// QD:830-869: a lone letter reads its initial table capped at 24 rows; anything else runs the cascade.
+    /// QD:830-869：单字母查首字母表，最多 24 行；其它输入走原级联查询。
     fn query_database(&mut self, segments: &[String], segmentation: &str) -> Vec<WordItem> {
         if segments.len() == 1 && segments[0].len() == 1 {
             let matched_code = if segmentation.is_empty() {
@@ -961,61 +949,26 @@ impl QuanpinDictionary {
             };
             // 单字母的首字母表查询也走行缓存；键前加 `\u{1}`，和切分键分开。
             let key = format!("\u{1}{}", segments[0]);
-            let rows = if let Some(rows) = self.segment_row_cache.get_ref(&key) {
-                rows.clone()
-            } else {
-                let rows = self
-                    .database
-                    .query_initial(&segments[0], INITIAL_CANDIDATE_LIMIT);
-                self.segment_row_cache.insert(key, rows.clone());
-                rows
-            };
-            let mut rows = initial_items(rows);
-            for item in &mut rows {
-                item.canonical_pinyin =
-                    std::mem::replace(&mut item.pinyin, matched_code.to_string());
+            if let Some(rows) = self.segment_row_cache.get_ref(&key) {
+                return matched_items(rows.iter().cloned(), matched_code);
             }
-            return rows;
+            let rows = self
+                .database
+                .query_initial(&segments[0], INITIAL_CANDIDATE_LIMIT);
+            self.segment_row_cache.insert(key, rows.clone());
+            return matched_items(rows, matched_code);
         }
-        // The segments were normalised once in `resolve_segments`, so the lookup uses the standard keys directly.
+        // 音节已在 `resolve_segments` 规范化一次，直接使用标准键查找。
         let code = segmentation.is_empty().then(|| join_segments(segments));
         let key = code.as_deref().unwrap_or(segmentation);
-        let rows = if let Some(rows) = self.segment_row_cache.get_ref_by(key) {
-            rows.clone()
-        } else {
-            let rows = self.database.query_segments_keyed_flat(
-                segments,
-                UNLIMITED_ROWS,
-                QuerySource::Quanpin,
-            );
-            self.segment_row_cache.insert(key.to_owned(), rows.clone());
-            rows
-        };
-        if let Some(code) = code.as_deref() {
-            rows.into_iter()
-                .map(|row| {
-                    WordItem::new(
-                        code,
-                        row.value,
-                        row.weight,
-                        CandidateSource::Database,
-                        row.key,
-                    )
-                })
-                .collect()
-        } else {
-            rows.into_iter()
-                .map(|row| {
-                    WordItem::new(
-                        segmentation,
-                        row.value,
-                        row.weight,
-                        CandidateSource::Database,
-                        row.key,
-                    )
-                })
-                .collect()
+        if let Some(rows) = self.segment_row_cache.get_ref_by(key) {
+            return matched_items(rows.iter().cloned(), key);
         }
+        let rows =
+            self.database
+                .query_segments_keyed_flat(segments, UNLIMITED_ROWS, QuerySource::Quanpin);
+        self.segment_row_cache.insert(key.to_owned(), rows.clone());
+        matched_items(rows, key)
     }
 
     /// The single normalisation choke point (QD:767-775): an explicit segmentation and the automatic cut both pass here, so the segments entering the pipeline are alias-normalised exactly once.
@@ -1119,6 +1072,21 @@ impl QuanpinDictionary {
                 .retain(|key| series_cache.contains(key));
         }
     }
+}
+
+/// 直接构造拥有型候选；缓存行可用惰性克隆迭代，避免完整的中间行页。
+fn matched_items(rows: impl IntoIterator<Item = DictRow>, matched_code: &str) -> Vec<WordItem> {
+    rows.into_iter()
+        .map(|row| {
+            WordItem::new(
+                matched_code,
+                row.value,
+                row.weight,
+                CandidateSource::Database,
+                row.key,
+            )
+        })
+        .collect()
 }
 
 /// `tbl_1_<c>` 的行转成 `WordItem(key, value, weight, Database, key)`。
@@ -1442,3 +1410,7 @@ mod tests;
 #[cfg(test)]
 #[path = "dictionary/lattice_span_cache_tests.rs"]
 mod lattice_span_cache_tests;
+
+#[cfg(test)]
+#[path = "dictionary/row_projection_tests.rs"]
+mod row_projection_tests;
