@@ -25,3 +25,5 @@ Status: implemented
 [神经评分单位修正](../../implemented/bug-fix/2026-10-14-neural-lattice-score-units.md)独立修正混合分数的自然对数契约，沿用本篇的原地排列、稳定顺序与尾部保留规则。
 
 [神经评分栈缓冲](2026-10-14-neural-rerank-score-buffers.md)将最多12条的评分中间存储移到栈上，并只对已评分前缀应用排列；本篇决定继续保留。
+
+[神经合并借用排列](2026-10-14-neural-lattice-borrowed-order.md)移除每个键盘重排器的完整路径深复制，评分、去重和输出块规则继续沿用本篇约束。

@@ -211,6 +211,10 @@ fn real_merge_preserves_nonempty_and_neural_rows_with_typo_return() {
         ("ca", &[("嚓", 1000)]),
     ]);
     let keys = syllables("a'ba'ca");
+    let graph = build_graph(&keys, &mut lookup(&rows), &LatticeOptions::default());
+    let decoded = decode_graph(&graph, &LatticeOptions::default(), None);
+    // 本轮借用排列移除完整路径克隆，按输入路径的独立实测成本收紧既有预算。
+    let clone_allocations = measure(|| decoded.clone()).1.allocations;
     let model = Arc::new(favouring_model(&['阿', '啊', '吧', '嚓'], &['啊']));
     // 先独立证实模型确实重排，而不是仅靠非空 rerankers 进入分支。
     let mut probe = NeuralReranker::new(CandidateSource::NeuralKeyboard, model.clone());
@@ -285,7 +289,12 @@ fn real_merge_preserves_nonempty_and_neural_rows_with_typo_return() {
                         assert_eq!(typo.edges, 1);
                         assert!(typo.sentence.ends_with("叭嚓"));
                         let empty = new.0 == input;
-                        assert_eq!(after.allocations + usize::from(empty), before.allocations);
+                        assert_eq!(
+                            after.allocations
+                                + usize::from(empty)
+                                + if neural { clone_allocations } else { 0 },
+                            before.allocations
+                        );
                         assert_eq!(after.remaining_bytes, before.remaining_bytes);
                         assert_eq!(after.minimum_bytes, 0);
                         if neural
@@ -303,7 +312,10 @@ fn real_merge_preserves_nonempty_and_neural_rows_with_typo_return() {
 }
 
 // 沿用 input-runtime 的合成零层模型，固定字符偏好，不依赖真实模型资源。
-fn favouring_model(characters: &[char], favoured: &[char]) -> chinese_ime_lm::SentenceModel {
+pub(super) fn favouring_model(
+    characters: &[char],
+    favoured: &[char],
+) -> chinese_ime_lm::SentenceModel {
     const CONTEXT: usize = 16;
     let vocabulary: Vec<String> = ["<pad>", "<unk>", "<bos>"]
         .into_iter()
