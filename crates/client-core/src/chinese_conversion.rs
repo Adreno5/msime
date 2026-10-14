@@ -9,6 +9,7 @@
 //!
 //! Where a dictionary lists several values the first is taken, as OpenCC does. Text no dictionary matches passes through unchanged; a complete ideographic description sequence (`⿰女尔`) passes through as one unit, so its components are never converted on their own.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -91,12 +92,15 @@ fn tables() -> &'static Tables {
 pub fn simplified_to_traditional(text: &str) -> String {
     let tables = tables();
     let normalized = convert_pass(text, |rest| tables.normalization.longest_prefix(rest));
-    convert_pass(&normalized, |rest| {
+    match convert_pass(&normalized, |rest| {
         tables
             .phrases
             .longest_prefix(rest)
             .or_else(|| tables.characters.longest_prefix(rest))
-    })
+    }) {
+        Cow::Borrowed(_) => normalized.into_owned(),
+        Cow::Owned(converted) => converted,
+    }
 }
 
 /// Map each Traditional character to the Simplified character `STCharacters` derives it from, one character at a time.
@@ -135,23 +139,38 @@ pub fn traditional_to_simplified_characters(text: &str) -> String {
     output
 }
 
-/// OpenCC's `Conversion::AppendConverted`: maximum forward match, unmatched text copied through.
-fn convert_pass(text: &str, matcher: impl Fn(&str) -> Option<(usize, &'static str)>) -> String {
-    let mut output = String::with_capacity(text.len() + text.len() / 5);
+/// 按 OpenCC 最大正向匹配扫描；未变化时借用原文，首次变化后才物化结果。
+fn convert_pass(
+    text: &str,
+    matcher: impl Fn(&str) -> Option<(usize, &'static str)>,
+) -> Cow<'_, str> {
+    let mut output: Option<String> = None;
     let mut position = 0;
     while position < text.len() {
         let rest = &text[position..];
         if let Some((length, value)) = matcher(rest) {
-            output.push_str(value);
+            if output.is_some() || &rest[..length] != value {
+                let output = output.get_or_insert_with(|| {
+                    let mut output = String::with_capacity(text.len() + text.len() / 5);
+                    output.push_str(&text[..position]);
+                    output
+                });
+                output.push_str(value);
+            }
             position += length;
             continue;
         }
         let length = ideographic_description_sequence_length(rest)
             .unwrap_or_else(|| rest.chars().next().map_or(rest.len(), char::len_utf8));
-        output.push_str(&rest[..length]);
+        if let Some(output) = output.as_mut() {
+            output.push_str(&rest[..length]);
+        }
         position += length;
     }
-    output
+    match output {
+        Some(output) => Cow::Owned(output),
+        None => Cow::Borrowed(text),
+    }
 }
 
 fn ideographic_description_operator_arity(character: char) -> usize {
@@ -277,6 +296,27 @@ mod tests {
     #[test]
     fn table_capacity_estimate_counts_source_lines() {
         assert_eq!(source_line_capacity(&["a\tb\nc\td\n", "e\tf\n"]), 3);
+    }
+
+    #[test]
+    fn conversion_pass_preserves_prefix_and_replacement_boundaries() {
+        let table = Table::parse(&["keep\tkeep\n变\texpanded-value\n長長\t短\na漢\t雙\n发\t發\n"]);
+        for (input, expected) in [
+            ("", ""),
+            ("keep😀𠀀", "keep😀𠀀"),
+            ("keep😀变𠀀", "keep😀expanded-value𠀀"),
+            ("变長長变", "expanded-value短expanded-value"),
+            ("keep長長a漢", "keep短雙"),
+            ("𠀀😀a漢かな", "𠀀😀雙かな"),
+            ("⿰发发", "⿰发发"),
+            ("⿰发", "⿰發"),
+        ] {
+            assert_eq!(
+                &*convert_pass(input, |rest| table.longest_prefix(rest)),
+                expected,
+                "{input}"
+            );
+        }
     }
 
     #[test]
