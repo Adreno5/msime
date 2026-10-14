@@ -21,7 +21,7 @@ Status: implemented
 
 ## Verification
 
-新增回归先在旧实现上单独运行，结果为 1 项失败、21 项跳过，旧冲突实际打开替换确认框。修复后运行 MCP 连接、复制反馈、代次复用和挂载复用四个测试文件，27 项全部通过，覆盖当前宿主冲突的取消和确认替换。复制回归等待实际可交互的「其他」选项出现，避免只等到外层分组就操作的准备竞态。
+新增回归先在旧实现上单独运行，结果为 1 项失败、21 项跳过，旧冲突实际打开替换确认框。修复后运行 MCP 连接、复制反馈、代次复用和挂载复用四个测试文件，27 项全部通过，覆盖当前宿主冲突的取消和确认替换。MCP 回归在操作选项前等待实际可交互的 radio 出现，避免只等到外层分组就操作的准备竞态。首次 CI 的 3177 项测试中，3176 项通过，既有重复安装用例因 Cursor 选项尚未加载而失败。用合成状态响应延迟 1 秒在旧等待方式下复现相同失败，改成按选项等待后通过；延迟只用于临时复现实验，不留在正式测试里。本地完整套件 577 个文件、3177 项测试通过。
 
 改动文件的 lint 与格式检查、`pnpm --filter @msime/desktop build`（含类型检查）、`pnpm run verify-notes`、`git diff --check` 和 `bash scripts/verify-local.sh --quick` 均通过。quick 的 Rust workspace、Android target 与共享 Apple bridge 编译通过；缺原生 macOS 资源而跳过 desktop crate，Linux 外壳缺 Docker、HarmonyOS 缺 hvigorw/已准备依赖、Windows 缺 MinGW，相关原生宿主按改动范围跳过。验证使用合成回调，不能代表真实助手配置写入或原生宿主设备验收。
 
