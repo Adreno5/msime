@@ -8015,3 +8015,7 @@ fn view_reports_the_applied_punctuation_marks() {
         serde_json::json!({ "quotes": "corner", "brackets": "hollow" })
     );
 }
+
+#[allow(unsafe_code)]
+mod allocations;
+mod online_gloss_retention;
