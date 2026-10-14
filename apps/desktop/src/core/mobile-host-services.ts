@@ -1,13 +1,12 @@
 import { createCommunityResourceClient } from "./community-resource-host";
 import { createSettingsSyncClient } from "./settings-sync-host";
+import { createCommunitySkinClient } from "@msime/ui";
 
 import type {
   AccountClient,
   AiSkinProposal,
   ChatClient,
-  CommunitySkin,
-  CommunitySkinDownload,
-  CommunitySkinPage,
+  CommunitySkinOperation,
   SettingsClient,
   SettingsSyncClient,
   MobileKeyboardFeedback,
@@ -60,6 +59,23 @@ export function createMobileHostServices(
       ),
   };
   const accountSettingsSync: SettingsSyncClient = createSettingsSyncClient(invoke);
+  const communitySkinRequest = <T>(
+    operation: CommunitySkinOperation,
+    args: Record<string, unknown>,
+  ): Promise<T> => {
+    if (operation === "report") return invoke<T>("community_report", { kind: "skins", ...args });
+    const command: Record<Exclude<CommunitySkinOperation, "report">, string> = {
+      list: "community_skin_list",
+      detail: "community_skin_detail",
+      download: "community_skin_download",
+      rate: "community_skin_rate",
+      publish: "community_skin_publish",
+      unpublish: "community_skin_unpublish",
+      set_category: "community_skin_set_category",
+      finish_trial: "community_skin_finish_trial",
+    };
+    return invoke<T>(command[operation], args);
+  };
   const account: AccountClient =
     platform === "ios"
       ? {
@@ -91,22 +107,7 @@ export function createMobileHostServices(
       load: () => invoke("load_custom_skin_library"),
       mutate: (action) => invoke("mutate_custom_skin_library", { action }),
     },
-    communitySkins: {
-      list: (offset, search, mine, category) =>
-        invoke<CommunitySkinPage>("community_skin_list", { offset, search, mine, category }),
-      detail: (id) => invoke("community_skin_detail", { id }),
-      download: (id, name) =>
-        invoke<CommunitySkinDownload>("community_skin_download", { id, name }),
-      rate: (id, stars) => invoke("community_skin_rate", { id, stars }),
-      publish: (id, name, description, design, category) =>
-        invoke("community_skin_publish", { id, name, description, design, category }),
-      unpublish: (id) => invoke("community_skin_unpublish", { id }),
-      setCategory: (id, category) =>
-        invoke<CommunitySkin>("community_skin_set_category", { id, category }),
-      finishTrial: (id, keep) => invoke("community_skin_finish_trial", { id, keep }),
-      report: (id, reason, detail) =>
-        invoke("community_report", { kind: "skins", id, reason, detail }),
-    },
+    communitySkins: createCommunitySkinClient(communitySkinRequest),
     aiSkins: {
       generate: (requestId, prompt) =>
         invoke<AiSkinProposal[]>("ai_skin_generate", { requestId, prompt }),
