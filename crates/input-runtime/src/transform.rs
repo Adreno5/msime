@@ -219,6 +219,33 @@ mod desktop {
         }
     }
 
+    fn annotation_text(title: &str, note: &str) -> Option<String> {
+        if title.is_empty() && note.is_empty() {
+            return None;
+        }
+        let separator = !title.is_empty() && !note.is_empty();
+        // 一个 UTF-16 码元最多对应三个 UTF-8 字节，32 码元的结果不会超过此容量。
+        let capacity = title
+            .len()
+            .saturating_add(note.len())
+            .saturating_add(usize::from(separator))
+            .min(MAX_ANNOTATION_UTF16 * 3);
+        let mut text = String::with_capacity(capacity);
+        let mut units = 0;
+        for character in title
+            .chars()
+            .chain(separator.then_some(' '))
+            .chain(note.chars())
+        {
+            units += character.len_utf16();
+            if units > MAX_ANNOTATION_UTF16 {
+                break;
+            }
+            text.push(character);
+        }
+        Some(text)
+    }
+
     /// 挂在 runtime 上的插件状态。
     #[derive(Default)]
     pub(crate) struct PluginState {
@@ -328,21 +355,7 @@ mod desktop {
                 .map(String::as_str)
                 .filter(|note| !note.chars().any(char::is_control))
                 .unwrap_or_default();
-            let joined = match (title.is_empty(), note.is_empty()) {
-                (true, true) => return None,
-                (false, true) => title.to_owned(),
-                (true, false) => note.to_owned(),
-                (false, false) => format!("{title} {note}"),
-            };
-            let mut units = 0;
-            let cut: String = joined
-                .chars()
-                .take_while(|character| {
-                    units += character.len_utf16();
-                    units <= MAX_ANNOTATION_UTF16
-                })
-                .collect();
-            Some(cut)
+            annotation_text(title, note)
         }
 
         /// 暂停或恢复候选变换。暂停期间派发里的 refresh 和展开不运行插件，旁路调用也不重放，记下的操作在下一次排列时清掉，列表保持内置排序；恢复之后从下一次派发起重新运行。宿主在上屏只能观察时暂停，见模块说明。
@@ -633,6 +646,60 @@ mod desktop {
                 .map(|(_, annotation)| annotation)
                 .filter(|annotation| !annotation.is_empty())
                 .cloned()
+        }
+    }
+    #[cfg(test)]
+    mod annotation_tests {
+        use super::*;
+        use crate::tests::allocations;
+
+        // 冻结原来的完整拼接和字符收集，独立对照空值、分隔空格及 UTF-16 边界。
+        fn frozen_annotation(title: &str, note: &str) -> Option<String> {
+            let joined = match (title.is_empty(), note.is_empty()) {
+                (true, true) => return None,
+                (false, true) => title.to_owned(),
+                (true, false) => note.to_owned(),
+                (false, false) => format!("{title} {note}"),
+            };
+            let mut units = 0;
+            Some(
+                joined
+                    .chars()
+                    .take_while(|character| {
+                        units += character.len_utf16();
+                        units <= MAX_ANNOTATION_UTF16
+                    })
+                    .collect(),
+            )
+        }
+
+        #[test]
+        fn direct_annotation_preserves_the_frozen_text_and_uses_one_buffer() {
+            let values = [
+                "".to_owned(),
+                "UUID".to_owned(),
+                "合成".to_owned(),
+                "😀".repeat(8),
+                "a".repeat(31),
+                "注".repeat(32),
+                "😀".repeat(17),
+                "混😀合".repeat(12),
+            ];
+            for title in &values {
+                for note in &values {
+                    let (expected, old_allocations, old_bytes) =
+                        allocations::count_bytes(|| frozen_annotation(title, note));
+                    let (actual, new_allocations, new_bytes) =
+                        allocations::count_bytes(|| annotation_text(title, note));
+                    assert_eq!(actual, expected, "title={title:?}, note={note:?}");
+                    assert_eq!(new_allocations, usize::from(actual.is_some()));
+                    assert!(new_bytes <= MAX_ANNOTATION_UTF16 * 3);
+                    if actual.is_some() {
+                        assert!(new_allocations < old_allocations);
+                        assert!(new_bytes < old_bytes);
+                    }
+                }
+            }
         }
     }
 }

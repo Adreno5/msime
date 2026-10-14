@@ -41,7 +41,7 @@ pub(super) fn count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     (result, COUNT.with(Cell::get).wrapping_sub(before))
 }
 
-pub(super) fn count_bytes<T>(operation: impl FnOnce() -> T) -> (T, usize, usize) {
+pub(crate) fn count_bytes<T>(operation: impl FnOnce() -> T) -> (T, usize, usize) {
     let before = BYTES.with(Cell::get);
     let (result, allocations) = count(operation);
     (
