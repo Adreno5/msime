@@ -1458,8 +1458,8 @@ fn alternative_segmentations(
             join_segments(cut),
         );
     }
-    let mut append = |candidate: &[String]| {
-        let key = join_segments(candidate);
+    let mut append = |candidate: Vec<String>| {
+        let key = join_segments(&candidate);
         if !key.is_empty()
             && alternatives.len() < SYLLABLE_GRAPH_PATH_LIMIT
             && remember_segmentation_key(&mut seen, &mut seen_length, primary_segmentation, key)
@@ -1467,16 +1467,16 @@ fn alternative_segmentations(
             if alternatives.is_empty() {
                 alternatives.reserve(SYLLABLE_GRAPH_PATH_LIMIT);
             }
-            alternatives.push(candidate.to_vec());
+            alternatives.push(candidate);
         }
     };
     // Correction-mode alternatives follow the autocorrect switch; offering them unconditionally made a misspelled "sahng" produce the corrected word with autocorrection turned off. Correction alternatives go first: they explain the letters actually typed, which the alias readings after them do not.
     if types != 0 {
         for cut in &resolution.alternative_corrected_cuts {
-            append(cut);
+            append(cut.to_vec());
         }
         for cut in cut_pinyin_by_mode(raw, CutMode::Correction) {
-            append(&cut);
+            append(cut);
         }
     }
     if !raw.contains('\'')
@@ -1485,7 +1485,7 @@ fn alternative_segmentations(
     {
         let graph = build_syllable_graph(raw);
         for path in enumerate_complete_segmentations(&graph, SYLLABLE_GRAPH_PATH_LIMIT) {
-            append(&path);
+            append(path);
         }
     }
     alternatives
