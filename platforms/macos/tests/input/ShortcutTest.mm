@@ -10899,6 +10899,7 @@ int main(int argc, char **argv) {
         appearance.vertical = NO;
         appearance.globalTheme = @"system";
         [controller appearanceChanged:nil];
+        NSDictionary *beforeArrowTransition = session.nextTransition;
         for (NSNumber *key in @[@123, @124, @125, @126]) {
             [controller setValue:@{@"focused": @YES, @"scheme": @0, @"editing_text": @"ceshi", @"caret_position": @5,
                                   @"candidates": @[@{@"text": @"甲", @"highlighted": @YES}]} forKey:@"view"];
@@ -10913,7 +10914,7 @@ int main(int argc, char **argv) {
                                 : code == 126 ? MSIME_PREVIOUS_CANDIDATE : MSIME_NEXT_CANDIDATE;
             assert(session.lastCommand == expected);
         }
-        session.nextTransition = nil;
+        session.nextTransition = beforeArrowTransition;
         // 后面的字符翻页测试从普通空组字开始，不继承皮肤测试的本地模式。
         [controller setValue:@{@"editing_text": @"", @"caret_position": @0, @"candidates": @[]} forKey:@"view"];
         {
