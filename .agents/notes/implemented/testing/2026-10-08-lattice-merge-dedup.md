@@ -27,3 +27,5 @@ Status: implemented
 [神经合并借用排列](2026-10-14-neural-lattice-borrowed-order.md)移除每个键盘重排器的完整路径深复制，评分、去重和输出块规则继续沿用本篇约束。
 
 [默认整句行所有权转移](2026-10-14-generated-lattice-row-ownership.md)直接把默认分支路径字段交给候选，沿用解码唯一性、去重和块容量规则；神经分支继续借用并复制实际输出字段。
+
+[神经行字段移交](2026-10-15-neural-lattice-row-ownership.md)先按来源选择栈索引再移动字段，候选查询继续按本篇边界分流，输出块仍为空0或非空2容量。

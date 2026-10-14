@@ -196,21 +196,24 @@ fn neural_merge_eliminates_path_copies_without_changing_candidates_or_typo() {
                                 {
                                     eprintln!("合成模型合并 路径={n} 分配 {old_count}→{new_count} 路径克隆={clone_count}");
                                 }
-                                let transferred_count: usize = if mode == 0 {
-                                    new.0
-                                        .iter()
-                                        .filter(|item| item.source == CandidateSource::Generated)
-                                        .map(|item| {
-                                            let path = decoded
-                                                .iter()
-                                                .find(|path| path.sentence == item.word)
-                                                .unwrap();
-                                            count(|| path.clone()).1
-                                        })
-                                        .sum()
-                                } else {
-                                    0
-                                };
+                                let transferred_count: usize = new
+                                    .0
+                                    .iter()
+                                    .filter(|item| {
+                                        matches!(
+                                            item.source,
+                                            CandidateSource::Generated
+                                                | CandidateSource::NeuralKeyboard
+                                        )
+                                    })
+                                    .map(|item| {
+                                        let path = decoded
+                                            .iter()
+                                            .find(|path| path.sentence == item.word)
+                                            .unwrap();
+                                        count(|| path.clone()).1
+                                    })
+                                    .sum();
                                 assert_eq!(new_count + clone_count * keyboard_count + transferred_count, old_count, "路径={n}/来源模式={mode}/重复={duplicates}/占位={filler_count}/缓存热={warm}");
                             }
                         }

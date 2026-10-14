@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-神经入口拆出只读路径的前缀评分排列，原 `rerank` 继续调用该评分并原地应用。合并仅保存最后一次成功键盘评分的索引排列，通过迭代器依次借用评分前缀与恒等尾部，再沿用原去重和行构造。每个模型仍按同一原始路径顺序独立评分，来源过滤、失败保留上次成功结果、字面最优、两种重复策略、插入位置与纠错返回保持。
+神经入口拆出只读路径的前缀评分排列，原 `rerank` 继续调用该评分并原地应用。合并仅保存最后一次成功键盘评分的索引排列，通过索引迭代器接回评分前缀与恒等尾部，沿用原去重；[神经输出字段移交](2026-10-15-neural-lattice-row-ownership.md)随后消耗选中路径。每个模型仍按同一原始路径顺序独立评分，来源过滤、失败保留上次成功结果、字面最优、两种重复策略、插入位置与纠错返回保持。
 
 ## Historical audit
 
@@ -36,6 +36,6 @@ Status: implemented
 
 ## Consequences
 
-保留拥有的评分索引与最终候选字段复制；不宣称模型推理、设备端延迟或RSS收益。私有合并助手接受借用迭代器，完整尾部通过恒等映射访问，不引入动态派发、unsafe、依赖、生产文件读写或Android资源变更。参照同仓 `rerank_order` 索引接口和上游锁定模型的借用评分接口；`IntoIterator` 契约依据[Rust官方文档](https://doc.rust-lang.org/std/iter/trait.IntoIterator.html)，已有切片调用和新的排列迭代器共用助手。
+保留拥有的评分索引；最终字段复制由[神经输出字段移交](2026-10-15-neural-lattice-row-ownership.md)取代；不宣称模型推理、设备端延迟或RSS收益。私有合并助手接受来源索引迭代器，完整尾部通过恒等映射访问，不引入动态派发、unsafe、依赖、生产文件读写或Android资源变更。参照同仓 `rerank_order` 索引接口和上游锁定模型的借用评分接口；`IntoIterator` 契约依据[Rust官方文档](https://doc.rust-lang.org/std/iter/trait.IntoIterator.html)，已有切片调用和新的排列迭代器共用助手。
 
-[默认整句行所有权转移](2026-10-14-generated-lattice-row-ownership.md)直接把默认分支路径字段交给候选，沿用解码唯一性、去重和块容量规则；神经分支继续借用并复制实际输出字段。
+[默认整句行所有权转移](2026-10-14-generated-lattice-row-ownership.md)直接把默认分支路径字段交给候选，沿用解码唯一性、去重和块容量规则；神经分支的评分继续借用，实际输出字段随后由[神经行移交](2026-10-15-neural-lattice-row-ownership.md)接管。
