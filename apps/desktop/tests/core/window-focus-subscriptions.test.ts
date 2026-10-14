@@ -3,6 +3,7 @@ import { act } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import * as windowEvents from "../../../../packages/ui/src/core/window-focus";
 import {
+  subscribeToWindowEvent,
   subscribeToWindowBlur,
   subscribeToWindowFocus,
   subscribeToWindowResume,
@@ -75,6 +76,28 @@ test.each([
   stopOther();
 });
 
+test("通用窗口事件订阅按事件类型注册并独立清理", () => {
+  const resize = vi.fn<(event: Event) => void>();
+  const keydown = vi.fn<(event: KeyboardEvent) => void>();
+  const stopResize = subscribeToWindowEvent("resize", resize);
+  const stopKeydown = subscribeToWindowEvent("keydown", keydown);
+
+  const resizeEvent = new Event("resize");
+  const keydownEvent = new KeyboardEvent("keydown", { key: "Escape" });
+  window.dispatchEvent(resizeEvent);
+  window.dispatchEvent(keydownEvent);
+  expect(resize).toHaveBeenCalledWith(resizeEvent);
+  expect(keydown).toHaveBeenCalledWith(keydownEvent);
+
+  stopResize();
+  stopResize();
+  window.dispatchEvent(resizeEvent);
+  window.dispatchEvent(keydownEvent);
+  expect(resize).toHaveBeenCalledOnce();
+  expect(keydown).toHaveBeenCalledTimes(2);
+  stopKeydown();
+});
+
 test("resumes on focus and visible transitions, but ignores hidden transitions", () => {
   const refresh = vi.fn();
   const stop = subscribeToWindowResume(refresh);
@@ -110,4 +133,26 @@ test.each(Object.entries(blurConsumers))("%s 复用公共失焦订阅生命周�
   expect(source).toContain("subscribeToWindowBlur");
   expect(source).not.toContain('window.addEventListener("blur"');
   expect(source).not.toContain('window.removeEventListener("blur"');
+});
+
+test("窗口事件调用方复用公共注册与清理", () => {
+  const sources = Object.values(
+    import.meta.glob<string>(
+      [
+        "../../../../packages/ui/src/keyboard/panels.tsx",
+        "../../../../packages/ui/src/settings/use-flush-on-window-leave.ts",
+      ],
+      { eager: true, query: "?raw", import: "default" },
+    ),
+  );
+  expect(sources.every((source) => source.includes("subscribeToWindowEvent"))).toBe(true);
+  expect(sources.every((source) => !source.includes('window.addEventListener("resize"'))).toBe(
+    true,
+  );
+  expect(sources.every((source) => !source.includes('window.addEventListener("keydown"'))).toBe(
+    true,
+  );
+  expect(sources.every((source) => !source.includes('window.addEventListener("pagehide"'))).toBe(
+    true,
+  );
 });
