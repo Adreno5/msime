@@ -6,7 +6,6 @@ import app.msime.android.LayoutPolicy;
 import android.inputmethodservice.InputMethodService;
 import app.msime.android.core.Telemetry;
 import app.msime.android.core.InputViewValuePolicy;
-import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.Context;
@@ -6781,18 +6780,6 @@ public final class MSIMEInputService extends InputMethodService {
                 keyboardRoot.announceForAccessibility(action.announcement());
             }
         } catch (JSONException | LinkageError error) { fail(); }
-    }
-
-    void confirmCandidateRemoval(JSONObject id, String text) {
-        new AlertDialog.Builder(this)
-            .setTitle("删除词条")
-            .setMessage("确认删除“" + text + "”？")
-            .setNegativeButton("取消", null)
-            .setPositiveButton("删除", (dialog, which) -> {
-                imeKeyFeedback.playFeedback(moreButton);
-                editCandidate(id, CandidateManagementAction.REMOVE);
-            })
-            .show();
     }
 
     private boolean candidateIsCurrent(int slot, JSONObject id, String text) {
