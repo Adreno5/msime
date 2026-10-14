@@ -463,9 +463,16 @@ impl Session {
     }
 
     pub fn snapshot(&self) -> SessionSnapshot {
+        self.snapshot_with_helpcode_visibility(true)
+    }
+
+    pub(crate) fn snapshot_with_helpcode_visibility(&self, show_helpcode: bool) -> SessionSnapshot {
         if self.nine_key.active() {
             return self.nine_key.snapshot();
         }
+        let hide_helpcode = !show_helpcode
+            && self.input.helpcode_enabled()
+            && !self.input.local_mode.annotates_rows();
         let input = &self.input;
         let candidates = input.candidates().to_vec();
         let preedit = if !self.shuangpin_preedit_uses_raw
@@ -495,7 +502,7 @@ impl Session {
             wubi_unique_four_code: input.wubi_unique_four_code(),
             shuangpin_profile: input.profile.kind.name().to_owned(),
             candidate_sources: candidates.iter().map(|item| item.source).collect(),
-            candidate_annotations: input.candidate_annotations(),
+            candidate_annotations: input.candidate_annotations(hide_helpcode),
             // 纠错候选按原始按键长度消费；普通候选仍按 `pinyin`，两者都由组字推进判断。
             candidate_answers_key: candidates
                 .iter()

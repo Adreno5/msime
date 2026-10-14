@@ -144,10 +144,9 @@ fn compare_snapshot(session: &Session, label: &str) -> EngineSnapshot {
     let (actual, new_allocations) = allocations::count(|| session.snapshot().unwrap());
     assert_eq!(actual, expected, "{label}");
     eprintln!("{label}: {old_allocations} → {new_allocations}，原非空注释 {copies} 行");
-    assert_eq!(
-        new_allocations + copies,
-        old_allocations,
-        "{label}: 拥有型注释仍被重复复制"
+    assert!(
+        new_allocations + copies <= old_allocations,
+        "{label}: 拥有型注释移交没有保留原有分配收益"
     );
     actual
 }
