@@ -695,6 +695,8 @@ public final class MSIMEInputService extends InputMethodService {
     };
     /** 只让当前输入框的启动任务占用工作线程；旧任务可能还在收尾，但不能再排队读偏好或同步词库。 */
     private volatile long engineStartGeneration;
+    /** 一次输入会话最多自动重建一次；持续失败时保留直接输入，避免在坏配置上循环重启。 */
+    private int inputFailureRecoveryAttempts;
     private Runnable inputViewRefreshTask;
     final ExecutorService preferencesWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService typingStatisticsWorker = new ThreadPoolExecutor(
@@ -1342,6 +1344,7 @@ public final class MSIMEInputService extends InputMethodService {
         }
         imeBottomRow.resetSpaceCursor();
         stop(false);
+        inputFailureRecoveryAttempts = 0;
         connection = getCurrentInputConnection();
         resetCaretAnchor();
         selectionEcho.reset(info == null ? -1 : info.initialSelStart,
@@ -3519,7 +3522,19 @@ public final class MSIMEInputService extends InputMethodService {
         ImeLog.e(InputFailurePolicy.logMessage(error), null);
         // 停止之前记录，沿用日志开关与当前输入框的隐私判断。
         imeDebugOverlay.recordEvent(InputFailurePolicy.eventKind(error));
+        boolean recover = InputFailureRecoveryPolicy.shouldRetry(
+            inputFailureRecoveryAttempts, session != 0, connection != null,
+            !runtimeOptionsForSnapshot.isEmpty());
+        if (recover) ++inputFailureRecoveryAttempts;
+        String recoveryOptions = runtimeOptionsForSnapshot;
+        long recoveryGeneration = ++engineStartGeneration;
         stop(false);
+        if (recover) {
+            message = "输入连接恢复中";
+            render();
+            scheduleEngineStartup(recoveryOptions, recoveryGeneration);
+            return;
+        }
         message = "输入连接失败：仅直接输入";
         render();
     }
