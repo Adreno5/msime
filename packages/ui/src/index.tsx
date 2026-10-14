@@ -603,6 +603,11 @@ export {
   type AsyncActionRunner,
 } from "./core/use-async-action";
 export {
+  subscribeToWindowFocus,
+  subscribeToWindowResume,
+  type WindowFocusListener,
+} from "./core/window-focus";
+export {
   ChatPage,
   type ChatClient,
   type ChatMessage,

@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
 import type { EditionInfo, InputScheme } from "../index";
 import { Row } from "../core/platform-controls";
+import { subscribeToWindowFocus } from "../core/window-focus";
 import { ActionButton } from "./action-button";
 import { useAsyncGeneration } from "./use-async-generation";
 
@@ -80,12 +81,11 @@ function useEnabledInputModes(client: MacosInputModesClient | undefined) {
       setEnabled(null);
       return;
     }
-    const onFocus = () => void refresh();
-    onFocus();
-    window.addEventListener("focus", onFocus);
+    refresh();
+    const stopFocus = subscribeToWindowFocus(refresh);
     return () => {
       request.current++;
-      window.removeEventListener("focus", onFocus);
+      stopFocus();
     };
   }, [client, refresh]);
 
