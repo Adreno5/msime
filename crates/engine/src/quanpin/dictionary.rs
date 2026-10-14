@@ -364,7 +364,14 @@ impl QuanpinDictionary {
             }
         }
         self.validate_row_caches();
-        let segments = split_segments(segmentation);
+        let segments: Vec<&str> = if segmentation.is_empty() {
+            Vec::new()
+        } else {
+            let count = segmentation.bytes().filter(|&byte| byte == b'\'').count() + 1;
+            let mut segments = Vec::with_capacity(count);
+            segments.extend(segmentation.split('\''));
+            segments
+        };
         let mut result = Vec::new();
         let mut budget = FUZZY_PATH_BUDGET;
         let mut typed = segmentation;
@@ -1594,3 +1601,7 @@ mod initial_row_key_tests;
 #[cfg(test)]
 #[path = "dictionary/fuzzy_typed_borrow_tests.rs"]
 mod fuzzy_typed_borrow_tests;
+
+#[cfg(test)]
+#[path = "dictionary/fuzzy_input_borrow_tests.rs"]
+mod fuzzy_input_borrow_tests;

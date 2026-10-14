@@ -274,7 +274,16 @@ fn full_fuzzy_queries_own_typed_prefixes_only_for_real_consumers() {
                         assert_eq!(actual.len(), FUZZY_ROW_LIMIT);
                     }
                     let unused = assert_fuzzy_state(&before, &after, typed, options);
-                    let saved = if mode == 2 { 0 } else { unused };
+                    // 冻结查询仍复制输入音节，在计量外独立加入后续切片的节省。
+                    let input_copies = if rules == 0 {
+                        0
+                    } else {
+                        split_segments(typed)
+                            .iter()
+                            .filter(|part| !part.is_empty())
+                            .count()
+                    };
+                    let saved = if mode == 2 { 0 } else { unused + input_copies };
                     saw_empty_page |=
                         rules != 0 && plan.iter().any(|(_, _, paths)| *paths) && actual.is_empty();
                     assert_eq!(
@@ -403,5 +412,9 @@ fn distinct_queries_empty_pages_fifo_and_invalidation_keep_the_old_state() {
     let (actual, new_count) = count(|| after.fuzzy_candidates("zan'fa", options));
     assert_rows(&actual, &expected);
     assert!(actual.iter().any(|item| item.word == "合成外部写入"));
-    assert_eq!(new_count, old_count, "重建的每个前缀都有候选时成本相同");
+    assert_eq!(
+        new_count + 2,
+        old_count,
+        "每个前缀都有候选，仍省去两个输入音节副本"
+    );
 }

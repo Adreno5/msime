@@ -14,6 +14,8 @@ Status: implemented
 
 按模糊前缀、`typed`、`append_cached_fuzzy_rows`、`fuzzy_candidates` 检索活跃树。已有[模糊行缓存索引](2026-10-11-fuzzy-row-cache-key-borrow.md)持有哈希与完整字段核对，[行投影](2026-10-14-quanpin-row-cache-projection.md)持有惰性行迭代与首行接管，部分重叠并互链，保持各自决定；本篇只收窄无消费者读法的拥有时机。[系列前缀借用](2026-10-14-quanpin-series-prefix-borrow.md)提供逐次缩短字符串视图的局部参考，但它需要规范键匹配与拥有回退，模糊入口没有别名规范化，不能照搬该回退。[模糊路径复用](2026-10-09-fuzzy-path-reuse.md)只改 beam 路径容器，无关并保留。
 
+输入音节的拥有型副本由[借用输入音节](2026-10-14-fuzzy-input-segments-borrow.md)处理；本篇保留前缀视图推进、缓存拥有副本与首行消费者规则。冻结查询矩阵在计量外独立补偿该后续切片的非空音节复制节省。
+
 ## Alternatives considered
 
 - 只把拼接移到 `paths.is_empty` 后：改动最少，可省无模糊路径的申请；不选，因为真实空行页仍会构造无人消费的 `typed`。

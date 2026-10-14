@@ -92,9 +92,9 @@ pub fn fuzzy_syllables(syllable: &str, options: FuzzyPinyinOptions) -> Vec<Strin
     result
 }
 
-/// Beam cartesian product capped at `limit` per step, minus the exact original (FZ:71-94).
-pub fn fuzzy_segmentations(
-    segments: &[String],
+/// 每轮受 `limit` 限制的 beam 笛卡尔积，排除原切分（FZ:71-94）。
+pub fn fuzzy_segmentations<S: AsRef<str>>(
+    segments: &[S],
     options: FuzzyPinyinOptions,
     limit: usize,
 ) -> Vec<Vec<String>> {
@@ -103,7 +103,7 @@ pub fn fuzzy_segmentations(
     }
     let mut paths: Vec<Vec<String>> = vec![Vec::new()];
     for syllable in segments {
-        let mut alternatives = fuzzy_syllables(syllable, options);
+        let mut alternatives = fuzzy_syllables(syllable.as_ref(), options);
         // 单变体不会增加路径数，已有路径满足上限，直接复用当前层容器。
         if let [alternative] = alternatives.as_mut_slice() {
             let last_index = paths.len() - 1;
@@ -147,7 +147,12 @@ pub fn fuzzy_segmentations(
         }
         paths = next;
     }
-    paths.retain(|path| path.as_slice() != segments);
+    paths.retain(|path| {
+        !path
+            .iter()
+            .map(String::as_str)
+            .eq(segments.iter().map(AsRef::as_ref))
+    });
     paths
 }
 
@@ -321,9 +326,12 @@ mod tests {
                 <= 63
         );
         assert!(fuzzy_segmentations(&typed, rules(0), FUZZY_SEGMENTATION_LIMIT).is_empty());
-        assert!(
-            fuzzy_segmentations(&[], rules(fuzzy_rule::ALL), FUZZY_SEGMENTATION_LIMIT).is_empty()
-        );
+        assert!(fuzzy_segmentations(
+            &[] as &[String],
+            rules(fuzzy_rule::ALL),
+            FUZZY_SEGMENTATION_LIMIT
+        )
+        .is_empty());
         assert!(fuzzy_segmentations(&typed, rules(fuzzy_rule::ALL), 0).is_empty());
     }
 
