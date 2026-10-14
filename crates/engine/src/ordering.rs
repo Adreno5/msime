@@ -46,18 +46,26 @@ fn corrections_may_lead(scheme: u8) -> bool {
 /// 短列表用栈缓冲，大列表才申请辅助缓冲，恒等排列直接返回。
 pub fn apply_order<T>(items: &mut [T], order: &[usize]) {
     debug_assert_eq!(items.len(), order.len());
+    apply_order_with(order, |left, right| items.swap(left, right));
+}
+
+/// 按排列的循环调用交换操作，让调用方同步移动多个并行数组。
+///
+/// `order` 必须是新座位到旧座位的合法排列；交换操作涉及的数组长度必须与它一致。
+/// 每条循环只遍历一次，共用访问标记缓冲，恒等排列不调用交换操作。
+pub fn apply_order_with(order: &[usize], mut swap: impl FnMut(usize, usize)) {
     if order.iter().enumerate().all(|(seat, row)| seat == *row) {
         return;
     }
     let mut stack_visited = [false; 128];
     let mut heap_visited;
-    let visited = if items.len() <= stack_visited.len() {
-        &mut stack_visited[..items.len()]
+    let visited = if order.len() <= stack_visited.len() {
+        &mut stack_visited[..order.len()]
     } else {
-        heap_visited = vec![false; items.len()];
+        heap_visited = vec![false; order.len()];
         &mut heap_visited[..]
     };
-    for start in 0..items.len() {
+    for start in 0..order.len() {
         if visited[start] {
             continue;
         }
@@ -65,7 +73,7 @@ pub fn apply_order<T>(items: &mut [T], order: &[usize]) {
         let mut current = start;
         while order[current] != start {
             let next = order[current];
-            items.swap(current, next);
+            swap(current, next);
             visited[next] = true;
             current = next;
         }
