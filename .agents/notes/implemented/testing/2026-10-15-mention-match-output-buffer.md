@@ -15,6 +15,7 @@ Status: implemented
 - [@ 查询使用固定行缓冲](../../implemented/testing/2026-10-08-mention-query-fixed-rows.md)：部分重叠，仍保留主机 exact/prefix 收集与名称数组；本决定接替其后续堆上匹配合并。
 - [@ 地点补全使用固定行缓冲](../../implemented/testing/2026-10-08-mention-place-fixed-rows.md)：部分重叠，保留扫描、去重和分组规则，本决定将私有输出从 `Vec` 改为固定数组。两篇互链，保留其独立的收集与去重决定。
 - [@ 列表短表去重](../../implemented/testing/2026-10-08-mention-table-dedup.md)与[空主机列表延后缓冲](../../implemented/testing/2026-10-11-mention-table-lazy-buffer.md)：属于输入表准备，和每次按键查询的输出缓冲无关。
+- [地点拼写前缀索引](2026-10-15-mention-place-prefix-index.md)：部分重叠，收窄地点扫描范围；本篇继续约束固定行输出和最终分配预算。
 - 没有完全吸收的旧记录或过时提案。
 
 ## Alternatives considered
