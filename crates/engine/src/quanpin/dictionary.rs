@@ -319,19 +319,22 @@ impl QuanpinDictionary {
         if expanded.len() <= limited_count {
             return false;
         }
-        let mut merged = Vec::with_capacity(candidates.len() - limited_count + expanded.len());
-        let mut inserted = false;
-        for item in candidates.drain(..) {
-            if is_limited_initial(&item) {
-                if !inserted {
-                    merged.extend(expanded.iter().cloned());
-                    inserted = true;
-                }
-                continue;
+        let first_limited = candidates
+            .iter()
+            .position(is_limited_initial)
+            .expect("limited_count checked above");
+        candidates.reserve_exact(expanded.len() - limited_count);
+        let mut removed = 0;
+        candidates.retain(|item| {
+            if is_limited_initial(item) {
+                removed += 1;
+                false
+            } else {
+                true
             }
-            merged.push(item);
-        }
-        *candidates = merged;
+        });
+        debug_assert_eq!(removed, limited_count);
+        candidates.splice(first_limited..first_limited, expanded.iter().cloned());
         self.cache.insert(code.to_string(), expanded);
         // 按参考规则写入不带 `C:` 的槽（QD:554）：单字母不纠错。根据调用方查询重算键，避免第二次光标前缀查询把整段输入的展开列表写入自己的槽。
         let cache_key =
