@@ -628,9 +628,9 @@ fn host_capability_boundary_describes_each_platform() {
     // Every host reads capabilities through this boundary, so the border colour reaches the Linux page here.
     assert_eq!(linux["value"]["candidate_border_color"], true);
     assert_eq!(linux["value"]["candidate_selection_appearance"], false);
-    // The Fcitx5 theme carries the card's radius but neither a scale nor a translucent fill.
+    // Fcitx5 主题支持圆角和候选字号缩放，桌面面板仍不提供半透明填充。
     assert_eq!(linux["value"]["candidate_corner_radius"], true);
-    assert_eq!(linux["value"]["candidate_window_scale"], false);
+    assert_eq!(linux["value"]["candidate_window_scale"], true);
     assert_eq!(linux["value"]["candidate_window_opacity"], false);
     // 菜单栏状态项是 macOS 独有的：Linux 由 Fcitx5/IBus 面板显示模式。
     assert_eq!(linux["value"]["input_mode_status_item"], false);
