@@ -24,7 +24,7 @@ fn seated_runtime(rows: usize, source: u8, fixed: usize) -> Runtime<Fixture> {
 }
 
 #[test]
-fn online_seating_reserves_only_the_fixed_english_rows() {
+fn online_seating_skips_identity_storage_without_fixed_english_rows() {
     let mut measurements = Vec::new();
     for rows in [32, 1024, 4096] {
         for source in [2, 3, 12] {
@@ -34,7 +34,7 @@ fn online_seating_reserves_only_the_fixed_english_rows() {
                     allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
                 let (_, refresh_allocations, refresh_bytes) =
                     allocations::count_bytes(|| runtime.refresh().unwrap());
-                // 列表已经坐好：刷新只需要排列缓冲，以及非空固定英文行缓冲。
+                // 列表已经坐好：没有固定英文行时不需要排列存储。
                 assert_eq!(runtime.cached.candidates, snapshot.candidates);
                 assert_eq!(runtime.cached.candidate_codes, snapshot.candidate_codes);
                 assert_eq!(
@@ -54,8 +54,12 @@ fn online_seating_reserves_only_the_fixed_english_rows() {
                     runtime.cached.candidate_answers_key,
                     snapshot.candidate_answers_key
                 );
-                let budget = (rows + fixed) * std::mem::size_of::<usize>();
-                let allocation_budget = 1 + usize::from(fixed > 0);
+                let budget = if fixed == 0 {
+                    0
+                } else {
+                    (rows + fixed) * std::mem::size_of::<usize>()
+                };
+                let allocation_budget = if fixed == 0 { 0 } else { 2 };
                 eprintln!("rows={rows} source={source} fixed={fixed}: extra_allocations={} extra_requested_bytes={}",
                     refresh_allocations.saturating_sub(snapshot_allocations),
                     refresh_bytes.saturating_sub(snapshot_bytes));
@@ -79,7 +83,7 @@ fn online_seating_reserves_only_the_fixed_english_rows() {
                     <= allocation_budget
                     && bytes <= budget
             ),
-        "固定英文缓冲不应按完整候选列表预留: {measurements:?}"
+        "已归位且无固定英文行时不应构造排列存储: {measurements:?}"
     );
 }
 
@@ -142,4 +146,184 @@ fn fixed_english_seats_keep_stable_ties_clamping_and_the_ai_tail() {
             .as_deref(),
         Some("英文乙")
     );
+}
+
+#[test]
+fn online_seating_materializes_early_and_late_mismatches() {
+    for rows in [4, 32, 128, 129, 4096] {
+        for late in [false, true] {
+            let mut sources = vec![0; rows];
+            if late {
+                // 大段云候选已经归位，只有末尾的本地行和 AI 行需要互换。
+                sources[1..rows - 2].fill(2);
+            }
+            sources[rows - 1] = 3;
+            let mut runtime = Runtime::new(
+                Fixture {
+                    words: (0..rows).map(|index| format!("合成候选{index}")).collect(),
+                    codes: (0..rows).map(|index| format!("k{index}")).collect(),
+                    sources,
+                    text: "a".into(),
+                    ..Fixture::default()
+                },
+                5,
+            )
+            .unwrap();
+            runtime.refresh().unwrap();
+            let mut expected: Vec<usize> = (0..rows).collect();
+            if late {
+                expected.swap(rows - 2, rows - 1);
+            } else {
+                expected.remove(rows - 1);
+                expected.insert(1, rows - 1);
+            }
+            assert_eq!(runtime.engine_order, expected);
+            for (seat, &row) in expected.iter().enumerate() {
+                assert_eq!(runtime.cached.candidates[seat], format!("合成候选{row}"));
+                assert_eq!(runtime.cached.candidate_codes[seat], format!("k{row}"));
+                assert_eq!(
+                    runtime.cached.candidate_annotations[seat],
+                    format!("({row})")
+                );
+            }
+            let (snapshot, snapshot_allocations, snapshot_bytes) =
+                allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
+            let (_, refresh_allocations, refresh_bytes) =
+                allocations::count_bytes(|| runtime.refresh().unwrap());
+            // 第二次刷新复用引擎映射容量，保留一份排列和大列表的一份循环标记。
+            let scratch = if rows > 128 { rows } else { 0 };
+            assert!(refresh_allocations - snapshot_allocations <= 1 + usize::from(scratch > 0));
+            assert!(
+                refresh_bytes - snapshot_bytes <= rows * std::mem::size_of::<usize>() + scratch
+            );
+            assert_eq!(runtime.cached.candidates.len(), snapshot.candidates.len());
+            assert_eq!(runtime.engine_order, expected);
+            runtime.focused = true;
+            let seat = if late { rows - 2 } else { 1 };
+            let id = CandidateId {
+                session: runtime.session,
+                generation: runtime.generation,
+                index: seat,
+            };
+            assert_eq!(
+                runtime
+                    .dispatch(Action::SelectAnyCandidate(id))
+                    .unwrap()
+                    .commit,
+                Some(format!("合成候选{}", rows - 1))
+            );
+        }
+    }
+}
+
+#[test]
+fn seated_source_groups_need_no_order_allocation() {
+    let cases = [
+        (
+            vec![0, 2, 2, 3, 13, 4, 6, 7, 0, 0, 4, 13, 6, 7, 3, 12],
+            false,
+        ),
+        (vec![0, 13, 4, 3, 6, 7, 0, 4, 13, 6, 7, 12, 3], false),
+        (vec![4, 13, 0, 2, 3, 6, 7, 0, 4, 13, 6, 7, 12], false),
+        (vec![13, 0, 2, 3, 4, 6, 7, 0, 4, 13, 6, 7, 3], false),
+        (vec![2, 2, 3, 13, 4, 6, 7, 4, 13, 6, 7, 3], false),
+        (vec![0, 0, 2, 3, 4, 6, 7, 0, 4, 6, 7, 3], true),
+    ];
+    let mut measurements = Vec::new();
+    for (sources, single_kana) in cases {
+        let rows = sources.len();
+        let mut runtime = Runtime::new(
+            Fixture {
+                words: (0..rows).map(|index| format!("合成候选{index}")).collect(),
+                codes: (0..rows).map(|index| format!("k{index}")).collect(),
+                sources,
+                text: "a".into(),
+                scheme: if single_kana {
+                    msime_engine::SchemeType::JapaneseRomaji as u8
+                } else {
+                    0
+                },
+                reading: if single_kana {
+                    "あ".into()
+                } else {
+                    String::new()
+                },
+                ..Fixture::default()
+            },
+            5,
+        )
+        .unwrap();
+        let epochs = (runtime.composition_epoch, runtime.candidates_epoch);
+        let (snapshot, snapshot_allocations, snapshot_bytes) =
+            allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
+        let (_, refresh_allocations, refresh_bytes) =
+            allocations::count_bytes(|| runtime.refresh().unwrap());
+        assert_eq!(runtime.cached.candidates, snapshot.candidates);
+        assert_eq!(runtime.cached.candidate_codes, snapshot.candidate_codes);
+        assert_eq!(
+            runtime.cached.candidate_annotations,
+            snapshot.candidate_annotations
+        );
+        assert_eq!(runtime.cached.candidate_sources, snapshot.candidate_sources);
+        assert_eq!(
+            runtime.cached.candidate_positions,
+            snapshot.candidate_positions
+        );
+        assert_eq!(
+            runtime.cached.candidate_corrected,
+            snapshot.candidate_corrected
+        );
+        assert_eq!(
+            runtime.cached.candidate_answers_key,
+            snapshot.candidate_answers_key
+        );
+        assert_eq!(
+            (runtime.composition_epoch, runtime.candidates_epoch),
+            epochs
+        );
+        assert!(runtime.engine_order.is_empty());
+        measurements.push((
+            rows,
+            refresh_allocations - snapshot_allocations,
+            refresh_bytes - snapshot_bytes,
+        ));
+    }
+    assert!(
+        measurements
+            .iter()
+            .all(|(_, count, bytes)| *count == 0 && *bytes == 0),
+        "已归位的多来源列表不需要排列存储: {measurements:?}"
+    );
+}
+
+#[test]
+fn fixed_english_materializes_an_identity_prefix_before_the_ai_tail() {
+    let mut runtime = Runtime::new(
+        Fixture {
+            words: ["本地", "英文", "AI首行", "AI占位尾行"]
+                .map(str::to_owned)
+                .to_vec(),
+            codes: (0..4).map(|index| format!("k{index}")).collect(),
+            sources: vec![0, 4, 3, 12],
+            positions: vec![0, 2, 0, 0],
+            text: "a".into(),
+            ..Fixture::default()
+        },
+        5,
+    )
+    .unwrap();
+    let (snapshot, snapshot_allocations, snapshot_bytes) =
+        allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
+    let (_, refresh_allocations, refresh_bytes) =
+        allocations::count_bytes(|| runtime.refresh().unwrap());
+    assert_eq!(runtime.cached.candidates, snapshot.candidates);
+    assert_eq!(runtime.cached.candidate_codes, snapshot.candidate_codes);
+    assert_eq!(runtime.cached.candidate_sources, snapshot.candidate_sources);
+    assert_eq!(
+        runtime.cached.candidate_positions,
+        snapshot.candidate_positions
+    );
+    assert!(runtime.engine_order.is_empty());
+    assert!(refresh_allocations - snapshot_allocations <= 2);
+    assert!(refresh_bytes - snapshot_bytes <= 5 * std::mem::size_of::<usize>());
 }

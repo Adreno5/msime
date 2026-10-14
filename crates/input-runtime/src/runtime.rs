@@ -1724,154 +1724,153 @@ impl<E: InputEngine> Runtime<E> {
             return false;
         }
 
-        // A provider may answer with several candidates - the AI limit reaches ten - and they take
-        // their seat as a group. The reference has only one of each to place and silently drops the
-        // rest; dropping a candidate the user was offered is not an option here.
-        //
-        // 有中文候选时，引擎只在两种情况下把英文放在首位，从不看权重或置顶：输入拆不成完整音节、英文正好完全匹配整段输入（`CandidateQueries::mixed`），或者用户把这个词固定在第一位（`apply_candidate_positions`）。所以本地候选还在、首位却是英文时，就是这样一个词：它保留首位，领先的英文座位不再填第二个英文词。
-        //
-        // 日文混输行（`CandidateSource::MixedJapanese`，只有一行）按英文的规矩坐：引擎让它领先时它在首位，英文已经领先时在第二位，云候选、AI 候选到达后保持不动；不领先时它坐英文的优先座位，排在英文那一行前面。
-        let is_local = |source: u8| {
-            !matches!(
-                source,
-                CLOUD | AI | AI_PENDING | ENGLISH | EMOJI | KAOMOJI | JAPANESE
-            )
-        };
-        let first_source = |source: u8| {
-            snapshot
-                .candidate_sources
-                .iter()
-                .position(|candidate_source| *candidate_source == source)
-        };
-        let mut local_count = 0;
+        const LOCAL_GROUP: usize = 0;
+        const CLOUD_GROUP: usize = 1;
+        const AI_GROUP: usize = 2;
+        const JAPANESE_GROUP: usize = 3;
+        const ENGLISH_GROUP: usize = 4;
+        const EMOJI_GROUP: usize = 5;
+        const KAOMOJI_GROUP: usize = 6;
+        let mut counts = [0; 7];
         let mut fixed_english_count = 0;
         for (source, position) in snapshot
             .candidate_sources
             .iter()
             .zip(&snapshot.candidate_positions)
         {
-            local_count += usize::from(is_local(*source));
-            fixed_english_count += usize::from(*source == ENGLISH && *position > 0);
-        }
-        let first_english = first_source(ENGLISH);
-        let promoted_english = first_english == Some(0) && local_count != 0;
-        let first_japanese = first_source(JAPANESE);
-        let promoted_japanese =
-            local_count != 0 && first_japanese == Some(usize::from(promoted_english));
-        let has_cloud = snapshot.candidate_sources.contains(&CLOUD);
-        let first_emoji = first_source(EMOJI);
-        let first_kaomoji = first_source(KAOMOJI);
-        let mut order = Vec::with_capacity(count);
-        let append_group =
-            |order: &mut Vec<usize>, source: u8, skip: usize, limit: Option<usize>| {
-                let end = limit.map_or(usize::MAX, |count| skip.saturating_add(count));
-                let mut matched = 0;
-                for (index, candidate_source) in snapshot.candidate_sources.iter().enumerate() {
-                    if *candidate_source != source {
-                        continue;
-                    }
-                    if matched < skip {
-                        matched += 1;
-                        continue;
-                    }
-                    if matched >= end {
-                        break;
-                    }
-                    order.push(index);
-                    matched += 1;
+            match *source {
+                CLOUD => counts[CLOUD_GROUP] += 1,
+                AI | AI_PENDING => counts[AI_GROUP] += 1,
+                JAPANESE => counts[JAPANESE_GROUP] += 1,
+                ENGLISH => {
+                    counts[ENGLISH_GROUP] += 1;
+                    fixed_english_count += usize::from(*position > 0);
                 }
-            };
-        let append_local = |order: &mut Vec<usize>, skip: usize, limit: Option<usize>| {
-            let end = limit.map_or(usize::MAX, |count| skip.saturating_add(count));
-            let mut matched = 0;
-            for (index, candidate_source) in snapshot.candidate_sources.iter().enumerate() {
-                if !is_local(*candidate_source) {
-                    continue;
-                }
-                if matched < skip {
-                    matched += 1;
-                    continue;
-                }
-                if matched >= end {
-                    break;
-                }
-                order.push(index);
-                matched += 1;
+                EMOJI => counts[EMOJI_GROUP] += 1,
+                KAOMOJI => counts[KAOMOJI_GROUP] += 1,
+                _ => counts[LOCAL_GROUP] += 1,
             }
-        };
-        if promoted_english {
-            order.push(0);
         }
-        if promoted_japanese {
-            order.extend(first_japanese);
-        }
-        // The hiragana/katakana pair of a single complete kana keeps seats 1 and 2 ahead of every online candidate, as the reference's `preserve_single_kana_pair` does (server/src/ipc/event_listener.cpp); the reading is the converted kana, so one character in U+3041..U+3096 is its `IsSingleKanaConversion`.
+        // 引擎把完全匹配或固定在首位的英文保留在首位；领先的日文混输行也不被在线行挤走。
+        let promoted_english = counts[LOCAL_GROUP] > 0 && snapshot.candidate_sources[0] == ENGLISH;
+        let promoted_japanese = counts[LOCAL_GROUP] > 0
+            && snapshot.candidate_sources[usize::from(promoted_english)] == JAPANESE;
+        let has_cloud = counts[CLOUD_GROUP] > 0;
         let mut reading = snapshot.reading.chars();
         let single_kana = scheme_type(snapshot.scheme) == Some(SchemeType::JapaneseRomaji)
             && matches!((reading.next(), reading.next()), (Some(kana), None) if ('\u{3041}'..='\u{3096}').contains(&kana));
         let local_prefix = if single_kana { 2 } else { 1 };
-        // 坐 AI 座位的那一行，以及排到最后的其余 AI 候选。
-        let mut ai_rows = snapshot
-            .candidate_sources
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| is_ai(**source))
-            .map(|(index, _)| index);
-        let ai_seat = ai_rows.next();
-        append_local(&mut order, 0, Some(local_prefix));
+
+        // 每组有优先段和剩余段，组内按引擎原顺序排列；AI 的剩余段放在整个列表末尾。
+        let mut head_starts = [0; 7];
+        let mut head_counts = [0; 7];
+        let mut next_seat = 0;
+        let mut head = |group: usize, limit: usize| {
+            head_starts[group] = next_seat;
+            head_counts[group] = counts[group].min(limit);
+            next_seat += head_counts[group];
+        };
+        if promoted_english {
+            head(ENGLISH_GROUP, 1);
+        }
+        if promoted_japanese {
+            head(JAPANESE_GROUP, 1);
+        }
+        head(LOCAL_GROUP, local_prefix);
+        head(CLOUD_GROUP, counts[CLOUD_GROUP]);
         if has_cloud {
-            append_group(&mut order, CLOUD, 0, None);
-            order.extend(ai_seat);
+            head(AI_GROUP, 1);
         }
         if !promoted_japanese {
-            order.extend(first_japanese);
+            head(JAPANESE_GROUP, 1);
         }
         if !promoted_english {
-            if let Some(index) = first_english {
-                order.push(index);
-            }
+            head(ENGLISH_GROUP, 1);
         }
         if !has_cloud {
-            order.extend(ai_seat);
+            head(AI_GROUP, 1);
         }
-        if let Some(index) = first_emoji {
-            order.push(index);
+        head(EMOJI_GROUP, 1);
+        head(KAOMOJI_GROUP, 1);
+        let mut tail_starts = [0; 7];
+        for group in [
+            LOCAL_GROUP,
+            ENGLISH_GROUP,
+            JAPANESE_GROUP,
+            EMOJI_GROUP,
+            KAOMOJI_GROUP,
+            AI_GROUP,
+        ] {
+            tail_starts[group] = next_seat;
+            next_seat += counts[group] - head_counts[group];
         }
-        if let Some(index) = first_kaomoji {
-            order.push(index);
-        }
-        append_local(&mut order, local_prefix, None);
-        append_group(&mut order, ENGLISH, 1, None);
-        append_group(&mut order, JAPANESE, 1, None);
-        append_group(&mut order, EMOJI, 1, None);
-        append_group(&mut order, KAOMOJI, 1, None);
-        // 固定英文行在在线座位排好后归位，云或 AI 不能把它挤离指定座位（参考 server/src/ipc/candidate_selection_policy.h 的 NormalizeMixedCandidateOrder）。位置从 1 开始，超出末尾时夹到末尾；来源统计给出实际行数，空缓冲不申请存储。
-        if fixed_english_count > 0 {
-            let mut fixed_english = Vec::with_capacity(fixed_english_count);
-            order.retain(|index| {
-                let fixed = snapshot.candidate_sources[*index] == ENGLISH
-                    && snapshot.candidate_positions[*index] > 0;
-                if fixed {
-                    fixed_english.push(*index);
-                }
-                !fixed
-            });
-            fixed_english.sort_by_key(|index| snapshot.candidate_positions[*index]);
-            for index in fixed_english {
-                let seat = usize::from(snapshot.candidate_positions[index] - 1).min(order.len());
-                order.insert(seat, index);
+        debug_assert_eq!(next_seat, count);
+
+        // 第二次扫描直接计算每行的新座位；全部未变位时不建立索引表。
+        let mut order = None;
+        let mut seen = [0; 7];
+        let mut take_ordinal = |group: usize| {
+            let ordinal = seen[group];
+            seen[group] += 1;
+            (group, ordinal)
+        };
+        for (index, source) in snapshot.candidate_sources.iter().enumerate() {
+            let (group, ordinal) = match *source {
+                CLOUD => take_ordinal(CLOUD_GROUP),
+                AI | AI_PENDING => take_ordinal(AI_GROUP),
+                JAPANESE => take_ordinal(JAPANESE_GROUP),
+                ENGLISH => take_ordinal(ENGLISH_GROUP),
+                EMOJI => take_ordinal(EMOJI_GROUP),
+                KAOMOJI => take_ordinal(KAOMOJI_GROUP),
+                _ => take_ordinal(LOCAL_GROUP),
+            };
+            let seat = if ordinal < head_counts[group] {
+                head_starts[group] + ordinal
+            } else {
+                tail_starts[group] + ordinal - head_counts[group]
+            };
+            if seat != index && order.is_none() {
+                order = Some((0..count).collect::<Vec<usize>>());
+            }
+            if let Some(order) = &mut order {
+                order[seat] = index;
             }
         }
-        order.extend(ai_rows);
-        // A permutation or nothing: a missing or repeated index would silently drop a candidate.
+        // 固定英文行在在线座位排好后归位，云或 AI 不能把它挤离指定座位（参考 server/src/ipc/candidate_selection_policy.h 的 NormalizeMixedCandidateOrder）。位置从 1 开始，超出末尾时夹到末尾；来源统计给出实际行数，空缓冲不申请存储。
+        if fixed_english_count > 0 {
+            let order = order.get_or_insert_with(|| (0..count).collect::<Vec<usize>>());
+            // 只压缩非 AI 尾部；空出的槽供固定英文插回，AI 尾部始终留在原处。
+            let prefix_len = count - counts[AI_GROUP].saturating_sub(1);
+            let mut fixed_english = Vec::with_capacity(fixed_english_count);
+            let mut write = 0;
+            for read in 0..prefix_len {
+                let index = order[read];
+                if snapshot.candidate_sources[index] == ENGLISH
+                    && snapshot.candidate_positions[index] > 0
+                {
+                    fixed_english.push(index);
+                } else {
+                    order[write] = index;
+                    write += 1;
+                }
+            }
+            fixed_english.sort_by_key(|index| snapshot.candidate_positions[*index]);
+            for index in fixed_english {
+                let seat = usize::from(snapshot.candidate_positions[index] - 1).min(write);
+                order.copy_within(seat..write, seat + 1);
+                order[seat] = index;
+                write += 1;
+            }
+            debug_assert_eq!(write, prefix_len);
+        }
+        let Some(order) = order else {
+            return false;
+        };
+        // 排列必须包含全部候选，恒等排列不应用到候选数组。
         debug_assert_eq!(order.len(), count);
-        if order.len() != count {
+        if order.len() != count || order.iter().enumerate().all(|(seat, index)| seat == *index) {
             return false;
         }
-        if order.iter().enumerate().all(|(seat, index)| seat == *index) {
-            return false;
-        }
-
         self.apply_candidate_order(&order);
         true
     }
