@@ -298,33 +298,64 @@ pub(super) fn build_graph(
     let n = syllables.len();
     let max_len = options.max_phrase_syllables.max(1);
     let mut graph: Graph = (0..n).map(|_| Vec::new()).collect();
-    // A key repeated in the input (ma'ma'ma) is looked up once.
+    // 重复跨度只查一次字典，缓存首个图边区间；首次查询行直接移交字段。
+    struct CachedSpan {
+        column: usize,
+        edges: std::ops::Range<usize>,
+        reserve: usize,
+    }
     let span_capacity = (0..n)
         .map(|start| n.min(start.saturating_add(max_len)) - start)
         .sum();
-    let mut span_cache: HashMap<&[String], Vec<LatticeLexeme>> =
-        HashMap::with_capacity(span_capacity);
-    for (start, edges) in graph.iter_mut().enumerate() {
+    let mut span_cache: HashMap<&[String], CachedSpan> = HashMap::with_capacity(span_capacity);
+    for start in 0..n {
+        // 同一列的跨度长度各异，重复键必在更早的列；追加图边不改变区间索引。
+        let (earlier, remaining) = graph.split_at_mut(start);
+        let edges = &mut remaining[0];
         for end in start + 1..=n.min(start + max_len) {
             let span = &syllables[start..end];
-            let rows = span_cache.entry(span).or_insert_with(|| lookup(span));
-            edges.reserve(rows.len().min(options.span_limit));
-            let mut span_key = None;
-            for row in rows.iter().take(options.span_limit) {
-                if row.value.is_empty() {
-                    continue;
+            match span_cache.entry(span) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let cached = entry.get();
+                    edges.reserve(cached.reserve);
+                    for edge in &earlier[cached.column][cached.edges.clone()] {
+                        edges.push(Edge {
+                            end,
+                            word: edge.word.clone(),
+                            key: edge.key.clone(),
+                            log_prob: edge.log_prob,
+                            typo: false,
+                        });
+                    }
                 }
-                edges.push(Edge {
-                    end,
-                    word: row.value.clone(),
-                    key: if row.key.is_empty() {
-                        span_key.get_or_insert_with(|| span.join("'")).clone()
-                    } else {
-                        row.key.clone()
-                    },
-                    log_prob: edge_log_prob(row.weight, end - start, options),
-                    typo: false,
-                });
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let rows = lookup(span);
+                    let reserve = rows.len().min(options.span_limit);
+                    edges.reserve(reserve);
+                    let begin = edges.len();
+                    let mut span_key = None;
+                    for row in rows.into_iter().take(options.span_limit) {
+                        if row.value.is_empty() {
+                            continue;
+                        }
+                        edges.push(Edge {
+                            end,
+                            word: row.value,
+                            key: if row.key.is_empty() {
+                                span_key.get_or_insert_with(|| span.join("'")).clone()
+                            } else {
+                                row.key
+                            },
+                            log_prob: edge_log_prob(row.weight, end - start, options),
+                            typo: false,
+                        });
+                    }
+                    entry.insert(CachedSpan {
+                        column: start,
+                        edges: begin..edges.len(),
+                        reserve,
+                    });
+                }
             }
         }
     }
@@ -1380,3 +1411,7 @@ pub(super) mod tests {
         .is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "graph_ownership_tests.rs"]
+mod graph_ownership_tests;
