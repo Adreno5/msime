@@ -21,3 +21,5 @@ Status: implemented
 ## Consequences
 
 神经重排不再为整条路径数组及其深层内容创建临时副本；路径切片本身仍由调用方拥有，模型评分和候选顺序不变。[排列循环线性遍历](../../implemented/testing/2026-10-12-order-permutation-linear-cycles.md)补充访问标记：128 行以内零分配，大非恒等排列为标记申请一次布尔缓冲，不复制路径内容。
+
+[神经评分单位修正](../../implemented/bug-fix/2026-10-14-neural-lattice-score-units.md)独立修正混合分数的自然对数契约，沿用本篇的原地排列、稳定顺序与尾部保留规则。

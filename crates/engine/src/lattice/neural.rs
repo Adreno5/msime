@@ -20,9 +20,6 @@ pub const CONTEXT_CHARACTERS: usize = 64;
 pub const MAX_MODEL_BYTES: u64 = 64 * 1024 * 1024;
 const MODEL_CACHE_CAPACITY: usize = 8;
 
-/// The lattice score is converted as log10 the way the C++ did (patch:869-871); the arithmetic is ported unchanged so the two models' blend keeps the weight it was tuned with.
-const LOG10_TO_NATS: f64 = std::f64::consts::LN_10;
-
 static MODELS: OnceLock<Mutex<LruCache<PathBuf, Option<Arc<SentenceModel>>>>> = OnceLock::new();
 
 /// A shipped model for tests: from `MSIME_EVAL_RESOURCES` (the dictionary resource set), else from `MSIME_NEURAL_MODEL_DIR` (where `scripts/fetch_neural_model.py` puts both models, `target/neural-model` by default); the error is the reason a test skips.
@@ -84,18 +81,18 @@ fn load_model(path: &Path) -> Option<Arc<SentenceModel>> {
     SentenceModel::load(&bytes).ok().map(Arc::new)
 }
 
-/// The first `min(n, 12)` indices stable-sorted by `static * ln 10 + lambda * (neural - static * ln 10)` descending, the rest in order. `None` for fewer than two paths or mismatched lengths (patch:914-944). `neural` holds per-sentence summed natural-log probabilities, `static_log10` the lattice scores.
+/// 对前 `min(n, 12)` 条路径按 `static + lambda * (neural - static)` 降序稳定排序，尾部保留原顺序。路径不足两条或评分长度不匹配时返回 `None`。两侧都使用自然对数：`neural` 是逐字评分的总和，`static_nats` 是词网格的 `SentencePath.log_prob`。
 ///
-/// `neural` scores the same paths as `static_log10`, in order; only its first `min(n, 12)` entries are read, so a caller may score only those and pass exactly that many.
-pub fn rerank_order(neural: &[f64], static_log10: &[f64]) -> Option<Vec<usize>> {
-    let n = static_log10.len();
+/// `neural` 按相同路径顺序评分，只读取前 `min(n, 12)` 项，调用方可以只计算并传入这些评分。
+pub fn rerank_order(neural: &[f64], static_nats: &[f64]) -> Option<Vec<usize>> {
+    let n = static_nats.len();
     let scored = n.min(MAX_RERANK_PATHS);
     if n < 2 || (neural.len() != n && neural.len() != scored) {
         return None;
     }
     let combined: Vec<f64> = (0..scored)
         .map(|index| {
-            let statik = static_log10[index] * LOG10_TO_NATS;
+            let statik = static_nats[index];
             statik + RERANK_LAMBDA * (neural[index] - statik)
         })
         .collect();
@@ -176,15 +173,29 @@ mod tests {
 
     #[test]
     fn rerank_order_blends_the_two_scores() {
-        // Static in log10, neural in nats: path 1 is worse on the lattice but the model prefers it enough.
+        // 两侧都是自然对数：路径 1 的静态分较低，但神经分足以补上差距。
         let statik = [-1.0, -1.2];
         let neural = [-10.0, -2.0];
-        let combined0 = -LOG10_TO_NATS + 0.5 * (-10.0 + LOG10_TO_NATS);
-        let combined1 = -1.2 * LOG10_TO_NATS + 0.5 * (-2.0 + 1.2 * LOG10_TO_NATS);
+        let combined0 = -1.0 + 0.5 * (-10.0 + 1.0);
+        let combined1 = -1.2 + 0.5 * (-2.0 + 1.2);
         assert!(combined1 > combined0);
         assert_eq!(rerank_order(&neural, &statik), Some(vec![1, 0]));
-        // The model agreeing with the lattice leaves the order.
+        // 模型也偏向静态首选时维持顺序。
         assert_eq!(rerank_order(&[-2.0, -10.0], &statik), Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn rerank_order_uses_the_lattice_producers_natural_log_scores() {
+        use super::super::decode::{edge_log_prob, LatticeOptions};
+
+        let options = LatticeOptions::default();
+        let statik = [
+            edge_log_prob(100, 2, &options),
+            edge_log_prob(50, 2, &options),
+        ];
+        // 词频相差两倍只贡献 ln(2)，模型多给第二条 1 nat 时应选它。
+        // 再乘 ln(10) 会把词频差放大到约 1.596，错误保留第一条。
+        assert_eq!(rerank_order(&[-3.0, -2.0], &statik), Some(vec![1, 0]));
     }
 
     #[test]
