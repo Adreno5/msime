@@ -2320,7 +2320,7 @@ fn hanzi_to_pinyin_reads_the_generation_dictionary() {
 }
 
 /// ni'hao 你好 100 / 拟好 80 plus the english schema v3 (`dictionary_stage/tests.rs:6-30`), written into the resources and the generation alike instead of staged.
-fn helpcode_fixture(root: &Path, extra_sql: &str, helpcodes: &str) -> EngineOptions {
+pub(super) fn helpcode_fixture(root: &Path, extra_sql: &str, helpcodes: &str) -> EngineOptions {
     let mut options = options(root);
     for directory in [&options.resources, &options.dictionaries] {
         let directory = Path::new(directory);
@@ -2822,7 +2822,7 @@ fn a_session_dropped_while_its_thread_exits_does_not_abort() {
     assert_eq!(written, 1);
 }
 
-fn generated_mode_options(root: &Path) -> EngineOptions {
+pub(super) fn generated_mode_options(root: &Path) -> EngineOptions {
     let mut value = options(root);
     value.local_expression = true;
     value.local_command = true;

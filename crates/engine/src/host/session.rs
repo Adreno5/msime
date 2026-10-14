@@ -249,11 +249,10 @@ impl Session {
             conversion_focus_start: value.conversion_focus.0,
             conversion_focus_end: value.conversion_focus.1,
         };
+        let mut annotations = value.candidate_annotations.into_iter();
         for (index, candidate) in value.candidates.into_iter().enumerate() {
-            let mut annotation = value
-                .candidate_annotations
-                .get(index)
-                .cloned()
+            let mut annotation = annotations
+                .next()
                 .unwrap_or_else(|| candidate.corrected_from.clone());
             if let Some(keymap) = keymap {
                 if !self.show_helpcode {
@@ -806,3 +805,7 @@ mod tests {
         assert_eq!(word.capacity(), word.len());
     }
 }
+
+#[cfg(test)]
+#[path = "session/annotation_move_tests.rs"]
+mod annotation_move_tests;
