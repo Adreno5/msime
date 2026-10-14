@@ -131,7 +131,7 @@ pub(crate) fn storage_savings<S: AsRef<str>>(
             .count();
         parents = capacity;
     }
-    saved
+    saved + super::deferred_string_tests::deferred_string_savings(segments, options, limit)
 }
 
 #[test]
@@ -191,7 +191,9 @@ fn borrowed_beam_variants_save_planning_and_original_only_storage() {
             for limit in [0, 1, 2, 3, 5, 63, 64, 65, 128, usize::MAX] {
                 let saved = storage_savings(&owned, options, limit);
                 let (expected, old_count) = count(|| legacy_segmentations(&owned, options, limit));
-                saw_partial_last_parent |= !expected.is_empty() && saved > owned.len();
+                let planning_saved = saved
+                    - super::deferred_string_tests::deferred_string_savings(&owned, options, limit);
+                saw_partial_last_parent |= !expected.is_empty() && planning_saved > owned.len();
                 let (actual, new_count) = count(|| fuzzy_segmentations(&owned, options, limit));
                 assert_eq!(actual, expected);
                 assert_eq!(
