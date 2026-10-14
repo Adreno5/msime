@@ -45,8 +45,8 @@ fn replay_of_one_annotation_has_a_bounded_identity_allocation_budget() {
     assert!(
         measurements
             .iter()
-            .all(|(_, allocations)| *allocations <= 32),
-        "身份重放不应逐行复制字符串: {measurements:?}"
+            .all(|(_, allocations)| *allocations == 0),
+        "身份重放不应重复申请工作区: {measurements:?}"
     );
 }
 
@@ -64,9 +64,13 @@ fn repeated_plugin_replays_reuse_arrangement_buffers() {
     eprintln!(
         "repeated plugin replay allocations: first={first_allocations}, second={second_allocations}"
     );
-    assert!(
-        first_allocations == 9 && second_allocations == 9,
-        "重复候选变换重放仍重复申请排列缓冲：first={first_allocations}, second={second_allocations}"
+    assert_eq!(
+        first_allocations, 0,
+        "候选变换重放仍在首次旁路调用申请排列工作区：{first_allocations}"
+    );
+    assert_eq!(
+        second_allocations, 0,
+        "候选变换重放仍在后续旁路调用申请排列工作区：{second_allocations}"
     );
 }
 
