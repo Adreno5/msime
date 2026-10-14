@@ -956,15 +956,17 @@ impl QuanpinDictionary {
             } else {
                 segmentation
             };
-            // 单字母的首字母表查询也走行缓存；键前加 `\u{1}`，和切分键分开。
-            let key = format!("\u{1}{}", segments[0]);
-            if let Some(rows) = self.segment_row_cache.get_ref(&key) {
+            // 单字节 UTF-8 音节必为 ASCII；局部键只供查找，前缀与普通切分键分开。
+            let key_bytes = [1, segments[0].as_bytes()[0]];
+            let key = std::str::from_utf8(&key_bytes).expect("单字节音节与缓存前缀必须是 ASCII");
+            if let Some(rows) = self.segment_row_cache.get_ref_by(key) {
                 return matched_items(rows.iter().cloned(), matched_code);
             }
             let rows = self
                 .database
                 .query_initial(&segments[0], INITIAL_CANDIDATE_LIMIT);
-            self.segment_row_cache.insert(key, rows.clone());
+            self.segment_row_cache
+                .insert(format!("\u{1}{}", segments[0]), rows.clone());
             return matched_items(rows, matched_code);
         }
         // 音节已在 `resolve_segments` 规范化一次，直接使用标准键查找。
@@ -1580,3 +1582,7 @@ mod slot_key_ownership_tests;
 #[cfg(test)]
 #[path = "dictionary/series_prefix_borrow_tests.rs"]
 mod series_prefix_borrow_tests;
+
+#[cfg(test)]
+#[path = "dictionary/initial_row_key_tests.rs"]
+mod initial_row_key_tests;
