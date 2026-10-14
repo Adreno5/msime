@@ -35,6 +35,7 @@ mod desktop {
     use crate::*;
     use msime_engine::ordering::apply_order;
     use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
 
     /// 交给插件的窗口最多几行。
     pub const MAX_TRANSFORM_ROWS: usize = 20;
@@ -117,22 +118,88 @@ mod desktop {
         tail: Vec<usize>,
     }
 
+    #[derive(Default)]
+    struct OccurrenceSlot {
+        hash: u64,
+        representative: usize,
+        count: usize,
+        generation: u64,
+    }
+
+    #[derive(Default)]
+    struct OccurrenceBuffers {
+        seats: Vec<usize>,
+        slots: Vec<OccurrenceSlot>,
+        generation: u64,
+    }
+
     impl Identity {
-        fn occurrences(snapshot: &EngineSnapshot, engine_order: &[usize]) -> Vec<usize> {
+        fn fill_occurrences(
+            snapshot: &EngineSnapshot,
+            engine_order: &[usize],
+            buffers: &mut OccurrenceBuffers,
+            occurrences: &mut Vec<usize>,
+        ) {
             let count = snapshot.candidates.len();
-            let mut seats: Vec<usize> = (0..count).collect();
-            seats.sort_unstable_by_key(|seat| engine_order.get(*seat).copied().unwrap_or(*seat));
-            let mut counts: HashMap<(&str, u8, &str), usize> = HashMap::new();
-            let mut occurrences = vec![0; count];
-            for seat in seats {
+            buffers.seats.clear();
+            buffers.seats.extend(0..count);
+            buffers
+                .seats
+                .sort_unstable_by_key(|seat| engine_order.get(*seat).copied().unwrap_or(*seat));
+            occurrences.clear();
+            occurrences.resize(count, 0);
+
+            let required_slots = count.saturating_mul(2).max(1);
+            if buffers.slots.len() < required_slots {
+                buffers
+                    .slots
+                    .resize_with(required_slots.next_power_of_two(), Default::default);
+            }
+            let next_generation = buffers.generation.wrapping_add(1);
+            if next_generation == 0 {
+                for slot in &mut buffers.slots {
+                    slot.generation = 0;
+                }
+                buffers.generation = 1;
+            } else {
+                buffers.generation = next_generation;
+            }
+            let generation = buffers.generation;
+            for &seat in &buffers.seats {
                 let text = snapshot.candidates[seat].as_str();
                 let source = snapshot.candidate_sources[seat];
                 let code = snapshot.candidate_codes[seat].as_str();
-                let occurrence = counts.entry((text, source, code)).or_default();
-                occurrences[seat] = *occurrence;
-                *occurrence += 1;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                text.hash(&mut hasher);
+                source.hash(&mut hasher);
+                code.hash(&mut hasher);
+                let hash = hasher.finish();
+                let mut slot = (hash as usize) & (buffers.slots.len() - 1);
+                loop {
+                    let entry = &mut buffers.slots[slot];
+                    if entry.generation != generation {
+                        *entry = OccurrenceSlot {
+                            hash,
+                            representative: seat,
+                            count: 1,
+                            generation,
+                        };
+                        break;
+                    }
+                    if entry.hash == hash
+                        && snapshot.candidates[entry.representative] == snapshot.candidates[seat]
+                        && snapshot.candidate_sources[entry.representative]
+                            == snapshot.candidate_sources[seat]
+                        && snapshot.candidate_codes[entry.representative]
+                            == snapshot.candidate_codes[seat]
+                    {
+                        occurrences[seat] = entry.count;
+                        entry.count += 1;
+                        break;
+                    }
+                    slot = (slot + 1) & (buffers.slots.len() - 1);
+                }
             }
-            occurrences
         }
 
         fn at(snapshot: &EngineSnapshot, seat: usize, occurrence: usize) -> Self {
@@ -166,6 +233,8 @@ mod desktop {
         annotations: Vec<(Identity, String)>,
         /// 与当前缓存座位平行的同组出现序号；文本和编码借用快照，仅被点名的行保存完整身份。
         occurrences: Vec<usize>,
+        /// 构造同组出现序号时复用的座位排序和开放寻址表。
+        occurrence_buffers: OccurrenceBuffers,
         /// 降到末尾、不显示的行数。
         hidden_rows: usize,
         /// 宿主暂停了候选变换：不运行、不重放。插件指令同样不调用。
@@ -351,7 +420,12 @@ mod desktop {
                 }
                 annotations_changed = previous != self.plugins.annotations;
             } else if ready && self.plugins.has_recorded() {
-                self.plugins.occurrences = Identity::occurrences(&self.cached, &self.engine_order);
+                Identity::fill_occurrences(
+                    &self.cached,
+                    &self.engine_order,
+                    &mut self.plugins.occurrence_buffers,
+                    &mut self.plugins.occurrences,
+                );
             } else {
                 self.plugins.occurrences.clear();
             }
@@ -390,7 +464,12 @@ mod desktop {
             }) {
                 return;
             }
-            plugins.occurrences = Identity::occurrences(snapshot, &self.engine_order);
+            Identity::fill_occurrences(
+                snapshot,
+                &self.engine_order,
+                &mut plugins.occurrence_buffers,
+                &mut plugins.occurrences,
+            );
             // 重排：后面的插件优先，所以倒着收，同一行只收第一次。
             for ops in plugins.ops.iter().rev() {
                 for &index in &ops.order {
