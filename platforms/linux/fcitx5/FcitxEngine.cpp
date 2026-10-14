@@ -2220,11 +2220,30 @@ public:
                              {"candidates", candidates}};
     if (dictionary) glossRequest["target_language"] = query.at("target_language");
     const auto gloss = glossRequest.dump();
+    std::vector<bool> providerAllowed;
+    providerAllowed.reserve(query.at("candidates").size());
+    const bool bypassSourceGate = manual_sentence || commandTranslation(query);
+    const auto &viewCandidates = view_.value("candidates", Json::array());
+    for (size_t candidateIndex = 0; candidateIndex < query.at("candidates").size();
+         ++candidateIndex) {
+      bool allowed = true;
+      if (!bypassSourceGate && viewCandidates.is_array() &&
+          candidateIndex < viewCandidates.size()) {
+        const auto &viewCandidate = viewCandidates.at(candidateIndex);
+        if (viewCandidate.is_object() && viewCandidate.contains("source") &&
+            viewCandidate.at("source").is_number_unsigned()) {
+          allowed = msime::linux_host::candidate_translation_source_allowed(
+              viewCandidate.at("source").get<std::uint64_t>());
+        }
+      }
+      providerAllowed.push_back(allowed);
+    }
     const auto socket = (manual_sentence || commandTranslation(query) ||
                          preferences_.value("candidate_translations", true))
                             ? translation_socket_ : std::string{};
     translation_job_ = detachedJob(
-        [query, encoded, gloss, offline, local, socket, dictionary, resources = resources_] () mutable {
+        [query, encoded, gloss, offline, local, socket, dictionary, providerAllowed,
+         resources = resources_] () mutable {
           if (offline) {
             try {
               local = preferOnline(response(msime_client_candidate_gloss_request(
@@ -2235,11 +2254,15 @@ public:
           } else if (!socket.empty()) {
             auto transport = query;
             auto missing = Json::array();
+            size_t candidateIndex = 0;
             for (const auto &candidate : query.at("candidates")) {
               const auto &text = candidate.at("text");
-              if (dictionary || std::none_of(local.begin(), local.end(), [&](const Json &item) {
+              const bool sourceAllowed = candidateIndex >= providerAllowed.size() ||
+                  providerAllowed[candidateIndex];
+              if (sourceAllowed && (dictionary || std::none_of(local.begin(), local.end(), [&](const Json &item) {
                     return item.at("text") == text;
-                  })) missing.push_back(text);
+                  }))) missing.push_back(text);
+              ++candidateIndex;
             }
             transport["candidates"] = std::move(missing);
             if (!transport.at("candidates").empty()) {

@@ -2071,8 +2071,25 @@ void translation_dispatch(IBusEngine *engine) {
     // The shared query carries candidate objects; the socket protocol takes
     // the candidate texts, matching TranslationQuery in the host API.
     auto texts = Json::array();
-    for (const auto &candidate : query.at("candidates"))
+    const auto &viewCandidates = s.view.value("candidates", Json::array());
+    size_t candidateIndex = 0;
+    for (const auto &candidate : query.at("candidates")) {
+      // Preserve the source gate before the text-only provider protocol drops
+      // candidate metadata. Unknown or mismatched rows remain eligible so a
+      // malformed view cannot suppress an otherwise valid translation.
+      if (viewCandidates.is_array() && candidateIndex < viewCandidates.size()) {
+        const auto &viewCandidate = viewCandidates.at(candidateIndex);
+        if (viewCandidate.is_object() && viewCandidate.contains("source") &&
+            viewCandidate.at("source").is_number_unsigned() &&
+            !msime::linux_host::candidate_translation_source_allowed(
+                viewCandidate.at("source").get<std::uint64_t>())) {
+          ++candidateIndex;
+          continue;
+        }
+      }
       texts.push_back(candidate.at("text"));
+      ++candidateIndex;
+    }
     query["candidates"] = std::move(texts);
     const auto encoded = query.dump();
     // Applying a gloss redraws the same generation. Do not start another
