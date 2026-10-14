@@ -10084,7 +10084,7 @@ int main(int argc, char **argv) {
         TestCandidatePanel *panel = [TestCandidatePanel new];
         [controller setValue:panel forKey:@"panel"];
         // 清掉前一组快捷键的上屏答复，光标命令的替身不返回上屏。
-        session.nextTransition = nil;
+        session.nextTransition = @{@"handled": @YES, @"view": @{@"focused": @YES, @"editing_text": @"ceshi", @"caret_position": @3, @"candidates": @[]}};
         // macOS 普通左右键编辑拼音，候选窗可见或隐藏时都不进入整句改字，也不上屏。
         const BOOL arrowVertical = appearance.vertical;
         appearance.vertical = YES;
@@ -10104,6 +10104,7 @@ int main(int argc, char **argv) {
             assert(session.lastCommand == (key.unsignedShortValue == 123 ? MSIME_MOVE_LEFT : MSIME_MOVE_RIGHT));
             assert(client.committed == nil);
         }
+        session.nextTransition = nil;
         appearance.vertical = arrowVertical;
         HiddenCandidatePanel *layoutPanel = [[HiddenCandidatePanel alloc] initWithContentRect:NSZeroRect styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
         for (NSNumber *key in @[@115, @119]) {
