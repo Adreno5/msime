@@ -349,7 +349,7 @@ impl QuanpinDictionary {
         true
     }
 
-    /// Fuzzy rows for a segmentation, cached under `fuzzy:<rules>:<segmentation>` (QD:1680-1709). Shuangpin reuses this.
+    /// 切分的模糊候选按规则与读法缓存（QD:1680-1709），双拼也复用该路径。
     pub fn fuzzy_candidates(
         &mut self,
         segmentation: &str,
@@ -382,42 +382,15 @@ impl QuanpinDictionary {
                 continue;
             }
             budget -= paths.len();
-            let rows = cached_fuzzy_rows(
+            append_cached_fuzzy_rows(
                 &self.database,
                 &mut self.fuzzy_row_cache,
                 &paths,
                 options.rules,
                 limit,
-                &typed,
+                typed,
+                &mut result,
             );
-            result.reserve(rows.len());
-            let mut rows = rows.into_iter();
-            if let Some(row) = rows.next() {
-                let mut item = WordItem::new(
-                    typed,
-                    row.value,
-                    row.weight,
-                    CandidateSource::Database,
-                    row.key,
-                );
-                item.fuzzy = true;
-                result.push(item);
-            }
-            for row in rows {
-                let mut item = WordItem::new(
-                    result
-                        .last()
-                        .expect("the first fuzzy row was inserted")
-                        .pinyin
-                        .clone(),
-                    row.value,
-                    row.weight,
-                    CandidateSource::Database,
-                    row.key,
-                );
-                item.fuzzy = true;
-                result.push(item);
-            }
         }
         self.fuzzy_cache.insert(
             hash,
@@ -1207,18 +1180,21 @@ fn fuzzy_cache_key_matches(cached: &CachedFuzzyCandidates, rules: u32, segmentat
     cached.rules == rules && cached.segmentation == segmentation
 }
 
-fn cached_fuzzy_rows(
+/// 热页直接投影，冷页保留原缓存副本与 SQLite 页容量策略。
+fn append_cached_fuzzy_rows(
     database: &PinyinDatabase,
     cache: &mut FifoCache<u64, CachedFuzzyRows>,
     paths: &[Vec<String>],
     rules: u32,
     limit: usize,
-    typed: &str,
-) -> Vec<DictRow> {
-    let hash = fuzzy_row_cache_hash(rules, limit, typed);
+    typed: String,
+    result: &mut Vec<WordItem>,
+) {
+    let hash = fuzzy_row_cache_hash(rules, limit, &typed);
     if let Some(cached) = cache.get_ref(&hash) {
-        if fuzzy_row_cache_key_matches(cached, rules, limit, typed) {
-            return cached.rows.clone();
+        if fuzzy_row_cache_key_matches(cached, rules, limit, &typed) {
+            append_fuzzy_items(cached.rows.iter().cloned(), typed, result);
+            return;
         }
     }
     let rows = database.query_exact_segmentations_keyed_flat(paths, FUZZY_ROW_LIMIT);
@@ -1227,11 +1203,42 @@ fn cached_fuzzy_rows(
         CachedFuzzyRows {
             rules,
             limit,
-            typed: typed.to_owned(),
+            typed: typed.clone(),
             rows: rows.clone(),
         },
     );
-    rows
+    append_fuzzy_items(rows.into_iter(), typed, result);
+}
+
+/// 首行接管已分配的匹配码，其余行沿用同一读法，结果继续独立拥有全部字段。
+fn append_fuzzy_items(
+    mut rows: impl ExactSizeIterator<Item = DictRow>,
+    typed: String,
+    result: &mut Vec<WordItem>,
+) {
+    result.reserve(rows.len());
+    if let Some(row) = rows.next() {
+        let mut item = WordItem::new(
+            typed,
+            row.value,
+            row.weight,
+            CandidateSource::Database,
+            row.key,
+        );
+        item.fuzzy = true;
+        result.push(item);
+    }
+    for row in rows {
+        let mut item = WordItem::new(
+            result.last().expect("首个模糊候选已插入").pinyin.clone(),
+            row.value,
+            row.weight,
+            CandidateSource::Database,
+            row.key,
+        );
+        item.fuzzy = true;
+        result.push(item);
+    }
 }
 
 fn fuzzy_row_cache_hash(rules: u32, limit: usize, typed: &str) -> u64 {
@@ -1406,3 +1413,7 @@ mod row_projection_tests;
 #[cfg(test)]
 #[path = "dictionary/initial_expansion_projection_tests.rs"]
 mod initial_expansion_projection_tests;
+
+#[cfg(test)]
+#[path = "dictionary/fuzzy_row_projection_tests.rs"]
+mod fuzzy_row_projection_tests;
