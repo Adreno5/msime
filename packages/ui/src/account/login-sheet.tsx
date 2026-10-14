@@ -42,7 +42,9 @@ export function BottomSheet({
     return () => {
       if (
         opener?.isConnected &&
-        (!document.activeElement || document.activeElement === document.body)
+        (!document.activeElement ||
+          document.activeElement === document.body ||
+          dialog.current?.contains(document.activeElement))
       )
         opener.focus();
     };
@@ -64,6 +66,7 @@ export function BottomSheet({
         className={account.sheet}
         onKeyDown={(event) => {
           if (event.key !== "Escape") return;
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           event.stopPropagation();
           close();
         }}

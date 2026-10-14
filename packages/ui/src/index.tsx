@@ -2576,7 +2576,6 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showInputModeHUD,
     showInputModeStatusItem,
     showVoiceCaptureDevices,
-    showDesktopMaintenanceShortcuts,
     showFullwidthChord,
     clientHostedPlatform,
     desktopPanels,
@@ -3382,7 +3381,6 @@ function SettingsShell(props: SettingsPageProps) {
     client,
     confirmation,
     confirm,
-    host,
     androidPlatform,
     iosPlatform,
     harmonyPlatform,
@@ -3580,6 +3578,7 @@ function SettingsShell(props: SettingsPageProps) {
         value={navQuery}
         onChange={(event) => setNavQuery(event.target.value)}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === "Escape") setNavQuery("");
           if (event.key !== "Enter") return;
           const first = shownSidebarGroups[0]?.pages[0];
