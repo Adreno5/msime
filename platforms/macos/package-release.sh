@@ -133,6 +133,24 @@ only() {
   printf '%s\n' "$1"
 }
 
+# 磁盘映像服务偶发失败时重新创建；每次都清掉半成品，持续失败仍阻止上传。
+create_dmg() {
+  local output="$1" attempt status
+  shift
+  for attempt in 1 2 3; do
+    rm -f "$output"
+    if hdiutil create "$@" "$output"; then
+      return 0
+    else
+      status=$?
+    fi
+    printf 'DMG creation failed: edition=%s attempt=%s status=%s\n' "$edition" "$attempt" "$status" >&2
+    if [ "$attempt" -lt 3 ]; then sleep "$((attempt * 5))"; fi
+  done
+  rm -f "$output"
+  return "$status"
+}
+
 # ---- Core dictionaries ----
 # install_resources prints progress on stderr and the verified directory as its last stdout line. Each edition's stage-resources.sh run (below) re-verifies it and stages target/macos/EngineResources, which tauri.macos.conf.json embeds.
 resources="$(cargo run --quiet --locked -p msime-client-core --example install_resources -- "$work/desktop-resources" | tail -n 1)"
@@ -426,7 +444,7 @@ printf '%s\n' \
 dmg="$out_dir/$dmg_prefix-$version-$arch.dmg"
 rm -f "$dmg"
 # 用 ULMO（lzma）而不是 UDZO（zlib）：同样内容的 DMG 小约三分之一。ULMO 在 macOS 10.15 及以后都能挂载，而应用本身要求 13.0。DMG 创建之后才签名、公证和装订，事后再转换格式会丢掉签名，所以在创建时就选定格式。
-hdiutil create -quiet -volname "$display_name $version" -srcfolder "$stage" -format ULMO -fs HFS+ "$dmg"
+create_dmg "$dmg" -volname "$display_name $version" -srcfolder "$stage" -format ULMO -fs HFS+
 if [ -n "$identity" ]; then
   codesign_timestamped --force --sign "$identity" "$dmg"
   codesign --verify --strict "$dmg"
