@@ -10596,11 +10596,10 @@ fn translation_queries_only_clear_chinese_candidates_for_the_network() {
             ));
         }
         let query = read(msime_client_translation_query(handle));
-        assert_eq!(
-            query["value"]["candidates"],
-            json!([{ "text": text, "online_gloss": online }]),
-            "candidate {text:?} was cleared for the online gloss endpoint incorrectly"
-        );
+        let candidate = &query["value"]["candidates"][0];
+        assert_eq!(candidate["text"], text);
+        assert_eq!(candidate["online_gloss"], online);
+        assert!(candidate["source"].as_u64().is_some());
     }
 }
 
@@ -10662,7 +10661,7 @@ fn translation_queries_never_clear_a_mixed_japanese_row_for_the_network() {
     let query = read(msime_client_translation_query(handle));
     assert_eq!(
         query["value"]["candidates"][0],
-        json!({ "text": "私", "online_gloss": false }),
+        json!({ "text": "私", "source": 13, "online_gloss": false }),
         "{query}"
     );
     read(msime_client_destroy(handle));

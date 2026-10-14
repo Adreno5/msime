@@ -871,9 +871,15 @@ TranslationWorker::translate(const FocusLease &lease, const std::string &query_b
       if (!target.empty())
         gloss_request["target_language"] = target;
       auto gloss_candidates = nlohmann::json::array();
-      for (const auto &candidate : query.at("candidates"))
+      for (const auto &candidate : query.at("candidates")) {
+        const auto source = candidate.value("source", uint8_t{});
+        if (source_gets_no_translation(source))
+          continue;
         gloss_candidates.push_back(
-            {{"text", candidate.at("text")}, {"source", 0}});
+            {{"text", candidate.at("text")}, {"source", source}});
+      }
+      if (gloss_candidates.empty())
+        return std::nullopt;
       gloss_request["candidates"] = std::move(gloss_candidates);
       const auto gloss_bytes = gloss_request.dump();
       auto glossed = host_value(msime_client_candidate_gloss_request(
@@ -979,9 +985,13 @@ TranslationWorker::translate(const FocusLease &lease, const std::string &query_b
         {"target_language", query.at("target_language")},
         {"candidates", [&] {
            auto candidates = nlohmann::json::array();
-           for (const auto &candidate : query.at("candidates"))
+           for (const auto &candidate : query.at("candidates")) {
+             const auto source = candidate.value("source", uint8_t{});
+             if (source_gets_no_translation(source))
+               continue;
              candidates.push_back(
-                 {{"text", candidate.at("text")}, {"source", 0}});
+                 {{"text", candidate.at("text")}, {"source", source}});
+           }
            return candidates;
          }()}};
     const auto plan_bytes = plan_request.dump();
