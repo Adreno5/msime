@@ -299,6 +299,22 @@ fn plugin_commits_stay_out_of_the_ai_context() {
     assert!(!runtime.ai_context.contains("0f8fad5b"));
 }
 
+/// 插件注释只拥有最终结果，不先复制完整标题和注释。
+#[test]
+fn plugin_annotation_reads_only_allocate_the_final_text() {
+    let directory = tempfile::tempdir().unwrap();
+    let long = "注".repeat(40);
+    let (mut runtime, _script) = plugin_runtime(directory.path(), rows(&[("甲", &long)]));
+    type_text(&mut runtime, "/uuid");
+    let (annotation, allocations) = allocations::count(|| runtime.script_annotation(0));
+    let expected = format!("UUID {}", "注".repeat(27));
+    assert_eq!(annotation.as_deref(), Some(expected.as_str()));
+    assert_eq!(
+        allocations, 1,
+        "插件注释读取只应申请最终字符串：{allocations}"
+    );
+}
+
 /// 插件注释格最多 32 个 UTF-16 码元，在字符边界上截断；含控制字符的注释不显示，只剩标题。
 #[test]
 fn plugin_annotations_are_cut_to_the_annotation_limit() {
@@ -417,6 +433,6 @@ fn repeated_command_queries_reuse_the_output_rows_buffer() {
             transition.view.candidates[0].script_annotation.as_deref(),
             Some("UUID 注释")
         );
-        assert_eq!(count, 49, "预热后的插件指令查询仍申请了临时行容器：{count}");
+        assert_eq!(count, 46, "预热后的插件指令查询超出分配预算：{count}");
     }
 }
