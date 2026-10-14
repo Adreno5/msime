@@ -3,6 +3,7 @@ import { ControlledCheckbox } from "../core/controlled-checkbox";
 import { errorCode } from "../core/error-code";
 import { StatusMessage } from "../core/status-message";
 import { ActionButton } from "../core/action-button";
+import { trackAsyncSubscription } from "../core/async-subscription";
 import { fullScreenColumn, fullScreenSurface } from "../core/full-screen-style";
 import { randomRequestId } from "../core/random-id";
 import { aiSkinMessage, libraryError } from "./touch-keyboard-skin-errors";
@@ -76,19 +77,13 @@ export function AiSkinGeneration({
     const generation = progressGeneration.current;
     requestRef.current = requestId;
     if (!client.onProgress) return;
-    let unsubscribe: (() => void) | undefined;
-    void client
-      .onProgress((progress) => {
+    return trackAsyncSubscription(
+      client.onProgress((progress) => {
         if (generation === progressGeneration.current && progress.requestId === requestRef.current)
           setCompleted(progress.completed);
-      })
-      .then((value) => {
-        if (generation === progressGeneration.current) unsubscribe = value;
-        else value();
-      });
-    return () => {
-      unsubscribe?.();
-    };
+      }),
+      () => generation === progressGeneration.current,
+    );
   }, [client, progressGeneration, requestId]);
 
   useEffect(
