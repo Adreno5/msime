@@ -3,6 +3,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <fstream>
+#include <filesystem>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 namespace {
 void require(bool condition, const char *message) {
@@ -107,14 +110,44 @@ int main(int argc, char **argv) {
   if (argc != 2)
     return 2;
   const std::string scenario = argv[1];
-  if (scenario != "english" && scenario != "blocked" && scenario != "destroyed")
+  if (scenario != "english" && scenario != "blocked" && scenario != "destroyed" &&
+      scenario != "compose")
     return 2;
   try {
+    std::filesystem::path compose_directory;
+    if (scenario == "compose") {
+      gchar *temporary = g_dir_make_tmp("msime-compose-test-XXXXXX", nullptr);
+      require(temporary != nullptr, "无法创建 Compose 测试目录");
+      compose_directory = temporary;
+      g_free(temporary);
+      std::ofstream(compose_directory / "compose.fixture")
+          << "<dead_circumflex> <e> : \"ê\"\n";
+      g_setenv("XCOMPOSEFILE", (compose_directory / "compose.fixture").c_str(), TRUE);
+    }
+    struct ComposeCleanup {
+      std::filesystem::path directory;
+      ~ComposeCleanup() {
+        if (directory.empty())
+          return;
+        g_unsetenv("XCOMPOSEFILE");
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+      }
+    } compose_cleanup{compose_directory};
     Fixture fixture;
     IBUS_ENGINE_GET_CLASS(fixture.engine)->focus_in(fixture.engine);
     wait_until([&] { return fixture.seen.shown == 1; });
     require(fixture.seen.visible, "英文模式没有显示输入模式提示");
     const auto hidden_before = fixture.seen.hidden;
+    if (scenario == "compose") {
+      auto *engine_class = IBUS_ENGINE_GET_CLASS(fixture.engine);
+      require(engine_class->process_key_event(fixture.engine, XKB_KEY_dead_circumflex, 0, 0),
+              "英文模式没有消费 Compose 死键");
+      require(engine_class->process_key_event(fixture.engine, XKB_KEY_e, 0, 0),
+              "英文模式没有消费 Compose 完成键");
+      std::cout << "IBus native Compose without an Engine session passed\n";
+      return 0;
+    }
     if (scenario == "blocked") {
       // 提示仍在等待时走 content_type -> close()，留下 null 视图。
       IBUS_ENGINE_GET_CLASS(fixture.engine)
