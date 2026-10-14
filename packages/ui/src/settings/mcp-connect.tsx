@@ -285,6 +285,7 @@ export function McpConnectSection({
         try {
           outcome = await install(id, false, flags);
         } catch (error) {
+          if (!isCurrent()) return;
           if (errorCode(error) !== "mcp_entry_exists") throw error;
           const replace = await confirm({
             title: `替换 ${name} 中的 msime？`,
