@@ -1,3 +1,5 @@
+import { createCommunityResourceClient } from "./community-resource-host";
+
 import type {
   CandidateSkinCommunityClient,
   CandidateSkinPackPreview,
@@ -8,9 +10,7 @@ import type {
   CommunityPluginClient,
   CommunityPluginPackPreview,
   CommunityPluginPage,
-  CommunityResourceApplication,
   CommunityResourceClient,
-  CommunityResourcePage,
   PluginPackage,
   SettingsSyncClient,
   SkinCatalog,
@@ -116,25 +116,7 @@ export function createDesktopPluginCommunity(invoke: Invoke): CommunityPluginCli
  * 桌面没有「高情商回复」键盘，所以不提供 storeReply / removeReply：回复模板只能收藏、评分、举报和发布，词包导入本机词库或账号云端词库。
  */
 export function createDesktopCommunityResources(invoke: Invoke): CommunityResourceClient {
-  return {
-    list: (kind, scope, search, offset) =>
-      invoke<CommunityResourcePage>("community_resource_list", { kind, scope, search, offset }),
-    detail: (id) => invoke("community_resource_detail", { id }),
-    publish: (id, kind, name, description, content, revision) =>
-      invoke("community_resource_publish", { id, kind, name, description, content, revision }),
-    apply: (id, resourceRevision) =>
-      invoke<CommunityResourceApplication>("community_resource_apply", { id, resourceRevision }),
-    save: (id, saved) => invoke("community_resource_save", { id, saved }),
-    rate: (id, stars) => invoke("community_resource_rate", { id, stars }),
-    unpublish: (id) => invoke("community_resource_unpublish", { id }),
-    report: (kind, id, reason, detail) =>
-      invoke("community_report", {
-        kind: kind === "dictionary" ? "dictionaries" : "replies",
-        id,
-        reason,
-        detail,
-      }),
-  };
+  return createCommunityResourceClient(invoke);
 }
 
 /**
