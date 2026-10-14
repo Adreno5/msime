@@ -472,7 +472,7 @@ IBus 属性面板的「输入选项」子菜单另提供 `EnglishMode` 独立英
 
 Linux IBus 会话支持 `Ctrl+Shift+Super+K` 打开屏幕键盘面板。宿主只在当前输入上下文获得焦点且不是密码等受限字段时消费该组合，并通过现有桌面面板启动器打开键盘；客户端把 Super 报告为 `MOD4`、`SUPER` 或两者同时置位时都能识别；Super 组合是否能到达 IBus 仍由桌面环境的全局快捷键策略决定。
 
-IBus 属性面板还提供 `TraditionalOutput`。开启后，中文方案的候选显示和提交文本经 `msime-host-api` 导出的 `msime_client_simplified_to_traditional` 转换为繁体，与 Windows 共用同一份 OpenCC `s2t` 词级表（「头发」→「頭髮」而不是逐字的「頭發」），不再依赖系统 ICU；Unicode 直接输入、日语方案和英文/Emoji 文本保持原样。配置绝对共享偏好目录时开关按 revision 保存 `traditional_chinese_output`，未配置目录时只覆盖当前会话。
+IBus 属性面板还提供 `TraditionalOutput`。开启后，中文方案的候选显示和提交文本经 `msime-host-api` 导出的 `msime_client_simplified_to_traditional` 转换为繁体，与 Windows 共用同一份 OpenCC 词级表（「头发」→「頭髮」而不是逐字的「頭發」），不再依赖系统 ICU。用哪套配置看共享偏好 `traditional_chinese_variant`：缺省 `s2t`，设置页「中文输出」选台湾正体或台湾用词时是 `s2tw`、`s2twp`，两个宿主读偏好时一并读它，经 `msime_client_convert_to_traditional` 转换；Unicode 直接输入、日语方案和英文/Emoji 文本保持原样。配置绝对共享偏好目录时开关按 revision 保存 `traditional_chinese_output`，未配置目录时只覆盖当前会话。
 
 `Ctrl+Shift+F` 使用同一简繁输出路径：配置了共享偏好目录时通过 revision 保存 `traditional_chinese_output`，保存成功后更新当前会话；没有可写偏好目录时保留会话级切换。持久化写入进行中，新的一次按下不切换也不吞掉该快捷键，避免重复操作覆盖较新的 revision；已经切换过的那次按下，按住时的自动重复和松开都归这个快捷键，不会再切换一次，与 Windows 一致。
 
