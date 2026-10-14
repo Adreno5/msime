@@ -5354,6 +5354,39 @@ fn plugin_row_filter_does_not_allocate_a_second_text_index() {
 }
 
 #[test]
+fn cached_plugin_rows_do_not_allocate_a_temporary_row_vector() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    for count in [1, 2, crate::local::command::RESULT_LIMIT] {
+        let mut session = plugin_session(&fixture, |_| {});
+        let query = open_uuid(&mut session);
+        let rows: Vec<_> = (0..count)
+            .map(|index| (format!("合成行{index}"), String::new()))
+            .collect();
+        assert!(session.apply_plugin_command_rows(&query, &rows));
+        let cached = session.input.plugin_rows.as_ref().unwrap().1.clone();
+
+        for _ in 0..2 {
+            let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+                assert!(session.input.update_local_candidates().is_none());
+            });
+            assert_eq!(
+                allocations,
+                count * 2 + 1,
+                "{count} 行缓存插件候选重建产生了 {allocations} 次分配"
+            );
+            assert_eq!(session.input.local_candidates, cached);
+            assert_eq!(session.input.plugin_rows.as_ref().unwrap().1, cached);
+            assert!(session.plugin_command_query().is_none());
+        }
+
+        session.input.local_candidates[0].word.push('改');
+        assert_eq!(session.input.plugin_rows.as_ref().unwrap().1, cached);
+        session.input.update_local_candidates();
+        assert_eq!(session.input.local_candidates, cached);
+    }
+}
+
+#[test]
 fn zero_plugin_rows_keep_the_fallback_and_are_not_asked_again() {
     let fixture = Fixture::new(QUANPIN_FIXTURE);
     let mut session = plugin_session(&fixture, |_| {});
