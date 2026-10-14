@@ -394,6 +394,29 @@ int main(void)
         assert(!panel.isVisible);
         [controller renderCandidates];
         assert(panel.alphaValue == 1.0);
+        // 可选的合成显隐样本，仅输出耗时与菜单构建次数，不输出输入内容。
+        if (getenv("MSIME_CANDIDATE_BENCHMARK")) {
+            NSMutableArray *sample = [NSMutableArray array];
+            for (NSUInteger slot = 0; slot < 9; ++slot)
+                [sample addObject:@{@"id": @{@"session": @1, @"generation": @7, @"index": @(slot)},
+                                    @"text": @"合成", @"highlighted": @(slot == 0)}];
+            NSDictionary *shown = @{@"session": @1, @"generation": @7, @"focused": @YES,
+                                    @"editing_text": @"d", @"candidates": sample, @"page": @0, @"page_count": @1};
+            NSDictionary *hidden = @{@"candidates": @[]};
+            std::vector<double> timings;
+            for (NSUInteger iteration = 0; iteration < 60; ++iteration) {
+                @autoreleasepool {
+                    const uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+                    [controller setValue:shown forKey:@"view"];
+                    [controller renderCandidates];
+                    [controller setValue:hidden forKey:@"view"];
+                    [controller renderCandidates];
+                    timings.push_back((clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6);
+                }
+            }
+            std::sort(timings.begin(), timings.end());
+            printf("candidate show/hide: median=%.3fms p95=%.3fms\n", timings[30], timings[57]);
+        }
         MSIMERemoveTestPreferenceSuite(defaults, suite);
     }
     return 0;
