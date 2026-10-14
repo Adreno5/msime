@@ -140,7 +140,10 @@ fn segment_row_cache_hit_borrows_the_segmentation_key() {
     let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
         let _ = dictionary.query_database(&segments, "ni'hao");
     });
-    assert_eq!(allocations, 5, "热缓存分段查询仍重建了表键: {allocations}");
+    assert_eq!(
+        allocations, 4,
+        "热缓存分段查询仍创建了临时行页: {allocations}"
+    );
 }
 
 #[test]
@@ -153,7 +156,10 @@ fn automatic_segmentation_reuses_the_joined_code_for_word_items() {
     let (_, allocations) = crate::ime::personal_rerank::allocations::count(|| {
         let _ = dictionary.query_database(&segments, "");
     });
-    assert_eq!(allocations, 6, "自动分段查询重复拼接了读音: {allocations}");
+    assert_eq!(
+        allocations, 5,
+        "自动分段查询仍创建了临时行页: {allocations}"
+    );
 }
 
 #[test]
@@ -614,8 +620,8 @@ fn longer_phrase_cache_hit_does_not_rebuild_the_full_key() {
         let _ = dictionary.longer_phrase_candidates("ni'hao", &segments);
     });
     assert_eq!(
-        allocations, 8,
-        "热缓存长词补全仍重建了切分键: {allocations}"
+        allocations, 7,
+        "热缓存长词补全仍创建了临时行页: {allocations}"
     );
 }
 
