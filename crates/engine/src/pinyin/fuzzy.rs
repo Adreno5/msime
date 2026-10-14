@@ -115,13 +115,25 @@ pub fn fuzzy_segmentations<S: AsRef<str>>(
     options: FuzzyPinyinOptions,
     limit: usize,
 ) -> Vec<Vec<String>> {
-    if options.rules == 0 || segments.is_empty() || limit == 0 {
+    if options.rules == 0 || segments.is_empty() || limit <= 1 {
         return Vec::new();
     }
-    let mut paths: Vec<Vec<String>> = vec![Vec::new()];
-    for syllable in segments {
+    // 原组合始终在首位；真正分叉前只借用，避免为最终删掉的唯一原路径拥有字符串。
+    let mut paths: Vec<Vec<String>> = Vec::new();
+    for (index, syllable) in segments.iter().enumerate() {
         let variants = fuzzy_syllables(syllable.as_ref(), options);
         let alternatives = variants.as_slice();
+        if paths.is_empty() {
+            if alternatives.len() == 1 {
+                continue;
+            }
+            // 按原追加顺序恢复前缀，实际分叉保持原路径容量与分配策略。
+            let mut prefix = Vec::new();
+            for segment in &segments[..index] {
+                prefix.push(segment.as_ref().to_owned());
+            }
+            paths = vec![prefix];
+        }
         // 单变体不会增加路径数，已有路径满足上限，直接复用当前层容器。
         if let [alternative] = alternatives {
             for path in &mut paths {
@@ -353,7 +365,7 @@ mod tests {
         let options = rules(fuzzy_rule::ALL);
         let single = vec!["zan".to_owned()];
         let _ = fuzzy_segmentations(&single, options, FUZZY_SEGMENTATION_LIMIT);
-        for (limit, budget) in [(1, 4), (2, 6), (3, 8), (4, 10), (64, 10)] {
+        for (limit, budget) in [(1, 0), (2, 6), (3, 8), (4, 10), (64, 10)] {
             let (paths, allocations) = crate::ime::personal_rerank::allocations::count(|| {
                 fuzzy_segmentations(&single, options, limit)
             });
@@ -382,20 +394,20 @@ mod tests {
     }
 
     #[test]
-    fn single_variant_steps_reuse_the_current_beam_storage() {
+    fn single_variant_steps_elide_original_only_and_reuse_branch_storage() {
         let options = rules(fuzzy_rule::ALL);
         let _ = fuzzy_syllables("guo", options);
-        for (count, budget) in [(0, 0), (32, 37), (1, 3), (4, 6), (8, 11)] {
+        for (count, budget) in [(0, 0), (32, 0), (1, 0), (4, 0), (8, 0)] {
             let typed = vec!["guo".to_owned(); count];
             let (paths, allocations) = crate::ime::personal_rerank::allocations::count(|| {
                 fuzzy_segmentations(&typed, options, FUZZY_SEGMENTATION_LIMIT)
             });
             assert!(paths.is_empty());
-            assert_eq!(allocations, budget, "单变体仍创建下一层路径容器: {count}");
+            assert_eq!(allocations, budget, "仅原切分仍拥有路径: {count}");
         }
 
         let typed = vec!["zan".to_owned(), "guo".to_owned()];
-        for (limit, budget) in [(1, 5), (2, 9), (3, 13), (4, 17), (64, 17)] {
+        for (limit, budget) in [(1, 0), (2, 9), (3, 13), (4, 17), (64, 17)] {
             let (paths, allocations) = crate::ime::personal_rerank::allocations::count(|| {
                 fuzzy_segmentations(&typed, options, limit)
             });
@@ -468,3 +480,7 @@ mod tests {
 #[cfg(test)]
 #[path = "fuzzy/variant_view_tests.rs"]
 pub(crate) mod variant_view_tests;
+
+#[cfg(test)]
+#[path = "fuzzy/lazy_start_tests.rs"]
+mod lazy_start_tests;

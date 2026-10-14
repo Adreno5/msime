@@ -103,7 +103,7 @@ pub(crate) fn legacy_segmentations<S: AsRef<str>>(
     paths
 }
 
-// 只用冻结展开的结果数推导每层规划成本，不调用生产的借用规划。
+// 用冻结展开推导规划成本；必空路径在计量外取冻结 beam 的完整成本，不调用生产规划。
 pub(crate) fn storage_savings<S: AsRef<str>>(
     segments: &[S],
     options: FuzzyPinyinOptions,
@@ -111,6 +111,13 @@ pub(crate) fn storage_savings<S: AsRef<str>>(
 ) -> usize {
     if options.rules == 0 || segments.is_empty() || limit == 0 {
         return 0;
+    }
+    if limit == 1
+        || segments
+            .iter()
+            .all(|syllable| legacy_syllables(syllable.as_ref(), options).len() == 1)
+    {
+        return count(|| legacy_segmentations(segments, options, limit)).1;
     }
     let mut parents = 1usize;
     let mut saved = 0;
@@ -160,7 +167,7 @@ fn borrowed_variant_plans_preserve_every_syllable_rule_without_heap_storage() {
 }
 
 #[test]
-fn borrowed_beam_variants_save_only_planning_and_unused_owned_values() {
+fn borrowed_beam_variants_save_planning_and_original_only_storage() {
     let _ = super::super::syllables::intact_pinyin_set();
     let mut saw_partial_last_parent = false;
     for input in [
@@ -183,8 +190,8 @@ fn borrowed_beam_variants_save_only_planning_and_unused_owned_values() {
             let options = FuzzyPinyinOptions { rules: mask };
             for limit in [0, 1, 2, 3, 5, 63, 64, 65, 128, usize::MAX] {
                 let saved = storage_savings(&owned, options, limit);
-                saw_partial_last_parent |= saved > owned.len();
                 let (expected, old_count) = count(|| legacy_segmentations(&owned, options, limit));
+                saw_partial_last_parent |= !expected.is_empty() && saved > owned.len();
                 let (actual, new_count) = count(|| fuzzy_segmentations(&owned, options, limit));
                 assert_eq!(actual, expected);
                 assert_eq!(
@@ -192,7 +199,12 @@ fn borrowed_beam_variants_save_only_planning_and_unused_owned_values() {
                     old_count,
                     "beam {input:?}/{mask}/{limit}，目标省{saved}"
                 );
-                assert_eq!(actual.capacity(), expected.capacity());
+                let capacity = if expected.is_empty() {
+                    0
+                } else {
+                    expected.capacity()
+                };
+                assert_eq!(actual.capacity(), capacity);
                 for (actual, expected) in actual.iter().zip(&expected) {
                     assert_eq!(actual.capacity(), expected.capacity());
                     for (actual, expected) in actual.iter().zip(expected) {

@@ -318,8 +318,13 @@ fn owned_and_borrowed_fuzzy_paths_keep_the_frozen_beam_cost_and_capacity() {
                 let saved = storage_savings(&owned, options, limit);
                 assert_eq!(new_count + saved, old_count);
                 assert_eq!(borrowed_count + saved, old_count);
-                assert_eq!(actual.capacity(), expected.capacity());
-                assert_eq!(borrowed.capacity(), expected.capacity());
+                let capacity = if expected.is_empty() {
+                    0
+                } else {
+                    expected.capacity()
+                };
+                assert_eq!(actual.capacity(), capacity);
+                assert_eq!(borrowed.capacity(), capacity);
                 for (actual, expected) in actual.iter().zip(&expected) {
                     assert_eq!(actual.capacity(), expected.capacity());
                     for (actual, expected) in actual.iter().zip(expected) {
