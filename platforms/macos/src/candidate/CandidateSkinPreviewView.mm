@@ -240,7 +240,7 @@ void DrawDecoration(NSRect card, CGFloat pad, const msime::mac::ResolvedSkin &sk
     }
     NSImage *image = [[NSImage alloc] initWithContentsOfFile:@(skin.decorationPath.c_str())];
     const auto placed = image == nil ? std::nullopt
-                                     : msime::mac::DecorationPlacement(skin.decorationAlign, NSWidth(card), pad, skin.decorationTopDip, skin.tokens.pad,
+                                     : msime::mac::DecorationPlacement(skin.decorationAlign, NSWidth(card), pad, skin.decorationTopDip,
                                                                        skin.decorationWidthDip, image.size.width, image.size.height);
     if (!placed)
     {
