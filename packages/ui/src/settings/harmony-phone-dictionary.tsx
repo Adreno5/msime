@@ -663,7 +663,7 @@ function BuiltinDictionaryDetail({
   const [more, setMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
-  const generation = useRef(0);
+  const generation = useAsyncGeneration(dictionary, query);
   const searchId = useId();
 
   const load = async (search: string, offset: number) => {
