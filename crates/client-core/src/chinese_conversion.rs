@@ -24,10 +24,11 @@ const ST_CHARACTERS: &str = include_str!("../data/opencc/STCharacters.txt");
 const MAX_IDS_DEPTH: usize = 16;
 const MAX_IDS_CODE_POINTS: usize = 64;
 
-/// One OpenCC dictionary: key to its first value, plus the longest key in characters.
+/// 一张 OpenCC 词典：键到首值的映射、最长键字符数和有效键的首字节集合。
 struct Table {
     entries: HashMap<&'static str, &'static str>,
     longest: usize,
+    initial_bytes: [u64; 4],
 }
 
 fn source_line_capacity(sources: &[&str]) -> usize {
@@ -35,10 +36,11 @@ fn source_line_capacity(sources: &[&str]) -> usize {
 }
 
 impl Table {
-    /// Parse OpenCC's text format. Earlier sources win on duplicate keys, which is what the union group does when two members match the same length.
+    /// 解析 OpenCC 文本；重复键优先使用前面的来源，与等长匹配的词典组规则一致。
     fn parse(sources: &[&'static str]) -> Self {
         let mut entries = HashMap::with_capacity(source_line_capacity(sources));
         let mut longest = 0;
+        let mut initial_bytes = [0; 4];
         for source in sources {
             for line in source.lines() {
                 if line.is_empty() || line.starts_with('#') {
@@ -53,15 +55,26 @@ impl Table {
                 if key.is_empty() {
                     continue;
                 }
+                let first = usize::from(key.as_bytes()[0]);
+                initial_bytes[first / 64] |= 1 << (first % 64);
                 longest = longest.max(key.chars().count());
                 entries.entry(key).or_insert(value);
             }
         }
-        Self { entries, longest }
+        Self {
+            entries,
+            longest,
+            initial_bytes,
+        }
     }
 
     /// 返回匹配 `text` 的最长前缀键及其首值，键长以字节计。
     fn longest_prefix(&self, text: &str) -> Option<(usize, &'static str)> {
+        let first = usize::from(*text.as_bytes().first()?);
+        // 首字节只排除不可能的键；同字节的不同字符仍需原来的最长匹配。
+        if self.initial_bytes[first / 64] & (1 << (first % 64)) == 0 {
+            return None;
+        }
         let (offset, character) = text.char_indices().take(self.longest).last()?;
         let prefix = &text[..offset + character.len_utf8()];
         prefix.char_indices().rev().find_map(|(offset, character)| {
@@ -316,6 +329,35 @@ mod tests {
                 expected,
                 "{input}"
             );
+        }
+    }
+
+    #[test]
+    fn longest_prefix_handles_dictionary_initial_bytes() {
+        let table = Table::parse(&[
+            "#注释\t忽略\ninvalid\n\t忽略\nz\t  \nPN结\tPN結\nSQL注入\tSQL注入\nSQL注入攻击\tSQL注入攻擊\n\0\t零\n~\t符号\n\u{7f}\t边界\né\t重音\n漢\t汉\n𠀀\t辅助平面\n",
+            "PN结\t后来源\n😀\t表情\n",
+        ]);
+        for (text, expected) in [
+            ("PN结!", Some((5, "PN結"))),
+            ("SQL注入攻击!", Some((15, "SQL注入攻擊"))),
+            ("SQL注入?", Some((9, "SQL注入"))),
+            ("\0tail", Some((1, "零"))),
+            ("~tail", Some((1, "符号"))),
+            ("\u{7f}tail", Some((1, "边界"))),
+            ("é漢", Some((2, "重音"))),
+            ("漢字", Some((3, "汉"))),
+            ("𠀀字", Some((4, "辅助平面"))),
+            ("😀字", Some((4, "表情"))),
+            ("", None),
+            ("z字", None),
+            ("N字", None),
+            ("Pwrong", None),
+            ("ê字", None),
+            ("汉字", None),
+            ("😁字", None),
+        ] {
+            assert_eq!(table.longest_prefix(text), expected, "{text:?}");
         }
     }
 
