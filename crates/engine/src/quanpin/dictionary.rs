@@ -766,7 +766,7 @@ impl QuanpinDictionary {
         result.extend(rows);
     }
 
-    /// QD:560-730 without the Google sentence: prefix groups longest first, the lattice block, the typo sentence, sparse fallbacks.
+    /// 对应 QD:560-730：从长到短查前缀组，再合并词网格、纠错整句与稀疏回退。
     fn query_series(
         &mut self,
         raw: &str,
@@ -777,13 +777,16 @@ impl QuanpinDictionary {
             return self.query_single_path(raw, segmentation, segments);
         }
         let mut result = Vec::new();
-        let mut partial_segmentation = join_segments(segments);
+        let prefix_key = series_prefix_key(segmentation, segments);
+        let mut partial_segmentation = prefix_key.as_ref();
         for count in (1..=segments.len()).rev() {
             if count < segments.len() {
-                truncate_last_segment(&mut partial_segmentation);
+                partial_segmentation = partial_segmentation
+                    .rsplit_once('\'')
+                    .map_or("", |(prefix, _)| prefix);
             }
             let partial = &segments[..count];
-            let mut rows = self.query_single_path(raw, &partial_segmentation, partial);
+            let mut rows = self.query_single_path(raw, partial_segmentation, partial);
             if count == segments.len() {
                 // 同长度表里常常只剩冷僻同音词：ping'guo 只有 苹果 1143881、评过 1180、平果 169、平锅 1，而 苹果电脑 21495、苹果公司 19725 在 tbl_4_p，同长度查询看不到，第二位就落到冷僻同音词上。所以更长的补全词按权重并入这一组，权重出自同一语料，跨表可比。`pinyin` 仍是键入的切分（上屏只消耗已键入的音节），`canonical_pinyin` 保留完整读音供持久化。
                 // 但首位只留给读音和键入完全一致的同长度行里最重的那一行：补全词上屏会多出用户没打的字，权重再高也不能抢首选（#7345：dacuozi 的首选曾是 打错字了，doumeiren 的首选曾是 都没人管理）。补全词只和其余同长度行竞争第二位起的位置，苹果电脑 仍排在 平锅 前面。同长度查询没有精确键时会退到前缀区间（zhi'liang'jian 只查到 zhi'liang'jiang 的 质量奖），那一行的读音并不是键入的读音，不钉首位，和补全词一起按权重排；同长度查询一行都没有时同样按权重排，整句块随后由 `whole_sentence_insert_position` 插到首位。
@@ -792,7 +795,7 @@ impl QuanpinDictionary {
                     .iter()
                     .filter(|item| item.canonical_pinyin == partial_segmentation)
                     .count();
-                let longer = self.longer_phrase_candidates(&partial_segmentation, partial);
+                let longer = self.longer_phrase_candidates(partial_segmentation, partial);
                 if !longer.is_empty() {
                     if exact_rows < self.first_page_rows.get() {
                         rows.sort_by_key(|item| std::cmp::Reverse(item.weight));
@@ -1216,6 +1219,29 @@ fn lattice_span_cache_key_matches(
     remaining.is_empty()
 }
 
+// 只有参数字节恰好等于音节拼接结果才借用，保留空段、别名及嵌入撇号的旧键。
+fn series_prefix_key<'a>(segmentation: &'a str, segments: &[String]) -> Cow<'a, str> {
+    let mut remaining = segmentation;
+    for (index, segment) in segments.iter().enumerate() {
+        if index != 0 {
+            let Some(rest) = remaining.strip_prefix('\'') else {
+                return Cow::Owned(join_segments(segments));
+            };
+            remaining = rest;
+        }
+        let Some(rest) = remaining.strip_prefix(segment.as_str()) else {
+            return Cow::Owned(join_segments(segments));
+        };
+        remaining = rest;
+    }
+    if remaining.is_empty() {
+        Cow::Borrowed(segmentation)
+    } else {
+        Cow::Owned(join_segments(segments))
+    }
+}
+
+#[cfg(test)]
 fn truncate_last_segment(segmentation: &mut String) {
     if let Some(boundary) = segmentation.rfind('\'') {
         segmentation.truncate(boundary);
@@ -1550,3 +1576,7 @@ mod lazy_segments_tests;
 #[cfg(test)]
 #[path = "dictionary/slot_key_ownership_tests.rs"]
 mod slot_key_ownership_tests;
+
+#[cfg(test)]
+#[path = "dictionary/series_prefix_borrow_tests.rs"]
+mod series_prefix_borrow_tests;
