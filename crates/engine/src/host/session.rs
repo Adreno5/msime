@@ -185,7 +185,9 @@ impl Session {
 
     /// With the annotation rule of bridge.cpp:914-929.
     pub fn snapshot(&self) -> Result<EngineSnapshot> {
-        let value = self.inner.snapshot();
+        let value = self
+            .inner
+            .snapshot_with_helpcode_visibility(self.show_helpcode);
         let helpcode_scheme = value.scheme.helpcode();
         let uppercase_all = value.scheme == SchemeType::Quanpin;
         // Rows the engine generated in the expression, command and mention modes are not spelled by pinyin; their annotations are the engine's own. 拆字行的注释是字的读音，没有读音的字也不补辅助码。
@@ -255,13 +257,10 @@ impl Session {
                 .next()
                 .unwrap_or_else(|| candidate.corrected_from.clone());
             if let Some(keymap) = keymap {
-                if !self.show_helpcode {
-                    // Hidden helpcodes give their slot back to the correction hint the engine would otherwise have shown.
-                    let helpcode = compute_helpcodes(&candidate.word, uppercase_all, keymap);
-                    if !helpcode.is_empty() && annotation == helpcode {
-                        annotation = candidate.corrected_from.clone();
-                    }
-                } else if annotation.is_empty() && candidate.source == CandidateSource::Generated {
+                if self.show_helpcode
+                    && annotation.is_empty()
+                    && candidate.source == CandidateSource::Generated
+                {
                     // The engine annotates dictionary rows itself; a sentence it synthesised carries no helpcode until the host adds one.
                     annotation = compute_helpcodes(&candidate.word, uppercase_all, keymap);
                 }

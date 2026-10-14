@@ -3437,3 +3437,20 @@ fn a_multi_pick_in_the_pinyin_lookup_creates_no_phrase() {
     pick_in_two(&control, b"nihao");
     assert_eq!(created_rows(&control), 1);
 }
+
+#[test]
+fn hidden_helpcode_snapshot_does_not_recompute_annotations() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options = helpcode_fixture(root.path(), "", "你=ab\n好=cd\n拟=ef\n");
+    options.show_helpcode = false;
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"nihao");
+    let (snapshot, allocations) =
+        crate::ime::personal_rerank::allocations::count(|| session.snapshot().unwrap());
+    eprintln!("隐藏辅助码快照分配: {allocations}");
+    assert!(
+        allocations <= 32,
+        "隐藏辅助码重复构造分配了 {allocations} 次"
+    );
+    assert!(!snapshot.candidates.is_empty());
+}
