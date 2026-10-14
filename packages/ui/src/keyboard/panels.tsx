@@ -40,6 +40,7 @@ import { VoiceLanguageOptions } from "../voice/voice-language-options";
 import { useAsyncGeneration } from "../settings/use-async-generation";
 import { useMountedRef } from "../settings/use-mounted-ref";
 import { useLatestRef } from "../core/use-latest-ref";
+import { useTimedValue } from "../core/use-timed-value";
 import {
   isImeCommitKey,
   keyboardKeyWeight,
@@ -4120,8 +4121,7 @@ export function EmojiPanel({
   const deletedRowFocus = useRef<{ element: HTMLElement; index: number; query: string } | null>(
     null,
   );
-  const [notice, setNoticeText] = useState("");
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [notice, setNoticeText] = useTimedValue("");
   const [catalog, setCatalog] = useState({
     emoji: fallbackEmojiGroups,
     kaomoji: fallbackKaomojiGroups,
@@ -4136,26 +4136,14 @@ export function EmojiPanel({
   const clipboardLifecycle = useAsyncGeneration(client, page, clipboardRefresh);
 
   function setNotice(message: string, temporary = false) {
-    if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
-    noticeTimer.current = null;
-    setNoticeText(message);
-    if (temporary) {
-      noticeTimer.current = setTimeout(() => {
-        noticeTimer.current = null;
-        setNoticeText("");
-      }, 1600);
-    }
+    setNoticeText(message, temporary ? 1600 : undefined);
   }
 
   useEffect(() => {
     clipboardMutation.current = false;
     deletedRowFocus.current = null;
     setNotice("");
-    return () => {
-      invalidate();
-      if (noticeTimer.current !== null) clearTimeout(noticeTimer.current);
-      noticeTimer.current = null;
-    };
+    return invalidate;
   }, [client, invalidate]);
 
   useEffect(() => {

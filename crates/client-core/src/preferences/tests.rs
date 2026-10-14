@@ -1622,6 +1622,7 @@ fn appearance_preferences_absent_defaults_and_roundtrip() {
         "input_mode_hud",
         "input_mode_status_item",
         "expand_candidates",
+        "show_candidate_expand_button",
     ] {
         sparse["preferences"].as_object_mut().unwrap().remove(key);
     }
@@ -1634,6 +1635,7 @@ fn appearance_preferences_absent_defaults_and_roundtrip() {
     // 「展开候选」同样是新加的开关，缺字段的旧文档和新装都读成关闭。
     assert!(!Preferences::default().expand_candidates);
     assert!(!loaded.preferences.expand_candidates);
+    assert!(loaded.preferences.show_candidate_expand_button);
     // 缺这两项的旧文档按类型默认值读，保持跟随系统；触屏构建的新安装才用薄荷晨光（#2178），所以这里不能直接比 `Preferences::default()`。
     let mut expected = PreferencesSnapshot::default();
     expected.preferences.global_theme = crate::skin::theme::GlobalTheme::default();
@@ -1656,12 +1658,20 @@ fn appearance_preferences_absent_defaults_and_roundtrip() {
         input_mode_hud: false,
         input_mode_status_item: true,
         expand_candidates: true,
+        show_candidate_expand_button: false,
         ..Preferences::default()
     };
     let saved = store.save(0, preferences).unwrap();
     assert_eq!(store.load().unwrap(), saved);
     assert!(store.load().unwrap().preferences.input_mode_status_item);
     assert!(store.load().unwrap().preferences.expand_candidates);
+    assert!(
+        !store
+            .load()
+            .unwrap()
+            .preferences
+            .show_candidate_expand_button
+    );
 }
 
 #[test]

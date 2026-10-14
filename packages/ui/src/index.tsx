@@ -1943,6 +1943,8 @@ export type Preferences = {
   show_app_logo?: boolean;
   /** 「展开候选」：横排候选窗按 ↓ 展开成多行候选网格，默认关闭。 */
   expand_candidates?: boolean;
+  /** 展开按钮独立于页码显示，缺字段时默认开启。 */
+  show_candidate_expand_button?: boolean;
   /** The one theme for the candidate window, floating toolbar, menus and touch keyboard. `theme` stays the light/dark mode that `system` and the settings window follow. */
   global_theme?: GlobalTheme;
   /** What the `custom` global theme is made of: an external candidate skin package, the seven candidate colour pickers and the keyboard editor design. */
@@ -2574,7 +2576,6 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showInputModeHUD,
     showInputModeStatusItem,
     showVoiceCaptureDevices,
-    showDesktopMaintenanceShortcuts,
     showFullwidthChord,
     clientHostedPlatform,
     desktopPanels,
@@ -3380,7 +3381,6 @@ function SettingsShell(props: SettingsPageProps) {
     client,
     confirmation,
     confirm,
-    host,
     androidPlatform,
     iosPlatform,
     harmonyPlatform,
@@ -3578,6 +3578,7 @@ function SettingsShell(props: SettingsPageProps) {
         value={navQuery}
         onChange={(event) => setNavQuery(event.target.value)}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === "Escape") setNavQuery("");
           if (event.key !== "Enter") return;
           const first = shownSidebarGroups[0]?.pages[0];

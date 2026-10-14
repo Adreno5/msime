@@ -7408,19 +7408,22 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     NSFont *pageIndicatorFont = [NSFont monospacedDigitSystemFontOfSize:MSIMECandidatePageIndicatorPointSize * scale weight:NSFontWeightRegular];
     NSString *pageIndicator = pageControls ? [NSString stringWithFormat:@"%lu / %lu", (unsigned long)(page + 1), (unsigned long)pageCount] : @"";
     const CGFloat pageIndicatorWidth = pageControls ? ceil([pageIndicator sizeWithAttributes:@{NSFontAttributeName: pageIndicatorFont}].width) : 0;
-    // 「展开候选」打开时横排候选窗在 ‹ › 后面多一个展开按钮，给用鼠标的人（#7307）；条件和 ↓ 展开网格相同。它跟着翻页控件一起按 `show_candidate_page_number` 显示：关掉页码和翻页按钮的人要的是只剩候选行的卡片，↓ 照样能展开。
-    const BOOL expandable = pageControls && [self expandedCandidatesOffered];
-    const CGFloat pageControlsWidth = pageControls ? pageIndicatorWidth + indicatorGap + (expandable ? 3 : 2) * arrowWidth : 0;
-    const CGFloat headerHeight = MAX(preeditHeight, pageControls || logo ? headerRow : 0);
+    // 展开键由独立偏好控制；首行完全隐藏时放在候选行右端，不增加首行高度。
+    const BOOL expandable = _appearance.showsCandidateExpandButton && [self expandedCandidatesOffered];
+    const BOOL compactExpand = expandable && !pageControls && !preedit.length && !logo;
+    const CGFloat pageControlsWidth = (pageControls ? pageIndicatorWidth + indicatorGap + 2 * arrowWidth : 0) + (expandable && !compactExpand ? arrowWidth : 0);
+    const CGFloat headerHeight = MAX(preeditHeight, pageControls || logo || (expandable && !compactExpand) ? headerRow : 0);
     NSFont *numberFont = MSIMECandidateNumberFont(font);
     NSFont *glossFont = [_appearance candidateFontOfSize:MSIMECandidateTranslationPointSize * scale englishFirst:YES];
     const CGFloat preeditWidth = preedit.length ? ceil([preedit sizeWithAttributes:@{NSFontAttributeName:preeditFont}].width) + 4 * scale + MSIMEPreeditCaretGap : 0;
-    const CGFloat headerWidth = preedit.length || pageControls || logo ? 2 * inset + logoWidth + preeditWidth + (preedit.length && pageControls ? indicatorGap : 0) + pageControlsWidth : 0;
+    const CGFloat headerWidth = preedit.length || pageControls || logo ? 2 * inset + logoWidth + preeditWidth + (preedit.length && pageControlsWidth ? indicatorGap : 0) + pageControlsWidth : 0;
+    NSRect rowVisible = visible;
+    if (compactExpand) rowVisible.size.width = MAX(0.0, rowVisible.size.width - arrowWidth);
     const MSIMECandidatePageGeometry pageGeometry =
         [self candidatePageGeometry:candidates font:font glossFont:glossFont showSelectedBar:geometry.showSelectedBar inset:inset
-                             paging:pageControls visible:visible preeditWidth:headerWidth
+                             paging:pageControls visible:rowVisible preeditWidth:headerWidth
                        minimumWidth:MAX(skin.minWidthDip, skin.decorationWidthDip)];
-    const CGFloat width = pageGeometry.width;
+    const CGFloat width = pageGeometry.width + (compactExpand ? arrowWidth : 0);
     MSIMECandidatePanel *candidatePanel = [self candidatePanelWithAppearance:candidateAppearance];
     if (!candidatePanel.wheelPaging) [candidatePanel resetWheelAccumulator];
     candidatePanel.mouseWheelEnabled = [_appearance navigationEnabled:@"mouse_wheel"];
@@ -7534,15 +7537,18 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
             button.candidateID = _view;
             [content addSubview:button];
         }
-        if (expandable)
-            [content addSubview:[self expandedCandidatesToggleButton:NO
-                                                               frame:NSMakeRect(arrowsLeft + 2 * arrowWidth, controlsBottom, arrowWidth, headerRow)
-                                                               scale:scale]];
+    }
+    if (expandable) {
+        const CGFloat buttonHeight = compactExpand ? MIN(headerRow, pageGeometry.rows.front().height) : headerRow;
+        const CGFloat buttonBottom = compactExpand ? rowsTop - pageGeometry.rows.front().height + floor((pageGeometry.rows.front().height - buttonHeight) / 2)
+                                                  : headerBottom + floor((headerHeight - headerRow) / 2);
+        [content addSubview:[self expandedCandidatesToggleButton:NO
+            frame:NSMakeRect(width - inset - arrowWidth, buttonBottom, arrowWidth, buttonHeight) scale:scale]];
     }
     if (preedit.length) {
         MSIMECandidatePreeditField *label = [self candidatePreeditLabel:preedit font:preeditFont];
         label.frame = NSMakeRect(inset + logoWidth, headerBottom + floor((headerHeight - preeditHeight) / 2),
-                                 width - 2 * inset - logoWidth - (pageControls ? pageControlsWidth + indicatorGap : 0), preeditHeight);
+                                 width - 2 * inset - logoWidth - (pageControlsWidth ? pageControlsWidth + indicatorGap : 0), preeditHeight);
         [content addSubview:label];
     }
     if (logo) {
@@ -7669,9 +7675,7 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
         button.numberColor = button.candidateHighlighted ? SkinColor(tokens.selectedNumber) : SkinColor(tokens.number);
         button.barColor = SkinColor(tokens.accent);
         button.showSelectedBar = tokens.showSelectedBar;
-        const BOOL first = button == candidateButtons.firstObject;
-        const BOOL last = button == candidateButtons.lastObject;
-        button.cornerRadius = msime::mac::CandidateRowRadius(tokens, button.candidateHighlighted, first, last);
+        button.cornerRadius = msime::mac::CandidateRowRadius(tokens, button.candidateHighlighted);
         button.selectionLeftInset = MSIMECandidateScale(_appearance);
         button.contentTintColor = SkinColor(tokens.text);
         button.needsDisplay = YES;
