@@ -496,7 +496,7 @@ import type { MixedInputPreferences } from "./settings/mixed-input-preferences";
 import type { FrequencyPreferences } from "./settings/frequency-preferences";
 import { type LocalModePreferences } from "./settings/local-mode-preferences";
 import { floatingToolbarPreferences } from "./settings/floating-toolbar-preferences";
-import type { SurfaceTheme, ThemeMode } from "./settings/theme-settings-section";
+import type { ThemeMode, ThemePreferences } from "./settings/theme-preferences";
 import type { TouchToolbarPreferences } from "./settings/touch-keyboard-toolbar-preferences";
 import { HelpSettingsPage } from "./settings/help-settings-page";
 import type { MobileKeyboardFeedbackClient } from "./settings/mobile-keyboard-feedback";
@@ -804,13 +804,13 @@ export {
   type MusicPreferences,
   type PluginPreferences,
 } from "./settings/plugin-preferences";
-export {
-  ThemeSettingsSection,
-  type SurfaceTheme,
-  type ThemeMode,
-  type ThemePreferenceKey,
-  type ThemePreferences,
-} from "./settings/theme-settings-section";
+export { ThemeSettingsSection } from "./settings/theme-settings-section";
+export type {
+  SurfaceTheme,
+  ThemeMode,
+  ThemePreferenceKey,
+  ThemePreferences,
+} from "./settings/theme-preferences";
 export { SurfaceThemeSelect, type SurfaceThemeSelectProps } from "./settings/surface-theme-select";
 export { SurfaceThemeRow, type SurfaceThemeRowProps } from "./settings/surface-theme-row";
 export { ShortcutRow, type ShortcutRowProps } from "./settings/shortcut-row";
@@ -1881,16 +1881,9 @@ export type Preferences = PunctuationPreferences &
   WubiPreferences &
   CandidateFontPreferences &
   CandidateSizingPreferences &
-  CandidateWindowStylePreferences & {
+  CandidateWindowStylePreferences &
+  ThemePreferences & {
     theme?: ThemeMode;
-    settings_theme?: SurfaceTheme;
-    candidate_theme?: SurfaceTheme;
-    toolbar_theme?: SurfaceTheme;
-    screen_keyboard_theme?: SurfaceTheme;
-    handwriting_theme?: SurfaceTheme;
-    voice_theme?: SurfaceTheme;
-    emoji_theme?: SurfaceTheme;
-    menu_theme?: SurfaceTheme;
     ai_assistant?: AiAssistantPreferences;
     sentence_association?: SentenceAssociationPreferences;
     custom_translation?: { enabled: boolean; endpoint: string; api_key: string };
