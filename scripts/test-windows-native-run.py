@@ -139,6 +139,8 @@ COMPANIONS: dict[str, tuple[list[str], bool]] = {
     # struct out.
     "tsf/input/raw_commit.cpp": (["tsf/EngineResponse.cpp"], False),
     "tsf/input/host_composition.cpp": (["tsf/EngineResponse.cpp"], False),
+    # 按键分类快照读取宿主视图，需要链接同一个 JSON 解析器。
+    "tsf/input/key_composition_state.cpp": (["tsf/EngineResponse.cpp"], False),
     "tsf/input/engine_response.cpp": (["tsf/EngineResponse.cpp"], False),
 }
 COMPANION_LIBRARIES = ["-lcurl", "-lsqlite3"]

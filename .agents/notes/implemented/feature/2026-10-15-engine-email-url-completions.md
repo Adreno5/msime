@@ -41,6 +41,18 @@ Status: implemented
 
 TSF DLL 在 Server 回答前就要给按键分类，`platforms/windows/tsf/Global/LocalModeKeyPolicy.h` 保留了网址进入规则的拷贝。这份拷贝同步加上邮箱的键（`UrlEmailKey`、`IsEmailLocalPartAndKey`），`UrlModeAfterDeletion` 同样只在删末尾时退回；`scripts/test-windows-expression-symbols-parity.py` 多核对一项 `EMAIL_KEY` 与 `UrlEmailKey` 相同。
 
+### Windows 按键分类的状态归属
+
+TIP 的宿主会话处理输入时绕过 `AddVirtualKey`，旧键击缓冲可能一直为空。键盘编号或 TSF 内置候选列表选中网址开头、顶级域名后，宿主预编辑会直接替换。`CCompositionProcessorEngine::GetKeyCompositionState` 因此提供只读快照：有有效宿主时按其 `editing_text`、`caret_position` 和 `local_mode` 读取原文、光标、Unicode 与网址标记；宿主视图读取失败返回空状态，不能复用另一份旧会话。没有宿主会话的旧路径才从键击缓冲构建快照。中文方案和网址、Unicode 等本地模式的 `editing_text` 是 ASCII 原文，光标下标与 Windows UTF-16 一致；越南文、藏文的原文可含非 ASCII 字符，目前光标位于末尾，沿用按 UTF-16 长度钳制的位置。
+
+普通按键分类和排队按键的初始投影共用快照。投影已有效时仍按队列里尚未执行的按键推进，不用实时视图覆盖未来状态；队列完成后失效，下一次从宿主当前视图重新建立。宿主候选选择后不需要额外复制或修改旧缓冲。
+
+### Windows 断线恢复检查点
+
+`_RefreshDeferredRecoveryPrefix` 同样从 `GetKeyCompositionState` 读取原文和光标。宿主按键路径绕过旧键击缓冲，队列耗尽时和 transport 重置前若仍从旧缓冲压缩历史，会把非空组字变成空检查点；旧缓冲残留文字时还可能恢复已经结束的组字。检查点读取当前快照后仍按原有规则生成字符和左移事件，保持容量检查、焦点代次、上下文引用与重试顺序。`CommitsOnBlur` 方案（韩文、注音、越南文、藏文）不生成检查点：`_RequestLocalSessionReset` 已经把现有组字上屏，重放会重复输入；每次刷新仍先释放旧检查点。
+
+这是恢复原文和光标的数据来源修复，检查点仍不是引擎会话的序列化。经过选词、整句改字或进入本地模式后又删除触发前缀的状态，未必能从原文重放得到；越南文、藏文的非 ASCII 原文也不等于可重放的 ASCII 按键。需要完整恢复这些状态时，应单独设计会话恢复契约，不能据此宣称重连保留了全部组字语义。
+
 ## Alternatives considered
 
 - **补全排在整段网址前面（第一行就是 `zhangsan@qq.com`）** — 最贴近“打 @ 就联想后缀”的直觉，按空格直接得到最常用的后缀。但空格、失焦和结束网址的标点都上屏第一行，顶级域名补全领先时 `https://localhost` 会被改成 `.com`，打一半的域名也会被替换，这是悄悄改用户打的字。网址模式里数字不能选词，键盘上的选择本来就要靠方向键，让默认行保持用户打的内容更稳。
@@ -48,15 +60,21 @@ TSF DLL 在 Server 回答前就要给按键分类，`platforms/windows/tsf/Globa
 - **用 `Generated` 作来源（与组字里插入的日期时间行一样）** — 最省事。但 `Generated` 是 runtime 整句读法降位的依据（`LATTICE_SOURCE`），补全行会被当成整句读法挪位，同一列表里真正的整句读法也会认错宽度。
 - **选中顶级域名直接上屏** — 实现最简单，与邮箱后缀一致。但网址后面常常还要接路径（`github.com/...`），上屏后就接不上了；留在网址模式再按空格上屏只多一步。
 - **`@` 只在原文不是完整拼音时才进入邮箱** — 能保住 `xiexie@` 这类打完拼音直接接 `@` 的旧行为。但邮箱的本地部分本来就常是拼音名（`zhangsan`），分不出来；误进入后退格一次就回到原来的组字，可以选回汉字。
+- **在候选选择回调里同步旧缓冲** — 可以让旧分类代码不变，改动集中在候选选择路径。但键盘输入本来就绕过旧缓冲，删除、取消、模式切换也需要维护同样的同步；两份可变组字容易再次漂移。分类时读取拥有组字的会话，队列只维护尚未执行按键的投影。
+- **保留全部已执行按键作断线恢复历史** — 能保留仅靠原文无法表达的部分操作顺序。但历史会持续增长，重放已经上屏或只适用于旧候选代次的动作也不能保证还原会话；现有有界检查点继续压缩为当前原文与光标，只修正其读取来源，完整会话恢复另行设计。
 
 ## Consequences
 
-- **收益**：全拼、双拼、五笔的所有平台在组字后打 `@` 都有邮箱后缀候选，打 `ht`、`www` 之类有网址开头的补全，打主机名时有顶级域名补全，不需要宿主改动（Windows 只同步了按键分类规则的拷贝）。后缀表与 Android 宿主是同一份，由脚本核对。
-- **代价**：拼音后直接按 `@`（`xiexie@`）不再上屏“谢谢@”，而是进入网址模式；退格一次回到组字。组字时 `spelling_symbols` 多一个 `@`，快照多一次分配（两处分配预算测试各加一）。`ww`、`ft` 这类短组字的候选里多一两行补全。
-- **已知上限**：Windows TIP 自己维护键击缓冲和网址模式标记，只跟踪按键，不从 Server 的视图同步。键盘打出的邮箱（`@` 进入）两边一致；但点选组字里的 `https://` 或网址模式里的顶级域名时，Engine 的预编辑整段换掉而 TIP 的缓冲和网址标记没有跟上，之后的 `.`、数字可能在 TIP 里被当成翻页或选词。这条路径在 Windows 上没有验证；要支持它，TIP 需要在选择回复后按视图的 `local_mode` 和 `editing_text` 重建缓冲。
+- **收益**：全拼、双拼、五笔的所有平台在组字后打 `@` 都有邮箱后缀候选，打 `ht`、`www` 之类有网址开头的补全，打主机名时有顶级域名补全，共享引擎统一生成补全，Windows 同步按键分类规则并从宿主快照读取分类状态。后缀表与 Android 宿主是同一份，由脚本核对。
+- **代价**：拼音后直接按 `@`（`xiexie@`）不再上屏“谢谢@”，而是进入网址模式；退格一次回到组字。组字时 `spelling_symbols` 多一个 `@`，快照多一次分配（两处分配预算测试各加一）。`ww`、`ft` 这类短组字的候选里多一两行补全。Windows 普通分类、队列初次投影和恢复检查点各增加一次宿主视图读取及解析。
+- **Windows 验证边界**：TIP 从宿主快照读取当前原文和模式，宿主选择补全后的数字、句点不再受旧缓冲影响。便携 C++ 回归覆盖状态读取及网址键分类；真实 Windows 编辑器中的选择与后续按键仍需设备验收。独立的 Server 候选窗还有选择协议缺口：`ReplyComposer::select_candidate` 把没有 `commit` 的继续组字回复编码为 `ui_rejected_selection`，需要另行处理，不能据此宣称外部候选窗鼠标点选已可用。
+
+- **队列既有缺口**：状态读取和恢复检查点修复不改变队列选择的异步过渡。`ApplyDeferredKeyState` 对 `FUNCTION_SELECT_BY_NUMBER` 仍一律清空投影，因此选择网址补全尚未完成时快速连打，后续键可能按空组字分类；回放使用预分类结果。这需要独立处理。恢复检查点现在读取宿主原文和光标，仍有上述原文重放无法表达完整会话状态的边界。
 
 ## Verification
 
+- `python3 scripts/test-windows-deferred-recovery.py`：取实际 `_RefreshDeferredRecoveryPrefix` 方法编译执行，仅替换 Win32/COM 环境，覆盖空旧缓冲、旧缓冲残留、检查点替换、空宿主、光标、容量边界、字符修饰键和上下文引用释放；旧实现 11 项断言失败，快照实现全部通过。补充的 `CommitsOnBlur` 回归在缺少排除判断时四项失败，加判断后通过，避免已由 reset 上屏的组字再次入队。它由 `scripts/run-checks.sh` 自动发现，不依赖 Windows SDK；没有 C++ 编译器时显式跳过。该测试验证检查点生成，没有在真实 Windows 编辑器里模拟 transport 断线。
+- `msime-tsf-key-composition-state`：复现空旧缓冲和点选后的宿主视图，验证网址开头、顶级域名、后续数字与符号、键盘触发进入、光标、模式退出、空视图、读失败和旧路径回退；`scripts/test-windows-native-run.py` 与 Windows CMake 均登记。旧缓冲实现有 20 项断言失败，快照实现全部通过。
 - `cargo test -p msime-engine --locked`：`local::url::tests` 覆盖进入键、网址开头、邮箱和顶级域名补全的规则；`session::tests` 的 `url_at_after_a_local_part_offers_email_suffixes`（进入、20 个后缀、按已打域名缩小、完整后缀不给、数字是输入、选中上屏、空格交还 runtime）、`url_email_backspace_over_the_at_returns_to_the_composition`、`url_at_needs_a_plain_local_part`、`url_scheme_completions_enter_url_mode_when_picked`、`url_scheme_completion_is_not_taken_by_finishing`、`url_wubi_keeps_its_word_ahead_of_the_scheme_completion`，原有网址测试只改了 `spelling_symbols` 和补全行带来的期望。golden 基准不涉及网址，没有变化。
 - `cargo test -p msime-input-runtime --locked`：`url_email_suffixes_leave_digits_and_space_to_the_address`、`url_completions_picked_through_the_runtime_keep_composing` 走真实引擎验证数字不选词、`SelectHighlighted` 上屏打的网址、选补全不上屏。
 - `scripts/test-email-suffixes.py`、`scripts/test-windows-expression-symbols-parity.py`；`platforms/windows/tsf/tests/input/local_mode_key_policy.cpp` 用 clang 在本机编译运行通过。没有在任何平台的真实宿主里装机验证。

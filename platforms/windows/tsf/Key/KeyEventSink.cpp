@@ -1416,34 +1416,16 @@ void CMetasequoiaIME::_EnsureDeferredKeyProjection()
     _deferredProjectedDoubleSingleByteOpen =
         _pCompositionProcessorEngine && _pThreadMgr &&
         _pCompositionProcessorEngine->GetDoubleSingleByteMode(_pThreadMgr, _tfClientId) != FALSE;
-    // In the healthy path every IME-owned key enters the FIFO as well, so its
-    // first projection starts from the composition that is already visible.
-    // A transport-recovery checkpoint arms this projection before the local
-    // reset cancels that composition.
-    _deferredProjectedInputLength = _pCompositionProcessorEngine
-                                        ? min(static_cast<size_t>(MAX_PINYIN_LENGTH),
-                                              static_cast<size_t>(_pCompositionProcessorEngine->GetVirtualKeyLength()))
-                                        : 0;
-    _deferredProjectedRawInput.clear();
-    _deferredProjectedCaret = 0;
-    if (_pCompositionProcessorEngine)
-    {
-        const CStringRange &buffer = _pCompositionProcessorEngine->GetKeystrokeBuffer();
-        if (buffer.Get() && buffer.GetLength() > 0)
-        {
-            _deferredProjectedRawInput.assign(buffer.Get(), buffer.GetLength());
-        }
-        _deferredProjectedCaret = min(static_cast<size_t>(_pCompositionProcessorEngine->GetCaretPosition()),
-                                      _deferredProjectedRawInput.size());
-    }
-    // Incremental candidates are still the ordinary composing path: another
-    // letter extends the same raw input.  Only an explicit/original candidate
-    // list makes the next input a finalize-and-start-new boundary.
+    // 首键从当前组字快照开始投影；宿主点选补全可整段替换预编辑，不能从旧键击缓冲重建。
+    const auto composition = _pCompositionProcessorEngine ? _pCompositionProcessorEngine->GetKeyCompositionState()
+                                                         : msime::tsf::KeyCompositionState{};
+    _deferredProjectedRawInput = composition.rawInput;
+    _deferredProjectedInputLength = min(static_cast<size_t>(MAX_PINYIN_LENGTH), composition.rawInput.size());
+    _deferredProjectedCaret = composition.caret;
+    // 增量候选继续扩展原文；只有显式候选列表才让下一个输入先结束旧组字。
     _deferredProjectedCandidateActive = _candidateMode == CANDIDATE_ORIGINAL;
-    _deferredProjectedUnicodeMode =
-        _pCompositionProcessorEngine && _pCompositionProcessorEngine->IsUnicodeModeComposition() != FALSE;
-    _deferredProjectedUrlMode =
-        _pCompositionProcessorEngine && _pCompositionProcessorEngine->IsUrlModeComposition() != FALSE;
+    _deferredProjectedUnicodeMode = composition.unicodeMode;
+    _deferredProjectedUrlMode = composition.urlMode;
     _deferredProjectedKoreanHanjaListOpen =
         msime::windows::scheme::OpensCandidateList(Global::InputModeScheme.load(std::memory_order_relaxed)) &&
         _IsKoreanHanjaListOpen();
@@ -1537,9 +1519,17 @@ bool CMetasequoiaIME::_RefreshDeferredRecoveryPrefix(_In_ ITfContext *pContext)
         return false;
     }
 
-    CStringRange &raw = _pCompositionProcessorEngine->GetKeystrokeBuffer();
-    const size_t rawLength = static_cast<size_t>(raw.GetLength());
-    const size_t caret = min(rawLength, static_cast<size_t>(_pCompositionProcessorEngine->GetCaretPosition()));
+    // 与 _RequestLocalSessionReset 一致：这些方案的现有组字会在 reset 时上屏，不能再入队重放。
+    if (msime::windows::scheme::CommitsOnBlur(Global::InputModeScheme.load(std::memory_order_relaxed)))
+    {
+        return true;
+    }
+
+    // 宿主拥有组字时旧键击缓冲可能为空；恢复检查点与按键分类读取同一份当前快照。
+    const auto composition = _pCompositionProcessorEngine->GetKeyCompositionState();
+    const auto &raw = composition.rawInput;
+    const size_t rawLength = raw.size();
+    const size_t caret = min(rawLength, composition.caret);
     const size_t moveLeftCount = rawLength - caret;
     if (rawLength + moveLeftCount > MAX_DEFERRED_KEY_DOWN_COUNT)
     {
@@ -1548,7 +1538,7 @@ bool CMetasequoiaIME::_RefreshDeferredRecoveryPrefix(_In_ ITfContext *pContext)
 
     for (size_t index = 0; index < rawLength; ++index)
     {
-        const WCHAR wch = raw.Get()[index];
+        const WCHAR wch = raw[index];
         const SHORT virtualKey = VkKeyScanW(wch);
         DeferredKeyDown recoveryKey;
         recoveryKey.kind = DeferredKeyDown::Kind::KeyDown;
@@ -1673,7 +1663,7 @@ bool CMetasequoiaIME::_ClassifyDeferredKeyDown(_In_ ITfContext *pContext, WPARAM
         return true;
     }
 
-    // 候选列表开着：和 _IsKeyEaten 一样不只看 CANDIDATE_ORIGINAL，普通组字的增量候选也算。排队按键看投影里还有没有组字；宿主会话拥有组字时投影从空开始，这是数字键同样有的限制（见下面的数字选词）。
+    // 候选列表开着：和 _IsKeyEaten 一样不只看 CANDIDATE_ORIGINAL，普通组字的增量候选也算。排队按键看投影里还有没有组字，首个投影从当前拥有组字的会话读取。
     const bool projectedCandidateListOpen =
         _deferredKeyProjectionValid ? (_deferredProjectedInputLength > 0 || _deferredProjectedCandidateActive)
                                     : (_candidateMode != CANDIDATE_NONE);
@@ -1735,18 +1725,13 @@ bool CMetasequoiaIME::_ClassifyDeferredKeyDown(_In_ ITfContext *pContext, WPARAM
         shadow.punctuationOpen = _pCompositionProcessorEngine->GetPunctuationMode(_pThreadMgr, _tfClientId) != FALSE;
         shadow.doubleSingleByteOpen =
             _pCompositionProcessorEngine->GetDoubleSingleByteMode(_pThreadMgr, _tfClientId) != FALSE;
-        shadow.inputLength = min(static_cast<size_t>(MAX_PINYIN_LENGTH),
-                                 static_cast<size_t>(_pCompositionProcessorEngine->GetVirtualKeyLength()));
-        const CStringRange &buffer = _pCompositionProcessorEngine->GetKeystrokeBuffer();
-        if (buffer.Get() && buffer.GetLength() > 0)
-        {
-            shadow.rawInput.assign(buffer.Get(), buffer.GetLength());
-        }
-        shadow.caret =
-            min(static_cast<size_t>(_pCompositionProcessorEngine->GetCaretPosition()), shadow.rawInput.size());
+        const auto composition = _pCompositionProcessorEngine->GetKeyCompositionState();
+        shadow.rawInput = composition.rawInput;
+        shadow.inputLength = min(static_cast<size_t>(MAX_PINYIN_LENGTH), composition.rawInput.size());
+        shadow.caret = composition.caret;
         shadow.candidateActive = _candidateMode == CANDIDATE_ORIGINAL;
-        shadow.unicodeMode = _pCompositionProcessorEngine->IsUnicodeModeComposition() != FALSE;
-        shadow.urlMode = _pCompositionProcessorEngine->IsUrlModeComposition() != FALSE;
+        shadow.unicodeMode = composition.unicodeMode;
+        shadow.urlMode = composition.urlMode;
         shadow.koreanHanjaListOpen =
             msime::windows::scheme::OpensCandidateList(Global::InputModeScheme.load(std::memory_order_relaxed)) &&
             _IsKoreanHanjaListOpen();
