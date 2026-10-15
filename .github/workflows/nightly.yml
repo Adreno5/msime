@@ -73,6 +73,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # 每个平台的发布 workflow 已经上传了经过自身校验的 artifact；这里按平台分目录下载，避免同名的 SHA256SUMS 互相覆盖。
       - name: Download Android artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -113,36 +114,17 @@ jobs:
       - name: Package nightly assets
         env:
           SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          for platform in android ios macos linux harmony windows; do
-            test -d "nightly-assets/$platform"
-            test -n "$(find "nightly-assets/$platform" -type f -print -quit)"
-          done
-          stamp=$(date -u +%Y-%m-%d)
-          short_sha=${SOURCE_SHA:0:12}
-          mkdir -p dist
-          (cd nightly-assets && find . -type f -print0 | sort -z | xargs -0 sha256sum) > dist/SHA256SUMS
-          tar -czf "dist/msime-nightly-${stamp}-${short_sha}.tar.gz" -C nightly-assets .
-          for platform in android ios macos linux harmony windows; do
-            tar -czf "dist/msime-nightly-${platform}-${stamp}-${short_sha}.tar.gz" -C nightly-assets "$platform"
-          done
-          {
-            echo "nightly source: $SOURCE_SHA"
-            echo "built at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo
-            cat dist/SHA256SUMS
-          } > dist/README.txt
+        run: python3 scripts/package-nightly.py nightly-assets dist "$SOURCE_SHA"
       - name: Replace the rolling nightly release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PUBLISH_TOKEN || github.token }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
           fi
-          gh release create nightly dist/*.tar.gz dist/README.txt dist/SHA256SUMS \
+          gh release create nightly dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" \
             --prerelease \
