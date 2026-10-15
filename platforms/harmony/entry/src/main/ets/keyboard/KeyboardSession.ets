@@ -559,6 +559,8 @@ export interface KeyboardState {
   readonly editingCaret: number;
   /** The already-chosen part of a phrase leading `editing`, which the preedit style never hides. */
   readonly phrasePrefix: string;
+  /** 手机上拼写正写在输入框里，候选栏不画读音；见 `KeyboardSession.compositionInField`。 */
+  readonly compositionInField: boolean;
   readonly spellings: string[];
   readonly scheme: number;
   readonly shuangpinProfile: string;
@@ -3270,6 +3272,14 @@ export class KeyboardSession implements HardwareKeyTarget {
     }
   }
 
+  /** 手机上拼写此刻是否写在输入框里，候选栏因此不画读音；见 InlinePreeditPolicy.hidesStripReading。 */
+  compositionInField(): boolean {
+    const view: EngineView | undefined = this.lastView;
+    return view !== undefined && InlinePreeditPolicy.hidesStripReading(KeyboardFormFactor.isDesktop(),
+      this.previewText, SchemeCompositionPolicy.drawsPreedit(
+        SchemeCompositionPolicy.rulesScheme(view.scheme, view.dedicated_english, view.local_mode)));
+  }
+
   /**
    * Bring the editor's preview text in line with the composition the Engine last reported.
    *
@@ -3278,11 +3288,14 @@ export class KeyboardSession implements HardwareKeyTarget {
   private syncPreview(): void {
     const inputClient: inputMethodEngine.InputClient | undefined = this.inputClient;
     const view: EngineView | undefined = this.lastView;
-    // 拼写一栏传的是候选条画出来的那一串：多数方案就是 editing_text，笔画方案是笔画字形，文档里不出现键入的字母。
+    // 拼写一栏传的是候选条画出来的那一串：多数方案就是 editing_text，笔画方案是笔画字形，文档里不出现键入的字母。分词一栏是拼音分词形式，全拼九键是读音而不是按下的数字。
+    const rulesScheme: number = view === undefined ? -1
+      : SchemeCompositionPolicy.rulesScheme(view.scheme, view.dedicated_english, view.local_mode);
     const wanted: string = view === undefined ? '' : InlinePreeditPolicy.text(this.inlinePreeditStyle,
-      KeyboardFormFactor.isDesktop(), this.previewSupported, KeyboardSession.drawnReading(view), view.preedit,
-      view.phrase_prefix ?? '', SchemeCompositionPolicy.drawsPreedit(SchemeCompositionPolicy.rulesScheme(
-        view.scheme, view.dedicated_english, view.local_mode)));
+      KeyboardFormFactor.isDesktop(), this.previewSupported, KeyboardSession.drawnReading(view),
+      SchemeCompositionPolicy.fieldSpelling(rulesScheme, view.editing_text, view.preedit, view.nine_key_reading ?? ''),
+      view.phrase_prefix ?? '', SchemeCompositionPolicy.drawsPreedit(rulesScheme),
+      SchemeCompositionPolicy.keepsReadingOnStrip(rulesScheme, this.keyGrid === KeyGrid.FOURTEEN_KEY));
     if (inputClient === undefined || wanted === this.previewText) return;
     const shown: string = this.previewText;
     try {
@@ -4168,6 +4181,7 @@ export class KeyboardSession implements HardwareKeyTarget {
         editing: (view.phrase_prefix ?? '') + reading,
         editingCaret: KeyboardSession.drawnCaret(view, reading) + (view.phrase_prefix ?? '').length,
         phrasePrefix: view.phrase_prefix ?? '',
+        compositionInField: this.compositionInField(),
         spellings: view.nine_key_spellings,
         scheme: view.scheme,
         shuangpinProfile: view.shuangpin_profile,
@@ -4228,6 +4242,7 @@ export class KeyboardSession implements HardwareKeyTarget {
       candidates: entries, editing: (view.phrase_prefix ?? '') + reading,
       editingCaret: KeyboardSession.drawnCaret(view, reading) + (view.phrase_prefix ?? '').length,
       phrasePrefix: view.phrase_prefix ?? '',
+      compositionInField: this.compositionInField(),
       spellings: view.nine_key_spellings,
       scheme: view.scheme, shuangpinProfile: view.shuangpin_profile, localMode: view.local_mode,
       english: view.dedicated_english, diagnostic: this.diagnostic,
@@ -4291,6 +4306,7 @@ export class KeyboardSession implements HardwareKeyTarget {
       candidates: entries,
       editing: view?.editing_text ?? this.editing,
       editingCaret: view?.caret_position ?? this.editingCaret, phrasePrefix: '', spellings: [],
+      compositionInField: this.compositionInField(),
       scheme: view?.scheme ?? this.scheme, shuangpinProfile: view?.shuangpin_profile ?? this.profileName,
       localMode: view?.local_mode ?? this.localMode,
       english: view?.dedicated_english ?? this.englishMode, diagnostic: this.diagnostic,
