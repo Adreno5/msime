@@ -3,7 +3,7 @@ import { defaultFrequency } from "./frequency-preferences";
 import { defaultFuzzyPinyin } from "./fuzzy-pinyin-preferences";
 import { defaultKeybindings } from "./keybinding-defaults";
 import { defaultLocalModes } from "./local-mode-preferences";
-import { defaultMixedInput } from "./mixed-input-section";
+import { defaultMixedInput } from "./mixed-input-preferences";
 import { defaultNavigation, defaultWordCharacter } from "./candidate-paging-preferences";
 
 export type SettingsInputPreferencesSource = Pick<
