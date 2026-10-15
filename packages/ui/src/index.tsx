@@ -482,7 +482,7 @@ import type { PluginPreferences } from "./settings/plugin-preferences";
 import { AboutSettingsPage } from "./settings/pages/about-page";
 import { UsageReportingSettingsPage } from "./settings/pages/usage-reporting-page";
 import { PrivacySettingsPage } from "./settings/pages/privacy-page";
-import type { CustomHelpcodeSchema, HelpcodePreferences } from "./settings/pages/helpcode-page";
+import type { CustomHelpcodeSchema, HelpcodePreferences } from "./settings/helpcode-preferences";
 import type { ClipboardHistoryClient } from "./settings/clipboard-history-section";
 import type { CloudClipboardRequest } from "./settings/cloud-clipboard-send";
 import { type FuzzyPinyinPreferences } from "./settings/fuzzy-pinyin-preferences";
@@ -670,12 +670,15 @@ export {
   HelpcodeSettingsPage,
   HelpcodeSettingsGroup,
   type HelpcodeSettingsGroupProps,
+} from "./settings/pages/helpcode-page";
+export {
+  helpcodeSchemaOptions,
   type CustomHelpcodeSchema,
   type HelpcodePackOption,
   type HelpcodePreferences,
   type HelpcodeSchema,
   type HelpcodeSettings,
-} from "./settings/pages/helpcode-page";
+} from "./settings/helpcode-preferences";
 export {
   ClipboardHistorySection,
   type ClipboardHistoryClient,
