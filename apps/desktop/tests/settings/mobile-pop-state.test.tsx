@@ -85,3 +85,17 @@ test("设置外壳始终复用公共返回监听，与宿主能力发现时机�
   expect(source).toContain("useMobilePopState(true,");
   expect(source).not.toContain('window.addEventListener("popstate"');
 });
+
+test("桌面宿主自定义窗口事件复用公共订阅生命周期", () => {
+  const source = Object.values(
+    import.meta.glob<string>("../../src/main.tsx", {
+      eager: true,
+      query: "?raw",
+      import: "default",
+    }),
+  )[0];
+
+  expect(source).toContain("subscribeToWindowEvent");
+  expect(source).not.toContain('window.addEventListener("msime-mobile-panel"');
+  expect(source).not.toContain('window.addEventListener("msime-settings-page"');
+});
