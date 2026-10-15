@@ -17,7 +17,9 @@ Status: implemented
 
 ## Verification
 
-每个切换只消费自己的回复；A→B→A 不跳过返回请求；释放与运行失败拒绝全部切换；空闲同方案仍不发请求。可控 Worker 回归在旧实现 4 项失败、1 项通过，修复后通过。直接驱动生产 Worker 的测试核对初始加载无编号、两次方案切换分别带回各自编号；该层只替换 wasm 引擎，消息处理不替换。新增顺序用例核对方案、按键、方案按调用顺序发送且分别收到自己的结果。Node 单元测试 33 项通过，改动 JS 的 lint 与 `git diff --check` 通过。`bash scripts/verify-local.sh --quick` 通过，包含 Rust workspace、Android/Wasm 目标、Linux 设置外壳、Linux 原生 87 项测试、macOS 原生编译和 Apple 桥接；Windows 无本机交叉工具链、HarmonyOS 缺资源时按门禁说明跳过。真实打包冒烟补充连续切换，待 CI 验证；本机缺少匹配版本的 wasm-bindgen 和 wasm-opt。
+每个切换只消费自己的回复；A→B→A 不跳过返回请求；释放与运行失败拒绝全部切换；空闲同方案仍不发请求。可控 Worker 回归在旧实现 4 项失败、1 项通过，修复后通过。直接驱动生产 Worker 的测试核对初始加载无编号、两次方案切换分别带回各自编号；该层只替换 wasm 引擎，消息处理不替换。新增顺序用例核对方案、按键、方案按调用顺序发送且分别收到自己的结果。Node 单元测试 33 项通过，改动 JS 的 lint 与 `git diff --check` 通过。`bash scripts/verify-local.sh --quick` 通过，包含 Rust workspace、Android/Wasm 目标、Linux 设置外壳、Linux 原生 87 项测试、macOS 原生编译和 Apple 桥接；Windows 无本机交叉工具链、HarmonyOS 缺资源时按门禁说明跳过。PR 的 Web engine CI 通过真实 Wasm 构建、33 项 SDK 单测、打包并发冒烟、Chrome 接线、Wasm 单测与 clippy；本机缺少匹配版本的 wasm-bindgen 和 wasm-opt。
+
+首轮 CI 的共享 UI 全量有一项既有皮肤目录回归失败：按钮已调用，错误提示却被随后执行的首次挂载 effect 清除。本地重复 20 次有 1 次同样失败，追加代次轨迹后重复 60 次有 2 次捕获到 `start → catch → effect`；点击早于初始 effect。测试以异步 `act` 等待合成快照引发的挂载与 effect 完成后再操作，重复 60 次全部通过；正式用例保留一次，不保留临时轨迹和重复循环。只改该测试的准备阶段，不改变目录操作实现。
 
 ## Consequences
 
