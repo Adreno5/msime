@@ -248,6 +248,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   /// Japanese conversion keeps the selected candidate in the strip until Return commits it.
   private var japaneseConversionIndex: Int?
   private var isChineseMode = true
+  /// Shift 发起的英文片段不改变用户明确选择的语言，结束后回到原方案。
+  private var temporaryEnglishFromScheme = false
 
   /// The mode a newly opened keyboard starts in, from the shared `default_ime_mode`.
   ///
@@ -811,6 +813,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     closeKeyboardService()
     // 自己改动的回声：那次改动之后的组字仍是当前的组字。
     if ownEditEcho.isEcho(at: ProcessInfo.processInfo.systemUptime) { return }
+    finishTemporaryEnglish(force: true)
     // With 行内预编辑 the host already holds the letters: moving the caret out of marked text makes them ordinary text, and clearing the field removes them. Committing the composition as well would write it a second time, so the engine lets it go instead.
     if !inlineMarkedText.isEmpty {
       inlineMarkedText = ""
@@ -844,6 +847,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
+    finishTemporaryEnglish(force: true)
     DiagnosticLog.shared.write("focus_out")
     KeyboardUsageReporting.dismissed()
     replyModel.setText("")
@@ -3082,6 +3086,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     for _ in 0..<replacement.deleteCount { deleteOwnBackward() }
     insertDirectText(replacement.insert)
     updateCandidateStrip(preedit: "", candidates: [])
+    finishTemporaryEnglish()
   }
 
   /// A digit past the chips on show while composing. The session answers it with an unhandled diagnostic carrying no preedit, which the path below would take for "no composition" and type the digit into the document mid-word, so it does nothing instead. Not private: the page-size tests pin it.
@@ -3093,6 +3098,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   private func handleSymbol(_ symbol: String) {
     playInputClick()
     if !isChineseMode {
+      defer {
+        if symbol.contains(where: { !$0.isLetter && !$0.isNumber }) { finishTemporaryEnglish() }
+      }
       // 标点锁定为中文 keeps Chinese marks in English mode too; the shared route decides, as it does in Chinese mode.
       if session.sharedPreferences?["punctuation_lock"] as? String == "chinese",
          let punctuation = KeyboardPunctuationContext.engineInput(for: symbol, japanese: false) {
@@ -3299,7 +3307,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   // Explicit UIKit-trait boundary also allows layout/state regression tests without a fake engine.
   func applyInputContext(keyboardType: UIKeyboardType, documentIdentifier: UUID) {
     guard let chinese = inputContext.languageOverride(for: keyboardType, document: documentIdentifier,
-                                                      isChinese: isChineseMode) else { return }
+                                                      isChinese: isChineseMode, temporaryEnglish: temporaryEnglishFromScheme) else { return }
+    temporaryEnglishFromScheme = false
     // textWillChange normally finishes in the old field. If UIKit skipped that boundary, never
     // insert its remaining preedit into the new field while changing the keyboard's presentation.
     // The marked text belonged to the old field too, so there is nothing here to clear.
@@ -3315,12 +3324,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     updateCandidateStrip(preedit: "", candidates: [])
   }
 
-  private func toggleInputMode() {
-    playInputClick()
+  private func toggleInputMode(rememberChoice: Bool = true) {
+    temporaryEnglishFromScheme = false
+    // Shift 和片段结束键各自播放按键音；自动切回不再追加一次切换音。
+    if rememberChoice { playInputClick() }
     let snapshot = isChineseMode ? endComposition(at: .modeSwitch) : session.cancel()
     render(snapshot)
     isChineseMode.toggle()
-    if !inputContext.isInLatinField {
+    if rememberChoice && !inputContext.isInLatinField {
       ImeModeMemoryPreference.record(chinese: isChineseMode)
     }
     if isChineseMode && chinesePunctuation != appliedChinesePunctuation {
@@ -3336,7 +3347,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   private func toggleLetterCase() {
     // 韩语的 Shift 是布局自己的 Shift：选出 ㅃ ㅉ ㄸ ㄲ ㅆ ㅒ ㅖ，而不是切到英文。越南语和藏文的 Shift 与英文一样给出大写字母。
     if isChineseMode && !helpcodeCompositionEligible && !typesKorean && !typesCasedLetters {
-      toggleInputMode()
+      toggleInputMode(rememberChoice: false)
+      temporaryEnglishFromScheme = true
       letterCaseState = .lowercase
     }
 
@@ -3354,7 +3366,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       letterCaseState = letterCaseState == .lowercase ? .shifted : .lowercase
       lastShiftTapTime = now
     }
+    if letterCaseState == .lowercase { finishTemporaryEnglish(force: true) }
     updateLetterCaseControls()
+  }
+
+  /// 大写锁定跨单词保持，手动解除或离开编辑上下文时才退出；临时进入和返回都不写「沿用上次」。
+  private func finishTemporaryEnglish(force: Bool = false) {
+    guard temporaryEnglishFromScheme, force || letterCaseState != .capsLock else { return }
+    toggleInputMode(rememberChoice: false)
   }
 
   private func updateAutomaticCapitalization() {
@@ -3457,6 +3476,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.accessibilityLabel = korean ? "双辅音锁定" : "大写锁定"
         button.accessibilityValue = "开启"
       }
+      button.accessibilityHint = temporaryEnglishFromScheme
+        ? (letterCaseState == .capsLock ? "轻点解除大写锁定并返回原输入方案" : "空格或标点后返回原输入方案") : nil
     }
     styleShiftKeys()
   }
@@ -5026,6 +5047,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     if composing { render(session.finishComposition()) }
     insertOwnText("\t")
     if !isChineseMode { refreshEnglishSuggestions() }
+    finishTemporaryEnglish()
   }
 
   private func handleBackspace() {
@@ -5219,6 +5241,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     if !isChineseMode {
       insertDirectText(" ")
       refreshEnglishSuggestions()
+      finishTemporaryEnglish()
       return
     }
     if inputScheme.isJapanese && hasComposition
@@ -5251,6 +5274,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   // newline after every committed word, and in a field whose return key is 发送 or 完成 it also
   // fired that field's primary action. macOS swallows Return during a composition for this reason.
   private func handleReturn() {
+    defer { finishTemporaryEnglish() }
     if !handwriting.isHidden && handwriting.hasInk { _ = handwriting.commitFirst(); return }
     playInputClick()
     if inputScheme.isJapanese && hasComposition {
@@ -6816,6 +6840,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let self else { return }
         closeKeyboardPicker()
         if isChineseMode { toggleInputMode() }
+        else if temporaryEnglishFromScheme {
+          temporaryEnglishFromScheme = false
+          if !inputContext.isInLatinField { ImeModeMemoryPreference.record(chinese: false) }
+          updateLetterCaseControls()
+        }
       }, onSettings: { [weak self] in
         self?.showMorePicker()
       }, onAddLanguage: { [weak self] in
