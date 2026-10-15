@@ -135,7 +135,7 @@ final class NineKeyKeyboardTests: XCTestCase {
       XCTAssertEqual(
         (key.gestureRecognizers ?? []).compactMap { $0 as? UILongPressGestureRecognizer }.count, 1)
     }
-    // 1 键短按仍是符号入口，同时显示数字提示并提供长按数字。
+    // 1 键短按把常用标点放进候选条，同时显示数字提示并提供长按数字。
     let symbols = try button("nineKey1", in: controller)
     XCTAssertEqual(symbols.configuration?.title, "@#")
     XCTAssertEqual(symbols.accessibilityLabel, "1 符号")
