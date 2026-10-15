@@ -32,6 +32,14 @@ public final class InputFailureCategoryDeviceSmoke extends Instrumentation {
             });
             if (creationError.get() != null) throw creationError.get();
             service = created.get();
+            stage = "automatic recovery policy";
+            Class<?> recovery = loader.loadClass("app.msime.android.InputFailureRecoveryPolicy");
+            Method shouldRetry = method(recovery, "shouldRetry", int.class, boolean.class,
+                boolean.class, boolean.class);
+            check((boolean) shouldRetry.invoke(null, 0, true, true, true),
+                "installed policy retries the first live-session failure");
+            check(!(boolean) shouldRetry.invoke(null, 1, true, true, true),
+                "installed policy caps recovery at one attempt");
             Method value = method(type, "value", String.class);
             stage = "runtime rejection category";
             checkCategory(loader, failure(value, service,
@@ -100,6 +108,13 @@ public final class InputFailureCategoryDeviceSmoke extends Instrumentation {
 
     private static Method method(Class<?> type, String name, Class<?> parameter) throws Exception {
         Method method = type.getDeclaredMethod(name, parameter);
+        method.setAccessible(true);
+        return method;
+    }
+
+    private static Method method(Class<?> type, String name, Class<?>... parameters)
+            throws Exception {
+        Method method = type.getDeclaredMethod(name, parameters);
         method.setAccessible(true);
         return method;
     }
