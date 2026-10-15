@@ -873,6 +873,7 @@ export {
 } from "./settings/candidate-window-style-section";
 export { CandidatePageSizeSection } from "./settings/candidate-page-size-section";
 export { CandidateLayoutSection, type CandidateLayout } from "./settings/candidate-layout-section";
+export { candidateLayoutOptions } from "./settings/candidate-layout-options";
 export {
   CandidateFollowCursorSection,
   type CandidateFollowCursorSectionProps,
