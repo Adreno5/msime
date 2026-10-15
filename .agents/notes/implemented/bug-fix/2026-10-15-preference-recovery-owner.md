@@ -17,7 +17,7 @@ Status: implemented
 
 ## Verification
 
-新增回归先在旧实现上运行，迟到恢复会错误调用 `setSnapshot`，测试失败；修复后恢复测试 2 项全部通过。回归覆盖客户端替换、旧快照不落地以及旧请求不释放新客户端忙碌状态。改动文件的 lint、格式和 `git diff --check` 通过；完整 quick 和 CI 在提交前继续运行。
+新增回归先在旧实现上运行，迟到恢复会错误调用 `setSnapshot`，测试失败；修复后恢复测试 3 项全部通过。回归覆盖客户端替换、旧快照和草稿不落地，以及旧请求不释放新客户端忙碌状态。改动文件的 lint、格式和 `git diff --check` 通过；完整 quick 和 CI 在提交前继续运行。
 
 ## Consequences
 

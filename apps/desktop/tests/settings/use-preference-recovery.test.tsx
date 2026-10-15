@@ -106,3 +106,45 @@ test("ignores a late recovery result after the settings client changes", async (
   expect(setBusy).toHaveBeenCalledWith(true);
   expect(setBusy).not.toHaveBeenCalledWith(false);
 });
+
+test("ignores a late restore-defaults result after the settings client changes", async () => {
+  const pending = deferred<Preferences>();
+  const loadDefaultPreferences = vi.fn().mockReturnValue(pending.promise);
+  const setDraft = vi.fn();
+  const clientA = { loadDefaultPreferences };
+  const clientB = { loadDefaultPreferences: vi.fn() };
+  const options = (client: typeof clientA) => ({
+    client,
+    busy: false,
+    snapshotRef: { current: snapshot },
+    draftRef: { current: preferences },
+    setSnapshot: vi.fn(),
+    setDraft,
+    setBusy: vi.fn(),
+    setError: vi.fn(),
+    setNotice: vi.fn(),
+    setRecoveredBackup: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+  });
+  const { result, rerender } = renderHook(
+    ({ client }: { client: typeof clientA }) => usePreferenceRecovery(options(client)),
+    { initialProps: { client: clientA } },
+  );
+
+  let restore!: Promise<void>;
+  act(() => {
+    restore = result.current.restoreDefaults();
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(loadDefaultPreferences).toHaveBeenCalledOnce();
+
+  rerender({ client: clientB });
+  pending.resolve(preferences);
+  await act(async () => {
+    await restore;
+  });
+
+  expect(setDraft).not.toHaveBeenCalled();
+});
