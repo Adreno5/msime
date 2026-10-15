@@ -63,6 +63,37 @@ public final class KeyboardActionRowSmoke {
         }
         check("打开符号面板".equals(KeyboardActionRow.designDescription(KeyboardActionRow.DesignSlot.SYMBOL_PANEL, true)),
             "符 describes the panel it opens");
+        // 数字层只保留一个 0，原空格挪进右列；地球键和语言/数字交换仍可组合。
+        for (boolean globe : new boolean[] {false, true}) {
+            for (boolean swap : new boolean[] {false, true}) {
+                List<KeyboardActionRow.DesignEntry> numeric = KeyboardActionRow.designEntries(
+                    KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT, globe, swap, true);
+                List<KeyboardActionRow.DesignSlot> slots = numeric.stream()
+                    .map(KeyboardActionRow.DesignEntry::slot).toList();
+                check(slots.get(0) == (swap ? KeyboardActionRow.DesignSlot.LANGUAGE
+                        : KeyboardActionRow.DesignSlot.LAYER)
+                        && slots.get(1) == KeyboardActionRow.DesignSlot.SYMBOL_PANEL,
+                    "数字底行以九键和符号入口起头，交换时语言键占九键位置");
+                check(slots.contains(KeyboardActionRow.DesignSlot.GLOBE) == globe
+                        && slots.stream().filter(slot -> slot == KeyboardActionRow.DesignSlot.ZERO).count() == 1
+                        && !slots.contains(KeyboardActionRow.DesignSlot.SPACE),
+                    "数字底行唯一的 0 替下空格，地球键遵守宿主能力");
+                check(slots.get(slots.size() - 3) == KeyboardActionRow.DesignSlot.ZERO
+                        && slots.get(slots.size() - 2) == (swap ? KeyboardActionRow.DesignSlot.LAYER
+                            : KeyboardActionRow.DesignSlot.LANGUAGE)
+                        && slots.get(slots.size() - 1) == KeyboardActionRow.DesignSlot.RETURN,
+                    "0 在底行中间，右侧保留语言与回车");
+                check(KeyboardActionRow.languageBesideReturn(numeric) == !swap,
+                    "回车只向相邻的语言键让位");
+            }
+        }
+        for (int layout : new int[] {KeyboardLayout.STANDARD_TOUCH_LAYOUT, KeyboardLayout.STROKE_LAYOUT,
+                KeyboardLayout.ZHUYIN_NINE_KEY_LAYOUT, KeyboardLayout.JAPANESE_NINE_KEY_LAYOUT})
+            check(KeyboardActionRow.designEntries(layout, true, false, true)
+                    .equals(KeyboardActionRow.designEntries(layout, true)),
+                "九键数字底行不改变其他布局");
+        check("数字 0".equals(KeyboardActionRow.designDescription(KeyboardActionRow.DesignSlot.ZERO, true)),
+            "0 有独立无障碍描述");
         // 各普通底行交换动作与宽度，地球和其它按键顺序保持，回车不向数字入口让位。
         for (int layout : new int[] {KeyboardLayout.STANDARD_TOUCH_LAYOUT, KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT,
                 KeyboardLayout.FOURTEEN_KEY_LAYOUT, KeyboardLayout.KOREAN_LAYOUT, KeyboardLayout.ZHUYIN_LAYOUT,

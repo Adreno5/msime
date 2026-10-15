@@ -105,7 +105,7 @@ public final class KeyboardActionRow {
     // ---- 新设计的底行（plan §2.8，N/design-tokens.md §5）：123 1.25 / ， 1 / 空格 4 / 。 1 / 中 1.05 / ↵ 1.9；九键外框是 符 1.05 / 123 1.25 / 空格 4 / 中 1.05 / ↵ 1.9 ----
 
     /** 新设计底行的键，按排列顺序；符 只在九键外框（拼音九键、笔画）最左边出现，地球键只在宿主允许切换输入法时插在 123 之后，中/英紧挨在回车左边。 */
-    public enum DesignSlot { SYMBOL_PANEL, LAYER, GLOBE, COMMA, SPACE, PERIOD, LANGUAGE, RETURN }
+    public enum DesignSlot { SYMBOL_PANEL, LAYER, GLOBE, COMMA, SPACE, ZERO, PERIOD, LANGUAGE, RETURN }
 
     /** 新设计底行里的一个键与它的宽度份额。 */
     public record DesignEntry(DesignSlot slot, float weight) {}
@@ -124,7 +124,7 @@ public final class KeyboardActionRow {
     /**
      * 新设计的底行：123 |（地球）| ， | 空格 | 。 | 中/英 | 回车。中/英放在回车左边，右手拇指够得着；注音 9 键的逗号句号在网格最后一行，日文假名网格不带底行。
      *
-     * <p>拼音九键和笔画键盘共用九键外框，标点在侧栏，底行不放逗号句号，改成 符 | 123 |（地球）| 空格 | 中/英 | 回车，与 iOS 一致：符 打开符号面板，拼音网格的 1 键（@#）不再打开面板，而是把常用标点放进候选条。拼音九键数字键面的 0 在网格右列，所以这一行在字母、数字两个键面上相同（iOS 的 0 在底行，数字键面上由它替下 符）；笔画键盘的数字键面是自带底行的 123 层。
+     * <p>拼音九键和笔画键盘的字母层是 符 | 123 |（地球）| 空格 | 中/英 | 回车。拼音九键数字层由四参数重载排布，0 接替空格、空格移到右列；笔画键盘的数字键面是自带底行的 123 层。
      *
      * @param touchLayout {@link KeyboardLayout} 的界面常量
      * @param globe 宿主是否可以切换到下一个输入法（`shouldOfferSwitchingToNextInputMethod()`）
@@ -151,7 +151,22 @@ public final class KeyboardActionRow {
 
     /** 可选交换语言键与数字键，键的宽度跟随动作，其它键顺序不变。 */
     public static List<DesignEntry> designEntries(int touchLayout, boolean globe, boolean swapLanguageNumber) {
+        return designEntries(touchLayout, globe, swapLanguageNumber, false);
+    }
+
+    /** 九键数字层底行保留符号入口，0 位于原空格处；常驻空格键移到右列，手势保持。 */
+    public static List<DesignEntry> designEntries(int touchLayout, boolean globe,
+            boolean swapLanguageNumber, boolean digits) {
         List<DesignEntry> entries = designEntries(touchLayout, globe);
+        if (digits && touchLayout == KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT) {
+            List<DesignEntry> numeric = new ArrayList<>(entries);
+            java.util.Collections.swap(numeric, 0, 1);
+            for (int index = 0; index < numeric.size(); index++) {
+                if (numeric.get(index).slot() == DesignSlot.SPACE)
+                    numeric.set(index, new DesignEntry(DesignSlot.ZERO, DESIGN_SPACE_WEIGHT));
+            }
+            entries = List.copyOf(numeric);
+        }
         if (!swapLanguageNumber || entries.isEmpty()) return entries;
         List<DesignEntry> swapped = new ArrayList<>(entries);
         int layer = -1, language = -1;
@@ -193,6 +208,7 @@ public final class KeyboardActionRow {
             case GLOBE -> "切换输入法";
             case COMMA, PERIOD -> punctuationFace(slot, chinesePunctuation);
             case SPACE -> "空格";
+            case ZERO -> "数字 0";
             case RETURN -> "换行";
         };
     }
