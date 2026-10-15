@@ -7,7 +7,7 @@ import type {
 import type { PunctuationPreferences } from "./settings/punctuation-preferences";
 import type { KeybindingPreferences } from "./settings/keybinding-preferences";
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
-import type { TraditionalChineseVariant } from "./settings/traditional-chinese-output-section";
+import type { TraditionalChineseVariant } from "./settings/chinese-output-preferences";
 import type {
   BuiltinShuangpinProfile,
   ShuangpinCustomProblem,
