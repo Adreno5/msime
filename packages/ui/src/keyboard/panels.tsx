@@ -4201,7 +4201,7 @@ export function EmojiPanel({
     }
     const generation = clipboardLifecycle.current;
     const isCurrent = () => generation === clipboardLifecycle.current;
-    let poll: ReturnType<typeof setInterval> | undefined;
+    let stopPoll: (() => void) | undefined;
     let stopVisibility: (() => void) | undefined;
     let inFlight = 0;
     let refreshPending = false;
@@ -4264,9 +4264,9 @@ export function EmojiPanel({
       if (!isCurrent()) return stop;
       // Close the gap between the initial snapshot and subscription setup.
       refresh();
-      if (stop && poll !== undefined) {
-        clearInterval(poll);
-        poll = undefined;
+      if (stop && stopPoll !== undefined) {
+        stopPoll();
+        stopPoll = undefined;
         stopVisibility?.();
       }
       return stop;
@@ -4275,14 +4275,14 @@ export function EmojiPanel({
     // Use Windows' 400 ms interval until the host subscription is ready.
     refresh();
     if (page === "clipboard") {
-      poll = setInterval(pollVisible, 400);
+      stopPoll = subscribeToInterval(pollVisible, 400);
       stopVisibility = subscribeToDocumentVisibilityChange(pollVisible);
     }
     const disposeSubscription = trackAsyncSubscription(start(), isCurrent);
     return () => {
       refreshPending = false;
       ++clipboardGeneration.current;
-      if (poll !== undefined) clearInterval(poll);
+      stopPoll?.();
       stopVisibility?.();
       disposeSubscription();
     };
