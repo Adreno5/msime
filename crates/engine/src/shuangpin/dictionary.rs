@@ -35,8 +35,8 @@ use crate::user_dictionary::ngram_store::PersonalNgramStore;
 
 // 双拼前缀候选的短合并直接扫描已有词，避免临时哈希表和重复索引分配。
 const SMALL_PREFIX_DEDUP: usize = 64;
-// 单字辅助码的常见候选批次很短，排列索引放在栈上即可。
-const SMALL_SINGLE_HELP_CODE_ORDER: usize = 64;
+// 单字辅助码的常见候选批次很短，匹配分类和排列索引放在栈上即可。
+const SMALL_SINGLE_HELP_CODE_BATCH: usize = 64;
 /// 常见双拼纠错输入的两键分段放在栈上；更长的输入仍回退到堆容器，不改变准入范围。
 const INLINE_TYPO_CODES: usize = 32;
 
@@ -369,12 +369,9 @@ impl ShuangpinDictionary {
         }
         let prefer_last = help_code.as_bytes()[0].is_ascii_uppercase();
         let normalized = help_code.to_ascii_lowercase();
-        let matches: Vec<_> = candidates
-            .iter()
-            .map(|candidate| match_single_helpcode(&candidate.word, &normalized, keymap))
-            .collect();
+        let matches = single_helpcode_matches(&candidates, &normalized, keymap);
         let (mut result, unmatched) =
-            reorder_single_helpcode_rows(candidates, &matches, prefer_last);
+            reorder_single_helpcode_rows(candidates, matches.as_slice(), prefer_last);
         // The whole raw input, the last letter read as pinyin instead of a helpcode. The reference segments the raw input as one chunk, `'` included; the conversion drops the empty pieces that leaves (SD:370-372).
         let original_segmentation = pinyin_segmentation(raw, self.profile);
         let whole = self.generate_series(raw, &original_segmentation, "");
@@ -621,6 +618,47 @@ impl ShuangpinDictionary {
     }
 }
 
+struct SingleHelpcodeMatches {
+    values: [SingleHelpcodeMatch; SMALL_SINGLE_HELP_CODE_BATCH],
+    len: usize,
+    heap: Option<Vec<SingleHelpcodeMatch>>,
+}
+
+impl SingleHelpcodeMatches {
+    fn as_slice(&self) -> &[SingleHelpcodeMatch] {
+        self.heap.as_deref().unwrap_or(&self.values[..self.len])
+    }
+}
+
+fn single_helpcode_matches(
+    candidates: &[WordItem],
+    normalized: &str,
+    keymap: &HelpcodeKeymap,
+) -> SingleHelpcodeMatches {
+    let mut values = [SingleHelpcodeMatch::None; SMALL_SINGLE_HELP_CODE_BATCH];
+    if candidates.len() <= SMALL_SINGLE_HELP_CODE_BATCH {
+        for (slot, candidate) in values.iter_mut().zip(candidates) {
+            *slot = match_single_helpcode(&candidate.word, normalized, keymap);
+        }
+        return SingleHelpcodeMatches {
+            values,
+            len: candidates.len(),
+            heap: None,
+        };
+    }
+    let mut heap = Vec::with_capacity(candidates.len());
+    heap.extend(
+        candidates
+            .iter()
+            .map(|candidate| match_single_helpcode(&candidate.word, normalized, keymap)),
+    );
+    SingleHelpcodeMatches {
+        values,
+        len: 0,
+        heap: Some(heap),
+    }
+}
+
 /// 纠错整句的座位：全码词条和整句块之后，且永远不是第一位。整句块可能是空的（词网格关着、键盘重排器又没给出一条），这时全码词条之后就是第 0 位，纠错行会顶到首选，被空格直接上屏，所以至少让出第一位；表是空的就不给纠错行，免得它成为唯一也是首个候选。
 fn typo_sentence_seat(candidates: &[WordItem], segments: &[String]) -> Option<usize> {
     if candidates.is_empty() {
@@ -814,8 +852,8 @@ fn reorder_single_helpcode_rows(
         .iter()
         .filter(|matched| **matched == SingleHelpcodeMatch::None)
         .count();
-    if candidates.len() <= SMALL_SINGLE_HELP_CODE_ORDER {
-        let mut order = [0usize; SMALL_SINGLE_HELP_CODE_ORDER];
+    if candidates.len() <= SMALL_SINGLE_HELP_CODE_BATCH {
+        let mut order = [0usize; SMALL_SINGLE_HELP_CODE_BATCH];
         let order_len = fill_single_helpcode_order(&mut order, matches, prefer_last);
         debug_assert_eq!(order_len, candidates.len());
         debug_assert!(order_len <= order.len());
@@ -893,12 +931,14 @@ mod tests {
     use super::double_helpcode_cache_key;
     use super::prefix_group_count;
     use super::reorder_single_helpcode_rows;
+    use super::single_helpcode_matches;
     use super::typo_codes;
     use super::typo_sentence_seat;
     use super::ShuangpinDictionary;
     use super::SingleHelpcodeMatch;
     use super::INLINE_TYPO_CODES;
     use super::SHUANGPIN_TYPO_TYPES;
+    use super::SMALL_SINGLE_HELP_CODE_BATCH;
     use crate::helpcode::HelpcodeKeymap;
     use crate::paths::RuntimePaths;
     use crate::shuangpin::profile::profile;
@@ -995,6 +1035,42 @@ mod tests {
             allocations, 0,
             "短辅助码重排不应为排列索引分配临时存储：{allocations}"
         );
+    }
+
+    #[test]
+    fn short_single_helpcode_matching_does_not_allocate_a_heap_vector() {
+        let candidates = [row("甲"), row("乙"), row("丙")];
+        let keymap = HelpcodeKeymap::from_codes(std::collections::HashMap::from([
+            ("甲".to_owned(), "ab".to_owned()),
+            ("乙".to_owned(), "cd".to_owned()),
+            ("丙".to_owned(), "ef".to_owned()),
+        ]));
+
+        let (matches, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+            single_helpcode_matches(&candidates, "a", &keymap)
+        });
+
+        assert_eq!(
+            matches.as_slice(),
+            [
+                SingleHelpcodeMatch::First,
+                SingleHelpcodeMatch::None,
+                SingleHelpcodeMatch::None,
+            ]
+        );
+        assert_eq!(allocations, 0, "短辅助码匹配不应申请临时堆向量");
+    }
+
+    #[test]
+    fn long_single_helpcode_matching_keeps_the_heap_fallback() {
+        let candidates = vec![row("甲"); SMALL_SINGLE_HELP_CODE_BATCH + 1];
+        let matches = single_helpcode_matches(&candidates, "a", &HelpcodeKeymap::default());
+
+        assert_eq!(matches.as_slice().len(), candidates.len());
+        assert!(matches
+            .as_slice()
+            .iter()
+            .all(|matched| *matched == SingleHelpcodeMatch::None));
     }
 
     #[test]
