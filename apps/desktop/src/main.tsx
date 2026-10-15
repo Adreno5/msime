@@ -27,6 +27,7 @@ import {
   completeOnboardingPreferences,
   usePreferencesSnapshot,
   useMobilePopState,
+  subscribeToWindowEvent,
   SettingsPage,
   SettingsStartupPage,
   WelcomeFlowPage,
@@ -628,11 +629,14 @@ function DesktopSettings() {
         setMobilePanel(null);
       }
     };
-    window.addEventListener("msime-mobile-panel", onNativePanel);
-    window.addEventListener("msime-settings-page", onNativeSettingsPage);
+    const stopNativePanel = subscribeToWindowEvent("msime-mobile-panel", onNativePanel);
+    const stopNativeSettingsPage = subscribeToWindowEvent(
+      "msime-settings-page",
+      onNativeSettingsPage,
+    );
     return () => {
-      window.removeEventListener("msime-mobile-panel", onNativePanel);
-      window.removeEventListener("msime-settings-page", onNativeSettingsPage);
+      stopNativePanel();
+      stopNativeSettingsPage();
     };
   }, []);
   // The host menu entry that started this window names a section; resolve it

@@ -14,6 +14,16 @@ export function subscribeToWindowEvent<K extends keyof WindowEventMap>(
   event: K,
   listener: (event: WindowEventMap[K]) => void,
   options?: boolean | AddEventListenerOptions,
+): () => void;
+export function subscribeToWindowEvent(
+  event: string,
+  listener: (event: Event) => void,
+  options?: boolean | AddEventListenerOptions,
+): () => void;
+export function subscribeToWindowEvent(
+  event: string,
+  listener: (event: Event) => void,
+  options?: boolean | AddEventListenerOptions,
 ): () => void {
   if (typeof window === "undefined") return noop;
   window.addEventListener(event, listener as EventListener, options);

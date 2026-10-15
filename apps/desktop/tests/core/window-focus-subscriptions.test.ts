@@ -112,6 +112,17 @@ test("通用窗口事件订阅支持只触发一次", () => {
   stop();
 });
 
+test("通用窗口事件订阅支持自定义事件名", () => {
+  const callback = vi.fn();
+  const stop = subscribeToWindowEvent("msime-test-event", callback);
+  const event = new CustomEvent("msime-test-event", { detail: "合成详情" });
+
+  window.dispatchEvent(event);
+
+  expect(callback).toHaveBeenCalledWith(event);
+  stop();
+});
+
 test("resumes on focus and visible transitions, but ignores hidden transitions", () => {
   const refresh = vi.fn();
   const stop = subscribeToWindowResume(refresh);
