@@ -26,6 +26,8 @@ Status: implemented
 - 该保护只捕获 `RuntimeException`，不吞掉 `Error`；现有成功、拒写、组字清理、日语定稿和笔画清理顺序测试保持通过。
 
 - 辅助路径回归先在未修改的 `a5bf43722d` Android 宿主上运行：API 28 的 `InputFailureCategoryDeviceSmoke` 在 `deleteBeforeCursor` 阶段报告 `InvocationTargetException`，证明异常穿过产品服务。新增 JVM 冒烟覆盖每项守卫的断开返回值，以及批量开始返回 `false` 时仍继续提交。
+- 空框退格回归使用读取空串成功、发键抛异常的合成连接，分别断言按下与松开都尝试一次；它在遗漏系统发键辅助方法的第一版 APK 上失败，补齐保护后在 API 28、35 的安装产品中通过。
+- 同步 `develop` 后重新构建原生 Android 宿主和 `client-core` 设备测试程序：API 28、35 各 1420 项通过、0 项失败（13 项忽略、7 项过滤）；API 28 的 `smoke.sh --core` 安装验收通过。API 35 安装产品的断开回归也通过。验证使用锁定的语言词库，缺少注音词库的包会回退拼音，不能拿来验收注音布局。
 
 ## Consequences
 
