@@ -1,4 +1,9 @@
 import type { PreeditPreferences } from "./settings/preedit-preferences";
+import type {
+  CandidateFontPreferences,
+  CandidateSizingPreferences,
+  CandidateWindowStylePreferences,
+} from "./candidate/candidate-preferences";
 import type { PunctuationPreferences } from "./settings/punctuation-preferences";
 import type { KeybindingPreferences } from "./settings/keybinding-preferences";
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
@@ -1836,7 +1841,10 @@ export type SentenceAssociationPreferences = {
 };
 
 export type Preferences = PunctuationPreferences &
-  PreeditPreferences & {
+  PreeditPreferences &
+  CandidateFontPreferences &
+  CandidateSizingPreferences &
+  CandidateWindowStylePreferences & {
     theme?: ThemeMode;
     settings_theme?: SurfaceTheme;
     candidate_theme?: SurfaceTheme;
@@ -1923,24 +1931,11 @@ export type Preferences = PunctuationPreferences &
     single_character_only?: boolean;
     candidate_page_size: number;
     number_row_selection?: boolean;
-    candidate_font_size?: number;
-    candidate_preedit_font_size?: number;
-    /** Whole candidate window scale in percent (50-200, default 100): the font size and every geometry constant are multiplied by it. Absent means 100; the core does not write the default. */
-    candidate_scale_percent?: number;
-    /** Alpha of the candidate card fill, border and skin background in percent (50-100, default 100); text and the selection stay opaque. */
-    candidate_opacity_percent?: number;
-    /** Candidate card corner radius in points (0-32). Absent or null follows the skin package's radius, then the host's own. */
-    candidate_corner_radius?: number | null;
-    /** Space between the candidate card's edge and its candidates in points (0-16), before the scale. Absent or null follows the skin package, then the host's own (macOS 6pt). */
-    candidate_padding?: number | null;
     candidate_follow_cursor?: boolean;
     /** 切换中英文后在光标旁短暂显示的徽标（macOS、Windows、Linux 和鸿蒙 2in1）。 */
     input_mode_hud?: boolean;
     /** macOS 菜单栏里常驻显示当前输入模式（中/双/五/日……，英文时为「英」）的状态项，默认关闭。 */
     input_mode_status_item?: boolean;
-    candidate_font_family?: string;
-    candidate_english_font?: string | null;
-    candidate_fallback_fonts?: string[];
     candidate_layout?: "horizontal" | "vertical";
     show_candidate_page_number?: boolean;
     /** 候选窗和悬浮工具栏左端的水杉 logo。新装默认隐藏，旧文档缺这个字段时读成显示。 */

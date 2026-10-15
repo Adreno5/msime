@@ -13,10 +13,8 @@ import { SkinPreviewStage } from "./skin-preview-stage";
 import { SkinPreviewSurface } from "./skin-preview-surface";
 import { dimension, skinDecorationGeometry, skinPreviewBackground } from "./skin-preview-geometry";
 export { dimension } from "./skin-preview-geometry";
-import {
-  candidateWindowStyle,
-  type CandidateWindowStylePreferences,
-} from "../candidate/candidate-window-style";
+import { candidateWindowStyle } from "../candidate/candidate-window-style";
+import type { CandidateWindowStylePreferences } from "../candidate/candidate-preferences";
 import * as settings from "../settings/settings-style";
 import { SettingsExternalMeta } from "../settings/settings-external-meta";
 import { SettingsGroupBlock } from "../settings/settings-group-block";
