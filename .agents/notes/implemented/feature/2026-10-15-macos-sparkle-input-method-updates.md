@@ -21,7 +21,7 @@ Sparkle 更新的是输入法本体，也就是 `~/Library/Input Methods` 里那
 ### 只有发布包带 feed
 
 - `CMakeLists.txt` 的缓存变量 `MSIME_SPARKLE_APPCAST_BASE_URL` 非空时，`Info.plist.in` 的 `${MSIME_SPARKLE_PLIST_KEYS}` 展开成 `SUFeedURL`（`<base>appcast-<版本 id>.xml`）、`SUPublicEDKey`（`platforms/macos/sparkle-public-key.txt`）、`SURequireSignedFeed`、`SUVerifyUpdateBeforeExtraction`、`SUEnableAutomaticChecks`、`SUAutomaticallyUpdate` 和 `SUScheduledCheckInterval`（86400 秒）。前两项安全设置与 MSIME-Apple 时期发出去的 0.48 版相同：appcast 本身要带签名，更新包解压之前先验签。为空时一个键都不写，开发构建和 `scripts/install.sh` 装的输入法不会被正式版覆盖。
-- 密钥沿用 MSIME-Apple 时期的那一对：公钥 `rSAufajnup+T+d+I4LTs4EAhe5M8bwHemWDKao3CB/E=` 随 macos-v0.48.6 的构建发出去过（当时的 feed 是 `MSIME-Apple/releases/latest/download/appcast.xml`），私钥是仓库 secret `SPARKLE_ED_PRIVATE_KEY`（2026-09-04）。那批旧安装只认这把公钥，换一对新的就永远没法给它们签更新。
+- 密钥的选择已由[换一对有备份的 Sparkle 密钥](../process/2026-10-15-macos-sparkle-key-rotation.md)取代，下面一句保留当时的依据。密钥沿用 MSIME-Apple 时期的那一对：公钥 `rSAufajnup+T+d+I4LTs4EAhe5M8bwHemWDKao3CB/E=` 随 macos-v0.48.6 的构建发出去过（当时的 feed 是 `MSIME-Apple/releases/latest/download/appcast.xml`），私钥是仓库 secret `SPARKLE_ED_PRIVATE_KEY`（2026-09-04）。那批旧安装只认这把公钥，换一对新的就永远没法给它们签更新。
 - `package-release.sh` 只在拿到 `MSIME_SPARKLE_PRIVATE_KEY`（workflow 从 `SPARKLE_ED_PRIVATE_KEY` 传入）且有 Developer ID 身份时传入地址（默认 `https://github.com/metasequoiaime/msime/releases/download/macos-appcast/`）。Sparkle 要求新旧 bundle 出自同一签名身份，ad-hoc 包无从更新，所以没有身份时不开 feed。编译之前它从私钥得出公钥（32 字节种子用 OpenSSL 3 推出，Sparkle 旧的 96 字节格式直接取后 32 字节），与 `sparkle-public-key.txt` 比对，不是一对就失败：对不上的话每个更新包都会被当作签名无效拒绝，而发版本身照常成功。
 - 发布包只编 full，`edition_bundle.py` 把 bundle 改成其他版本时把 `appcast-full.xml` 换成 `appcast-<版本 id>.xml`。
 
