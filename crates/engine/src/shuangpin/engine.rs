@@ -389,7 +389,7 @@ mod tests {
     fn short_ordinary_inputs_do_not_allocate_helpcode_query_state() {
         let profile =
             crate::shuangpin::profile::profile(crate::types::ShuangpinProfileKind::Xiaohe).unwrap();
-        for raw in ["n", "ni"] {
+        for raw in ["n", "ni", "nihc", "nihcab"] {
             for cased in [raw, ""] {
                 let request = crate::types::QueryRequest {
                     raw_input: raw.into(),

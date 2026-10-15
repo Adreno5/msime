@@ -14,6 +14,8 @@ Status: implemented
 
 查询入口的独立判空也[直接扫描原始字节](2026-10-15-shuangpin-query-empty-check.md)，避免在进入本篇的检测路径前创建一次无用副本。
 
+双辅助码的[大写标志先于基码分段检查](2026-10-15-shuangpin-full-helpcode-fast-reject.md)，进一步排除无效模式；这里的输入借用与含分隔符回退保持独立。
+
 ## Alternatives considered
 
 - **继续复制两份字符串**：实现最简单，但每次双拼按键都会承担不必要的输入复制。
