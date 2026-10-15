@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
 import type { HostPlatform, Preferences } from "../index";
+import type {
+  CandidateFontPreferences,
+  CandidateWindowStylePreferences,
+} from "../candidate/candidate-preferences";
 import { GroupList, Row, Slider } from "../core/platform-controls";
 import {
   candidateFontPresetAvailable,
@@ -28,17 +32,13 @@ import { SliderRow } from "./slider-row";
 import { ActionButton } from "../core/action-button";
 
 export type CandidateWindowStyleSectionPreferences = Pick<
-  Preferences,
-  | "candidate_font_family"
-  | "candidate_fallback_fonts"
-  | "candidate_scale_percent"
-  | "candidate_opacity_percent"
-  | "candidate_corner_radius"
-  | "candidate_padding"
->;
+  CandidateFontPreferences,
+  "candidate_font_family" | "candidate_fallback_fonts"
+> &
+  CandidateWindowStylePreferences;
 
 export interface CandidateFontPresetRowProps {
-  preferences: Pick<Preferences, "candidate_font_family" | "candidate_fallback_fonts">;
+  preferences: Pick<CandidateFontPreferences, "candidate_font_family" | "candidate_fallback_fonts">;
   platform: HostPlatform | undefined;
   onChange: (patch: Partial<Preferences>) => void;
 }
@@ -74,7 +74,7 @@ export function CandidateFontPresetRow({
 }
 
 export interface CandidateScaleRowProps {
-  preferences: Pick<Preferences, "candidate_scale_percent">;
+  preferences: Pick<CandidateWindowStylePreferences, "candidate_scale_percent">;
   platform?: HostPlatform;
   onChange: (patch: Partial<Preferences>) => void;
 }
@@ -96,7 +96,7 @@ export function CandidateScaleRow({ preferences, platform, onChange }: Candidate
 
 export interface CandidateWindowStyleSectionProps {
   preferences: Pick<
-    Preferences,
+    CandidateWindowStylePreferences,
     "candidate_opacity_percent" | "candidate_corner_radius" | "candidate_padding"
   >;
   /** 宿主平台，决定「跟随皮肤」时滑块停在哪个圆角和内边距上。 */

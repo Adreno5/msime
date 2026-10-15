@@ -1,12 +1,7 @@
 import type { CSSProperties } from "react";
+import type { CandidateWindowStylePreferences } from "./candidate-preferences";
 
-/** The candidate window style preferences: whole-window scale, card opacity, card corner radius and card padding. Mirrors the bounds `Preferences::validate` enforces in client-core. */
-export type CandidateWindowStylePreferences = {
-  candidate_scale_percent?: number;
-  candidate_opacity_percent?: number;
-  candidate_corner_radius?: number | null;
-  candidate_padding?: number | null;
-};
+export type { CandidateWindowStylePreferences } from "./candidate-preferences";
 
 export const defaultCandidateScalePercent = 100;
 export const defaultCandidateOpacityPercent = 100;
