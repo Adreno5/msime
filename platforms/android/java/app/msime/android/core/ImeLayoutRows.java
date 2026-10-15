@@ -1285,6 +1285,10 @@ final class ImeLayoutRows {
 
     void commitNineKeyLiteral(String text) {
         if (s.connection == null) return;
+        if (s.dedicatedEnglish && text.length() == 1) {
+            s.commitEnglishLiteral(text.charAt(0));
+            return;
+        }
         s.command(2);
         s.commitText(s.fullWidthOutput(text));
     }

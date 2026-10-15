@@ -6649,6 +6649,7 @@ group("the word being completed is read backwards from the caret", () => {
     "with nothing before it the word is all of it",
   );
   check(EnglishSuggestionPolicy.currentWord("hello ") === "", "a space ends the word");
+  check(EnglishSuggestionPolicy.currentWord("say you're") === "you're", "撇号保留在整词内");
   check(EnglishSuggestionPolicy.currentWord("say,hel") === "hel", "so does punctuation");
   check(
     EnglishSuggestionPolicy.currentWord("\uff48\uff45\uff4c") === "hel",
@@ -6680,6 +6681,9 @@ group("a prefix is only queried when it could mean something", () => {
   );
   check(EnglishSuggestionPolicy.suggestible("") === false, "and none matches nothing");
   check(EnglishSuggestionPolicy.suggestible("he1") === false, "a digit is not part of a word");
+  check(EnglishSuggestionPolicy.suggestible("i", true), "手机可查询单字母固有大小写");
+  check(EnglishSuggestionPolicy.suggestible("you're", true), "手机允许完整的撇号形式");
+  check(!EnglishSuggestionPolicy.suggestible("you're"), "旧补全仍只接受字母前缀");
 });
 
 group("accepting a completion replaces exactly what was typed", () => {

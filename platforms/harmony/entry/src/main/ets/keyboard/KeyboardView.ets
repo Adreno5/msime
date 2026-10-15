@@ -2130,7 +2130,7 @@ struct KeyboardView {
     this.scheme = candidate;
     this.nineKey = KeyboardScheme.isNineKeyLayout(candidate.touchKeyboardLayout);
     this.nineKeyShuangpinFaces = candidate.preferenceId === 'nine_key_shuangpin'
-      ? KeyboardSession.shared.nineKeyShuangpinFaces() : [];
+      ? KeyboardSession.shared.nineKeyShuangpinFaces().slice() : [];
     this.fourteenKey = this.offersFourteenKey(candidate);
     // The kana grid belongs to the scheme, not to what the Engine last reported: the Engine only
     // says so once something has been typed, and the face has to change before that.
@@ -2745,7 +2745,7 @@ struct KeyboardView {
     this.scheme = this.enabledScheme();
     this.nineKey = KeyboardScheme.isNineKeyLayout(this.scheme.touchKeyboardLayout);
     this.nineKeyShuangpinFaces = this.scheme.preferenceId === 'nine_key_shuangpin'
-      ? KeyboardSession.shared.nineKeyShuangpinFaces() : [];
+      ? KeyboardSession.shared.nineKeyShuangpinFaces().slice() : [];
     this.fourteenKey = this.offersFourteenKey(this.scheme);
     this.japanese = this.scheme.engineScheme === 'japanese' && this.nineKey;
     KeyboardSession.shared.setKeyGrid(this.keyGrid());
