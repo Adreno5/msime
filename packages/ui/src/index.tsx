@@ -431,7 +431,8 @@ export type {
   TouchKeyboardSkinDesign,
 } from "./keyboard/touch-keyboard-skin-design";
 import { type SkinCatalog } from "./skin/external-skins";
-import { TypingStatisticsPage, type TypingStatisticsClient } from "./settings/typing-statistics";
+import { TypingStatisticsPage } from "./settings/typing-statistics";
+import type { TypingStatisticsClient } from "./settings/typing-statistics-model";
 import { VocabularyReviewPage, type VocabularyReviewClient } from "./settings/vocabulary-review";
 import {
   type McpClientId,
