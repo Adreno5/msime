@@ -14,6 +14,8 @@ Status: implemented
 
 检索活跃树中的 `Reranker`、共享前缀及缓存笔记：[九键句子设置](../../implemented/feature/2026-10-09-nine-key-sentence-options.md)部分相关，约束引擎内键盘模型，与本次宿主外部重排器分层不同；[独立句子静态证据](../../implemented/bug-fix/2026-10-14-rerank-static-evidence.md)部分重叠，评分与门控继续沿用；[重排静态评分栈缓冲](../../implemented/testing/2026-10-15-rerank-static-score-buffer.md)为输入缓冲决定，不覆盖模型状态复用。没有完全吸收或过时提案。
 
+部分共享位置的归一化复用由[共享状态归一化](2026-10-15-runtime-rerank-normalization-reuse.md)接续；完全命中与上一轮缓存寿命继续遵循本篇。
+
 ## Alternatives considered
 
 - 缩小候选集或跳过模型：可以直接减少推理，但会改变排序质量与既有门控，本次不采用。

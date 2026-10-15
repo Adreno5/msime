@@ -684,7 +684,7 @@ dependencies = [
 [[package]]
 name = "chinese-ime-lm"
 version = "0.2.0"
-source = "git+https://github.com/metasequoiaime/chinese-ime-lm?rev=2bd674a9972ee44c87c7b06e87a90efe35095316#2bd674a9972ee44c87c7b06e87a90efe35095316"
+source = "git+https://github.com/metasequoiaime/chinese-ime-lm?rev=f4d41421f8633d8899cdb8ed6d6a3207c5e980f7#f4d41421f8633d8899cdb8ed6d6a3207c5e980f7"
 dependencies = [
  "serde",
  "serde_json",
