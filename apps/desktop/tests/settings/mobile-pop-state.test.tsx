@@ -58,6 +58,19 @@ test("settings navigation reuses the shared mobile popstate lifecycle", () => {
   expect(source).not.toContain('window.addEventListener("popstate"');
 });
 
+test("移动端返回 Hook 复用公共窗口事件订阅", () => {
+  const source = Object.values(
+    import.meta.glob<string>("../../../../packages/ui/src/settings/use-mobile-pop-state.ts", {
+      eager: true,
+      query: "?raw",
+      import: "default",
+    }),
+  )[0];
+
+  expect(source).toContain("subscribeToWindowEvent");
+  expect(source).not.toContain('window.addEventListener("popstate"');
+});
+
 test("onboarding reuses the shared mobile popstate lifecycle", () => {
   const source = Object.values(
     import.meta.glob<string>("../../../../packages/ui/src/account/onboarding-page.tsx", {
