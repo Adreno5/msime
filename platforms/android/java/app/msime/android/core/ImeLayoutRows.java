@@ -948,7 +948,7 @@ final class ImeLayoutRows {
                 android.os.SystemClock.uptimeMillis() - toggleAt)) return false;
         String editing = InputViewValuePolicy.editingText(s.view);
         if (toggleLiteral.isEmpty()) return editing.equals(toggleEditing);
-        CharSequence before = s.connection.getTextBeforeCursor(toggleLiteral.length(), 0);
+        CharSequence before = InputConnectionGuard.textBeforeCursor(s.connection, toggleLiteral.length());
         return editing.isEmpty() && before != null && toggleLiteral.contentEquals(before);
     }
 
@@ -959,7 +959,7 @@ final class ImeLayoutRows {
         toggleEditing = s.view == null ? "" : InputViewValuePolicy.editingText(s.view);
         toggleLiteral = "";
         if (key.strokes().get(direction).isEmpty() && s.connection != null) {
-            CharSequence before = s.connection.getTextBeforeCursor(1, 0);
+            CharSequence before = InputConnectionGuard.textBeforeCursor(s.connection, 1);
             toggleLiteral = before == null ? "" : before.toString();
         }
     }
@@ -1001,7 +1001,7 @@ final class ImeLayoutRows {
         resetJapaneseToggle();
         if (s.connection == null) return;
         if (s.view == null || InputViewValuePolicy.editingText(s.view).isEmpty())
-            s.sendDownUpKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_LEFT);
+            s.sendEditorKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_LEFT);
     }
 
     /** →：结束连点切换，下一次轻点同一个键打新的假名（ああ）；不在切换、也没有组字时把光标右移一格。 */
@@ -1010,7 +1010,7 @@ final class ImeLayoutRows {
         resetJapaneseToggle();
         if (toggling || s.connection == null) return;
         if (s.view == null || InputViewValuePolicy.editingText(s.view).isEmpty())
-            s.sendDownUpKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_RIGHT);
+            s.sendEditorKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_RIGHT);
     }
 
     void selectJapaneseKey(JapaneseNineKeyLayout.Key key, int direction) {

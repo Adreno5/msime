@@ -46,7 +46,7 @@ final class ImeCalculator {
         ArithmeticResultPolicy.Result next = null;
         if (applies() && s.connection != null && !EditorPolicy.password(s.editorInputType)
                 && !s.hasEngineComposition()) {
-            CharSequence before = s.connection.getTextBeforeCursor(ArithmeticResultPolicy.MAX_CONTEXT, 0);
+            CharSequence before = InputConnectionGuard.textBeforeCursor(s.connection, ArithmeticResultPolicy.MAX_CONTEXT);
             next = ArithmeticResultPolicy.evaluateTrailing(before);
         }
         show(next);

@@ -37,6 +37,7 @@ import android.text.style.RelativeSizeSpan;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.KeyCharacterMap;
 import android.view.Menu;
 import android.view.MotionEvent;
 import android.view.View;
@@ -1232,7 +1233,7 @@ public final class MSIMEInputService extends InputMethodService {
     /** 删光标前 `length` 个 UTF-16 单元，并记下删完后的选区预期，免得这次删除迟到的回报把紧接着开始的新组字取消掉。有选区或组字区时删的位置由编辑器决定，追踪器会自己作废预期。 */
     boolean deleteBeforeCursor(int length) {
         pairedPunctuationStack.clear();
-        boolean deleted = connection.deleteSurroundingText(length, 0);
+        boolean deleted = InputConnectionGuard.deleteSurroundingText(connection, length, 0);
         if (deleted) {
             selectionEcho.deleteBefore(length);
             selectionEcho.expect();
@@ -1246,14 +1247,14 @@ public final class MSIMEInputService extends InputMethodService {
     void deleteCodePointBeforeCursor() {
         pairedPunctuationStack.clear();
         if (deleteSelection()) return;
-        CharSequence before = connection.getTextBeforeCursor(1, 0);
+        CharSequence before = InputConnectionGuard.textBeforeCursor(connection, 1);
         if (before != null && before.length() == 0) {
             // 空框外的艾特与引用不属于周边文字，应用只有收到退格事件才能处理；读取失败不当作空框。
             selectionEcho.invalidate();
-            sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
+            sendEditorKeyEvents(KeyEvent.KEYCODE_DEL);
             return;
         }
-        if (connection.deleteSurroundingTextInCodePoints(1, 0)) {
+        if (InputConnectionGuard.deleteSurroundingTextInCodePoints(connection, 1, 0)) {
             selectionEcho.deleteCodePointBefore();
             selectionEcho.expect();
         } else {
@@ -1263,17 +1264,30 @@ public final class MSIMEInputService extends InputMethodService {
 
     /** `deleteSurroundingText` 只删选区以外的字：选中文字后按删除，选区在开头时毫无反应，在中间时删掉的是选区前一个字。有选区就用空串替换它，和系统键盘一致；返回是否有选区，有选区时不再删光标前的字。 */
     private boolean deleteSelection() {
-        CharSequence selected = connection.getSelectedText(0);
+        CharSequence selected = InputConnectionGuard.selectedText(connection);
         if (selected == null || selected.length() == 0) return false;
         selectionEcho.invalidate();
-        connection.commitText("", 1);
+        InputConnectionGuard.commitText(connection, "", 1);
         return true;
+    }
+
+    /** 与系统辅助方法保持相同的按键标记，但两次发键分别保护，连接断开时松键仍尽力发送。 */
+    void sendEditorKeyEvents(int keyCode) {
+        InputConnection target = connection;
+        if (target == null) return;
+        long down = SystemClock.uptimeMillis();
+        InputConnectionGuard.sendKeyEvent(target, new KeyEvent(down, down,
+            KeyEvent.ACTION_DOWN, keyCode, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+            KeyEvent.FLAG_SOFT_KEYBOARD | KeyEvent.FLAG_KEEP_TOUCH_MODE));
+        InputConnectionGuard.sendKeyEvent(target, new KeyEvent(down, SystemClock.uptimeMillis(),
+            KeyEvent.ACTION_UP, keyCode, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+            KeyEvent.FLAG_SOFT_KEYBOARD | KeyEvent.FLAG_KEEP_TOUCH_MODE));
     }
 
     /** 编辑器动作可能改文字也可能不改，选区预期先作废。 */
     private boolean performEditorAction(int action) {
         selectionEcho.invalidate();
-        return connection.performEditorAction(action);
+        return InputConnectionGuard.performEditorAction(connection, action);
     }
 
     boolean commitText(String text) { return commitText(text, typingSource()); }
@@ -1308,7 +1322,7 @@ public final class MSIMEInputService extends InputMethodService {
             selectionEcho.commit(closing.length());
             selectionEcho.expect();
             for (int index = TextPolicy.codePointLength(closing); index > 0; index--)
-                sendDownUpKeyEvents(KeyEvent.KEYCODE_DPAD_LEFT);
+                sendEditorKeyEvents(KeyEvent.KEYCODE_DPAD_LEFT);
             selectionEcho.caretLeft(closing.length());
         } else {
             selectionEcho.commit(0);
@@ -1335,16 +1349,18 @@ public final class MSIMEInputService extends InputMethodService {
 
     /** 跨过光标右边已经补好的后半个：在一次批量编辑里删掉它再原样上屏，文字不变，光标到了它后面。不算一次输入，不记打字统计。 */
     private void stepOverClosingMark(String closing) {
-        connection.beginBatchEdit();
+        InputConnection target = connection;
+        if (!InputConnectionGuard.beginBatchEdit(target)) {
+            selectionEcho.invalidate();
+            return;
+        }
         try {
-            boolean moved = connection.deleteSurroundingText(0, closing.length())
-                && connection.commitText(closing, 1);
+            boolean moved = InputConnectionGuard.deleteSurroundingText(target, 0, closing.length())
+                && InputConnectionGuard.commitText(target, closing, 1);
             if (moved) selectionEcho.commit(closing.length());
             else selectionEcho.invalidate();
-        } catch (RuntimeException error) {
-            selectionEcho.invalidate();
         } finally {
-            connection.endBatchEdit();
+            InputConnectionGuard.endBatchEdit(target);
         }
         selectionEcho.expect();
     }
@@ -1640,7 +1656,8 @@ public final class MSIMEInputService extends InputMethodService {
         hardwareKeyboardAttached = attached;
         // 旋转、分屏后光标在屏幕上的位置变了：让编辑器立即重报一次，候选栏先按旧位置夹在新窗口里，新位置到了再挪过去。
         if (caretAnchorsAvailable())
-            connection.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
+            InputConnectionGuard.requestCursorUpdates(connection,
+                InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
         JSONObject preferences = preferencesSnapshot == null ? null
             : preferencesSnapshot.optJSONObject("preferences");
         // 输入法服务可能在深浅模式切换时保留同一个窗口，所有表面都按回调收到的配置重算。
@@ -2894,12 +2911,16 @@ public final class MSIMEInputService extends InputMethodService {
             render();
             return;
         }
+        InputConnection target = connection;
+        if (!InputConnectionGuard.beginBatchEdit(target)) {
+            selectionEcho.invalidate();
+            return;
+        }
         try {
-            connection.beginBatchEdit();
             if (!deleteBeforeCursor(replacement.deleteCount())) return;
             if (!commitText(fullWidthOutput(replacement.insert()))) return;
         } finally {
-            connection.endBatchEdit();
+            InputConnectionGuard.endBatchEdit(target);
         }
         clearEnglishSuggestions();
         render();
@@ -5822,14 +5843,14 @@ public final class MSIMEInputService extends InputMethodService {
 
     String editorContext(boolean before) {
         if (connection == null) return null;
-        CharSequence text = before ? connection.getTextBeforeCursor(64, 0)
-            : connection.getTextAfterCursor(64, 0);
+        CharSequence text = before ? InputConnectionGuard.textBeforeCursor(connection, 64)
+            : InputConnectionGuard.textAfterCursor(connection, 64);
         return text == null ? null : text.toString();
     }
 
     String selectedEditorText() {
         if (connection == null) return null;
-        CharSequence text = connection.getSelectedText(0);
+        CharSequence text = InputConnectionGuard.selectedText(connection);
         return text == null ? null : text.toString();
     }
 
@@ -6674,7 +6695,7 @@ public final class MSIMEInputService extends InputMethodService {
             Uri uri = ClipboardImageCache.contentUri(this, copy);
             InputContentInfo content = new InputContentInfo(uri,
                 new ClipDescription(ClipboardImagePolicy.LABEL, new String[] {mimeType}));
-            sent = connection.commitContent(content,
+            sent = InputConnectionGuard.commitContent(connection, content,
                 InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null);
         } catch (IOException | IllegalArgumentException error) {
             sent = false;
@@ -7568,15 +7589,16 @@ public final class MSIMEInputService extends InputMethodService {
         InputConnection target = connection;
         if (target == null) return;
         selectionEcho.invalidate();
-        CharSequence selected = target.getSelectedText(0);
-        if (selected != null && selected.length() > 0) target.commitText("", 1);
+        CharSequence selected = InputConnectionGuard.selectedText(target);
+        if (selected != null && selected.length() > 0
+                && !InputConnectionGuard.commitText(target, "", 1)) return;
         BackspaceSwipePolicy.clearBeforeCursor(new BackspaceSwipePolicy.Editor() {
             @Override public CharSequence textBeforeCursor(int length) {
-                return target.getTextBeforeCursor(length, 0);
+                return InputConnectionGuard.textBeforeCursor(target, length);
             }
 
             @Override public boolean deleteBeforeCursor(int length) {
-                return target.deleteSurroundingText(length, 0);
+                return InputConnectionGuard.deleteSurroundingText(target, length, 0);
             }
         });
         if (directEnglishActive()) {
@@ -8548,11 +8570,11 @@ public final class MSIMEInputService extends InputMethodService {
             && (hardwareKeyboardAttached || hardwareKeyboardMode);
         boolean requested = caretAnchorConnection != null && caretAnchorConnection == current;
         if (wanted == requested) return;
-        if (requested) current.requestCursorUpdates(0);
+        if (requested) InputConnectionGuard.requestCursorUpdates(current, 0);
         resetCaretAnchor();
         if (!wanted) return;
         caretAnchorConnection = current;
-        caretAnchorsReported = current.requestCursorUpdates(
+        caretAnchorsReported = InputConnectionGuard.requestCursorUpdates(current,
             InputConnection.CURSOR_UPDATE_MONITOR | InputConnection.CURSOR_UPDATE_IMMEDIATE);
         caretAnchorPending = caretAnchorsReported;
         if (caretAnchorPending) main.postDelayed(caretAnchorWaitExpired, CaretCandidatePolicy.ANCHOR_WAIT_MS);

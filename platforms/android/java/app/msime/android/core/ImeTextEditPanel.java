@@ -196,7 +196,7 @@ final class ImeTextEditPanel {
         } else {
             int menu = TextEditPanelModel.contextMenuAction(action);
             if (menu != 0) {
-                boolean done = target.performContextMenuAction(menu);
+                boolean done = InputConnectionGuard.performContextMenuAction(target, menu);
                 // 有些编辑器（部分 WebView、跨平台框架的输入框）不实现上下文菜单动作；粘贴还能退回到直接上屏剪贴板文字。复制和剪切不退回：那要宿主自己读选中的文字，会绕过密码框禁止复制的规则。
                 if (!done && action == TextEditPanelModel.Action.PASTE) pasteClipboardText(target);
             } else {
@@ -214,11 +214,11 @@ final class ImeTextEditPanel {
     private void sendKey(InputConnection target, int keyCode, int metaState) {
         boolean shift = (metaState & KeyEvent.META_SHIFT_ON) != 0;
         long down = SystemClock.uptimeMillis();
-        if (shift) target.sendKeyEvent(event(down, down, KeyEvent.ACTION_DOWN,
+        if (shift) InputConnectionGuard.sendKeyEvent(target, event(down, down, KeyEvent.ACTION_DOWN,
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON));
-        target.sendKeyEvent(event(down, down, KeyEvent.ACTION_DOWN, keyCode, metaState));
-        target.sendKeyEvent(event(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, metaState));
-        if (shift) target.sendKeyEvent(event(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP,
+        InputConnectionGuard.sendKeyEvent(target, event(down, down, KeyEvent.ACTION_DOWN, keyCode, metaState));
+        InputConnectionGuard.sendKeyEvent(target, event(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, metaState));
+        if (shift) InputConnectionGuard.sendKeyEvent(target, event(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP,
             KeyEvent.KEYCODE_SHIFT_LEFT, 0));
     }
 
@@ -233,6 +233,6 @@ final class ImeTextEditPanel {
         ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
         if (clip == null || clip.getItemCount() == 0) return;
         CharSequence text = clip.getItemAt(0).coerceToText(s);
-        if (text != null && text.length() > 0) target.commitText(text, 1);
+        if (text != null && text.length() > 0) InputConnectionGuard.commitText(target, text, 1);
     }
 }
