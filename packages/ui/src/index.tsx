@@ -747,6 +747,7 @@ export {
   type LocalModeKey,
   type LocalModePreferences,
 } from "./settings/local-modes-section";
+export { localModeRowsFor, type LocalModeRow } from "./settings/local-mode-options";
 export {
   PluginsSection,
   MAX_MENTIONS,
