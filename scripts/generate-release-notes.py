@@ -170,8 +170,10 @@ def group_by_pull_request(records: list[dict[str, object]]) -> list[dict[str, ob
     return groups
 
 
-def change_context(groups: list[dict[str, object]], pulls: dict[int, dict[str, object]], limit: int = 180) -> str:
+def change_context(groups: list[dict[str, object]], pulls: dict[int, dict[str, object]], limit: int = 1500) -> str:
     selected = groups[-limit:]
+    # 大版本动辄上千个 PR（android-v0.2.1 有 1242 组），只给最近一部分会把前面的改动整个漏掉；改为组数越多每组给得越少，总量压在十万 token 上下。
+    detail = "full" if len(selected) <= 180 else "brief" if len(selected) <= 500 else "title"
     lines: list[str] = []
     if len(groups) > limit:
         lines.append(f"（改动过多，只提供最近 {limit} 组；不要猜测未提供的改动。）")
@@ -192,17 +194,22 @@ def change_context(groups: list[dict[str, object]], pulls: dict[int, dict[str, o
             lines.append(f"[PR #{number}] 作者：{author}" + (f"；关闭 issue：{issues}" if issues else ""))
             lines.append(f"PR 标题：{pull['title']}")
             body = str(pull["body"]).strip()
-            if body:
-                lines.append(f"PR 正文：{body[:800]}")
-        for record in commits[:20]:
+            if body and detail != "title":
+                lines.append(f"PR 正文：{body[:800 if detail == 'full' else 200]}")
+            if detail != "full" and len(commits) == 1:
+                lines.append("")
+                continue
+        for record in commits[:20 if detail == "full" else 5]:
             lines.append(f"- 提交：{record['subject']}")
             body = str(record.get("body", ""))
-            if body and pull is None:
-                lines.append(f"  正文：{body[:400]}")
-        if len(commits) > 20:
-            lines.append(f"- ……另有 {len(commits) - 20} 个提交")
-        paths = sorted({str(path) for record in commits for path in list(record.get("paths", []))})
-        lines.append(f"路径：{', '.join(paths[:12])}" + (" …" if len(paths) > 12 else ""))
+            if body and pull is None and detail != "title":
+                lines.append(f"  正文：{body[:400 if detail == 'full' else 200]}")
+        shown = 20 if detail == "full" else 5
+        if len(commits) > shown:
+            lines.append(f"- ……另有 {len(commits) - shown} 个提交")
+        if detail == "full":
+            paths = sorted({str(path) for record in commits for path in list(record.get("paths", []))})
+            lines.append(f"路径：{', '.join(paths[:12])}" + (" …" if len(paths) > 12 else ""))
         lines.append("")
     return "\n".join(lines)
 
@@ -315,7 +322,7 @@ def model_notes(label: str, version: str, groups: list[dict[str, object]], pulls
         content = content.strip()
         if content.startswith("```") and content.endswith("```"):
             content = content.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
-        if not content.startswith(heading + "\n") or len(content) > 20000:
+        if not content.startswith(heading + "\n") or len(content) > 30000:
             raise ValueError("模型返回的发布说明格式不符合约束")
         return content + "\n"
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError, urllib.error.URLError) as error:
