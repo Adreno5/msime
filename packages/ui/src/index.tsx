@@ -1,3 +1,4 @@
+import type { KeybindingPreferences } from "./settings/keybinding-preferences";
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
 import type { TraditionalChineseVariant } from "./settings/traditional-chinese-output-section";
 import type {
@@ -1651,18 +1652,7 @@ export {
   type ResourcePackStatus,
 } from "./settings/resource-packs";
 
-export type KeybindingPreferences = {
-  switch_language_shift: boolean;
-  switch_language_ctrl: boolean;
-  switch_language_ctrl_space?: boolean;
-  switch_language_ctrl_alt_space: boolean;
-  toggle_character_set_ctrl_shift_f: boolean;
-  toggle_fullwidth_option_shift_h: boolean;
-  /** 单按 Caps Lock 切换中英文，长按照常是大写锁定。缺省为关。 */
-  switch_language_caps_lock?: boolean;
-  /** Ctrl+Shift+J 在中文和日语之间切换。缺省为关。 */
-  toggle_japanese_ctrl_shift_j?: boolean;
-};
+export type { KeybindingPreferences } from "./settings/keybinding-preferences";
 export type HostPlatform = "windows" | "macos" | "linux" | "android" | "ios" | "harmony";
 /** Mirrors `client-core::preferences::InputScheme`. */
 export type InputScheme =
