@@ -998,6 +998,11 @@ export {
   type InputModeShortcutsSectionProps,
 } from "./settings/input-mode-shortcuts-section";
 export {
+  languageSwitchChoice,
+  languageSwitchPatch,
+  type LanguageSwitchChoice,
+} from "./settings/input-mode-shortcuts-model";
+export {
   ShortcutsIntroSection,
   type ShortcutsIntroSectionProps,
 } from "./settings/shortcuts-intro-section";
