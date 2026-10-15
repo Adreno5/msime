@@ -293,7 +293,7 @@ msime::tsf::KeyCompositionState CCompositionProcessorEngine::GetKeyCompositionSt
     legacy.caret = _caretPosition;
     legacy.unicodeMode = IsUnicodeModeComposition() != FALSE;
     legacy.urlMode = _urlMode;
-    return msime::tsf::ReadKeyCompositionState(_hostEngineAdapter.get(), std::move(legacy), string_to_wstring);
+    return msime::tsf::ReadKeyCompositionState(_hostEngineAdapter.get(), std::move(legacy), FanyUtils::string_to_wstring);
 }
 
 BOOL CCompositionProcessorEngine::IsUnicodeModeComposition() const
