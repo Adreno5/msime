@@ -2669,6 +2669,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
   const {
     providerCredentials,
     aiCredentialGeneration,
+    aiCredentialGenerationRef,
     aiCredentialInput,
     setAiCredentialInput,
     tencentCredentialInput,
@@ -2807,6 +2808,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     ai,
     providerCredentialAvailable: aiProviderCredentials,
     credentialGeneration: aiCredentialGeneration,
+    credentialGenerationRef: aiCredentialGenerationRef,
     onChange: onAiChange,
   });
   const {
