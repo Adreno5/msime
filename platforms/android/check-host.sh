@@ -1129,11 +1129,11 @@ if rg -q 'button\.setTextColor\(accent\)' \
   echo "Android layout bar buttons must take actionForeground, not the accent they sit on" >&2
   exit 1
 fi
-# `deleteSurroundingText` 只删选区以外的字：选中开头的「你好」按删除毫无反应，选中中间的文字会删掉选区前一个字。键盘上的删除键都要经 `deleteCodePointBeforeCursor`，由它先删选区；笔画布局曾经绕过它直接调 InputConnection。
+# `deleteSurroundingText` 只删选区以外的字：选中开头的「你好」按删除毫无反应，选中中间的文字会删掉选区前一个字。键盘上的删除键都要经 `deleteCodePointBeforeCursor`，由它先删选区；笔画布局曾经绕过它直接调 InputConnection。只允许该入口和它使用的断开保护层调用码位删除，布局不能绕过入口。
 if ! rg -q 'if \(deleteSelection\(\)\) return;' \
     "$repo_root/platforms/android/java/app/msime/android/core/MSIMEInputService.java" \
   || rg -l '\.deleteSurroundingTextInCodePoints\(' "$repo_root/platforms/android/java" \
-    | rg -v '/core/MSIMEInputService\.java$' >/dev/null; then
+    | rg -v '/core/(MSIMEInputService|InputConnectionGuard)\.java$' >/dev/null; then
   echo "Android delete keys must go through deleteCodePointBeforeCursor, which deletes a selection first" >&2
   exit 1
 fi
