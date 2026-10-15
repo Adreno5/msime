@@ -126,7 +126,7 @@ export {
 } from "./settings/use-dictionary-manager";
 import { SettingsFormFooter } from "./settings/settings-form-footer";
 import { SettingsPageStatus } from "./settings/settings-page-status";
-import type { InputSourceStartupStatus } from "./settings/input-source-startup-notice";
+import type { InputSourceStartupStatus } from "./settings/input-source-startup-model";
 import { SettingsFormFrame } from "./settings/settings-form-frame";
 import { NoticeBanner, type NoticesClient } from "./settings/notice-banner";
 import { WindowTitlebar } from "./settings/window-titlebar";
@@ -2223,11 +2223,9 @@ export type FloatingToolbarPreferences = {
   scale_percent: 75 | 100 | 125 | 150;
   font_size: 16 | 18 | 20 | 22 | 24 | 26 | 28;
 };
-/** What the macOS settings app did with the input method it carries when it started. */
-export {
-  InputSourceStartupNotice,
-  type InputSourceStartupStatus,
-} from "./settings/input-source-startup-notice";
+export { InputSourceStartupNotice } from "./settings/input-source-startup-notice";
+/** macOS 设置宿主启动时对内嵌输入法的安装与启用状态。 */
+export type { InputSourceStartupStatus } from "./settings/input-source-startup-model";
 export interface SettingsClient {
   /** What the surrounding host can do. Absent hosts fall back to user-agent detection. */
   host?: HostCapabilities;
