@@ -10,7 +10,7 @@ import java.util.function.Predicate;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** 经真实九键网格验收英文候选、数字底行和字面上屏。 */
+/** Device acceptance for Engine-owned English candidates entered through the real nine-key grid. */
 public final class NineKeyEnglishDeviceSmoke extends DeviceSmoke {
     @Override protected String successDescription() {
         return "nine-key English candidate discovery and exact InputConnection commit";
@@ -77,38 +77,15 @@ public final class NineKeyEnglishDeviceSmoke extends DeviceSmoke {
             tap(key("1"));
             await(field("msime-test-plain").and(node -> node.getText() != null
                 && node.getText().toString().equalsIgnoreCase("ok11")));
-            stage = "nine-key numeric zero position and space ownership";
-            android.graphics.Rect zero = bounds(key("0"));
-            android.graphics.Rect eight = bounds(key("8"));
-            android.graphics.Rect space = bounds(describedPrefix("空格"));
-            android.graphics.Rect nine = bounds(key("9"));
-            if (zero.top < eight.bottom || !(zero.left < eight.centerX() && zero.right > eight.centerX())
-                    || space.left < nine.right || space.centerY() != nine.centerY())
-                throw new AssertionError("0 must sit below 8, with the original space key beside 9");
-            tap(key("0"));
-            tap(describedPrefix("空格"));
-            tap(key("."));
-            await(field("msime-test-plain").and(node -> node.getText() != null
-                && node.getText().toString().equalsIgnoreCase("ok110 .")));
-            tap(described("打开符号面板"));
-            await(described("符号面板"));
-            tap(described("关闭符号面板"));
-            // 面板返回或刷新不能把右列空格抢回底行，也不能移走 0。
-            await(key("0"));
-            android.graphics.Rect restoredSpace = bounds(describedPrefix("空格"));
-            if (restoredSpace.left < nine.right)
-                throw new AssertionError("Space ownership changed after closing the symbol panel");
             tap(key("九键"));
             await(key("@#").and(AccessibilityNodeInfo::isLongClickable));
-            if (bounds(describedPrefix("空格")).top < bounds(key("WXYZ")).bottom)
-                throw new AssertionError("Letter layer must restore space to the bottom row");
 
             // 空闲时第一格短按不打开符号面板，而是把常用标点放进候选条；点一个经 Engine 上屏（中文标点下 \ 写成 、），候选条随后回到空闲。
             stage = "nine-key 1 key quick punctuation";
             tap(key("@#"));
             tap(described("常用标点 5：、"));
             await(field("msime-test-plain").and(node -> node.getText() != null
-                && node.getText().toString().equalsIgnoreCase("ok110 .、")));
+                && node.getText().toString().equalsIgnoreCase("ok11、")));
             awaitGone(describedPrefix("常用标点 "));
 
             // 符号面板改从九键底行最左边的 符 打开。
@@ -122,12 +99,6 @@ public final class NineKeyEnglishDeviceSmoke extends DeviceSmoke {
             if (original == null) Files.deleteIfExists(preferences.toPath());
             else publish(preferences, original);
         }
-    }
-
-    private android.graphics.Rect bounds(Predicate<AccessibilityNodeInfo> match) {
-        android.graphics.Rect bounds = new android.graphics.Rect();
-        awaitStableBounds(match).getBoundsInScreen(bounds);
-        return bounds;
     }
 
     private Predicate<AccessibilityNodeInfo> candidate(String text) {

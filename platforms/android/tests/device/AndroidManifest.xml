@@ -33,6 +33,7 @@
     <instrumentation android:name="app.msime.android.test.KeyboardHeightDeviceSmoke" android:targetPackage="app.msime.android" />
     <instrumentation android:name="app.msime.android.test.FuzzyPinyinDeviceSmoke" android:targetPackage="app.msime.android" />
     <instrumentation android:name="app.msime.android.test.CandidateGlossDeviceSmoke" android:targetPackage="app.msime.android" />
+    <instrumentation android:name="app.msime.android.test.NineKeyNumericLayoutDeviceSmoke" android:targetPackage="app.msime.android" />
     <instrumentation android:name="app.msime.android.test.NineKeyEnglishDeviceSmoke" android:targetPackage="app.msime.android" />
     <instrumentation android:name="app.msime.android.test.NineKeyPanelDeviceSmoke" android:targetPackage="app.msime.android" />
     <instrumentation android:name="app.msime.android.test.FourteenKeyDeviceSmoke" android:targetPackage="app.msime.android" />
