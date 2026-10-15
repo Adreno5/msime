@@ -1,7 +1,7 @@
 //! 双拼的按键处理（`R/schemes/shuangpin_scheme.cpp`，schemes-lang.md §1.8）。方案用得到 `;` 键时（微软双拼把 ing 放在 `;` 上，自定义方案可以把韵母或零声母编码的第二个键放在 `;` 上，见 `ShuangpinProfile::uses_semicolon_key`），自上一个 `'` 以来的片段长度为奇数时把 `;` 当作按键接受。
 
 use super::query::{
-    apply_segmentation_cases, effective_input_length, normalize_input, segment_input,
+    apply_segmentation_cases_into, effective_input_length, normalize_input, segment_input,
     to_quanpin_segmentation,
 };
 use super::ShuangpinProfile;
@@ -98,9 +98,11 @@ impl ShuangpinScheme {
         request.valid = effective_input_length(&request.raw_input) > 0;
         if request.valid {
             let segmentation = segment_input(&request.raw_input, profile);
-            let raw_segmentation =
-                apply_segmentation_cases(&segmentation, &request.raw_input_with_cases);
-            request.raw_segmentation.clone_from(&raw_segmentation);
+            apply_segmentation_cases_into(
+                &segmentation,
+                &request.raw_input_with_cases,
+                &mut request.raw_segmentation,
+            );
             let normalized_segmentation = to_quanpin_segmentation(&segmentation, profile);
             request
                 .normalized_segmentation
@@ -152,6 +154,25 @@ mod tests {
                 letter => SchemeKey::Letter(letter),
             });
         }
+    }
+
+    #[test]
+    fn refreshing_a_request_reuses_the_case_output_buffer() {
+        let typed = {
+            let mut typed = scheme(ShuangpinProfileKind::Xiaohe);
+            type_text(&mut typed, "NiHc");
+            typed
+        };
+        let mut request = typed.build_request();
+        let expected = request.clone();
+        let pointer = request.raw_segmentation.as_ptr();
+        let ((), allocations) = crate::ime::personal_rerank::allocations::count(|| {
+            typed.build_request_into(&mut request);
+        });
+        assert_eq!(request, expected);
+        assert_eq!(request.raw_segmentation, "Ni'Hc");
+        assert_eq!(request.raw_segmentation.as_ptr(), pointer);
+        assert_eq!(allocations, 11);
     }
 
     #[test]

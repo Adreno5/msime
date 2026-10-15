@@ -561,7 +561,7 @@ fn caret_prefix_expands_its_own_initial_list() {
     let (grew, allocations) =
         crate::ime::personal_rerank::allocations::count(|| session.expand_initial_candidates());
     assert!(grew);
-    assert_eq!(allocations, 316, "光标前缀展开申请次数：{allocations}");
+    assert_eq!(allocations, 315, "光标前缀展开申请次数：{allocations}");
     let widened = words(&session);
     assert_eq!(widened.len(), 30);
     assert!(widened.contains(&"丝".to_owned()), "{widened:?}");
@@ -1558,7 +1558,7 @@ fn ignored_scheme_key_does_not_clone_preedit_for_change_detection() {
     });
 
     assert!(!result.handled);
-    assert_eq!(allocations, 25);
+    assert_eq!(allocations, 23);
 }
 
 #[test]
@@ -1585,7 +1585,7 @@ fn backspacing_at_the_end_does_not_build_the_preedit_twice_for_caret_detection()
         crate::ime::personal_rerank::allocations::count(|| session.command(Command::Backspace));
 
     assert!(result.handled);
-    assert_eq!(allocations, 16);
+    assert_eq!(allocations, 15);
 }
 
 #[test]
@@ -1675,7 +1675,7 @@ fn typing_at_a_caret_reuses_the_editing_text_length() {
         crate::ime::personal_rerank::allocations::count(|| session.character(b'x', false));
 
     assert!(result.handled);
-    assert_eq!(allocations, 196, "光标处输入的分配次数：{allocations}");
+    assert_eq!(allocations, 194, "光标处输入的分配次数：{allocations}");
 }
 
 #[test]
