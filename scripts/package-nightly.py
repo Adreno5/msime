@@ -67,7 +67,8 @@ def package(source, output, source_sha, limit=ASSET_LIMIT):
     ))
     readme = (f"nightly source: {source_sha}\nbuilt at: {now.isoformat()}\n\n"
               "按平台下载对应压缩包；全部平台也可下载总包。\n"
-              "sha256sum -c ARCHIVE_SHA256SUMS 校验下载文件；解压后用 SHA256SUMS 校验内容。\n")
+              "sha256sum --ignore-missing -c ARCHIVE_SHA256SUMS 校验下载文件。\n"
+              "解压后运行 sha256sum --ignore-missing -c SHA256SUMS 校验内容。\n")
     if instructions:
         readme += ("\n分卷包需下载同名的全部 .part 文件，在同一目录按序合并后解压：\n"
                    + "".join(instructions)
