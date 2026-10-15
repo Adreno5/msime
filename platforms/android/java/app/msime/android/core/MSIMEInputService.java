@@ -4772,7 +4772,7 @@ public final class MSIMEInputService extends InputMethodService {
             () -> Color.parseColor(skin.accent()));
         ViewPolicy.setAllCapsFalse(button);
         button.setText("更多");
-        imeStyler.styleButton(button, true);
+        imeStyler.styleButton(button, KeyboardKeyRole.GLYPH, skin);
         bindAction(button, action);
         row.addView(button, LayoutPolicy.weightedWrapParams(1));
         return button;
