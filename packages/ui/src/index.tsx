@@ -833,6 +833,7 @@ export {
   type PreeditStyleSelectProps,
 } from "./settings/preedit-style-select";
 export { PreeditStyleRow, type PreeditStyleRowProps } from "./settings/preedit-style-row";
+export { preeditControlState } from "./settings/preedit-preferences";
 export {
   CandidateColorsSection,
   type CandidateColorKey,
