@@ -809,6 +809,12 @@ export { OpenPanelRow, type OpenPanelRowProps } from "./settings/open-panel-row"
 export { ActionRow, type ActionRowProps } from "./settings/action-row";
 export { ActionButton, type ActionButtonProps } from "./settings/action-button";
 export { FeedbackKindOptions } from "./settings/feedback-kind-options";
+export {
+  feedbackDiagnostics,
+  feedbackMaxText,
+  feedbackTypes,
+  type FeedbackDiagnosticsSource,
+} from "./settings/feedback-contracts";
 export { OpenPanelButton, type OpenPanelButtonProps } from "./settings/open-panel-button";
 export {
   VoiceLanguageOptions,
