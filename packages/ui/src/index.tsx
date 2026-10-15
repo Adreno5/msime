@@ -1142,6 +1142,11 @@ export {
 } from "./settings/voice-hotkeys-section";
 export { FloatingToolbarPlatformNotice } from "./settings/floating-toolbar-platform-notice";
 export {
+  floatingToolbarButtonOptions,
+  floatingToolbarFontSizes,
+  floatingToolbarScales,
+} from "./settings/floating-toolbar-options";
+export {
   DoubaoAuthModeSection,
   type DoubaoAuthMode,
   type DoubaoAuthModeSectionProps,
