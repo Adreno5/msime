@@ -4,8 +4,7 @@ import { defaultFuzzyPinyin } from "./fuzzy-pinyin-section";
 import { defaultKeybindings } from "./keybinding-defaults";
 import { defaultLocalModes } from "./local-modes-section";
 import { defaultMixedInput } from "./mixed-input-section";
-import { defaultNavigation } from "./navigation-section";
-import { defaultWordCharacter } from "./word-character-section";
+import { defaultNavigation, defaultWordCharacter } from "./candidate-paging-preferences";
 
 export type SettingsInputPreferencesSource = Pick<
   Preferences,
