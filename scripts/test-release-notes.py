@@ -95,11 +95,17 @@ def check_pull_request_assignment() -> None:
         run("merge", "-q", "--no-ff", "feature", "-m", "Merge pull request #12 from org/feature")
         commit("c", "feat(engine): 新功能 (#13)")
         commit("d", "chore: 直接推送")
+        # release PR 把 develop 带进 main，它的合并提交不能认领前面那些提交。
+        run("checkout", "-q", "-b", "release/1.0.0")
+        commit("e", "chore(release): set version to 1.0.0")
+        run("checkout", "-q", "develop")
+        run("checkout", "-q", "-b", "main", "start")
+        run("merge", "-q", "--no-ff", "release/1.0.0", "-m", "Merge pull request #14 from org/release/1.0.0")
         records = MODULE.collect_commits(root, "start", "HEAD", "android")
     numbers = {str(record["subject"]): record["pr"] for record in records}
-    check(numbers == {"fix(engine): 第一处": 12, "test(engine): 覆盖第一处": 12, "feat(engine): 新功能 (#13)": 13, "chore: 直接推送": None}, f"提交没有对上 PR：{numbers}")
+    check(numbers == {"fix(engine): 第一处": 12, "test(engine): 覆盖第一处": 12, "feat(engine): 新功能 (#13)": 13, "chore: 直接推送": None, "chore(release): set version to 1.0.0": None}, f"提交没有对上 PR：{numbers}")
     groups = MODULE.group_by_pull_request(records)
-    check([group["pr"] for group in groups] == [12, 13, None], f"按 PR 分组不对：{[group['pr'] for group in groups]}")
+    check([group["pr"] for group in groups] == [12, 13, None, None], f"按 PR 分组不对：{[group['pr'] for group in groups]}")
 
 
 def main() -> int:

@@ -42,7 +42,7 @@ MAINTAINERS = frozenset({"houko"})
 # 发布说明的格式以这份样例为准，模型按它的结构和措辞写，兜底版本也用同一套分组标题。
 EXAMPLE_PATH = Path(__file__).with_name("release-notes-example.md")
 
-MERGE_SUBJECT = re.compile(r"^Merge pull request #(\d+) from ")
+MERGE_SUBJECT = re.compile(r"^Merge pull request #(\d+) from [^/\s]+/(\S+)")
 SQUASH_SUBJECT = re.compile(r"\(#(\d+)\)$")
 CONVENTIONAL_SUBJECT = re.compile(r"^(\w+)(?:\([^)]*\))?!?:\s*")
 
@@ -97,20 +97,23 @@ def collect_commits(root: Path, start_tag: str | None, end_ref: str, platform: s
 
 
 def assign_pull_requests(root: Path, revision_range: str, records: list[dict[str, object]]) -> None:
-    """给每个提交标上它所属的 PR：merge commit 合进来的看合并提交，squash 进来的看标题末尾的 (#N)。"""
+    """给每个提交标上它所属的 PR：squash 进来的看标题末尾的 (#N)，merge commit 合进来的看合并提交。
+
+    release/* 分支的 PR 是把整个 develop 带进 main，不是一项改动，跳过；否则它会认领区间里所有还没归属的提交，android-v0.2.0 有 355 个 squash 提交就这样被算到了 release PR 名下。
+    """
     owner: dict[str, int] = {}
     merges = git(root, "log", "--merges", "--reverse", "--format=%H %P%x00%s", revision_range)
     for line in merges.splitlines():
         parents, _, subject = line.partition("\x00")
         match = MERGE_SUBJECT.match(subject)
         hashes = parents.split()
-        if not match or len(hashes) != 3:
+        if not match or len(hashes) != 3 or match.group(2).startswith("release/"):
             continue
         for commit in git(root, "rev-list", "--no-merges", f"{hashes[1]}..{hashes[2]}").split():
             owner.setdefault(commit, int(match.group(1)))
     for record in records:
         squash = SQUASH_SUBJECT.search(str(record["subject"]))
-        record["pr"] = owner.get(str(record["commit"])) or (int(squash.group(1)) if squash else None)
+        record["pr"] = int(squash.group(1)) if squash else owner.get(str(record["commit"]))
 
 
 def fetch_pull_requests(numbers: list[int]) -> dict[int, dict[str, object]]:
