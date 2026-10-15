@@ -37,6 +37,8 @@ use crate::user_dictionary::ngram_store::PersonalNgramStore;
 const SMALL_PREFIX_DEDUP: usize = 64;
 // 单字辅助码的常见候选批次很短，排列索引放在栈上即可。
 const SMALL_SINGLE_HELP_CODE_ORDER: usize = 64;
+/// 常见双拼纠错输入的两键分段放在栈上；更长的输入仍回退到堆容器，不改变准入范围。
+const INLINE_TYPO_CODES: usize = 32;
 
 /// The reference passed `INT_MAX` as "no limit" to the row queries (SD:899, SD:543).
 const UNLIMITED_ROWS: usize = i32::MAX as usize;
@@ -309,7 +311,7 @@ impl ShuangpinDictionary {
                 database,
                 span_cache,
                 profile,
-                &codes,
+                codes.as_slice(),
                 segments,
                 literal_best,
                 types,
@@ -632,20 +634,72 @@ fn typo_sentence_seat(candidates: &[WordItem], segments: &[String]) -> Option<us
 }
 
 /// 纠错整句要求每个音节恰好是一对键，才知道该换哪个键；用户手打的 `'` 表示按字面切分，和全拼一样不纠。`rows_key` 是这次答案的缓存键（带 `'` 的原始输入或去掉分隔的按键），所以准入只由缓存键和切分决定，命中缓存的答案与重新计算的一致。不可纠时返回空。
+struct TypoCodes<'a> {
+    values: [&'a str; INLINE_TYPO_CODES],
+    len: usize,
+    heap: Option<Vec<&'a str>>,
+}
+
+impl<'a> TypoCodes<'a> {
+    fn empty() -> Self {
+        Self {
+            values: [""; INLINE_TYPO_CODES],
+            len: 0,
+            heap: None,
+        }
+    }
+
+    fn as_slice(&self) -> &[&'a str] {
+        self.heap.as_deref().unwrap_or(&self.values[..self.len])
+    }
+
+    fn is_empty(&self) -> bool {
+        self.as_slice().is_empty()
+    }
+}
+
 fn typo_codes<'a>(
     types: u32,
     segments: &[String],
     segmentation: &'a str,
     rows_key: &str,
-) -> Vec<&'a str> {
+) -> TypoCodes<'a> {
     if types & SHUANGPIN_TYPO_TYPES == 0 || rows_key.contains('\'') {
-        return Vec::new();
+        return TypoCodes::empty();
     }
-    let codes: Vec<&str> = segmentation.split('\'').collect();
-    if codes.len() != segments.len() || codes.iter().any(|code| code.len() != 2) {
-        return Vec::new();
+    let mut inline = [""; INLINE_TYPO_CODES];
+    let mut len = 0;
+    let mut heap: Option<Vec<&'a str>> = None;
+    for code in segmentation.split('\'') {
+        if code.len() != 2 {
+            return TypoCodes::empty();
+        }
+        if let Some(values) = &mut heap {
+            values.push(code);
+        } else if len < INLINE_TYPO_CODES {
+            inline[len] = code;
+            len += 1;
+        } else {
+            let mut values = Vec::with_capacity(segments.len());
+            values.extend_from_slice(&inline[..len]);
+            values.push(code);
+            heap = Some(values);
+        }
     }
-    codes
+    match heap {
+        Some(values) if values.len() == segments.len() => TypoCodes {
+            values: inline,
+            len,
+            heap: Some(values),
+        },
+        Some(_) => TypoCodes::empty(),
+        None if len == segments.len() => TypoCodes {
+            values: inline,
+            len,
+            heap: None,
+        },
+        None => TypoCodes::empty(),
+    }
 }
 
 fn prefix_group_count(segmentation: &str) -> usize {
@@ -839,9 +893,12 @@ mod tests {
     use super::double_helpcode_cache_key;
     use super::prefix_group_count;
     use super::reorder_single_helpcode_rows;
+    use super::typo_codes;
     use super::typo_sentence_seat;
     use super::ShuangpinDictionary;
     use super::SingleHelpcodeMatch;
+    use super::INLINE_TYPO_CODES;
+    use super::SHUANGPIN_TYPO_TYPES;
     use crate::helpcode::HelpcodeKeymap;
     use crate::paths::RuntimePaths;
     use crate::shuangpin::profile::profile;
@@ -1134,5 +1191,34 @@ mod tests {
             allocations <= 2,
             "large prefix merge allocated {allocations} temporary buffers"
         );
+    }
+
+    #[test]
+    fn typical_typo_code_projection_does_not_allocate_a_heap_vector() {
+        let segments: Vec<String> = ["mei", "gen", "xi"].map(str::to_owned).into();
+        let (codes, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+            typo_codes(SHUANGPIN_TYPO_TYPES, &segments, "mw'gf'xi", "mwgfxi")
+        });
+
+        assert_eq!(codes.as_slice(), ["mw", "gf", "xi"]);
+        assert_eq!(allocations, 0, "双拼纠错码投影不应申请临时堆向量");
+    }
+
+    #[test]
+    fn typo_code_projection_keeps_invalid_and_long_input_semantics() {
+        let segments: Vec<String> = ["mei", "gen"].map(str::to_owned).into();
+        assert!(typo_codes(SHUANGPIN_TYPO_TYPES, &segments, "mw'gf", "mw'gf").is_empty());
+        assert!(typo_codes(SHUANGPIN_TYPO_TYPES, &segments, "mwgf", "mwgf").is_empty());
+        assert!(typo_codes(0, &segments, "mw'gf", "mwgf").is_empty());
+
+        let long_segments = vec!["aa".to_owned(); INLINE_TYPO_CODES + 1];
+        let long_segmentation = long_segments.join("'");
+        let codes = typo_codes(
+            SHUANGPIN_TYPO_TYPES,
+            &long_segments,
+            &long_segmentation,
+            &long_segmentation.replace('\'', ""),
+        );
+        assert_eq!(codes.as_slice().len(), INLINE_TYPO_CODES + 1);
     }
 }
