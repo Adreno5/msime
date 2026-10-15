@@ -877,6 +877,7 @@ export { candidateLayoutOptions } from "./settings/candidate-layout-options";
 export { themeModeOptions } from "./settings/theme-mode-options";
 export { candidateTabs, type CandidateTab } from "./settings/candidate-tabs";
 export { expressionTabs, type ExpressionTab } from "./settings/expression-tabs";
+export { inputTabs, type InputTab } from "./settings/input-tabs";
 export {
   CandidateFollowCursorSection,
   type CandidateFollowCursorSectionProps,
