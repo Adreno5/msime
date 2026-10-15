@@ -6,6 +6,7 @@ import type {
 } from "./candidate/candidate-preferences";
 import type { PunctuationPreferences } from "./settings/punctuation-preferences";
 import type { KeybindingPreferences } from "./settings/keybinding-preferences";
+import type { WubiPreferences } from "./settings/wubi-preferences";
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
 import type { TraditionalChineseVariant } from "./settings/chinese-output-preferences";
 import type {
@@ -947,6 +948,7 @@ export {
   type TelemetrySectionProps,
 } from "./settings/telemetry-section";
 export { WubiSection, type WubiPreferences, type WubiSectionProps } from "./settings/wubi-section";
+export { wubiControlState } from "./settings/wubi-preferences";
 export {
   WubiCodeLookupSection,
   WUBI_CODE_LOOKUP_MAX_LENGTH,
@@ -1858,6 +1860,7 @@ export type { SentenceAssociationPreferences } from "./settings/sentence-associa
 
 export type Preferences = PunctuationPreferences &
   PreeditPreferences &
+  WubiPreferences &
   CandidateFontPreferences &
   CandidateSizingPreferences &
   CandidateWindowStylePreferences & {
@@ -1902,9 +1905,6 @@ export type Preferences = PunctuationPreferences &
     navigation?: NavigationPreferences;
     keybindings?: KeybindingPreferences;
     scheme: InputScheme;
-    wubi_code_hint?: boolean;
-    /** 五笔四码唯一候选自动上屏；缺省为开。 */
-    wubi_auto_commit_unique?: boolean;
     /** 触屏键盘的布局；`fourteen_key` 是全拼 14 键，`nine_key_shuangpin` 是九键双拼，都只配全拼。 */
     touch_keyboard_layout?:
       | "twenty_six_key"
@@ -1942,7 +1942,6 @@ export type Preferences = PunctuationPreferences &
     /** 「输入时显示双拼键位提示」。没选过时文档里没有这一项，按关显示；macOS 那时仍沿用本机旧的选择。 */
     shuangpin_keymap_hint?: boolean;
     vietnamese?: VietnamesePreferences;
-    wubi_mixed_pinyin?: boolean;
     /** 只出单字：全拼、双拼、五笔和粤拼的候选只留单个汉字；缺省为关。 */
     single_character_only?: boolean;
     candidate_page_size: number;
