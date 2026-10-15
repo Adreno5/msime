@@ -25,3 +25,5 @@ Status: implemented
 三个字段及样式取值各自只有一份声明，选择器、设置组件和总偏好直接依赖叶子契约。新增一个纯类型文件和原位置兼容接口，原类型导出路径、接口声明合并能力、字段可选性及整份偏好的 `Record<string, unknown>` 兼容性保持。格式器对总偏好的三个交叉部分自动换行，偏好对象内仅随之调整缩进。
 
 既有预编辑控件、行内默认值与保存、设置页面测试抽取前后均为三个文件、六项通过；独立 TypeScript 编译核对旧类型导出、空偏好、样式范围、组件声明合并与 `Record` 兼容性。桌面构建与 Harmony 类型检查通过。字段一致性门禁仍核对 35 组共享类型，既有四项组合解析回归通过。不新增复述类型字段的运行时测试，默认值、控件顺序、可见条件和存储格式保持。
+
+本片 CI 的 `Workflow validation` 连续两次在准备 action 时失败：`setup-go` 发布提交 `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` 的 SHA 归档返回 404，官方 API 与 Git 标签仍指向它。同一仓库发布后的固定提交归档可下载；`quality.yml` 改为固定在 `fba3fb4ead8c8e09a06f1d32ae5436e5818eff15`。该提交比发布版前进两次，更新上游依赖并修复其审计问题，`action.yml` 与 `src/` 没有变化，Go 1.26、禁用缓存及 actionlint 命令保持。来源与差异见 [上游对比](https://github.com/actions/setup-go/compare/b7ad1dad31e06c5925ef5d2fc7ad053ef454303e...fba3fb4ead8c8e09a06f1d32ae5436e5818eff15)。此项是推进本片时发现的门禁修复；后续依赖更新仍须核对实际 SHA 归档可下载。
