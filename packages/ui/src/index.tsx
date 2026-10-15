@@ -495,7 +495,7 @@ import type { FrequencyPreferences } from "./settings/frequency-preferences";
 import { type LocalModePreferences } from "./settings/local-mode-preferences";
 import { floatingToolbarPreferences } from "./settings/floating-toolbar-preferences";
 import type { SurfaceTheme, ThemeMode } from "./settings/theme-settings-section";
-import type { TouchToolbarPreferences } from "./settings/touch-keyboard-geometry-section";
+import type { TouchToolbarPreferences } from "./settings/touch-keyboard-toolbar-preferences";
 import { HelpSettingsPage } from "./settings/help-settings-page";
 import type { MobileKeyboardFeedbackClient } from "./settings/mobile-keyboard-feedback";
 import { HandwritingSettingsPage } from "./settings/pages/handwriting-page";
