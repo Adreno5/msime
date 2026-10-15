@@ -43,6 +43,7 @@ import {
   isSettingsFormPage,
 } from "./settings/settings-page-visibility";
 import { settingsInputPreferences } from "./settings/settings-input-preferences";
+import type { AppInputModeRule, PickedApplication } from "./settings/app-input-mode-rules";
 import { aiSettingsPreferences } from "./settings/ai-settings-preferences";
 import { diagnosticLogPreferences } from "./settings/diagnostic-log-preferences";
 import { clipboardHistoryEnabled } from "./settings/clipboard-history-preferences";
@@ -679,6 +680,7 @@ export {
   type HelpcodeSchema,
   type HelpcodeSettings,
 } from "./settings/helpcode-preferences";
+export type { AppInputModeRule, PickedApplication } from "./settings/app-input-mode-rules";
 export {
   ClipboardHistorySection,
   type ClipboardHistoryClient,
@@ -1722,8 +1724,6 @@ export type VietnamesePreferences = {
   input_method?: "telex" | "vni";
   tone_style?: "modern" | "classic";
 };
-/** 对应 `client-core::preferences::AppInputModeRule`。 */
-export type AppInputModeRule = "chinese" | "english";
 /** Mirrors `client-core::host_surface::HostCapabilities`. */
 export interface HostCapabilities {
   platform: HostPlatform;
@@ -2395,7 +2395,7 @@ export interface SettingsClient {
    */
   pickVoiceModelPath?: () => Promise<string | null>;
   /** 应用例外的「添加应用…」：宿主弹出系统的选应用对话框，交回规则用的标识（macOS 的 Bundle ID，Windows 的程序文件名）和应用名称，用户取消时为 null；所选不是应用程序时以 `not_application` 拒绝。没有它的宿主只能手填应用标识。 */
-  pickApplication?: () => Promise<{ id: string; name: string } | null>;
+  pickApplication?: () => Promise<PickedApplication | null>;
   /** 应用例外列表的显示名称：按规则标识查本机装着的应用，查不到的不返回（macOS）。 */
   applicationNames?: (ids: string[]) => Promise<Record<string, string>>;
   /** The host's on-device speech model store; hosts that provide it offer the `local` provider with a model manager. */
