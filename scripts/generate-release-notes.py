@@ -294,6 +294,8 @@ def model_notes(label: str, version: str, groups: list[dict[str, object]], pulls
         {
             # 不带 temperature：GPT-5 系列的推理模型只接受默认值，带别的值会被直接拒绝（HTTP 400），windows-v0.2.1 的发布说明就是这样退回了确定性版本。
             "model": model,
+            # 不写的话由网关给默认上限，按样例写的长说明会被截断：android-v0.3.0 停在半句话上，改动多的版本整段返回空内容。
+            "max_tokens": 32000,
             "messages": [
                 {"role": "system", "content": "你只输出符合要求的 Markdown，不要输出分析。"},
                 {"role": "user", "content": prompt},
@@ -316,7 +318,10 @@ def model_notes(label: str, version: str, groups: list[dict[str, object]], pulls
         # 按样例写一整份说明比原来的三段式长得多，推理模型常要一两分钟，45 秒会在出结果前超时。
         with urllib.request.urlopen(request, timeout=300) as response:
             document = json.load(response)
-        content = document["choices"][0]["message"]["content"]
+        choice = document["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("模型输出达到长度上限被截断")
+        content = choice["message"]["content"]
         if not isinstance(content, str) or not content.strip():
             raise ValueError("模型返回了空内容")
         content = content.strip()
