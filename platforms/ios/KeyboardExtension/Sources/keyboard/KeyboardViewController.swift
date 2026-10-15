@@ -323,6 +323,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   private var phoneActionWidths: [NSLayoutConstraint] = []
   /// iPad 26 键底行，以空格键的 6.4 为基准（`TabletLetterLayout`）：123 1.5、中 1.2、地球键 1、123 1.5、⌄ 1.2。
   private var tabletActionWidths: [NSLayoutConstraint] = []
+  private var phoneExpandedSpaceWidths: [NSLayoutConstraint] = []
+  private var nineKeyExpandedSpaceWidths: [NSLayoutConstraint] = []
+  private var tabletExpandedSpaceWidths: [NSLayoutConstraint] = []
+  private var tabletSplitExpandedSpaceWidths: [NSLayoutConstraint] = []
   /// iPad 底行的第二个 123 和收起键盘的 ⌄；其他底行上都隐藏。
   private var tabletLayerButton: UIButton!
   private var dismissKeyButton: UIButton!
@@ -2864,6 +2868,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       weight(tabletLayer, TabletLetterLayout.layerWeight, space: tabletSpace),
       weight(dismiss, TabletLetterLayout.dismissWeight, space: tabletSpace),
     ]
+    // 隐藏语言键时把它的份额交给空格，避免仅隐藏视图后其他功能键也一起变宽。
+    func expandedWidths(spaceWeight: CGFloat, entries: [(UIView, CGFloat, Bool)]) -> [NSLayoutConstraint] {
+      entries.map { key, value, optional in weight(key, value, space: spaceWeight, optional: optional) }
+    }
+    phoneExpandedSpaceWidths = expandedWidths(spaceWeight: phoneSpace + 1.05, entries: [
+      (layoutToggle, 1.25, false), (globe, 1, true), (delete, 1, true),
+      (punctuation, 1, true), (period, 1, true), (enter, 1.9, false),
+    ])
+    nineKeyExpandedSpaceWidths = expandedWidths(spaceWeight: Self.nineKeySpaceWeight + 1.05, entries: [
+      (layoutToggle, 1.25, false), (globe, 1, true), (zero, 1.05, false), (enter, 1.6, false),
+    ])
+    let tabletEntries: [(UIView, CGFloat, Bool)] = [
+      (layoutToggle, TabletLetterLayout.layerWeight, false),
+      (globe, TabletLetterLayout.globeWeight, true),
+      (tabletLayer, TabletLetterLayout.layerWeight, false),
+      (dismiss, TabletLetterLayout.dismissWeight, false),
+    ]
+    tabletExpandedSpaceWidths = expandedWidths(
+      spaceWeight: tabletSpace + TabletLetterLayout.languageWeight, entries: tabletEntries)
+    tabletSplitExpandedSpaceWidths = expandedWidths(
+      spaceWeight: tabletSpace + TabletLetterLayout.languageWeight / 2, entries: tabletEntries)
     actionGlobeButton = globe
     return row
   }
@@ -4851,7 +4876,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       phoneBottomRowShown = style == .phone
       nineKeyHeight.isActive = nineKeyFrame
       arrangeActionRow(style)
-      NSLayoutConstraint.deactivate(standardActionWidths + nineKeyActionWidths + phoneActionWidths + layerActionWidths + tabletActionWidths)
+      NSLayoutConstraint.deactivate(standardActionWidths + nineKeyActionWidths + phoneActionWidths + layerActionWidths
+        + tabletActionWidths + phoneExpandedSpaceWidths + nineKeyExpandedSpaceWidths
+        + tabletExpandedSpaceWidths + tabletSplitExpandedSpaceWidths)
       // iPad 的 26 键底行在回车的位置放第二个 123 和 ⌄，回车在 iPad 上排到第二排字母末尾。
       if tabletLayerButton.isHidden != (style != .tablet) { tabletLayerButton.isHidden = style != .tablet }
       if dismissKeyButton.isHidden != (style != .tablet) { dismissKeyButton.isHidden = style != .tablet }
@@ -4877,8 +4904,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       fullSymbolsWidth?.isActive = !nineKeySymbolsButton.isHidden && (style == .phone || style == .standard || style == .tablet)
       layerEmojiButton.isHidden = !(symbolLayer && !showsMoreSymbols)
       nineKeyZeroButton.isHidden = style != .nineKey
-      bottomLanguageButton?.isHidden = style == .symbolLayer
-      bottomLanguageWidth?.isActive = style == .standard
+      let hidesLanguage = !layout.showsBottomLanguage
+      bottomLanguageButton?.isHidden = style == .symbolLayer || hidesLanguage
+      bottomLanguageWidth?.isActive = style == .standard && !hidesLanguage
       // iPad 的 26 键从第三排字母输入 ，。，所以它的底行没有自己的 ，。
       quickPunctuationButton.isHidden = nineKeyFrame || showsSymbols || kana || style == .tablet
       quickPunctuationWidth?.isActive = !quickPunctuationButton.isHidden && style == .standard
@@ -4903,11 +4931,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       actionDeleteButton.isHidden = !showsSymbols || kana || symbolLayer || nineKeyFrame
       symbolDeleteWidth?.isActive = !actionDeleteButton.isHidden && style == .standard
       switch style {
-      case .phone: NSLayoutConstraint.activate(phoneActionWidths)
-      case .nineKey: NSLayoutConstraint.activate(nineKeyActionWidths)
+      case .phone: NSLayoutConstraint.activate(hidesLanguage ? phoneExpandedSpaceWidths : phoneActionWidths)
+      case .nineKey: NSLayoutConstraint.activate(hidesLanguage ? nineKeyExpandedSpaceWidths : nineKeyActionWidths)
       case .symbolLayer: NSLayoutConstraint.activate(layerActionWidths)
       case .standard: NSLayoutConstraint.activate(standardActionWidths)
-      case .tablet: NSLayoutConstraint.activate(tabletActionWidths)
+      case .tablet: NSLayoutConstraint.activate(hidesLanguage
+        ? (split ? tabletSplitExpandedSpaceWidths : tabletExpandedSpaceWidths) : tabletActionWidths)
       }
     }
     symbolRowViews.forEach { $0.isHidden = !showsSymbols || kana || nineKeyFrame || symbolLayer }

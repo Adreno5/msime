@@ -15,7 +15,7 @@ final class NineKeyKeyboardTests: XCTestCase {
   private var savedKeyboardPreferences: [String: Any] = [:]
   private let preferenceKeys = [KeyboardLayoutPreference.keySpacingKey,
     KeyboardLayoutPreference.rowSpacingKey, KeyboardLayoutPreference.heightAdjustmentKey,
-    KeyboardLayoutPreference.voiceShortcutKey,
+    KeyboardLayoutPreference.voiceShortcutKey, KeyboardLayoutPreference.hideLanguageKeyKey,
     ImeModeMemoryPreference.enabledKey, ImeModeMemoryPreference.lastChineseKey]
   override func tearDown() {
     for key in preferenceKeys {
@@ -66,6 +66,55 @@ final class NineKeyKeyboardTests: XCTestCase {
           attachment.lifetime = .keepAlways
           add(attachment)
         }
+      }
+    }
+  }
+
+  func testHidingLanguageKeyExpandsSpaceAndReloadsAcrossPhoneLayouts() throws {
+    let previous = InputSchemePreference.scheme
+    defer { InputSchemePreference.scheme = previous }
+    for scheme in [ChineseInputScheme.quanpin, .fourteenKey, .nineKey] {
+      InputSchemePreference.scheme = scheme
+      for width in [320.0, 414.0] {
+        KeyboardLayoutPreference.hideLanguageKey = false
+        let controller = KeyboardViewController()
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: width, height: KeyboardViewController.defaultKeyboardHeight)
+        controller.view.layoutIfNeeded()
+        let space = try button("spaceKey", in: controller)
+        let language = try button("bottomLanguageKey", in: controller)
+        let enter = try button("returnKey", in: controller)
+        let originalSpace = space.convert(space.bounds, to: controller.view)
+        let originalReturnWidth = enter.bounds.width
+        XCTAssertFalse(language.isHidden)
+        KeyboardLayoutPreference.hideLanguageKey = true
+        controller.viewWillAppear(false)
+        controller.view.layoutIfNeeded()
+        let expanded = space.convert(space.bounds, to: controller.view)
+        XCTAssertTrue(language.isHidden)
+        XCTAssertGreaterThan(expanded.width, originalSpace.width + 20, "\(scheme) / \(width)")
+        XCTAssertGreaterThan(expanded.maxX, originalSpace.maxX + 15)
+        XCTAssertEqual(enter.bounds.width, originalReturnWidth, accuracy: 2)
+        XCTAssertLessThanOrEqual(enter.convert(enter.bounds, to: controller.view).maxX, width + 0.5)
+        if scheme == .quanpin {
+          let period = try button("bottomPeriodKey", in: controller)
+          XCTAssertFalse(period.isHidden)
+          XCTAssertLessThan(expanded.maxX, period.convert(period.bounds, to: controller.view).minX)
+          if width == 414 {
+            let screenshot = UIGraphicsImageRenderer(bounds: controller.view.bounds).image {
+              controller.view.layer.render(in: $0.cgContext)
+            }
+            let attachment = XCTAttachment(image: screenshot)
+            attachment.name = "HiddenLanguageKey-ExpandedSpace"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+          }
+        }
+        KeyboardLayoutPreference.hideLanguageKey = false
+        controller.viewWillAppear(false)
+        controller.view.layoutIfNeeded()
+        XCTAssertFalse(language.isHidden)
+        XCTAssertEqual(space.bounds.width, originalSpace.width, accuracy: 0.5)
       }
     }
   }
