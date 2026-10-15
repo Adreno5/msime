@@ -18,6 +18,8 @@ Android 发布链通过 `install-ndk.sh` 安装固定 NDK，下载解压失败�
 
 ## Alternatives considered
 
+- **取消总包，只提供六个平台包**：省下重复下载和打包空间，但失去一次收齐全部平台的入口，而且单个平台以后仍可能超限；统一对总包和平台包分卷，保留现有下载选择。
+
 - **复制六套 nightly 构建步骤**：拒绝。依赖安装、资源锁、产物验证和版本矩阵会与正式链分叉，之后修复发布问题时容易漏改 nightly。
 - **继续要求模糊拼音结果排第一**：可以捕获排序变化，但规则只保证候选存在，排序属于词库和学习行为，因此门禁改为匹配完整候选内容并保留关闭规则的负向断言。
 - **macOS 磁盘映像首次失败立即退出**：失败路径最短，但磁盘映像服务的短暂故障会浪费已完成的 universal 构建；采用三次有界重试，持续失败仍返回工具退出码并清理输出。原始 CI 的 macOS 根因没有确认，这项恢复措施不作为根因已定位的证据。
@@ -27,7 +29,7 @@ Android 发布链通过 `install-ndk.sh` 安装固定 NDK，下载解压失败�
 
 ## Consequences
 
-nightly 与正式发布共享每个平台的构建脚本和验证步骤，六个平台任一失败都不会更新滚动 Release。Release 同时提供六个按平台拆分的压缩包和一个总压缩包，并附统一校验文件。nightly 产物是测试构建：Android 使用开发签名，iOS 同时提供模拟器 artifact 和外部 TestFlight 构建，macOS 可能是 ad-hoc 未公证包，Windows、HarmonyOS、Linux 按各自 workflow 的非发布路径产出；不能把它们当正式升级包。
+nightly 与正式发布共享每个平台的构建脚本和验证步骤，六个平台任一失败都不会更新滚动 Release。Release 同时提供六个按平台拆分的压缩包和一个总压缩包。`package-nightly.py` 将超过 GitHub 单附件 2 GiB 限制的压缩包拆成按序编号的 `.partNNN` 文件，每卷不大于 2 GiB 减一字节；小包保持单文件。`README.txt` 给出各分卷包的合并命令，`ARCHIVE_SHA256SUMS` 校验下载文件，原有 `SHA256SUMS` 校验解压内容。六平台目录必须都有实际文件，输出目录必须为空，打包完成后再次核对所有待上传文件大小，避免删除旧 nightly 后才发现附件超限。创建滚动标签与各平台发布保持一致，优先使用 `RELEASE_PUBLISH_TOKEN`，缺失时回退 `github.token`，避免构建期间默认分支 workflow 更新后普通令牌无权创建旧提交标签。nightly 产物是测试构建：Android 使用开发签名，iOS 同时提供模拟器 artifact 和外部 TestFlight 构建，macOS 可能是 ad-hoc 未公证包，Windows、HarmonyOS、Linux 按各自 workflow 的非发布路径产出；不能把它们当正式升级包。
 
 每次 nightly 会消耗六个平台的 runner，默认每天一次；手动触发用于临时验证。iOS 外部测试构建还受 Apple 审核和 App Store Connect 处理时间影响。滚动 release 替换时会先等六个平台全部成功，随后删除旧的 `nightly` release 并创建新的版本；替换窗口内下载链接可能短暂失效。
 
@@ -46,3 +48,5 @@ DMG helper 的合成测试覆盖成功、一次失败后恢复、持续失败与
 后续修复 PR #7850 确认重启后的系统输入法选择稳定，随后在独立 API 35 AVD 上一次通过完整验收；公共模糊拼音排序和设备首选断言保持原样。共享 AVD 曾被并行会话替换测试 APK，因此那台设备上此前的失败与单项通过不充作当前提交证据，方法见[设备门禁笔记](../testing/2026-10-08-android-device-gates.md)。这份修复的远端完整 nightly 尚未验证，不能把本地通过说成六平台滚动 Release 已发布。
 
 定时运行 `38639487504` 已包含 #7850：iOS、macOS、Windows、HarmonyOS 和 Linux DEB 成功；Android 的两台设备在新增的长度限制组字用例失败，藏文版 NDK 下载报 `Error on ZipFile unknown archive`，RPM 的三个 IBus 模式提示用例因缺少 `dbus-daemon` 中止，滚动发布被跳过。Android 产品回归的修复依据见[长度限制组字笔记](../bug-fix/2026-10-15-android-composition-length-filter.md)。NDK 安装器的四项合成 SDK 测试覆盖失败后成功、持续失败三次、缺少编译器和复用完整安装；ShellCheck 与 actionlint 通过。修正后的固定 Fedora RPM 镜像实际构建成功，镜像内的 `GTestDBus` 私有总线连接测试通过；这不等同于完整 RPM 打包或六平台 nightly 成功。
+
+归档大小修复的合成测试用较小阈值覆盖完整归档、平台包及总包分卷、按序恢复、解压后逐字节对照、两层 SHA-256 校验，以及缺平台与残留输出拒绝路径；macOS 本地打包关闭 AppleDouble 元数据，保持与 Linux runner 一致。真实产物的最终大小与发布结果以实际运行记录为准。
