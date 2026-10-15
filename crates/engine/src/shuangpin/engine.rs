@@ -134,7 +134,7 @@ impl ShuangpinEngine {
             .set_autocorrect_types(request_autocorrect_types(request));
 
         let raw = &request.raw_input;
-        if remove_manual_delimiters(raw).is_empty() {
+        if raw.bytes().all(|byte| byte == b'\'') {
             return Vec::new();
         }
         // Without a loaded table nothing matches a helpcode, which is what the reference's null keymap did.
