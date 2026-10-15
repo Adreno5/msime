@@ -3255,7 +3255,8 @@ public final class MSIMEInputService extends InputMethodService {
             String content = JsonPolicy.strictString(message.opt("content"));
             if (content == null) return texts;
             if (!OnlineCandidatePolicy.acceptsAiContent(content)) return texts;
-            JSONArray entries = new JSONObject(content).optJSONArray("candidates");
+            JSONArray entries = new JSONObject(OnlineCandidatePolicy.stripCodeFence(content))
+                .optJSONArray("candidates");
             if (entries == null) return texts;
             texts = new java.util.ArrayList<>(entries.length());
             for (int index = 0; index < entries.length(); index++) {
