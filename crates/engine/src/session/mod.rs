@@ -534,6 +534,16 @@ impl Session {
         self.input.engine.candidate_wubi_code(word)
     }
 
+    /// 显示候选与原始候选同座且词面一致时复用已缓存的反查码；候选身份错位时返回 `None`，由宿主回退到按词入口。
+    pub(crate) fn candidate_wubi_code_at_if_word(&self, index: usize, word: &str) -> Option<&str> {
+        if self.nine_key.active() {
+            return None;
+        }
+        self.input
+            .engine
+            .candidate_wubi_code_at_if_word(index, word)
+    }
+
     /// Byte offsets into `editing_text` for pinyin-unit editing; empty when idle, in local modes, for non-pinyin schemes and during nine-key input. Read-only.
     pub fn segment_raw_boundaries(&self) -> Vec<usize> {
         if self.nine_key.active() {

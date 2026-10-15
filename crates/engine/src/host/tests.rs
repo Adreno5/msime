@@ -2426,7 +2426,7 @@ fn wubi_reverse_codes_are_shown_only_in_the_wubi_scheme() {
     let mut native = helpcode_fixture(native_root.path(), extra, "");
     native.scheme = SchemeType::Wubi as u8;
     let mut session = Session::new(&native).unwrap();
-    type_text(&mut session, b"wqvb");
+    type_text(&mut session, b"wq");
     let view = session.snapshot().unwrap();
     let index = view
         .candidates
@@ -2490,6 +2490,46 @@ fn wubi_reverse_codes_are_looked_up_only_in_the_wubi_scheme() {
             .iter()
             .any(|item| item.word == "你好"));
         assert_eq!(session.candidate_wubi_code("你好"), expected, "{scheme:?}");
+    }
+}
+
+#[test]
+fn wubi_reverse_code_fast_path_requires_the_display_word_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let mut options = helpcode_fixture(
+        root.path(),
+        "INSERT INTO wubi86 VALUES('wqvb','你好',300),('wqbb','父子',200);",
+        "",
+    );
+    options.scheme = SchemeType::Wubi as u8;
+    options.show_helpcode = false;
+    let mut session = Session::new(&options).unwrap();
+    type_text(&mut session, b"wq");
+    let snapshot = session.snapshot().unwrap();
+    assert!(!snapshot.candidates.is_empty());
+    for (index, candidate) in snapshot.candidates.iter().enumerate() {
+        assert_eq!(
+            session.candidate_wubi_code_for_display(index, candidate),
+            snapshot
+                .candidate_annotations
+                .get(index)
+                .and_then(|annotation| annotation.split_whitespace().next()),
+            "同座候选应复用已有反查码"
+        );
+        assert!(
+            session
+                .candidate_wubi_code_for_display(index, "另一个词")
+                .is_none(),
+            "词面不一致时不得读取该座位的反查码"
+        );
+    }
+    if snapshot.candidates.len() > 1 {
+        let other = &snapshot.candidates[1];
+        assert_eq!(
+            session.candidate_wubi_code_for_display(0, other),
+            snapshot.candidate_annotations[1].split_whitespace().next(),
+            "座位错位时应回退到按词查找"
+        );
     }
 }
 

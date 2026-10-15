@@ -149,6 +149,15 @@ pub struct Session {
 }
 
 impl Session {
+    /// 显示候选仍与引擎原始候选同座时直接取反查码；身份不一致时保持旧的按词查找语义。
+    pub(crate) fn candidate_wubi_code_for_display(&self, index: usize, word: &str) -> Option<&str> {
+        self.inner
+            .candidate_wubi_code_at_if_word(index, word)
+            .or_else(|| self.inner.candidate_wubi_code(word))
+    }
+}
+
+impl Session {
     pub fn new(options: &EngineOptions) -> Result<Session> {
         // The C++ ran `options_for` a second time only to read the profile name back (bridge.cpp:430); that rerun recopied the same sidecar, so one mapping is enough.
         let inner = crate::session::Session::new(session_options(options)?)?;
@@ -274,7 +283,8 @@ impl Session {
                     SchemeType::Quanpin | SchemeType::Shuangpin | SchemeType::Wubi
                 )
             {
-                if let Some(code) = self.inner.candidate_wubi_code(&candidate.word) {
+                let code = self.candidate_wubi_code_for_display(index, &candidate.word);
+                if let Some(code) = code {
                     if !annotation.contains(code) {
                         if !annotation.is_empty() {
                             annotation.push(' ');
