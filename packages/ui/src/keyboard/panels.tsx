@@ -16,6 +16,7 @@ import {
 } from "../core/optional-storage";
 import { useConfirm } from "../core/confirm";
 import { clamp } from "../core/number";
+import { touchKeyboardSpacing } from "../settings/touch-keyboard-spacing";
 import { utf8ByteLength } from "../core/text";
 import { readDictionaryFile } from "../dictionary/dictionary-file";
 import { DictionaryFormatOptions } from "../dictionary/dictionary-format-options";
@@ -417,8 +418,8 @@ export function KeyboardPanel({
   platform,
   theme = "dark",
   layout = "twenty_six_key",
-  keySpacingTenths = 60,
-  rowSpacingTenths = 70,
+  keySpacingTenths,
+  rowSpacingTenths,
   voiceShortcut = false,
   skin = "system",
   customDesign,
@@ -716,8 +717,10 @@ export function KeyboardPanel({
       );
     return match ?? fallback;
   }
-  const keyGap = clamp(keySpacingTenths / 10, 3, 6);
-  const rowGap = clamp(rowSpacingTenths / 10, 4, 10);
+  const { keySpacing: keyGap, rowSpacing: rowGap } = touchKeyboardSpacing(
+    keySpacingTenths,
+    rowSpacingTenths,
+  );
   const keyboardStyle = {
     "--keyboard-key-gap": `${keyGap}px`,
     "--keyboard-row-gap": `${rowGap}px`,
