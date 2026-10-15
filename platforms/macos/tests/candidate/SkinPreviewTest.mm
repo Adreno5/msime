@@ -285,7 +285,7 @@ static void TestCandidateWindowStyle(MSIMEAppearancePreferences *preferences, NS
         NSSlider *padding = (id)FindControl(root, @"内边距");
         NSButton *followPadding = (id)FindControl(root, @"内边距跟随皮肤");
         assert([padding isKindOfClass:NSSlider.class] && [followPadding isKindOfClass:NSButton.class]);
-        assert(padding.minValue == 2 && padding.maxValue == 16);
+        assert(padding.minValue == 0 && padding.maxValue == 16);
         [preferences applySharedCandidatePreferences:@{}];
         assert(preferences.candidatePadding == nil && !followPadding.enabled);
         assert(padding.integerValue == lround([preferences resolvedSkinForDark:NO].tokens.pad));
@@ -299,9 +299,12 @@ static void TestCandidateWindowStyle(MSIMEAppearancePreferences *preferences, NS
         }
         [preferences applySharedCandidatePreferences:@{@"candidate_padding": @0}];
         assert([preferences.candidatePadding isEqual:@0]);
+        // 0pt 仍留出 1pt 细边框的宽度（#7974），所以 1pt 和 0pt 一样高，16pt 比它多 2 × 15pt 而不是 2 × 16pt。
         const CGFloat minimumPaddingHeight = preview.previewContentHeight;
+        preferences.candidatePadding = @1;
+        assert(std::abs(preview.previewContentHeight - minimumPaddingHeight) < .01);
         preferences.candidatePadding = @16;
-        assert(std::abs(preview.previewContentHeight - minimumPaddingHeight - 28.0 * preferences.candidateScalePercent / 100.0) < .01);
+        assert(std::abs(preview.previewContentHeight - minimumPaddingHeight - 30.0 * preferences.candidateScalePercent / 100.0) < .01);
         preferences.candidatePadding = @0;
         [preferences applySharedCandidatePreferences:@{@"candidate_padding": NSNull.null}];
         assert(preferences.candidatePadding == nil);
@@ -568,7 +571,8 @@ int main(int argc, const char **argv) {
                         CGFloat rowHeight = ceil(candidateFont.ascender - candidateFont.descender + candidateFont.leading) + 8.0;
                         NSInteger rows = vertical.boolValue ? MIN(size.integerValue, 5) : 1;
                         CGFloat footerHeight = vertical.boolValue && size.integerValue > 5 ? 18.0 : 0.0;
-                        CGFloat expectedHeight = 10 + 16 + 4 + 6 + preeditHeight + rows * rowHeight + footerHeight + 6 + 14;
+                        // 卡片上下各留原生默认的 4pt 内边距。
+                        CGFloat expectedHeight = 10 + 16 + 4 + 4 + preeditHeight + rows * rowHeight + footerHeight + 4 + 14;
                         assert(std::abs(preview.previewContentHeight - expectedHeight) < .01);
                         assert(preview.previewSkin.id == skin.UTF8String);
                         NSString *expected = [NSString stringWithFormat:@"%@，%@ 个候选，%@ pt", vertical.boolValue ? @"纵向列表" : @"横向排列", size, font];
@@ -617,7 +621,7 @@ int main(int argc, const char **argv) {
         NSFont *measuredPreedit = [preferences candidateFontOfSize:preferences.preeditFontSize];
         CGFloat measuredRow = ceil(measuredCandidate.ascender - measuredCandidate.descender + measuredCandidate.leading) + 8;
         CGFloat measuredHeader = MAX(22.0, ceil(measuredPreedit.ascender - measuredPreedit.descender + measuredPreedit.leading) + 6);
-        CGFloat familyHeight = 10 + 16 + 4 + 6 + measuredHeader + 5 * measuredRow + 18 + 6 + 14;
+        CGFloat familyHeight = 10 + 16 + 4 + 4 + measuredHeader + 5 * measuredRow + 18 + 4 + 14;
         assert(std::abs(preview.previewContentHeight - familyHeight) < .01);
         Draw(preview);
         familyControl.stringValue = @"";
@@ -726,7 +730,7 @@ int main(int argc, const char **argv) {
         assert(actualHeight > ceil(fallbackFont.ascender - fallbackFont.descender + fallbackFont.leading));
         NSFont *headerFont = [preferences candidateFontOfSize:preferences.preeditFontSize];
         CGFloat headerHeight = MAX(22.0, MAX(ceil([@"nihao" sizeWithAttributes:@{NSFontAttributeName:headerFont}].height), ceil(headerFont.ascender - headerFont.descender + headerFont.leading)) + 6);
-        CGFloat fallbackPreviewHeight = 10 + 16 + 4 + 6 + headerHeight + 5 * (actualHeight + 8) + 18 + 6 + 14;
+        CGFloat fallbackPreviewHeight = 10 + 16 + 4 + 4 + headerHeight + 5 * (actualHeight + 8) + 18 + 4 + 14;
         assert(std::abs(preview.previewContentHeight - fallbackPreviewHeight) < .01);
         Draw(preview);
         preferences.fontFamily = @"Segoe UI";
