@@ -1519,9 +1519,17 @@ bool CMetasequoiaIME::_RefreshDeferredRecoveryPrefix(_In_ ITfContext *pContext)
         return false;
     }
 
-    CStringRange &raw = _pCompositionProcessorEngine->GetKeystrokeBuffer();
-    const size_t rawLength = static_cast<size_t>(raw.GetLength());
-    const size_t caret = min(rawLength, static_cast<size_t>(_pCompositionProcessorEngine->GetCaretPosition()));
+    // 与 _RequestLocalSessionReset 一致：这些方案的现有组字会在 reset 时上屏，不能再入队重放。
+    if (msime::windows::scheme::CommitsOnBlur(Global::InputModeScheme.load(std::memory_order_relaxed)))
+    {
+        return true;
+    }
+
+    // 宿主拥有组字时旧键击缓冲可能为空；恢复检查点与按键分类读取同一份当前快照。
+    const auto composition = _pCompositionProcessorEngine->GetKeyCompositionState();
+    const auto &raw = composition.rawInput;
+    const size_t rawLength = raw.size();
+    const size_t caret = min(rawLength, composition.caret);
     const size_t moveLeftCount = rawLength - caret;
     if (rawLength + moveLeftCount > MAX_DEFERRED_KEY_DOWN_COUNT)
     {
@@ -1530,7 +1538,7 @@ bool CMetasequoiaIME::_RefreshDeferredRecoveryPrefix(_In_ ITfContext *pContext)
 
     for (size_t index = 0; index < rawLength; ++index)
     {
-        const WCHAR wch = raw.Get()[index];
+        const WCHAR wch = raw[index];
         const SHORT virtualKey = VkKeyScanW(wch);
         DeferredKeyDown recoveryKey;
         recoveryKey.kind = DeferredKeyDown::Kind::KeyDown;
