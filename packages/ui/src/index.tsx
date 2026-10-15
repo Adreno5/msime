@@ -874,6 +874,7 @@ export {
 export { CandidatePageSizeSection } from "./settings/candidate-page-size-section";
 export { CandidateLayoutSection, type CandidateLayout } from "./settings/candidate-layout-section";
 export { candidateLayoutOptions } from "./settings/candidate-layout-options";
+export { themeModeOptions } from "./settings/theme-mode-options";
 export {
   CandidateFollowCursorSection,
   type CandidateFollowCursorSectionProps,
