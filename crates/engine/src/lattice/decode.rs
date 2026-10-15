@@ -463,7 +463,7 @@ pub(super) fn decode_graph(
 
     // 同一列里很多假设经由同一个词到达，只是更早的历史不同；它们对每条出边查到的二元分完全一样。按前一个词把这一列所有出边的二元分记下来，同一个词只查一遍表。
     let row_capacity = options.beam.max(options.nbest);
-    let mut bigram_rows: Vec<(&str, Vec<f32>)> = Vec::new();
+    let mut bigram_rows: Vec<Vec<f32>> = Vec::new();
     let mut bigram_row_indices: HashMap<&str, usize> = HashMap::new();
     // 这一列的出边，按原来的顺序（先图里的，再 `extra` 的）收集一次，每个假设都按这个顺序展开。
     let mut outgoing: Vec<&Edge> = Vec::new();
@@ -471,7 +471,8 @@ pub(super) fn decode_graph(
         keep_beam(&mut columns[pos], options.beam);
         let (done, ahead) = columns.split_at_mut(pos + 1);
         let current = &done[pos];
-        bigram_rows.clear();
+        // 行存储跨列复用；前词索引和有效行数只属于当前列，评分必须重新填满。
+        let mut used_bigram_rows = 0;
         bigram_row_indices.clear();
         outgoing.clear();
         outgoing.extend(
@@ -486,26 +487,34 @@ pub(super) fn decode_graph(
                 let row = if let Some(&row) = bigram_row_indices.get(previous) {
                     row
                 } else {
-                    if bigram_rows.is_empty() {
-                        bigram_rows.reserve_exact(row_capacity);
-                        bigram_row_indices.reserve(row_capacity);
+                    let row = used_bigram_rows;
+                    if row == bigram_rows.len() {
+                        if bigram_rows.is_empty() {
+                            bigram_rows.reserve_exact(row_capacity);
+                            bigram_row_indices.reserve(row_capacity);
+                        }
+                        bigram_rows.push(Vec::new());
                     }
-                    let scores = match memo.as_deref_mut() {
-                        Some(memo) => outgoing
-                            .iter()
-                            .map(|edge| memo.score(table, previous, &edge.word))
-                            .collect(),
-                        None => outgoing
-                            .iter()
-                            .map(|edge| table.bigram(previous, &edge.word))
-                            .collect(),
-                    };
-                    bigram_rows.push((previous, scores));
-                    let row = bigram_rows.len() - 1;
+                    let scores = &mut bigram_rows[row];
+                    scores.clear();
+                    scores.reserve_exact(outgoing.len());
+                    match memo.as_deref_mut() {
+                        Some(memo) => scores.extend(
+                            outgoing
+                                .iter()
+                                .map(|edge| memo.score(table, previous, &edge.word)),
+                        ),
+                        None => scores.extend(
+                            outgoing
+                                .iter()
+                                .map(|edge| table.bigram(previous, &edge.word)),
+                        ),
+                    }
+                    used_bigram_rows += 1;
                     bigram_row_indices.insert(previous, row);
                     row
                 };
-                &bigram_rows[row].1
+                &bigram_rows[row]
             });
             // The column a hypothesis points back into was pruned before this one was expanded and is never touched again, so the word two back is stable here.
             let context = personal.map(|personal| {
@@ -781,6 +790,10 @@ pub fn decode_pinned(
 }
 
 #[cfg(test)]
+#[path = "decode_bigrams_tests.rs"]
+mod bigram_buffer_tests;
+
+#[cfg(test)]
 pub(super) mod tests {
     use std::collections::HashSet;
 
@@ -899,6 +912,50 @@ pub(super) mod tests {
 
         assert!(paths.is_empty());
         assert_eq!(allocations, 4);
+    }
+
+    #[test]
+    fn bigram_row_allocations_do_not_grow_with_column_count() {
+        use crate::ime::personal_rerank::allocations::measure;
+
+        let directory = tempfile::tempdir().unwrap();
+        let bigram = Arc::new(pair_table(
+            directory.path(),
+            "zero.bin",
+            &[("甲", "甲", 0.0)],
+        ));
+        for length in [1, 2, 8, 32] {
+            let graph = (0..length)
+                .map(|position| {
+                    vec![Edge {
+                        end: position + 1,
+                        word: "甲".to_owned(),
+                        key: "jia".to_owned(),
+                        log_prob: -1.0,
+                        typo: false,
+                    }]
+                })
+                .collect();
+            let options = LatticeOptions {
+                beam: 1,
+                nbest: 1,
+                ..LatticeOptions::default()
+            };
+            let (plain, without) = measure(|| decode_graph(&graph, &options, None));
+            let options = LatticeOptions {
+                bigram: Some(Arc::clone(&bigram)),
+                ..options
+            };
+            let (scored, with) = measure(|| decode_graph(&graph, &options, None));
+            assert_eq!(scored, plain);
+            assert_eq!(with.remaining_bytes, without.remaining_bytes);
+            assert_eq!(with.minimum_bytes, 0);
+            assert!(with.peak_bytes <= without.peak_bytes + 256);
+            assert!(
+                with.allocations <= without.allocations + 3,
+                "{length} 列：无表 {without:?}，有表 {with:?}"
+            );
+        }
     }
 
     /// test_pinyin.cpp:540-548, like the other fake-lookup lattice cases of `test_word_lattice` (:534-677) ported here and in merge.rs; the SQLite lookup case (:641-666) is in dictionary/pinyin.rs.
