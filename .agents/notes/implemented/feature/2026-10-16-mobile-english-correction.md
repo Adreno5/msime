@@ -14,6 +14,8 @@ Status: implemented
 
 宿主接线的契约是：手机在空格边界使用纠错建议并追加 ASCII 空格；标点紧随词，随后补空格。点原文候选是本次明确拒绝纠错，下一次边界不再改写它。沿用现有英文候选开关，密码、网址、邮箱及禁止建议的输入框不自动纠错。九键数字组码仍按九键英文消歧处理。
 
+拒绝纠错在当前词或外部编辑上下文变化时失效。iOS 额外比较可选文档标识，但系统不提供标识时仍允许本次拒绝生效，不能以标识必须存在为前提。Android 的数字页标点和字母页共用英文提交入口；HarmonyOS 在手机纠错模式下同步写入字母，让紧随其后的边界查询能读到最后一键。
+
 ## Related notes audit
 
 [专用英文前缀借用](../../implemented/testing/2026-10-08-dedicated-english-prefix-borrow.md)和[英文前缀空页](../../implemented/testing/2026-10-10-english-empty-prefix-storage.md)只约束已有补全查询，新接口不取代它们。[iOS 临时英文](../../implemented/feature/2026-10-15-ios-temporary-english.md)的 Shift 与片段结束边界继续成立，纠错不会把临时进入写入持久偏好。[网址邮箱补全](../../implemented/feature/2026-10-15-engine-email-url-completions.md)属于中文组字中的入口，与本次普通英文词纠错无关。
@@ -27,7 +29,13 @@ Status: implemented
 
 合成词库覆盖 issue 示例、正确词只有原文、大小写、缩写、手动撇号、长度边界与缺失词库；C ABI 回归核对原文顺序、两行上限、不改变输入会话、旧请求保持补全。固定词库的六个分词/纠错示例全部通过，本机调试构建单次查询约 0.4–29 毫秒。手机延迟尚未测量。
 
-宿主接线仍在同一 issue 的后续切片完成：空格与标点默认纠错、拒绝纠错、焦点和异步失效，以及 Android API 28/35、iOS、HarmonyOS 验收尚未完成，当前共享接口通过不代表整项功能已可用。
+Engine 全套 2156 项、31 项 golden 和新增 C ABI 专项通过，相关 crate 的 clippy 通过。Android 235 项 JVM 冒烟及 129 个设备套件源文件编译通过；本分支重编的原生 APK 在 API 28、35 的专用模拟器通过纠错示例、正确词与缩写、明确点原文、数字页标点和禁止建议／网址／邮箱／密码输入框验收。
+
+iOS 的 16 项词边界与组字测试通过；系统加载的键盘扩展在模拟器真实编辑器中通过原文、唯一纠错、正确词不补全、空格、拒绝纠错、句号追加空格和手动首字母大写验收。没有安装到真机。
+
+HarmonyOS 纯逻辑套件、OpenHarmony 原生交叉构建、`ohpm install` 后的 `hvigorw assembleHap --no-daemon` 通过。真打包顺带修复了原有九键双拼响应的内联对象类型，以及只读数组直接赋给视图状态的 ArkTS 类型错误。没有已连接的 HarmonyOS 设备，尚未验证其系统输入法入口和编辑器替换时序。
+
+最终本地 `CARGO_PROFILE_DEV_DEBUG=0 MSIME_BUILD_JOBS=2 ANDROID_SDK_ROOT=… bash scripts/verify-local.sh --quick` 通过，覆盖 Windows 原生链接、macOS 和 Apple 共享桥接；Linux 因本机没有 Docker 跳过。`cargo fmt --all --check`、`git diff --check` 和 `pnpm run verify-notes` 通过。
 
 ## Consequences
 
