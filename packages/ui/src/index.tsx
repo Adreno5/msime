@@ -491,7 +491,7 @@ import type {
 } from "./settings/candidate-paging-preferences";
 import { type MixedInputPreferences } from "./settings/mixed-input-section";
 import { type FrequencyPreferences } from "./settings/frequency-section";
-import { type LocalModePreferences } from "./settings/local-modes-section";
+import { type LocalModePreferences } from "./settings/local-mode-preferences";
 import { floatingToolbarPreferences } from "./settings/floating-toolbar-preferences";
 import type { SurfaceTheme, ThemeMode } from "./settings/theme-settings-section";
 import type { TouchToolbarPreferences } from "./settings/touch-keyboard-geometry-section";
