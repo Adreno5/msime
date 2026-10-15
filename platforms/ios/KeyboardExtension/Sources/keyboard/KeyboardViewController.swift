@@ -27,6 +27,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   /// 建引擎会话之前的内存读数。存储属性按声明顺序初始化，所以它紧挨在 `session` 上面：前面几个属性（皮肤背景视图、读 App Group 的键盘高度）算进它自己，`keyboard_loaded` 把它记成 `base=`，与 `session=` 之差只有引擎会话。
   private let launchMemory = DiagnosticLog.MemorySample.current()
   private let session = MetasequoiaInputSessionBridge()
+  private var englishCorrectionRejectedPrefix = ""
+  private var englishCorrectionRejectedDocument: UUID?
   /// 引擎会话刚建好时的内存读数，紧跟在 `session` 后面声明，`keyboard_loaded` 记成 `session=`。
   private let sessionMemory = DiagnosticLog.MemorySample.current()
   /// 「全角输入」 for the running keyboard: starts from the shared `character_width`, then the 全角 card switches it.
@@ -808,6 +810,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   override func selectionWillChange(_ textInput: UITextInput?) {
     super.selectionWillChange(textInput)
+    if !ownEditEcho.isEcho(at: ProcessInfo.processInfo.systemUptime) {
+      englishCorrectionRejectedPrefix = ""
+    }
     replyModel.invalidateContext()
     handwriting.clear()
     closeKeyboardService()
@@ -820,6 +825,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     closeKeyboardService()
     // 自己改动的回声：那次改动之后的组字仍是当前的组字。
     if ownEditEcho.isEcho(at: ProcessInfo.processInfo.systemUptime) { return }
+    englishCorrectionRejectedPrefix = ""
     finishTemporaryEnglish(force: true)
     // With 行内预编辑 the host already holds the letters: moving the caret out of marked text makes them ordinary text, and clearing the field removes them. Committing the composition as well would write it a second time, so the engine lets it go instead.
     if !inlineMarkedText.isEmpty {
@@ -854,6 +860,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
+    englishCorrectionRejectedPrefix = ""
     finishTemporaryEnglish(force: true)
     DiagnosticLog.shared.write("focus_out")
     KeyboardUsageReporting.dismissed()
@@ -3115,19 +3122,53 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
   /// Read the current word from the host document instead of maintaining a shadow
   /// buffer; autocorrect, cursor movement and external edits then stay truthful.
   private var englishWordBeforeCursor: String {
-    guard !isChineseMode, EnglishSuggestionsPreference.isEnabled else { return "" }
+    guard englishCorrectionsEnabled else { return "" }
     let before = textDocumentProxy.documentContextBeforeInput ?? ""
     return EnglishSuggestionPolicy.currentWord(before: before)
   }
 
   private func refreshEnglishSuggestions() {
     let prefix = englishWordBeforeCursor
-    guard prefix.count >= 2 else {
+    if prefix != englishCorrectionRejectedPrefix {
+      englishCorrectionRejectedPrefix = ""
+      englishCorrectionRejectedDocument = nil
+    }
+    guard !prefix.isEmpty else {
       updateCandidateStrip(preedit: "", candidates: [])
       return
     }
     updateCandidateStrip(
-      preedit: "", candidates: session.englishCompletions(forPrefix: prefix, limit: 12))
+      preedit: "", candidates: session.englishCorrections(forPrefix: prefix))
+  }
+
+  private var englishCorrectionsEnabled: Bool {
+    !isChineseMode && EnglishSuggestionsPreference.isEnabled && !isCredentialField
+      && textDocumentProxy.keyboardType != .URL && textDocumentProxy.keyboardType != .emailAddress
+      && textDocumentProxy.autocorrectionType != .no
+  }
+
+  @discardableResult
+  private func commitEnglishBoundary(_ boundary: String) -> Bool {
+    guard englishCorrectionsEnabled, " ,.!?:;".contains(boundary), boundary.count == 1 else { return false }
+    let typed = englishWordBeforeCursor
+    guard !typed.isEmpty else { return false }
+    let rejected = typed == englishCorrectionRejectedPrefix
+      && englishCorrectionRejectedDocument == KeyboardHostContext.documentIdentifier(for: textDocumentProxy)
+    let items = rejected ? [typed] : session.englishCorrections(forPrefix: typed)
+    let candidate = items.first == typed && items.count == 2 ? items[1] : typed
+    guard typed == englishWordBeforeCursor else { return false }
+    let replacement = EnglishSuggestionPolicy.replacement(
+      typed: typed, candidate: candidate, startedCapitalized: typed.first?.isUppercase ?? false)
+    if let replacement {
+      for _ in 0..<replacement.deleteCount { deleteOwnBackward() }
+    }
+    let suffix = boundary == " " ? " " : boundary + " "
+    let word = FullWidthInputPolicy.output(replacement?.insert ?? "",
+      enabled: fullWidthInput && !typesKorean && !typesCasedLetters)
+    insertOwnText(word + suffix)
+    englishCorrectionRejectedPrefix = ""
+    updateCandidateStrip(preedit: "", candidates: [])
+    return true
   }
 
   private func useEnglishSuggestion(at index: Int) {
@@ -3137,7 +3178,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     guard let replacement = EnglishSuggestionPolicy.replacement(
       typed: typed, candidate: visibleCandidates[index], startedCapitalized: startedCapitalized)
     else {
+      englishCorrectionRejectedPrefix = typed
+      englishCorrectionRejectedDocument = KeyboardHostContext.documentIdentifier(for: textDocumentProxy)
       updateCandidateStrip(preedit: "", candidates: [])
+      finishTemporaryEnglish()
       return
     }
     for _ in 0..<replacement.deleteCount { deleteOwnBackward() }
@@ -3158,6 +3202,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
       defer {
         if symbol.contains(where: { !$0.isLetter && !$0.isNumber }) { finishTemporaryEnglish() }
       }
+      if session.sharedPreferences?["punctuation_lock"] as? String != "chinese",
+         commitEnglishBoundary(symbol) { return }
       // 标点锁定为中文 keeps Chinese marks in English mode too; the shared route decides, as it does in Chinese mode.
       if session.sharedPreferences?["punctuation_lock"] as? String == "chinese",
          let punctuation = KeyboardPunctuationContext.engineInput(for: symbol, japanese: false) {
@@ -3383,6 +3429,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
   private func toggleInputMode(rememberChoice: Bool = true) {
     temporaryEnglishFromScheme = false
+    englishCorrectionRejectedPrefix = ""
     // Shift 和片段结束键各自播放按键音；自动切回不再追加一次切换音。
     if rememberChoice { playInputClick() }
     let snapshot = isChineseMode ? endComposition(at: .modeSwitch) : session.cancel()
@@ -3447,7 +3494,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     let mode: EnglishCapitalizationMode
-    let capitalization = (inputContext.keyboardType == .URL || inputContext.keyboardType == .emailAddress)
+    let capitalization = (englishCorrectionsEnabled || inputContext.keyboardType == .URL || inputContext.keyboardType == .emailAddress)
       ? UITextAutocapitalizationType.none : (textDocumentProxy.autocapitalizationType ?? .sentences)
     switch capitalization {
     case .none:
@@ -5305,6 +5352,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
     clearSmartPunctuationArming()
     if !isChineseMode {
+      if commitEnglishBoundary(" ") {
+        finishTemporaryEnglish()
+        return
+      }
       insertDirectText(" ")
       refreshEnglishSuggestions()
       finishTemporaryEnglish()
