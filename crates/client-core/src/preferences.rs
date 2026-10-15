@@ -940,8 +940,8 @@ pub struct Preferences {
     /// 26 键按「123」时出一行 1 到 0 的数字符号页，还是九宫格那样的 3×3 数字层。
     #[serde(default)]
     pub touch_twenty_six_key_number_layout: TwentySixKeyNumberLayout,
-    /// 触屏 26 键双拼时在字母键底部画当前方案的声母/韵母提示，读屏也读它。默认开；全拼、独立英文和本地模式本来就不画，不受它影响。桌面宿主原样保留、不使用。
-    #[serde(default = "enabled_by_default")]
+    /// 触屏 26 键双拼时在字母键底部画当前方案的声母/韵母提示，读屏也读它。默认关；全拼、独立英文和本地模式本来就不画，不受它影响。桌面宿主原样保留、不使用。
+    #[serde(default = "disabled_by_default")]
     pub touch_shuangpin_key_hints: bool,
     /// The optional buttons on the touch keyboard's toolbar, the counterpart of the floating toolbar's component switches. The voice entry stays under `touch_voice_shortcut`.
     #[serde(default)]
@@ -1069,6 +1069,12 @@ pub struct Preferences {
         skip_serializing_if = "SecondThirdCandidatePreferences::is_default"
     )]
     pub second_third_candidate: SecondThirdCandidatePreferences,
+    /// 五笔普通组字的二三候选字符，候选不足时保留原标点行为。
+    #[serde(
+        default,
+        skip_serializing_if = "WubiCandidateSelectionPreferences::is_default"
+    )]
+    pub wubi_candidate_selection: WubiCandidateSelectionPreferences,
     #[serde(default)]
     pub frequency: FrequencyPreferences,
     #[serde(default)]
@@ -1918,6 +1924,50 @@ impl SecondThirdCandidatePreferences {
     }
 }
 
+/// 五笔二三候选只占用两个不同的 ASCII 标点，不改变字母组码和数字选词。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WubiCandidateSelectionPreferences {
+    pub enabled: bool,
+    pub second_key: String,
+    pub third_key: String,
+}
+
+impl Default for WubiCandidateSelectionPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            second_key: ";".into(),
+            third_key: "'".into(),
+        }
+    }
+}
+
+impl WubiCandidateSelectionPreferences {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> bool {
+        let valid = |key: &str| key.len() == 1 && key.as_bytes()[0].is_ascii_punctuation();
+        valid(&self.second_key) && valid(&self.third_key) && self.second_key != self.third_key
+    }
+
+    /// 当前页中从零计数的位置；无效文档不抢占任何字符。
+    pub fn slot(&self, value: u8) -> Option<usize> {
+        if !self.enabled || !self.validate() {
+            return None;
+        }
+        if self.second_key.as_bytes() == [value] {
+            Some(1)
+        } else if self.third_key.as_bytes() == [value] {
+            Some(2)
+        } else {
+            None
+        }
+    }
+}
+
 /// 自建的云剪贴板中继：基地址和中继管理员发的令牌，两项要么都空（不用中继），要么都合规。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -2013,6 +2063,10 @@ impl Default for KeybindingPreferences {
 
 fn enabled_by_default() -> bool {
     true
+}
+
+fn disabled_by_default() -> bool {
+    false
 }
 
 /// Smart punctuation is off on a fresh Windows or macOS profile.
@@ -2161,7 +2215,7 @@ impl Default for Preferences {
             touch_voice_shortcut: false,
             touch_number_keypad_order: NumberKeypadOrder::default(),
             touch_twenty_six_key_number_layout: TwentySixKeyNumberLayout::default(),
-            touch_shuangpin_key_hints: true,
+            touch_shuangpin_key_hints: false,
             touch_toolbar: TouchToolbarPreferences::default(),
             last_chinese_scheme: None,
             shuangpin_profile: ShuangpinProfile::default(),
@@ -2206,6 +2260,7 @@ impl Default for Preferences {
             keybindings: KeybindingPreferences::default(),
             word_character: WordCharacterPreferences::default(),
             second_third_candidate: SecondThirdCandidatePreferences::default(),
+            wubi_candidate_selection: WubiCandidateSelectionPreferences::default(),
             frequency: FrequencyPreferences::default(),
             mixed_input: MixedInputPreferences::default(),
             local_modes: LocalModePreferences::default(),
@@ -2755,6 +2810,27 @@ impl Preferences {
     }
 
     pub fn validate(&self) -> Result<(), PreferencesError> {
+        if !self.wubi_candidate_selection.validate() {
+            return Err(PreferencesError::InvalidWubiCandidateSelection);
+        }
+        if self.wubi_candidate_selection.enabled {
+            let keys = [
+                &self.wubi_candidate_selection.second_key,
+                &self.wubi_candidate_selection.third_key,
+            ];
+            let edge_keys = match self.word_character.keys {
+                WordCharacterKeys::Brackets => "[]",
+                WordCharacterKeys::MinusEqual => "-=",
+            };
+            if keys.iter().any(|key| {
+                (self.navigation.comma_period && ",.".contains(key.as_str()))
+                    || (self.navigation.minus_equal && "-=".contains(key.as_str()))
+                    || (self.navigation.brackets && "[]".contains(key.as_str()))
+                    || (self.word_character.enabled && edge_keys.contains(key.as_str()))
+            }) {
+                return Err(PreferencesError::ConflictingKeyBindings);
+            }
+        }
         let tencent = &self.tencent_tmt;
         if tencent.secret_id.len() > 4096
             || !crate::text::is_bounded_text(&tencent.secret_key, 4096)
@@ -2919,6 +2995,8 @@ impl PreferencesSnapshot {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PreferencesError {
+    #[error("五笔二三候选键必须是两个不同的单个 ASCII 标点")]
+    InvalidWubiCandidateSelection,
     #[error("floating toolbar settings are invalid")]
     InvalidFloatingToolbar,
     #[error("AI assistant provider or candidate limit is invalid")]

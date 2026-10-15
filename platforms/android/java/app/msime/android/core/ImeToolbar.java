@@ -27,6 +27,7 @@ final class ImeToolbar {
 
     private final MSIMEInputService s;
     private Button[] shortcutButtons;
+    private java.util.List<ToolbarOrderPolicy.Item> appliedOrder;
     /** 「最近复制」那一行自己的剪贴板入口和收起键，和工具栏上的同一套配色。 */
     private Button recentClipHistoryButton;
     private Button recentClipCollapseButton;
@@ -49,6 +50,7 @@ final class ImeToolbar {
 
     /** 空闲工具栏：品牌、表情、常用语、剪贴板、皮肤、输入方式、浮动键盘、文本编辑、收起，等分整行宽度；哪些显示由 render 按 `touch_toolbar` 与本地设置决定。数字键面上有算式结果时，品牌键右边多一个结果胶囊（{@link ImeCalculator}）。 */
     void installShortcutBar(Button dismissButton) {
+        appliedOrder = null;
         s.shortcutBar.removeAllViews();
         s.dismissShortcutButton = dismissButton;
         Button[] buttons = {s.moreButton, s.emojiShortcutButton, s.phraseShortcutButton,
@@ -78,6 +80,29 @@ final class ImeToolbar {
             if (retired.getParent() instanceof LinearLayout parent) parent.removeView(retired);
             ViewPolicy.hide(retired);
         }
+    }
+
+    /** 只移动已有视图，保留按钮原来的回调、触摸区域、无障碍身份与面板激活态。 */
+    private void applyShortcutOrder() {
+        if (shortcutButtons == null || s.shortcutBar == null) return;
+        java.util.List<ToolbarOrderPolicy.Item> order = ToolbarOrderPolicy.ordered(
+            s.localSettings.text(AndroidLocalSettings.TOOLBAR_ORDER));
+        if (order.equals(appliedOrder)) return;
+        for (Button button : shortcutButtons) s.shortcutBar.removeView(button);
+        for (int index = 0; index < order.size(); index++) {
+            Button button = switch (order.get(index)) {
+                case EMOJI -> s.emojiShortcutButton;
+                case PHRASE -> s.phraseShortcutButton;
+                case CLIPBOARD -> s.clipboardShortcutButton;
+                case SKIN -> s.skinButton;
+                case SCHEME -> s.schemeButton;
+                case FLOATING -> s.floatingShortcutButton;
+                case TEXT_EDIT -> s.textEditShortcutButton;
+            };
+            // 品牌和算式结果固定在开头，收起键固定在末尾。
+            s.shortcutBar.addView(button, index + 2);
+        }
+        appliedOrder = order;
     }
 
     /** 读音行（读音、提示、页码、漢、退出本地模式）与工具栏的滚动容器；读音行只在组词或有提示时显示。 */
@@ -278,9 +303,14 @@ final class ImeToolbar {
         dismiss.setContentDescription("不再显示这条复制的内容");
         bindToolbarAction(dismiss, s::dismissRecentClip);
         row.addView(dismiss, LayoutPolicy.linearParamsPx(s.pixels(44), LinearLayout.LayoutParams.MATCH_PARENT));
-        // 这一行只在没有工具栏面板开着时显示，收起键在这里只有收起键盘这一个意思。
+        // 文本编辑面板也显示最近复制；收起键与普通工具栏一样先返回键盘。
         Button collapse = s.shortcutButton(row, "收起", KeyboardShortcutIconPolicy.Icon.DISMISS,
-            () -> s.requestHideSelf(0));
+            () -> {
+                if (s.anyToolbarPanelOpen()) {
+                    s.closeToolbarPanels();
+                    s.render();
+                } else s.requestHideSelf(0);
+            });
         collapse.setContentDescription("收起键盘");
         collapse.setLayoutParams(LayoutPolicy.linearParamsPx(s.pixels(44), LinearLayout.LayoutParams.MATCH_PARENT));
         recentClipCollapseButton = collapse;
@@ -297,6 +327,7 @@ final class ImeToolbar {
         boolean visible = text != null || image;
         ViewPolicy.setVisible(s.recentClipRow, visible);
         if (!visible) return;
+        recentClipCollapseButton.setContentDescription(s.anyToolbarPanelOpen() ? "返回键盘" : "收起键盘");
         String preview = image ? ClipboardImagePolicy.LABEL : RecentClipboardSuggestion.preview(text);
         if (!preview.contentEquals(s.recentClipButton.getText())) s.recentClipButton.setText(preview);
         s.recentClipButton.setContentDescription(image ? "发送最近复制的图片" : "粘贴最近复制的内容：" + preview);
@@ -314,6 +345,7 @@ final class ImeToolbar {
 
     /** 每次 render 末尾：工具栏图标色、激活底、品牌键配色、展开键与高度条的颜色。 */
     void styleTopRow() {
+        applyShortcutOrder();
         KeyboardSkin skin = s.skin;
         String cacheKey = skin.key() + ":" + s.imeStyler.appThemeSeed();
         if (!cacheKey.equals(styleCacheKey)) {

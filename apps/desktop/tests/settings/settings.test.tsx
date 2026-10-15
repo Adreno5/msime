@@ -377,13 +377,16 @@ test("Android touch schemes follow Apple order and stay absent on hosts without 
     within(group)
       .getAllByRole("button")
       .map((button) => button.textContent?.replace("✓", "")),
-  ).toEqual([...touchSchemeLabels, "全拼 14 键"]);
+  ).toEqual([...touchSchemeLabels, "全拼 14 键", "九键双拼"]);
   // 高情商回复是键盘工具栏上的工具，不是输入方案。
   expect(within(group).queryByText("高情商回复")).toBeNull();
-  expect(within(group).getAllByRole("switch")).toHaveLength(12);
-  // 全拼 14 键排在最后，默认不启用。
+  expect(within(group).getAllByRole("switch")).toHaveLength(13);
+  // 全拼 14 键与九键双拼追加在原有列表后，默认不启用。
   expect(
     (screen.getByRole("switch", { name: "显示输入方案 全拼 14 键" }) as HTMLInputElement).checked,
+  ).toBe(false);
+  expect(
+    (screen.getByRole("switch", { name: "显示输入方案 九键双拼" }) as HTMLInputElement).checked,
   ).toBe(false);
   enabled.unmount();
   render(<SettingsPage client={{ load: async () => initial, save: vi.fn() }} />);
@@ -427,8 +430,9 @@ test("touch hosts offering Cantonese, Zhuyin, Vietnamese, Tibetan and Stroke lis
     "笔画",
     "注音 9 键",
     "全拼 14 键",
+    "九键双拼",
   ]);
-  expect(within(group).getAllByRole("switch")).toHaveLength(18);
+  expect(within(group).getAllByRole("switch")).toHaveLength(19);
   for (const label of [
     "粤拼 26 键",
     "大千注音",
@@ -4068,14 +4072,14 @@ test("the shuangpin key hint switch appears only on touch hosts and saves into t
     { name: "双拼键位提示" },
     { timeout: 3000 },
   )) as HTMLInputElement;
-  // 文档里没有这个键时按开，和以前的键盘一样画提示。
-  expect(hints.checked).toBe(true);
+  // 文档里没有这个键时按关，新安装的键盘默认不画提示。
+  expect(hints.checked).toBe(false);
   fireEvent.click(hints);
   saveSettingsNow();
   await screen.findByText("已保存");
   expect(save).toHaveBeenCalledWith(7, {
     ...initial.preferences,
-    touch_shuangpin_key_hints: false,
+    touch_shuangpin_key_hints: true,
   });
 });
 

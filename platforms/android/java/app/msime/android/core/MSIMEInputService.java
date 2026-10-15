@@ -271,8 +271,8 @@ public final class MSIMEInputService extends InputMethodService {
     int touchRowSpacingTenths = KeyboardSpacingPolicy.DEFAULT_ROW_SPACING_TENTHS;
     int touchKeyboardHeightAdjustment = KeyboardHeightPolicy.DEFAULT_HEIGHT_ADJUSTMENT_DP;
     private boolean touchVoiceShortcutEnabled;
-    /** 26 键双拼的字母键画不画声母/韵母提示，来自共享偏好 `touch_shuangpin_key_hints`，缺省为开。 */
-    private boolean shuangpinKeyHintsEnabled = true;
+    /** 26 键双拼的字母键画不画声母/韵母提示，来自共享偏好 `touch_shuangpin_key_hints`，缺省为关。 */
+    private boolean shuangpinKeyHintsEnabled = false;
     private boolean voiceInputEnabled = true;
     private String voiceLanguage = "zh-CN";
     KeyboardSkin skin = KeyboardSkin.system(false);
@@ -2127,9 +2127,9 @@ public final class MSIMEInputService extends InputMethodService {
         else touchKeyboardHeightAdjustment = saved;
     }
 
-    /** 没有偏好或旧文档里没有这个键时按开，与 client-core 的默认值一致。 */
+    /** 没有偏好或旧文档里没有这个键时按关，与 client-core 的默认值一致。 */
     private static boolean shuangpinKeyHintsFrom(JSONObject preferences) {
-        return preferences == null || preferences.optBoolean(ShuangpinKeyHintPolicy.PREFERENCE_KEY, true);
+        return preferences != null && preferences.optBoolean(ShuangpinKeyHintPolicy.PREFERENCE_KEY, false);
     }
 
     /** 日语九键侧列的 ☺：顶部工具栏有表情按钮时两处入口重复，不放；工具栏关掉表情或整条隐藏时才放回来。 */
@@ -8993,7 +8993,9 @@ public final class MSIMEInputService extends InputMethodService {
         if (!idle) recentClip.dismiss();
         long nowMs = System.currentTimeMillis();
         // 候选条模式里不换上「最近复制」：它会盖住工具栏上展开软键盘的那个键。
-        boolean recentAllowed = toolbarRow && !keysCollapsed && !anyToolbarPanelOpen() && recentClipEnabled()
+        // 文本编辑面板保留顶部的复制预览，点「复制」后不必先返回键盘（#8104）。
+        boolean recentPanelAllowed = ViewPolicy.isVisible(textEditPanel) || !anyToolbarPanelOpen();
+        boolean recentAllowed = toolbarRow && !keysCollapsed && recentPanelAllowed && recentClipEnabled()
             && connection != null && imePrivacyGate.allows(ImePrivacyGate.Record.CLIPBOARD_HISTORY);
         String recent = recentAllowed ? recentClip.text(nowMs) : null;
         // 图片只在当前输入框收得下时才占这一行（#6781）。

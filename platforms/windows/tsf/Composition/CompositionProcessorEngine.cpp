@@ -17,6 +17,7 @@
 #include "FanyUtils.h"
 #include "FanyLog.h"
 #include "../../common/SecondThirdCandidatePolicy.h"
+#include "../../common/WubiCandidateSelectionPolicy.h"
 
 //////////////////////////////////////////////////////////////////////
 //
@@ -379,7 +380,8 @@ void CCompositionProcessorEngine::RemoveVirtualKey(DWORD_PTR dwIndex)
     }
 
     _keystrokeBuffer.Set(_keystrokeBuffer.Get(), srgKeystrokeBufLen - 1);
-    _urlMode = Global::UrlModeAfterDeletion(_urlMode, _keystrokeBuffer.Get(), _keystrokeBuffer.GetLength(), removed);
+    _urlMode = Global::UrlModeAfterDeletion(_urlMode, _keystrokeBuffer.Get(), _keystrokeBuffer.GetLength(), removed,
+                                            dwIndex == _keystrokeBuffer.GetLength());
     if (_caretPosition > dwIndex)
     {
         --_caretPosition;
@@ -2164,6 +2166,19 @@ BOOL CCompositionProcessorEngine::IsVirtualKeyNeed( //
     if (candidateMode == CANDIDATE_ORIGINAL)
     {
         fComposing = FALSE;
+    }
+
+    // 按字符送入共享会话，选择与标点回退由同一份候选视图决定，不预先把键改成数字。
+    if (pwch && msime::windows::wubi_candidate_character(
+            Global::WubiCandidateKeys.load(std::memory_order_relaxed),
+            static_cast<wchar_t>(Global::InputModeIndicator.load(std::memory_order_relaxed)),
+            Global::DedicatedEnglish.active(GetTickCount64()), *pwch))
+    {
+        if (pKeyState) {
+            pKeyState->Category = CATEGORY_COMPOSING;
+            pKeyState->Function = FUNCTION_INPUT;
+        }
+        return TRUE;
     }
 
     // 排在音节分隔符前面：打开「二三候选」后，组字中的 '\'' 选第三个候选而不是分隔音节。网址模式和 V 模式拼写的符号、微软双拼的韵母 ing 仍是输入，由 IsSecondThirdCandidateKey 排除。
