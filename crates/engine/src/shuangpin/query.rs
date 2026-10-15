@@ -188,8 +188,12 @@ pub fn apply_segmentation_cases(segmentation: &str, raw_with_cases: &str) -> Str
     if segmentation.is_empty() || raw_with_cases.is_empty() {
         return String::new();
     }
-    let letters = remove_manual_delimiters(segmentation);
-    if letters != remove_manual_delimiters(raw_with_cases).to_ascii_lowercase() {
+    let letters = segmentation.bytes().filter(|&byte| byte != b'\'');
+    let typed_letters = raw_with_cases
+        .bytes()
+        .filter(|&byte| byte != b'\'')
+        .map(|byte| byte.to_ascii_lowercase());
+    if !letters.eq(typed_letters) {
         return segmentation.to_string();
     }
     let cased = raw_with_cases.as_bytes();
@@ -347,6 +351,100 @@ mod tests {
         assert!(!is_complete_input("ni'", xiaohe()));
         assert!(!is_complete_input("ni''hc", xiaohe()));
         assert!(!is_complete_input("", xiaohe()));
+    }
+
+    #[test]
+    fn applying_cases_allocates_only_the_owned_ascii_result() {
+        for (segmentation, typed, expected) in [
+            ("ni'hc'ab", "nihcAB", "ni'hc'AB"),
+            ("ni'hc", "nihx", "ni'hc"),
+            ("j;'gk", "J;gK", "J;'gK"),
+            ("''", "'", "''"),
+        ] {
+            let (result, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+                apply_segmentation_cases(segmentation, typed)
+            });
+            assert_eq!(result, expected);
+            assert_eq!(
+                allocations, 1,
+                "segmentation={segmentation:?}, typed={typed:?}"
+            );
+        }
+        for (segmentation, typed) in [("", "ni"), ("ni", ""), ("", "")] {
+            let (result, allocations) = crate::ime::personal_rerank::allocations::count(|| {
+                apply_segmentation_cases(segmentation, typed)
+            });
+            assert!(result.is_empty());
+            assert_eq!(allocations, 0);
+        }
+    }
+
+    fn owned_case_reference(segmentation: &str, raw_with_cases: &str) -> String {
+        if segmentation.is_empty() || raw_with_cases.is_empty() {
+            return String::new();
+        }
+        let letters = remove_manual_delimiters(segmentation);
+        if letters != remove_manual_delimiters(raw_with_cases).to_ascii_lowercase() {
+            return segmentation.to_string();
+        }
+        let cased = raw_with_cases.as_bytes();
+        let mut result = String::with_capacity(segmentation.len());
+        let mut index = 0;
+        for &byte in segmentation.as_bytes() {
+            if byte == b'\'' {
+                result.push('\'');
+                continue;
+            }
+            while index < cased.len() && cased[index] == b'\'' {
+                index += 1;
+            }
+            let Some(&typed) = cased.get(index) else {
+                return segmentation.to_string();
+            };
+            // 保留旧实现只对原始输入一侧做大小写匹配的回填规则。
+            if byte == typed || u16::from(byte) == u16::from(typed) + 32 {
+                result.push(char::from(typed));
+            } else {
+                result.push(char::from(byte));
+            }
+            index += 1;
+        }
+        result
+    }
+
+    #[test]
+    fn case_byte_comparison_matches_the_owned_reference() {
+        let mut corpus = vec![String::new()];
+        let mut layer = vec![String::new()];
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            for prefix in &layer {
+                for suffix in ['n', 'i', 'N', 'I', '\'', ';', '你'] {
+                    let mut value = prefix.clone();
+                    value.push(suffix);
+                    next.push(value);
+                }
+            }
+            corpus.extend(next.iter().cloned());
+            layer = next;
+        }
+        corpus.extend(
+            [
+                "ni'hc'ab", "nihcAB", "nihcAB'", "Ni'hC", "NI'hc", "j;'gk", "J;gK", "ni'hx",
+            ]
+            .map(str::to_owned),
+        );
+        corpus.push(std::iter::repeat_n("ni", 128).collect::<Vec<_>>().join("'"));
+        corpus.push("NI".repeat(128));
+        for segmentation in &corpus {
+            for typed in &corpus {
+                assert_eq!(
+                    apply_segmentation_cases(segmentation, typed),
+                    owned_case_reference(segmentation, typed),
+                    "segmentation={segmentation:?}, typed={typed:?}"
+                );
+            }
+        }
     }
 
     #[test]
