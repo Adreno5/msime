@@ -56,7 +56,7 @@ final class ImeVoiceEntry {
     private LocalAsrRecognizer local;
     private DoubaoRecognizer streaming;
     private SpeechRecognizer platform;
-    /** 系统识别服务已经报过 onReadyForSpeech：之后的失败不再转交识别窗口。 */
+    /** 系统识别服务已经报过 onReadyForSpeech：之后只为权限拒绝转交识别窗口。 */
     private boolean platformListening;
     /** 用户已经按语音键结束了这次系统识别：之后报的错（例如还没开始聆听就被叫停时的 ERROR_CLIENT）不再转交识别窗口，否则按两下语音键会弹出一个识别窗口重新录音。 */
     private boolean platformStopped;

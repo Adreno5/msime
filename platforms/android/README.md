@@ -387,4 +387,4 @@ cargo test -p msime-client-core --lib --target aarch64-linux-android --locked
 
 系统契约参考：[InputMethodService](https://developer.android.com/reference/android/inputmethodservice/InputMethodService) 与 [InputConnection](https://developer.android.com/reference/android/view/inputmethod/InputConnection)。
 
-语音窗口生命周期回归：先构建当前工作树的原生宿主 APK，再运行 `bash platforms/android/tests/device/voice-lifecycle.sh emulator-5580`（API 28 用 `emulator-5566`）。合成识别服务先发 ready 再报错误码 9，不访问麦克风或网络；用例验证真实 Activity 在恢复后才创建识别器，错误结束请求，并在退出时恢复默认识别服务。
+语音窗口生命周期回归：先构建当前工作树的原生宿主 APK，再运行 `bash platforms/android/tests/device/voice-lifecycle.sh emulator-5580`（API 28 用 `emulator-5566`）。合成识别服务先发 ready 再报错误码 9，不访问麦克风或网络；用例验证真实 Activity 在恢复后才创建识别器、错误结束请求，以及恢复前停止不会再次录音；API 28 另验证绑定权限被同步拒绝时正常结束。退出时禁用测试服务，恢复默认识别服务和宿主、测试包原有的麦克风授权状态。

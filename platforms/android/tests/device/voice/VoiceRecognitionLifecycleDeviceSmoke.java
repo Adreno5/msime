@@ -10,27 +10,33 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 
-/** 用合成识别服务验证真实语音窗口在恢复之后才创建识别器，不访问麦克风或网络。 */
+/** 验证真实语音窗口的启动、恢复前停止及同步拒绝路径；合成服务不访问麦克风或网络。 */
 public final class VoiceRecognitionLifecycleDeviceSmoke extends Instrumentation {
     static final String CALLBACKS = "app.msime.android.test.SPEECH_READY_ERROR";
+    private String scenario;
     private volatile boolean callbacksDelivered;
     private volatile String violation;
     private volatile int created;
     private volatile int resumed;
+    private volatile Activity voiceActivity;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
+        scenario = arguments == null ? "ready-error" : arguments.getString("scenario", "ready-error");
         start();
     }
 
     @Override public void callActivityOnCreate(Activity activity, Bundle state) {
         super.callActivityOnCreate(activity, state);
         if (!isVoice(activity)) return;
+        voiceActivity = activity;
         created++;
         try {
-            var field = activity.getClass().getDeclaredField("recognizer");
-            field.setAccessible(true);
-            if (field.get(activity) != null) violation = "Recognizer started before resume";
+            if (recognizer(activity) != null) violation = "Recognizer started before resume";
+            if (scenario.equals("stop-before-resume")) {
+                activity.getClass().getMethod("stopActive").invoke(null);
+                if (!activity.isFinishing()) violation = "Pending stop did not finish the request";
+            }
         } catch (ReflectiveOperationException error) {
             violation = "Recognizer state unavailable";
         }
@@ -41,12 +47,17 @@ public final class VoiceRecognitionLifecycleDeviceSmoke extends Instrumentation 
         if (!isVoice(activity)) return;
         resumed++;
         try {
-            var field = activity.getClass().getDeclaredField("recognizer");
-            field.setAccessible(true);
-            if (field.get(activity) == null) violation = "Recognizer did not start after resume";
+            boolean started = recognizer(activity) != null;
+            if (started != scenario.equals("ready-error")) violation = "Unexpected recognizer state after resume";
         } catch (ReflectiveOperationException error) {
             violation = "Recognizer state unavailable";
         }
+    }
+
+    private static Object recognizer(Activity activity) throws ReflectiveOperationException {
+        var field = activity.getClass().getDeclaredField("recognizer");
+        field.setAccessible(true);
+        return field.get(activity);
     }
 
     private static boolean isVoice(Activity activity) {
@@ -55,7 +66,7 @@ public final class VoiceRecognitionLifecycleDeviceSmoke extends Instrumentation 
 
     @Override public void onStart() {
         Bundle result = new Bundle();
-        Activity activity = null;
+        boolean passed = false;
         BroadcastReceiver receiver = new BroadcastReceiver() {
             @Override public void onReceive(Context context, Intent intent) {
                 callbacksDelivered = true;
@@ -67,31 +78,38 @@ public final class VoiceRecognitionLifecycleDeviceSmoke extends Instrumentation 
             getTargetContext().registerReceiver(receiver, new IntentFilter(CALLBACKS));
         }
         try {
+            String requestId = "voice-lifecycle-" + scenario;
             Intent intent = new Intent().setClassName(getTargetContext(),
                 "app.msime.android.VoiceRecognitionActivity")
+                .putExtra("app.msime.android.voice.REQUEST_ID", requestId)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            activity = startActivitySync(intent);
+            // 恢复前停止会在 onCreate 内结束窗口；异步启动避免 startActivitySync 等待一个不会恢复的窗口。
+            runOnMainSync(() -> getTargetContext().startActivity(intent));
             long deadline = SystemClock.uptimeMillis() + 10000;
-            while ((!callbacksDelivered || (!activity.isFinishing() && !activity.isDestroyed()))
-                    && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(50);
-            if (!callbacksDelivered) throw new AssertionError("Synthetic service did not deliver callbacks");
+            boolean expectCallbacks = scenario.equals("ready-error");
+            while ((voiceActivity == null || (!voiceActivity.isFinishing() && !voiceActivity.isDestroyed())
+                    || (expectCallbacks && !callbacksDelivered)) && SystemClock.uptimeMillis() < deadline) {
+                SystemClock.sleep(50);
+            }
+            waitForIdleSync();
             if (violation != null) throw new AssertionError(violation);
-            if (created != 1 || resumed != 1) throw new AssertionError("Unexpected voice lifecycle count");
-            if (!activity.isFinishing() && !activity.isDestroyed())
-                throw new AssertionError("Synthetic permission error did not finish the request");
-            result.putString("stream", "MSIME_VOICE_LIFECYCLE_PASSED\n");
-            finish(Activity.RESULT_OK, result);
+            if (callbacksDelivered != expectCallbacks) throw new AssertionError("Unexpected service callbacks");
+            if (created != 1 || resumed > 1 || (expectCallbacks && resumed != 1))
+                throw new AssertionError("Unexpected voice lifecycle count");
+            if (voiceActivity == null || (!voiceActivity.isFinishing() && !voiceActivity.isDestroyed()))
+                throw new AssertionError("Voice request did not finish");
+            if (Boolean.TRUE.equals(voiceActivity.getClass().getMethod("isRequestActive", String.class)
+                    .invoke(null, requestId))) throw new AssertionError("Finished request remains active");
+            result.putString("stream", "MSIME_VOICE_LIFECYCLE_PASSED: " + scenario + "\n");
+            passed = true;
         } catch (Exception | AssertionError error) {
-            result.putString("stream", "MSIME_VOICE_LIFECYCLE_FAILED: " + error.getClass().getSimpleName()
+            result.putString("stream", "MSIME_VOICE_LIFECYCLE_FAILED: " + scenario + " "
+                + error.getClass().getSimpleName()
                 + (error instanceof AssertionError ? " " + error.getMessage() : "") + "\n");
-            finish(Activity.RESULT_CANCELED, result);
         } finally {
             getTargetContext().unregisterReceiver(receiver);
-            if (activity != null) {
-                Activity running = activity;
-                runOnMainSync(running::finish);
-            }
+            if (voiceActivity != null) runOnMainSync(voiceActivity::finish);
         }
+        finish(passed ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);
     }
-
 }

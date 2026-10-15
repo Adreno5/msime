@@ -10,20 +10,43 @@ serial=${1:-emulator-5580}
 avd_name=$("$adb" -s "$serial" emu avd name | tr -d '\r' | head -1)
 [[ "$avd_name" == msime-client-test || "$avd_name" == msime-client-test-api* ]] || exit 1
 previous=$("$adb" -s "$serial" shell settings get secure voice_recognition_service | tr -d '\r')
+# 只保留应用包中这一项权限的布尔状态，不打印或保存 dumpsys 的其他内容。
+record_audio_granted() {
+  "$adb" -s "$serial" shell dumpsys package "$1" | \
+    python3 -c 'import sys; print("true" if "android.permission.RECORD_AUDIO: granted=true" in sys.stdin.read() else "false")'
+}
+host_audio=$(record_audio_granted app.msime.android)
+fixture_audio=$(record_audio_granted app.msime.android.test)
+fixture_ready=false
 restore() {
-  # 测试服务不留在可用服务列表里，避免系统在默认项为空时自动选中它。
-  "$adb" -s "$serial" shell am instrument -w -e enabled false \
-    app.msime.android.test/app.msime.android.test.SyntheticSpeechSetup
-  if [[ "$previous" == null ]]; then
-    "$adb" -s "$serial" shell settings delete secure voice_recognition_service >/dev/null
-  else
-    "$adb" -s "$serial" shell settings put secure voice_recognition_service "'$previous'"
+  local status=$?
+  trap - EXIT
+  set +e
+  # 清理失败也继续恢复系统设置和授权；清理本身失败不能把本次测试报告成通过。
+  if [[ "$fixture_ready" == true ]]; then
+    cleanup=$("$adb" -s "$serial" shell am instrument -w -e enabled false \
+      app.msime.android.test/app.msime.android.test.SyntheticSpeechSetup)
+    printf '%s\n' "$cleanup"
+    [[ "$cleanup" == *MSIME_SPEECH_SETUP_PASSED* ]] || status=1
   fi
+  if [[ "$previous" == null ]]; then
+    "$adb" -s "$serial" shell settings delete secure voice_recognition_service >/dev/null || status=1
+  else
+    "$adb" -s "$serial" shell settings put secure voice_recognition_service "'$previous'" || status=1
+  fi
+  if [[ "$host_audio" != true ]]; then
+    "$adb" -s "$serial" shell pm revoke app.msime.android android.permission.RECORD_AUDIO || status=1
+  fi
+  if [[ "$fixture_audio" != true && "$fixture_ready" == true ]]; then
+    "$adb" -s "$serial" shell pm revoke app.msime.android.test android.permission.RECORD_AUDIO || status=1
+  fi
+  exit "$status"
 }
 trap restore EXIT
 "$adb" -s "$serial" install --no-incremental -r target/android/msime-android.apk
 bash platforms/android/tests/device/build-editor.sh
 "$adb" -s "$serial" install --no-incremental -r target/android/editor-test.apk
+fixture_ready=true
 setup=$("$adb" -s "$serial" shell am instrument -w -e enabled true \
   app.msime.android.test/app.msime.android.test.SyntheticSpeechSetup)
 [[ "$setup" == *MSIME_SPEECH_SETUP_PASSED* ]]
@@ -33,7 +56,19 @@ service=app.msime.android.test.SyntheticSpeechService
 api=$("$adb" -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')
 if (( api < 31 )); then service=app.msime.android.test.LegacySyntheticSpeechService; fi
 "$adb" -s "$serial" shell settings put secure voice_recognition_service "app.msime.android.test/$service"
-result=$("$adb" -s "$serial" shell am instrument -w \
-  app.msime.android.test/app.msime.android.test.VoiceRecognitionLifecycleDeviceSmoke)
-printf '%s\n' "$result"
-[[ "$result" == *MSIME_VOICE_LIFECYCLE_PASSED* ]]
+run_case() {
+  local scenario=$1
+  local result
+  result=$("$adb" -s "$serial" shell am instrument -w -e scenario "$scenario" \
+    app.msime.android.test/app.msime.android.test.VoiceRecognitionLifecycleDeviceSmoke)
+  printf '%s\n' "$result"
+  [[ "$result" == *"MSIME_VOICE_LIFECYCLE_PASSED: $scenario"* ]]
+}
+run_case ready-error
+run_case stop-before-resume
+if (( api < 31 )); then
+  # 旧系统由调用应用直接绑定；选择只允许系统绑定的入口，制造真正的同步 SecurityException。
+  "$adb" -s "$serial" shell settings put secure voice_recognition_service \
+    app.msime.android.test/app.msime.android.test.SyntheticSpeechService
+  run_case refused-start
+fi
