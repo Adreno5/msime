@@ -1,3 +1,4 @@
+import type { PunctuationPreferences } from "./settings/punctuation-preferences";
 import type { KeybindingPreferences } from "./settings/keybinding-preferences";
 import type { DictionaryCollectionsClient } from "./dictionary/dictionary-collections";
 import type { TraditionalChineseVariant } from "./settings/traditional-chinese-output-section";
@@ -1833,7 +1834,7 @@ export type SentenceAssociationPreferences = {
   show_next_on_duplicate?: boolean;
 };
 
-export type Preferences = {
+export type Preferences = PunctuationPreferences & {
   theme?: ThemeMode;
   settings_theme?: SurfaceTheme;
   candidate_theme?: SurfaceTheme;
@@ -1875,8 +1876,6 @@ export type Preferences = {
   navigation?: NavigationPreferences;
   keybindings?: KeybindingPreferences;
   scheme: InputScheme;
-  /** Width used when desktop hosts commit printable ASCII characters. */
-  character_width?: "halfwidth" | "fullwidth";
   wubi_code_hint?: boolean;
   /** 五笔四码唯一候选自动上屏；缺省为开。 */
   wubi_auto_commit_unique?: boolean;
@@ -1971,19 +1970,6 @@ export type Preferences = {
   };
   quanpin_helpcode?: HelpcodePreferences;
   shuangpin_helpcode?: HelpcodePreferences;
-  chinese_punctuation: boolean;
-  smart_punctuation?: boolean;
-  smart_punctuation_repeat?: boolean;
-  smart_punctuation_space_convert?: boolean;
-  smart_punctuation_direct_digit?: boolean;
-  smart_punctuation_direct_letter?: boolean;
-  paired_punctuation?: boolean;
-  punctuation_lock?: "follow" | "chinese" | "english";
-  caps_lock_ascii_punctuation?: boolean;
-  /** 中文标点下引号键的样式；缺省为弯引号，等于缺省时文档里没有这个键。 */
-  quote_style?: "curly" | "corner" | "corner_when_traditional";
-  /** 中文标点下方头括号键的样式；缺省为实心，等于缺省时文档里没有这个键。 */
-  bracket_style?: "solid" | "hollow";
   traditional_chinese_output?: boolean;
   /** 繁体输出用的 OpenCC 配置：标准繁体、台湾正体、台湾正体加惯用词。缺省为 `s2t`，等于缺省时文档里没有这个键。 */
   traditional_chinese_variant?: TraditionalChineseVariant;
