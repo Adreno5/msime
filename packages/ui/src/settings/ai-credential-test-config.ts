@@ -1,6 +1,5 @@
 import type { AiAssistantPreferences } from "../index";
-
-type AiCredentialPreferences = Pick<AiAssistantPreferences, "provider" | "endpoint" | "model">;
+import type { AiCredentialPreferences } from "./ai-credential-preferences";
 
 /** Configuration sent to the Linux provider when checking the AI settings. */
 export function aiProviderCredentialTestConfig(
