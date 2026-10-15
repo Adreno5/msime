@@ -483,7 +483,7 @@ import { PrivacySettingsPage } from "./settings/pages/privacy-page";
 import type { CustomHelpcodeSchema, HelpcodePreferences } from "./settings/pages/helpcode-page";
 import type { ClipboardHistoryClient } from "./settings/clipboard-history-section";
 import type { CloudClipboardRequest } from "./settings/cloud-clipboard-send";
-import { type FuzzyPinyinPreferences } from "./settings/fuzzy-pinyin-section";
+import { type FuzzyPinyinPreferences } from "./settings/fuzzy-pinyin-preferences";
 import type {
   NavigationPreferences,
   WordCharacterPreferences,
