@@ -707,6 +707,11 @@ export {
 } from "./settings/word-character-section";
 export { NavigationSection } from "./settings/navigation-section";
 export {
+  enabledPagingShortcuts,
+  navigationShortcutItems,
+  wordCharacterKeyOptions,
+} from "./settings/candidate-paging-options";
+export {
   handwritingPrivacyText,
   type HandwritingPlatform,
 } from "./settings/handwriting-platform-notice";
