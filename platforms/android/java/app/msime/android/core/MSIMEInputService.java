@@ -130,6 +130,7 @@ public final class MSIMEInputService extends InputMethodService {
     ImeTextEditPanel imeTextEditPanel;
     ImeCalculator imeCalculator;
     ImeEmailSuffixes imeEmailSuffixes;
+    ImeNineKeyQuickPunctuation imeNineKeyQuickPunctuation;
     ImeTranslationSenses imeTranslationSenses;
     ImeStylusHandwriting imeStylusHandwriting;
     long session;
@@ -435,7 +436,7 @@ public final class MSIMEInputService extends InputMethodService {
     Button globeButton;
     Button deleteButton;
     View nineKeySidebar;
-    /** 拼音九键的 1 键：组字时显示「分词」，否则「@#」，render 时按组字状态更新。 */
+    /** 拼音九键的 1 键：组字时显示「分词」，否则「@#」（点按把常用标点放进候选条），render 时按组字状态更新。 */
     Button nineKeySymbolKey;
     /** 笔画网格的通配键：只在组字中可用，render 时按组字状态更新。 */
     Button strokeWildcardKey;
@@ -1448,6 +1449,7 @@ public final class MSIMEInputService extends InputMethodService {
         imeTextEditPanel = new ImeTextEditPanel(this);
         imeCalculator = new ImeCalculator(this);
         imeEmailSuffixes = new ImeEmailSuffixes(this);
+        imeNineKeyQuickPunctuation = new ImeNineKeyQuickPunctuation(this);
         imeTranslationSenses = new ImeTranslationSenses(this);
         imeStylusHandwriting = new ImeStylusHandwriting(this, HANDWRITING_DEBOUNCE_MILLIS);
         // 必须在 super.onCreate() 之前：InputMethodService 在那里按这个主题建输入法窗口，之后再设会抛异常。按名字查是因为 core/ 要能脱离 Gradle 生成的 R 编译（check-host.sh 的 JVM 冒烟）；res/values/themes.xml 说明了这个主题为什么存在。
@@ -1531,6 +1533,7 @@ public final class MSIMEInputService extends InputMethodService {
         imeBottomRow.resetSpaceCursor();
         imeCalculator.clear();
         imeEmailSuffixes.clear();
+        imeNineKeyQuickPunctuation.clear();
         imeTranslationSenses.clear();
         translationConsumedKeyCode = -1;
         imeStylusHandwriting.inputFinished();
@@ -2709,6 +2712,8 @@ public final class MSIMEInputService extends InputMethodService {
             throw new InputFailurePolicy.Failure(InputFailurePolicy.Reason.EDITOR_REJECTED);
         }
         view = next;
+        // 九键 1 键放进候选条的常用标点只留到下一次转换，下面的 render 画这次转换的候选。
+        imeNineKeyQuickPunctuation.clear();
         imeDebugOverlay.showDiagnostic(result.isNull("diagnostic") ? null
             : result.optString("diagnostic", ""));
         if (rebuildLayout || !KeyboardLayout.carriesLetterCase(displayedTouchLayout(view)))
@@ -4065,7 +4070,7 @@ public final class MSIMEInputService extends InputMethodService {
         return InputViewValuePolicy.punctuationMarks(view);
     }
 
-    private java.util.List<QuickPunctuationPolicy.Entry> quickPunctuationEntries() {
+    java.util.List<QuickPunctuationPolicy.Entry> quickPunctuationEntries() {
         return QuickPunctuationPolicy.entries(dedicatedEnglish,
             view == null ? -1 : InputViewValuePolicy.scheme(view, -1),
             view == null ? "none" : InputViewValuePolicy.textOr(view, "local_mode", "none"));
@@ -8815,11 +8820,13 @@ public final class MSIMEInputService extends InputMethodService {
         boolean hasHandwritingResults = handwriting && !handwritingResults.isEmpty()
             && handwritingCandidateToken != null;
         boolean hasEmailSuffixes = imeEmailSuffixes.active();
+        boolean hasNineKeyPunctuation = imeNineKeyQuickPunctuation.active();
         boolean idle = view == null || (InputViewValuePolicy.editingText(view).isEmpty()
             && "none".equals(InputViewValuePolicy.textOr(view, "local_mode", "none"))
             && (visibleCandidates == null || visibleCandidates.length() == 0)
             && !hasEnglishSuggestions
             && !hasEmailSuffixes
+            && !hasNineKeyPunctuation
             && !hasHandwritingResults);
         if (preedit != null) {
             // 读音的字号由 ImeStyler.applySkin 在 render 末尾统一设置，这里不再另设一份。
@@ -9040,8 +9047,8 @@ public final class MSIMEInputService extends InputMethodService {
             layerButton.setContentDescription(KeyboardActionRow.layerDescription(symbols));
         }
         if (symbolPanelButton != null) {
-            ViewPolicy.setEnabled(symbolPanelButton, session != 0 && connection != null
-                && keyboardLayer == KeyboardLayout.Layer.LETTERS);
+            // 这个键只出现在拼音九键和笔画键盘的底行；拼音九键的数字键面也画这一行，在那里同样能打开面板。
+            ViewPolicy.setEnabled(symbolPanelButton, session != 0 && connection != null);
             symbolPanelButton.setContentDescription("打开符号面板");
         }
         updateReturnKey();
@@ -9169,6 +9176,9 @@ public final class MSIMEInputService extends InputMethodService {
             // 义项页占用候选行：不画引擎候选，也不显示展开键和页码，义项都在这一页上。
             imeTranslationSenses.render(activeCandidates, candidateHorizontal);
             if (candidatePage != null) candidatePage.setText("");
+        } else if (hasNineKeyPunctuation) {
+            // 用户刚点了九键的 1 键，先给它要的常用标点，邮箱后缀等下一次转换之后再出现。
+            imeNineKeyQuickPunctuation.render(activeCandidates, candidateHorizontal);
         } else if (imeEmailSuffixes.active()) {
             // 邮箱后缀和英文建议占同一个候选行；打到 `@` 之后英文建议本来也没有，先给后缀。
             imeEmailSuffixes.render(activeCandidates);

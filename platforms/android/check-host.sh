@@ -904,6 +904,15 @@ if [[ $(rg -c 's\.backspaceKey\(' "$layout_rows") != $(rg -c 's\.imeLetterRows\.
   echo "Every Android layout delete key must be bound through ImeLetterRows.bindBackspaceRepeat" >&2
   exit 1
 fi
+# 拼音九键的 1 键（@#）空闲时把常用标点放进候选条（ImeNineKeyQuickPunctuation），符号面板改从九键外框底行最左边的 符 打开（KeyboardActionRow.designEntries，KeyboardActionRowSmoke 覆盖排布）；这些标点只留到下一次 Engine 转换。候选条的接线在 InputMethodService 里，JVM 冒烟碰不到，这里钉住三处：1 键不再直接打开面板、apply() 收起标点、底行的 SYMBOL_PANEL 是 符 键。
+symbol_key_body=$(sed -n '/private void symbolKey(NineKeyLayout\.Key key) {$/,/^    }$/p' "$layout_rows")
+if ! rg -q 's\.imeNineKeyQuickPunctuation\.show\(\)' <<< "$symbol_key_body" \
+  || rg -q 'showSymbolPanel' <<< "$symbol_key_body" \
+  || ! sed -n '/boolean apply(String response) throws JSONException {$/,/^    }$/p' "$account_service" | rg_q_stdin 'imeNineKeyQuickPunctuation\.clear\(\)' \
+  || ! rg -q 'case SYMBOL_PANEL -> s\.symbolPanelButton;' "$repo_root/platforms/android/java/app/msime/android/core/ImeBottomRow.java"; then
+  echo "The Android nine-key 1 key must lay quick punctuation into the candidate strip until the next Engine transition, and 符 must open the symbol panel from the bottom row" >&2
+  exit 1
+fi
 # 文本编辑面板（#5625）是工具栏面板的一员：closeToolbarPanels 要关掉它、anyToolbarPanelOpen 要算上它，否则换输入框时它会留在下一个编辑器的键盘上，收起键也不会变成「返回键盘」。
 if ! sed -n '/void closeToolbarPanels()/,/^    }$/p' "$account_service" | rg_q_stdin 'imeTextEditPanel\.close\(\)' \
   || ! sed -n '/boolean anyToolbarPanelOpen()/,/^    }$/p' "$account_service" | rg_q_stdin 'shown\(textEditPanel\)|ViewPolicy\.isVisible\(textEditPanel\)'; then
