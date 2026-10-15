@@ -18,6 +18,7 @@ import { ActionButton } from "./action-button";
 import { ErrorAlert } from "../core/error-alert";
 import { StatusMessage } from "../core/status-message";
 import { formatZhNumber, formatZhPercent } from "../core/format-number";
+import { formatDateTime } from "../core/format-date";
 import { SettingsEmptyMessage } from "./settings-empty-message";
 import {
   charactersPerMinute,
@@ -1322,7 +1323,7 @@ export function availabilityNotice(
     ? "请先确认已在系统设置 → 通用 → 键盘 → 键盘 → 水杉输入法中为水杉键盘开启“允许完全访问”，未开启时键盘不记录统计。"
     : "";
   if (status.lastWrittenMs) {
-    const written = new Date(status.lastWrittenMs).toLocaleString("zh-CN");
+    const written = formatDateTime(status.lastWrittenMs, "zh-CN");
     return iosPlatform
       ? `统计最后写入于 ${written}，当前计数为零。${fullAccess}已开启的话，如果刚刚清空过统计，这是正常的。`
       : `统计最后写入于 ${written}，当前计数为零；如果刚刚清空过统计，这是正常的。`;
