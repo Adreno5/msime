@@ -12,11 +12,11 @@ import { MixedInputSection, type MixedInputPreferences } from "./mixed-input-sec
 import { SingleCharacterOnlySection } from "./single-character-only-section";
 import { SwitchRow } from "./switch-row";
 import { TraditionalChineseOutputSection } from "./traditional-chinese-output-section";
-import {
-  WordCharacterSection,
-  type NavigationPreferences,
-  type WordCharacterPreferences,
-} from "./word-character-section";
+import { WordCharacterSection } from "./word-character-section";
+import type {
+  NavigationPreferences,
+  WordCharacterPreferences,
+} from "./candidate-paging-preferences";
 
 export type InputSharedSettingsTab = "mode" | "selection" | "candidates" | "output" | "advanced";
 
