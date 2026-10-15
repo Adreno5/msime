@@ -484,6 +484,7 @@ import type { CustomHelpcodeSchema, HelpcodePreferences } from "./settings/pages
 import type { ClipboardHistoryClient } from "./settings/clipboard-history-section";
 import type { CloudClipboardRequest } from "./settings/cloud-clipboard-send";
 import { type FuzzyPinyinPreferences } from "./settings/fuzzy-pinyin-preferences";
+import type { TranslationLanguage } from "./settings/translation-language-helpers";
 import type {
   NavigationPreferences,
   WordCharacterPreferences,
@@ -1872,9 +1873,9 @@ export type Preferences = PunctuationPreferences &
     candidate_english_gloss?: boolean;
     candidate_pronunciation?: boolean;
     english_suggestions?: boolean;
-    translation_target_language?: "en" | "fr" | "ja" | "es" | "ru" | "de" | "ko";
-    /** Optional second candidate-translation language; null/absent keeps one gloss row. */
-    translation_secondary_language?: "en" | "fr" | "ja" | "es" | "ru" | "de" | "ko" | null;
+    translation_target_language?: TranslationLanguage;
+    /** 可选的第二种候选翻译语言；null 或缺省表示只显示一行释义。 */
+    translation_secondary_language?: TranslationLanguage | null;
     /** The user explicitly chose the MSIME account (api.msime.app) for candidate translations; absent means not chosen. */
     translation_account?: boolean;
     /** Anonymous usage reporting (daily activity, session ends, crash summaries) read by every host; absent means on, the default. */
