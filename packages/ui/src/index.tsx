@@ -1185,6 +1185,8 @@ export {
 export {
   VoiceRecordingBehaviorSection,
   type VoiceRecordingBehaviorSectionProps,
+  VoiceCueSwitchesSection,
+  type VoiceCueSwitchesSectionProps,
 } from "./settings/voice-recording-behavior-section";
 export {
   VoiceModelMirrorRow,
@@ -2202,6 +2204,9 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showVoiceCommitMode,
     showVoiceProviderSettings,
     showVoiceStreamPreedit,
+    showVoiceSpaceLockSwitch,
+    showVoiceCueSwitches,
+    showVoiceCaptureBackends,
     showCandidateRowColors,
     showCandidateSelectionAppearance,
     showCandidateBorderColor,
@@ -2776,6 +2781,9 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showVoiceCommitMode,
     showVoiceProviderSettings,
     showVoiceStreamPreedit,
+    showVoiceSpaceLockSwitch,
+    showVoiceCueSwitches,
+    showVoiceCaptureBackends,
     showCandidateRowColors,
     showCandidateSelectionAppearance,
     showCandidateBorderColor,
