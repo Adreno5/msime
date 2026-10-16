@@ -145,6 +145,7 @@ platforms/android/tests/device/keyboard/EmojiCombinationLayoutDeviceSmoke.java
 platforms/android/tests/device/keyboard/EmojiCombinationDeviceSmoke.java
 
 platforms/android/tests/device/keyboard/CompositionBatchDeviceSmoke.java
+platforms/android/tests/device/keyboard/ToolbarEditorDeviceSmoke.java
 platforms/android/tests/device/voice/LocalSpeechHandleDeviceSmoke.java
 
 platforms/android/tests/device/core/BatchEditorActivity.java

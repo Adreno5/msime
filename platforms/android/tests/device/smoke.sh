@@ -147,6 +147,10 @@ printf '%s\n' "$result"
 result=$(run_instrumentation app.msime.android.test/app.msime.android.test.ChatNavigationDeviceSmoke)
 printf '%s\n' "$result"
 [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Native chat navigation acceptance failed" >&2; exit 1; }
+# 工具栏编辑入口在最低 API 上也支持，核心验收覆盖真实长按和原生设置跳转。
+result=$(run_instrumentation app.msime.android.test/app.msime.android.test.ToolbarEditorDeviceSmoke)
+printf '%s\n' "$result"
+[[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Toolbar editor entry acceptance failed" >&2; exit 1; }
 # 本地语音句柄经过真实 JNI；不加载模型或录音，最低 API 的核心验收也执行。
 result=$(run_instrumentation app.msime.android.test/app.msime.android.test.LocalSpeechHandleDeviceSmoke)
 printf '%s\n' "$result"
