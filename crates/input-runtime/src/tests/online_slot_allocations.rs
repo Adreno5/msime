@@ -196,12 +196,13 @@ fn online_seating_materializes_early_and_late_mismatches() {
                 allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
             let (_, refresh_allocations, refresh_bytes) =
                 allocations::count_bytes(|| runtime.refresh().unwrap());
-            // 第二次刷新复用引擎映射容量，保留一份排列和大列表的一份循环标记。
-            let scratch = if rows > 128 { rows } else { 0 };
-            assert!(refresh_allocations - snapshot_allocations <= 1 + usize::from(scratch > 0));
-            assert!(
-                refresh_bytes - snapshot_bytes <= rows * std::mem::size_of::<usize>() + scratch
+            // 第二次刷新应复用候选座位排列的工作缓冲；大列表的循环访问标记仍由排序器单独申请。
+            let cycle_scratch = if rows > 128 { rows } else { 0 };
+            assert_eq!(
+                refresh_allocations - snapshot_allocations,
+                usize::from(cycle_scratch > 0)
             );
+            assert_eq!(refresh_bytes - snapshot_bytes, cycle_scratch);
             assert_eq!(runtime.cached.candidates.len(), snapshot.candidates.len());
             assert_eq!(runtime.engine_order, expected);
             runtime.focused = true;
@@ -333,4 +334,40 @@ fn fixed_english_materializes_an_identity_prefix_before_the_ai_tail() {
     assert!(runtime.engine_order.is_empty());
     assert!(refresh_allocations - snapshot_allocations <= 2);
     assert!(refresh_bytes - snapshot_bytes <= 6 * std::mem::size_of::<usize>());
+
+    let (_, snapshot_allocations, snapshot_bytes) =
+        allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
+    let (_, refresh_allocations, refresh_bytes) =
+        allocations::count_bytes(|| runtime.refresh().unwrap());
+    assert_eq!(refresh_allocations - snapshot_allocations, 0);
+    assert_eq!(refresh_bytes - snapshot_bytes, 0);
+}
+
+#[test]
+fn fixed_english_reuses_its_order_and_index_scratch() {
+    let mut runtime = Runtime::new(
+        Fixture {
+            words: ["本地", "英文", "云", "AI", "本地尾"]
+                .map(str::to_owned)
+                .to_vec(),
+            codes: (0..5).map(|index| format!("k{index}")).collect(),
+            sources: vec![0, 4, 2, 3, 0],
+            positions: vec![0, 3, 0, 0, 0],
+            text: "a".into(),
+            ..Fixture::default()
+        },
+        5,
+    )
+    .unwrap();
+    runtime.refresh().unwrap();
+    let (_, snapshot_allocations, snapshot_bytes) =
+        allocations::count_bytes(|| runtime.engine.snapshot().unwrap());
+    let (_, refresh_allocations, refresh_bytes) =
+        allocations::count_bytes(|| runtime.refresh().unwrap());
+    assert_eq!(
+        runtime.cached.candidates,
+        ["本地", "云", "英文", "本地尾", "AI"]
+    );
+    assert_eq!(refresh_allocations - snapshot_allocations, 0);
+    assert_eq!(refresh_bytes - snapshot_bytes, 0);
 }
