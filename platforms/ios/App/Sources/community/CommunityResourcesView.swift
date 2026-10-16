@@ -13,15 +13,12 @@ struct CommunityHomeView: View {
       case .dictionary: CommunityResourcesView(kind: .dictionary, embedded: true)
       }
     }
-    // 放在安全区内边距里而不是列表上方的一行，列表仍是页面的滚动视图，大标题照样随滚动收进导航栏。
-    .safeAreaInset(edge: .top, spacing: 0) {
+    .designPinnedSegments {
       DesignSegmentedControl(items: [("皮肤", AppNavigation.CommunitySegment.skin), ("词库", .dictionary)],
                              selection: $navigation.communitySegment, style: .rounded, identifierPrefix: "communityTab")
         .frame(maxWidth: horizontalSizeClass == .regular ? CommunityLayout.regularMaxWidth : .infinity)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16).padding(.vertical, 8)
-        // 限制在自己的 frame 内：颜色背景默认会延伸进安全区，在这里会盖住大标题。
-        .background(MetasequoiaTheme.canvas, ignoresSafeAreaEdges: [])
     }
     .designCanvasBackground()
     .navigationTitle("社区")
@@ -463,7 +460,7 @@ struct CommunityResourceDetail: View {
           Text("提示词预览").font(.headline)
           Text(item.content.prompt ?? "").font(.body).textSelection(.enabled)
             .padding().frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            .background(MetasequoiaTheme.surface, in: RoundedRectangle(cornerRadius: 12))
           Button("添加到高情商回复键盘") { run { id in
             try await SkinCommunityAPI.shared.saveResource(item.id, saved: true)
             try request.checkCurrent(id)
@@ -515,7 +512,7 @@ struct CommunityResourceDetail: View {
         }
         if busy { ProgressView() }
       }.padding(20)
-    }.background(Color(uiColor: .systemGroupedBackground)).navigationTitle(item.kind == .dictionary ? "词库详情" : "回复模板")
+    }.designCanvasBackground().navigationTitle(item.kind == .dictionary ? "词库详情" : "回复模板")
       .task {
         request.appear()
         run { id in
