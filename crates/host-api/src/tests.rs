@@ -5447,6 +5447,11 @@ fn mobile_clipboard_uses_structured_actions() {
     let pinned = call(json!({"operation": "load"}));
     assert_eq!(pinned["value"]["entries"][0]["text"], "synthetic older");
     assert_eq!(pinned["value"]["entries"][1]["text"], "synthetic current");
+    let exported = call(json!({"operation": "export_text"}));
+    assert_eq!(exported["value"]["count"], 2);
+    let text = exported["value"]["text"].as_str().unwrap();
+    assert!(text.contains("1 · 已置顶 ==========\nsynthetic older\n"));
+    assert!(text.contains("2 ==========\nsynthetic current\n"));
     assert_eq!(
         call(json!({"operation": "remove", "text": "synthetic current"}))["value"]["removed"],
         true
@@ -5467,6 +5472,7 @@ fn mobile_clipboard_uses_structured_actions() {
     let refused = call(json!({"operation": "capture", "text": "synthetic rejected"}));
     assert_eq!(refused["ok"], false);
     assert_eq!(std::fs::read(&shared).unwrap(), corrupt);
+    assert_eq!(call(json!({"operation": "export_text"}))["ok"], false);
 
     let null = read(unsafe { msime_client_mobile_clipboard_history(std::ptr::null(), 0) });
     assert_eq!(null["ok"], false);

@@ -6888,6 +6888,28 @@ public final class MSIMEInputService extends InputMethodService {
         openHostPage(ClipboardSearchPolicy.SEARCH_PAGE, args);
     }
 
+    private boolean clipboardExportBusy;
+
+    /** 键盘右上方显式导出；旧系统首次授权交给原生历史页承接。 */
+    void exportClipboardHistory() {
+        if (clipboardExportBusy) return;
+        clipboardExportBusy = true;
+        Context application = getApplicationContext();
+        preferencesWorker.execute(() -> {
+            String message;
+            try { message = app.msime.android.ClipboardExport.export(application); }
+            catch (RuntimeException | LinkageError failed) { message = "剪贴板导出失败，请重试"; }
+            String result = message;
+            main.post(() -> {
+                clipboardExportBusy = false;
+                if (app.msime.android.ClipboardExport.NEEDS_DIRECTORY.equals(result)) {
+                    openHostPage(ClipboardSearchPolicy.SEARCH_PAGE);
+                    notice("首次导出请在历史页点击「导出」，选择并授权文件夹");
+                } else notice(result);
+            });
+        });
+    }
+
     /** 编辑页、剪贴板历史页做完之后要不要回到原来的应用：当前输入框属于别的应用才要；在水杉自己的输入框里打开时留在应用里（{@link ClipboardHistoryPolicy#RETURN_TO_CALLER_ARG}）。 */
     private void putReturnToCaller(android.os.Bundle args) {
         EditorInfo info = getCurrentInputEditorInfo();

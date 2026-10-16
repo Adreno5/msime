@@ -1444,6 +1444,8 @@ final class ImePanels {
             if (items != null && !items.isEmpty()) {
                 Button search = clipboardAction(header, "搜索", s::openClipboardSearch);
                 search.setContentDescription("在水杉应用里搜索剪贴板历史");
+                Button export = clipboardAction(header, "导出", s::exportClipboardHistory);
+                export.setContentDescription("导出全部剪贴板历史");
             }
             // 复制会自动记录，不再需要「保存当前」。
             clipboardAction(header, "清空", () -> {
