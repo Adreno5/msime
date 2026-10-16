@@ -6966,6 +6966,28 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     MSIMECandidatePanelOwner = self;
 }
 
+static const char *MSIMEMotionPresetName(msime::mac::SkinAnimationPreset preset) {
+    switch (preset) {
+    case msime::mac::SkinAnimationPreset::none: return "none";
+    case msime::mac::SkinAnimationPreset::fade: return "fade";
+    case msime::mac::SkinAnimationPreset::fade_scale: return "fade_scale";
+    case msime::mac::SkinAnimationPreset::slide_up: return "slide_up";
+    case msime::mac::SkinAnimationPreset::spring: return "spring";
+    case msime::mac::SkinAnimationPreset::glow: return "glow";
+    }
+    return "none";
+}
+
+// 动效没播时只看画面分不出是皮肤没写、数据没到，还是被规则挡下，所以把这次的决定连同画的包和它的预设一起记下来。
+- (void)logCandidateMotion {
+    if (!msime_macos_diagnostic_enabled()) return;
+    const auto &animation = _renderedCandidateAnimation;
+    msime_macos_diagnostic_writef("candidate motion %s skin=%s enter=%s exit=%s selection=%s duration_ms=%.0f",
+        _candidateMotion.lastDecision.UTF8String ?: "-", _renderedCandidateSkin.empty() ? "-" : _renderedCandidateSkin.c_str(),
+        MSIMEMotionPresetName(animation.enter), MSIMEMotionPresetName(animation.exit), MSIMEMotionPresetName(animation.selection),
+        animation.durationMs);
+}
+
 // 候选窗同步显隐：_panel.isVisible 立即是新状态，键盘和指针路由从不等动画。皮肤包写了的动效只加在图层上，见 MSIMECandidateMotion。
 - (void)hideCandidatePanel:(const char *)reason {
     if (msime_macos_diagnostic_enabled() && _panel.isVisible) msime_macos_diagnostic_writef("candidate hide reason=%s", reason);
@@ -6973,8 +6995,10 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     _animatedHighlightContext = nil;
     // 只有普通收起（上屏、取消、切到英文）可以播退场；失焦、会话替换、光标无效等立即收起，不在屏幕上留旧候选文字。
     const BOOL allowExit = strcmp(reason, "empty") == 0 || strcmp(reason, "english_mode") == 0;
+    const BOOL wasVisible = _panel.isVisible;
     if (_candidateMotion) [_candidateMotion hidePanel:_panel animation:_renderedCandidateAnimation allowExit:allowExit];
     else [_panel orderOut:nil];
+    if (wasVisible && _candidateMotion) [self logCandidateMotion];
 }
 
 - (void)showCandidatePanel {
@@ -6982,7 +7006,10 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSView *subview in _panel.contentView.subviews)
         if ([subview isKindOfClass:MSIMECandidateButton.class] && subview.tag >= 0) [rows addObject:subview];
+    const BOOL wasVisible = _panel.isVisible;
     [_candidateMotion showPanel:_panel animation:_renderedCandidateAnimation rows:rows];
+    // 打字时每个键都重新显示一次，只记从隐藏到显示的那一次。
+    if (!wasVisible) [self logCandidateMotion];
 }
 
 // 高亮在同一个输入串的同一页里换了格位时（方向键、Tab、网格里移动），按皮肤的选中预设装饰新高亮行；高亮本身已经随这一帧同步画好。打字或翻页时 Engine 把高亮放回第一格，那不是选中，不播，与 CandidatePanel 只在 selectCandidateWithIdentifier: 时装饰一致。
@@ -7000,6 +7027,9 @@ static __weak MSIMEInputController *MSIMECandidatePanelOwner;
     const BOOL sameContext = [_animatedHighlightContext isEqualToString:context];
     _animatedHighlightContext = context;
     if (!panelWasVisible || !sameContext || previous == 0 || slot == 0 || slot == previous) return;
+    if (msime_macos_diagnostic_enabled())
+        msime_macos_diagnostic_writef("candidate motion select slot=%lu->%lu selection=%s duration_ms=%.0f", (unsigned long)previous,
+            (unsigned long)slot, MSIMEMotionPresetName(_renderedCandidateAnimation.selection), _renderedCandidateAnimation.durationMs);
     [_candidateMotion decorateSelectionOfRow:highlighted fill:highlighted.fillColor cornerRadius:highlighted.cornerRadius
                                       accent:_renderedCandidateAccent animation:_renderedCandidateAnimation];
 }

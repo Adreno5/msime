@@ -20,6 +20,8 @@
 @property(nonatomic, readonly) NSWindow *exitWindow;
 // 正在接管底色的选中图层，没有时为 nil。
 @property(nonatomic, readonly) CALayer *selectionLayer;
+// 最近一次显示或收起对动效的处理，写进诊断日志：播了进场或退场，或者没播、被哪一条规则挡下（减弱动态效果、皮肤没写这个预设、连续输入、正在退场等）。
+@property(nonatomic, readonly, copy) NSString *lastDecision;
 // 把面板摆上屏幕（替代 orderFrontRegardless）。面板原本隐藏时视情况播放进场；正在退场时撤掉退场窗，以完整不透明度显示。rows 是参与错峰的候选行，按显示顺序。
 - (void)showPanel:(NSWindow *)panel animation:(const msime::mac::SkinAnimation &)animation rows:(NSArray<NSView *> *)rows;
 // 立即收起面板。allowExit 为 YES 且皮肤写了退场时，内容视图移到退场窗淡出，面板换上一个空的内容视图。
