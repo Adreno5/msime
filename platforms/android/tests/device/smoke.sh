@@ -129,6 +129,8 @@ if [[ "$feedback" == true ]]; then
   printf '%s\n' "$result"
   [[ "$result" == *MSIME_DEVICE_SMOKE_PASSED* ]] || { echo "Feedback input stability acceptance failed" >&2; exit 1; }
 fi
+# 剪贴板全文导出涉及存储授权，API 28/35 核心套件都覆盖。
+bash platforms/android/tests/device/clipboard-export.sh "$serial"
 if [[ "$diagnostics" == true ]]; then
   # 只生成合成日志包，覆盖原生导出到上传请求的契约，不发网络请求。
   result=$(run_instrumentation app.msime.android.test/app.msime.android.test.DiagnosticsBundleDeviceSmoke)

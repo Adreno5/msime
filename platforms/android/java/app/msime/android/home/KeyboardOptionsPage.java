@@ -1,5 +1,7 @@
 package app.msime.android.home;
 
+import app.msime.android.ClipboardExport;
+
 import app.msime.android.KeyboardBottomBarPolicy;
 
 import app.msime.android.DimensionPolicy;
@@ -46,6 +48,19 @@ import org.json.JSONObject;
  * <p>键盘与本页读同一批存储：按键间距、行间距、双拼键位提示和表情/剪贴板/皮肤三个工具栏按钮在共享偏好里（`touch_key_spacing_tenths`、`touch_row_spacing_tenths`、`touch_shuangpin_key_hints`、`touch_toolbar.*`）；键盘高度、横屏分离式键盘、浮动键盘、物理键盘时候选栏跟随光标、键盘底栏、底部留白、按键弹出预览、按键动画、三个手势、常用语/输入方式/浮动键盘三个工具栏按钮和「显示方式：隐藏」（整行不显示，候选条照常显示）只有 Android 用，在 {@link AndroidLocalSettings} 里。键盘高度按设计以 75–160 % 显示，存的是 dp（{@link KeyboardHeightPolicy#heightPercentToAdjustment}），本地没写过时沿用共享偏好里旧的 `touch_keyboard_height_adjustment`。按键音和按键振动是 Android 一直以来的本地开关（`KeyboardFeedbackStore`），键盘的功能面板改的也是它们。
  */
 public class KeyboardOptionsPage extends ReloadingDetailPage {
+    private final ClipboardExportActions clipboardExport = new ClipboardExportActions(this, this::reload);
+
+    @Override public void onCreate(@Nullable android.os.Bundle saved) {
+        super.onCreate(saved);
+        clipboardExport.restore(saved);
+    }
+
+    @Override public void onSaveInstanceState(android.os.Bundle saved) {
+        clipboardExport.save(saved);
+        super.onSaveInstanceState(saved);
+    }
+
+    @Override protected void onContentDestroyed() { clipboardExport.destroyed(); }
     @Override protected java.util.List<String> sectionTitles() {
         return java.util.List.of("布局", "反馈", "手势", "工具栏", "剪贴板");
     }
@@ -53,7 +68,7 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
     private static final String[] ANIMATIONS = {"bounce", "ripple", "glow", "lift", "none"};
     private static final String[] ANIMATION_LABELS = {"弹起", "涟漪", "发光", "浮起", "无"};
     private record State(JSONObject preferences, AndroidLocalSettings.Snapshot local,
-                         KeyboardFeedbackStore.Settings feedback, KeyboardSkin skin) {}
+                         KeyboardFeedbackStore.Settings feedback, KeyboardSkin skin, String exportDirectory) {}
 
     @Override protected void reload() {
         boolean dark = AppMode.dark(requireContext());
@@ -61,7 +76,7 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
             JSONObject preferences = KeyboardSheets.preferences(context);
             if (preferences == null) return null;
             return new State(preferences, AndroidLocalSettings.load(context), KeyboardFeedbackStore.load(context),
-                HostStore.keyboardSkin(preferences, dark, HostStore.seed(context)));
+                HostStore.keyboardSkin(preferences, dark, HostStore.seed(context)), ClipboardExport.directoryName(context));
         }, this::render);
     }
 
@@ -215,6 +230,8 @@ public class KeyboardOptionsPage extends ReloadingDetailPage {
         }
 
         GroupCard clipboard = GroupCard.add(sectionColumn(target, "剪贴板"), "剪贴板");
+        clipboard.headerAction(clipboardExport.button());
+        clipboard.nav("导出文件夹", "全文保存为 TXT；自选目录只在本机生效", state.exportDirectory(), clipboardExport::choose);
         // 剪贴板历史关着时键盘不显示最近复制，也不为它读剪贴板（RecentClipboardSuggestion.enabled），这一项跟着置灰。
         boolean clipboardHistory = preferences.optBoolean("clipboard_history", false);
         GroupCard.Row recentClipRow = clipboard.toggle("工具栏显示最近复制",

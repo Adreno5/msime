@@ -68,6 +68,18 @@ public final class GroupCard {
     /** 整组（标题加卡片），搜索过滤或整组隐藏时用。 */
     public LinearLayout view() { return group; }
 
+    /** 在组标题右侧放一个操作，保留标题的读屏语义和足够的按钮触控面积。 */
+    public void headerAction(View action) {
+        if (group.getChildCount() == 0 || !(group.getChildAt(0) instanceof TextView)) return;
+        View heading = group.getChildAt(0);
+        group.removeViewAt(0);
+        LinearLayout row = LayoutPolicy.row(context);
+        ViewPolicy.setCenteredVertically(row);
+        row.addView(heading, LayoutPolicy.weightedWrapParams(1));
+        row.addView(action, LayoutPolicy.wrapParams());
+        group.addView(row, 0, LayoutPolicy.matchWidthWrapParams());
+    }
+
     /** 卡片本身，需要放自定义内容时用。 */
     public LinearLayout card() { return card; }
 

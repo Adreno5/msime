@@ -446,9 +446,10 @@ fn full_hot_refresh_saves_completion_copies() {
     before.digits = "64426".to_owned();
     after.digits = "64426".to_owned();
     before.legacy_filtered_refresh();
-    after.refresh();
+    // 对照停在读法筛选版本，隔离后续提前拒绝重复行的额外收益。
+    after.before_dominated_refresh();
     let (_, old_count) = count(|| before.legacy_filtered_refresh());
-    let (_, new_count) = count(|| after.refresh());
+    let (_, new_count) = count(|| after.before_dominated_refresh());
     assert_session(&after, &before);
     eprintln!("完整热刷新申请：{old_count} → {new_count}");
     assert_eq!(

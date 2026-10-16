@@ -22,6 +22,8 @@ public final class SuperscriptShortcutDeviceSmoke extends DeviceSmoke {
         await(field(PLAIN).and(AccessibilityNodeInfo::isFocused));
         stage = "open number layer";
         tap(described("切换到数字和符号"));
+        // 中文数字入口默认显示九宫格，叹号仍在可达的扩展符号页。
+        tap(key("#+="));
         AccessibilityNodeInfo exclamation = await(describedPrefix("！；上滑输入 0；长按选择上标"));
 
         stage = "long press superscript zero";

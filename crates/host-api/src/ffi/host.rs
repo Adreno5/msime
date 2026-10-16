@@ -1684,6 +1684,7 @@ struct MobileClipboardRequest {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum MobileClipboardAction {
     Load,
+    ExportText,
     Capture { text: String },
     SetPinned { text: String, pinned: bool },
     Remove { text: String },
@@ -1714,6 +1715,12 @@ pub unsafe extern "C" fn msime_client_mobile_clipboard_history(
         let path = root.join("MSIME").join("clipboard_history.json");
         let mut history = msime_client_core::clipboard::ClipboardHistoryStore::open(path);
         match request.action {
+            MobileClipboardAction::ExportText => {
+                history
+                    .load()
+                    .map_err(|_| "mobile clipboard history unavailable")?;
+                Ok(json!({"text": history.export_text(), "count": history.entries().len()}))
+            }
             MobileClipboardAction::Load => {
                 history
                     .load()

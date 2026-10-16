@@ -82,6 +82,16 @@ public final class ClipboardHistoryStore {
         return ClipboardHistoryPolicy.editRejection(JsonPolicy.strictStringOrEmpty(response.opt("reason")));
     }
 
+    /** 全文格式由共享 Rust 生成，Android 只负责把快照写到用户选定的位置。 */
+    public record Export(String text, int count) {}
+
+    public Export exportText() {
+        JSONObject value = request("export_text", null, false);
+        if (value == null || !(value.opt("text") instanceof String))
+            throw new IllegalStateException("Clipboard export had no answer");
+        return new Export(value.optString("text"), value.optInt("count", 0));
+    }
+
     public void clear() {
         request("clear", null, false);
     }

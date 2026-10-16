@@ -271,39 +271,33 @@ impl QuanpinDictionary {
         result
     }
 
-    /// 九键只按词面、显示读法、规范读法和模糊标记筛选，返回行仍拥有全部字段。
-    pub(crate) fn query_filtered(
+    /// 九键同步借用完整行筛选；只有核对失效后的系列热页允许提前排名。
+    pub(crate) fn query_filtered_rows(
         &mut self,
         raw: &str,
         segmentation: &str,
         fuzzy: FuzzyPinyinOptions,
-        mut keep: impl FnMut(&str, &str, &str, bool) -> bool,
+        mut keep: impl FnMut(&WordItem, bool) -> bool,
     ) -> Vec<WordItem> {
         if fuzzy.rules != 0 {
             // 模糊合并的去重和站位必须先完成，避免被筛掉的词让另一条同文行复活。
             let mut rows = self.query(raw, segmentation, 0, fuzzy);
-            rows.retain(|row| keep(&row.word, &row.pinyin, &row.canonical_pinyin, row.fuzzy));
+            rows.retain(|row| keep(row, false));
             return rows;
         }
         let mut result =
-            self.query_exact_projected(raw, segmentation, 0, ColdRows::Borrow, |rows| match rows {
-                Cow::Owned(mut rows) => {
-                    rows.retain(|row| {
-                        keep(&row.word, &row.pinyin, &row.canonical_pinyin, row.fuzzy)
-                    });
-                    rows
-                }
-                Cow::Borrowed(rows) => {
-                    // 容器预留完整行数，只跳过拒绝行的字段复制。
-                    let mut result = Vec::with_capacity(rows.len());
-                    result.extend(
-                        rows.iter()
-                            .filter(|row| {
-                                keep(&row.word, &row.pinyin, &row.canonical_pinyin, row.fuzzy)
-                            })
-                            .cloned(),
-                    );
-                    result
+            self.query_exact_projected(raw, segmentation, 0, ColdRows::Borrow, |rows, cached| {
+                match rows {
+                    Cow::Owned(mut rows) => {
+                        rows.retain(|row| keep(row, cached));
+                        rows
+                    }
+                    Cow::Borrowed(rows) => {
+                        // 容器预留完整行数，只跳过拒绝行的字段复制。
+                        let mut result = Vec::with_capacity(rows.len());
+                        result.extend(rows.iter().filter(|row| keep(row, cached)).cloned());
+                        result
+                    }
                 }
             });
         mark_autocorrect_candidates(
@@ -313,6 +307,20 @@ impl QuanpinDictionary {
             &self.alternative_segmentations,
         );
         result
+    }
+
+    /// 旧筛选接口只供冻结刷新与既有分配对照使用。
+    #[cfg(test)]
+    pub(crate) fn query_filtered(
+        &mut self,
+        raw: &str,
+        segmentation: &str,
+        fuzzy: FuzzyPinyinOptions,
+        mut keep: impl FnMut(&str, &str, &str, bool) -> bool,
+    ) -> Vec<WordItem> {
+        self.query_filtered_rows(raw, segmentation, fuzzy, |row, _| {
+            keep(&row.word, &row.pinyin, &row.canonical_pinyin, row.fuzzy)
+        })
     }
 
     /// 个人上下文模型的只读视图（与同一份用户日志上的输入会话共用）。九键查一次简拼时取一次，按 `PersonalNgram::word_count` 把用户用过的简拼词排到前面（#6185）；拿着它时不要记录新的使用，记录要写锁。
@@ -657,22 +665,23 @@ impl QuanpinDictionary {
 
     /// QD:320-482.
     fn query_exact(&mut self, raw: &str, segmentation: &str, types: u32) -> Vec<WordItem> {
-        self.query_exact_projected(raw, segmentation, types, ColdRows::Transfer, |rows| {
+        self.query_exact_projected(raw, segmentation, types, ColdRows::Transfer, |rows, _| {
             rows.into_owned()
         })
     }
 
     /// 同步投影只能筛选、复制或移交原行，不改字段和顺序；冷页全保留时可交换副本与原页。
+    /// 回调的布尔值只标识核对失效后的系列热命中，借用的冷页仍为 `false`。
     fn query_exact_projected(
         &mut self,
         raw: &str,
         segmentation: &str,
         types: u32,
         cold: ColdRows,
-        project: impl FnOnce(Cow<'_, [WordItem]>) -> Vec<WordItem>,
+        project: impl FnOnce(Cow<'_, [WordItem]>, bool) -> Vec<WordItem>,
     ) -> Vec<WordItem> {
         if raw.is_empty() {
-            return project(Cow::Owned(Vec::new()));
+            return project(Cow::Owned(Vec::new()), false);
         }
         self.current_autocorrect_types = types;
         if types & TYPO_EDGE_TYPES != 0 {
@@ -730,7 +739,7 @@ impl QuanpinDictionary {
                 self.reset_cache();
             }
             if let Some(cached) = self.series_cache.get_ref(&slot) {
-                return project(Cow::Borrowed(cached));
+                return project(Cow::Borrowed(cached), true);
             }
         }
 
@@ -790,10 +799,10 @@ impl QuanpinDictionary {
         let (cached, projected) = match cold {
             ColdRows::Transfer => {
                 let cached = result.clone();
-                (cached, project(Cow::Owned(result)))
+                (cached, project(Cow::Owned(result), false))
             }
             ColdRows::Borrow => {
-                let projected = project(Cow::Borrowed(&result));
+                let projected = project(Cow::Borrowed(&result), false);
                 if projected.len() == result.len() {
                     // 全保留时副本可直接入缓存，原页作为输出，省去额外缩容。
                     (projected, result)
