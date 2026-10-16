@@ -2573,6 +2573,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     macos: macosPlatform,
     linux: linuxPlatform,
     windows: windowsPlatform,
+    harmony: harmonyPlatform,
     candidateEnglishGlossAvailable: Boolean(client.candidateEnglishGloss),
     onDeviceDownloadable,
     onChange: onTranslationChange,
