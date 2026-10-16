@@ -746,7 +746,9 @@ export { PunctuationSection, type PunctuationPreferences } from "./settings/punc
 export { punctuationControlState } from "./settings/punctuation-preferences";
 export {
   MixedInputSection,
+  MixedInputMoreRows,
   defaultMixedInput,
+  mixedInputDefaultsFor,
   type MixedInputPreferences,
 } from "./settings/mixed-input-section";
 export {
@@ -2212,6 +2214,8 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showInputModeStatusItem,
     showVoiceCaptureDevices,
     showFullwidthChord,
+    showTabPagePagingSwitches,
+    showMixedInputMinimumPrefix,
     clientHostedPlatform,
     desktopPanels,
     showVoiceHotkeys,
@@ -2515,7 +2519,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     candidateEnglishGloss,
     englishSuggestions,
     inputModeHUD,
-  } = settingsInputPreferences(draft);
+  } = settingsInputPreferences(draft, client.host?.platform);
   const touchKeyboardSchemes = draft?.touch_keyboard_schemes ?? {
     enabled: defaultTouchKeyboardSchemes,
   };
@@ -2784,6 +2788,8 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showInputModeStatusItem,
     showVoiceCaptureDevices,
     showFullwidthChord,
+    showTabPagePagingSwitches,
+    showMixedInputMinimumPrefix,
     fullwidthChord,
     clientHostedPlatform,
     platformLicenseUrl,
