@@ -555,3 +555,58 @@ impl QuanpinDictionary {
         )
     }
 }
+
+#[test]
+fn cold_rank_filter_preserves_generated_row_capacity() {
+    let fixture = Fixture::new();
+    fixture.insert("ni", "你", 100);
+    fixture.insert("ni'hao", "你好", 1000);
+    fixture.insert("ma", "吗", 100);
+    let mut before = QuanpinDictionary::new(&fixture.paths);
+    let mut after = QuanpinDictionary::new(&fixture.paths);
+    let fuzzy = FuzzyPinyinOptions { rules: 0 };
+    let mut expected = before.query_filtered("nihaoma", "ni'hao'ma", fuzzy, |_, _, _, _| true);
+    let generated = expected
+        .iter()
+        .find(|row| row.source == CandidateSource::Generated)
+        .expect("合成词网格应产生整句");
+    assert!(generated.sentence_words.capacity() > generated.sentence_words.len());
+    expected.retain(|row| row.word != "你");
+    let mut actual = after.query_filtered_rows("nihaoma", "ni'hao'ma", fuzzy, |row, cached| {
+        !cached || row.word != "你"
+    });
+    actual.retain(|row| row.word != "你");
+    assert_rows(&actual, &expected, false);
+}
+
+#[test]
+fn rank_filter_hot_flag_follows_actual_valid_series_hits() {
+    let fixture = Fixture::new();
+    fixture.insert("ni", "你", 100);
+    let mut dictionary = QuanpinDictionary::new(&fixture.paths);
+    let fuzzy = FuzzyPinyinOptions { rules: 0 };
+    let check = |dictionary: &mut QuanpinDictionary, fuzzy, expected| {
+        let mut visited = 0;
+        let rows = dictionary.query_filtered_rows("ni", "ni", fuzzy, |_, cached| {
+            assert_eq!(cached, expected);
+            visited += 1;
+            true
+        });
+        assert!(visited > 0);
+        assert!(!rows.is_empty());
+    };
+    check(&mut dictionary, fuzzy, false);
+    check(&mut dictionary, fuzzy, true);
+    fixture.insert("ni", "合成新增", 200);
+    check(&mut dictionary, fuzzy, false);
+    check(&mut dictionary, fuzzy, true);
+    dictionary.reset_cache();
+    check(&mut dictionary, fuzzy, false);
+    check(
+        &mut dictionary,
+        FuzzyPinyinOptions {
+            rules: crate::types::fuzzy_rule::Z_ZH,
+        },
+        false,
+    );
+}

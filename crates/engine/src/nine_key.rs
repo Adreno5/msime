@@ -1217,13 +1217,20 @@ impl NineKeySession {
         let initials =
             self.locked.is_empty() && initial.is_none() && initials_apply(remaining.len(), splits);
         let initials_lead = initials && !splits.is_empty();
+        // 模糊页已拥有结果；九键双拼的覆盖核对会另建编码，保留原单次核对路径。
+        let filter_dominated =
+            self.fuzzy.rules == 0 && matches!(grid, KeyGrid::NineKey | KeyGrid::FourteenKey);
         for (index, path) in alternatives.iter().enumerate() {
             append_path_key(&mut key, &locked_key, path);
             if key.is_empty() || !query_key_is_new(&alternatives, index, &key, queried.as_ref()) {
                 continue;
             }
             let full_len = self.locked.len() + path.len();
-            let accepts_reading = |word: &str, pinyin: &str, canonical: &str, fuzzy: bool| {
+            let accepts_reading = |candidate: &WordItem, cached: bool| {
+                let word = candidate.word.as_str();
+                let pinyin = candidate.pinyin.as_str();
+                let canonical = candidate.canonical_pinyin.as_str();
+                let fuzzy = candidate.fuzzy;
                 if self.single_character_only && is_han_phrase(word) {
                     return false;
                 }
@@ -1250,9 +1257,31 @@ impl NineKeySession {
                         return false;
                     }
                 }
+                if cached && filter_dominated {
+                    if let Some(best) = leading.get(word) {
+                        let Some(covered) = grid.matching_code_prefix_len(matched, &self.digits)
+                        else {
+                            return false;
+                        };
+                        // 只查已接纳的前页结果；本页内的同词仍由 `push_ranked` 处理。
+                        if *best
+                            <= rank_key_for_reading(
+                                candidate,
+                                covered,
+                                canonical,
+                                prefer_exact,
+                                initials_lead,
+                                grid,
+                            )
+                        {
+                            return false;
+                        }
+                    }
+                }
                 true
             };
-            for mut candidate in dictionary.query_filtered(&key, &key, self.fuzzy, accepts_reading)
+            for mut candidate in
+                dictionary.query_filtered_rows(&key, &key, self.fuzzy, accepts_reading)
             {
                 let canonical = take_candidate_canonical_pinyin(&mut candidate);
                 let matched = if candidate.fuzzy {
@@ -2289,27 +2318,49 @@ type RankKey = (Reverse<usize>, bool, bool, bool, bool, Reverse<i64>);
 /// 简拼行（`is_initials_row`）在同样覆盖的词典行里的位置由 `initials_lead` 决定：用户在每个数字之间都打了切分时排在前面，否则先排在音节行之后、整句行之前，去重后再由 `interleave_initials` 按权重插进音节行里。
 /// `grid` 只用来算全拼占几个组码：九键双拼一个音节两位，不是一个字母一位。
 fn rank_key(item: &WordItem, prefer_exact: bool, initials_lead: bool, grid: KeyGrid) -> RankKey {
+    rank_key_for_reading(
+        item,
+        item.pinyin.len(),
+        &item.canonical_pinyin,
+        prefer_exact,
+        initials_lead,
+        grid,
+    )
+}
+
+/// 复制前用将来的数字覆盖长度和规范读法求同一个排序键。
+fn rank_key_for_reading(
+    item: &WordItem,
+    covered: usize,
+    canonical: &str,
+    prefer_exact: bool,
+    initials_lead: bool,
+    grid: KeyGrid,
+) -> RankKey {
     #[cfg(all(test, debug_assertions))]
     cached_rank_tests::KEY_EVALUATIONS.with(|count| count.set(count.get() + 1));
-    let completion =
-        prefer_exact && grid.reading_code_len(&item.canonical_pinyin) > item.pinyin.len();
-    let initials = is_initials_row(item);
+    let completion = prefer_exact && grid.reading_code_len(canonical) > covered;
+    let initials = is_initials_reading(item, covered, canonical);
     (
-        Reverse(item.pinyin.len()),
+        Reverse(covered),
         item.source.is_generated_or_fallback(),
         initials != initials_lead,
         completion,
         item.fuzzy,
-        Reverse(comparable_weight(item)),
+        Reverse(comparable_weight_for_reading(item, canonical)),
     )
 }
 
 /// 整句行的分是 `log_prob * 1000`，词组边每覆盖一个音节就带一份 `PHRASE_LENGTH_BONUS`。同一串音节里比较时这无关紧要，九宫格却要比较不同音节串各自解出的整句：音节越多、越能拼成词组的读法分越高，`9436364782662` 的 xi'e'meng'suan'ma（洗噩梦算吗）就会压过 zhe'neng'suan'ma（这能算吗）。这里按路径的音节数每个扣一份奖励：同一条路径内的先后不变，多切出来的音节要靠词本身的分量才能赢。只扣词组实际拿到的那部分反而更差（整句集 top-1 降了一截），见 `.agents/notes/implemented/bug-fix/2026-10-08-nine-key-path-ranking.md`。
 fn comparable_weight(item: &WordItem) -> i64 {
-    if item.source != CandidateSource::Generated || item.canonical_pinyin.is_empty() {
+    comparable_weight_for_reading(item, &item.canonical_pinyin)
+}
+
+fn comparable_weight_for_reading(item: &WordItem, canonical: &str) -> i64 {
+    if item.source != CandidateSource::Generated || canonical.is_empty() {
         return item.weight;
     }
-    let syllables = item.canonical_pinyin.split('\'').count();
+    let syllables = canonical.split('\'').count();
     // 每词插入代价已在共享词网格解码中扣除；这里只消去跨切分比较的音节奖励。
     item.weight - (PHRASE_LENGTH_BONUS * 1000.0 * syllables as f64) as i64
 }
@@ -2328,16 +2379,14 @@ fn reads_pinyin(source: CandidateSource) -> bool {
 
 /// 一个数字一个音节、全拼比数字长的词典行：按简拼查出来的行（`68` 的 明天 mei'tian）。只有两个及以上数字时才算，一个数字本来就按首字母补全。
 fn is_initials_row(item: &WordItem) -> bool {
-    let digits = item.pinyin.len();
+    is_initials_reading(item, item.pinyin.len(), &item.canonical_pinyin)
+}
+
+fn is_initials_reading(item: &WordItem, digits: usize, canonical: &str) -> bool {
     digits >= 2
         && !item.source.is_generated_or_fallback()
-        && item.canonical_pinyin.split('\'').count() == digits
-        && item
-            .canonical_pinyin
-            .bytes()
-            .filter(u8::is_ascii_lowercase)
-            .count()
-            > digits
+        && canonical.split('\'').count() == digits
+        && canonical.bytes().filter(u8::is_ascii_lowercase).count() > digits
 }
 
 /// 简拼只在每个数字都能是一个音节时才查：至少两个数字，用户打的切分（`splits`，相对未锁定的数字）把数字切成的每一段都只有一个数字。末尾的切分也是一个音节的结尾：`68'` 说 68 是一个音节，不是两个首字母。
@@ -3022,6 +3071,8 @@ impl SyllablePrior {
     }
 }
 
+#[cfg(test)]
+mod dominated_projection_tests;
 #[cfg(test)]
 mod filter_projection_tests;
 
