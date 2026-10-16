@@ -1,6 +1,7 @@
 package app.msime.android;
 
 import app.msime.android.LayoutPolicy;
+import app.msime.android.core.InputViewValuePolicy;
 
 
 import android.graphics.Color;
@@ -37,6 +38,29 @@ final class ImeLetterRows {
     private Button keyPreviewOwner;
     /** 符号层里正在显示 #+= 页（否则是 123 页）。 */
     private boolean moreSymbols;
+
+    /** 数字页显示九宫格，不改变 Engine 里的中文方案和组码布局。 */
+    boolean numberPadDrawn() {
+        return numberPadDrawn(s.displayedTouchLayout(s.view));
+    }
+
+    boolean numberPadDrawn(int layout) {
+        boolean local = !"none".equals(InputViewValuePolicy.textOr(s.view, "local_mode", "none"));
+        return !moreSymbols && KeyboardLayout.drawsNumberPad(s.keyboardLayer, layout,
+            KeyboardLayout.numberPadLanguage(InputViewValuePolicy.scheme(s.view, -1), s.dedicatedEnglish), local);
+    }
+
+    /** 键行是否按另一种数字页状态建成：在借用的数字页上切中/英、退出本地模式等不改变触屏布局，也要换回原键面。 */
+    boolean numberPadStale() {
+        return s.keyRows != null && builtNumberPad != numberPadDrawn();
+    }
+
+    /** 数字页的扩展符号入口，返回 123 后仍回到数字九宫格。 */
+    void showMoreSymbols() {
+        moreSymbols = true;
+        rebuildKeyRows();
+        s.render();
+    }
     /** 分离式键盘第二行（a–l）的缩进占位；微软双拼的第十个键出现时收起。 */
     private View secondRowLeadingIndent;
     private View secondRowTrailingIndent;
@@ -494,6 +518,7 @@ final class ImeLetterRows {
     }
 
     private boolean builtLanguageNumberSwap;
+    private boolean builtNumberPad;
 
     boolean languageNumberSwapStale() {
         return builtLanguageNumberSwap != s.localSettings.bool(AndroidLocalSettings.SWAP_LANGUAGE_NUMBER_KEYS);
@@ -522,6 +547,7 @@ final class ImeLetterRows {
         secondRowLeadingIndent = null;
         secondRowTrailingIndent = null;
         if (s.keyboardLayer == KeyboardLayout.Layer.LETTERS) moreSymbols = false;
+        builtNumberPad = numberPadDrawn();
         s.imeLayoutRows.hideJapaneseFlickPreview();
         s.deactivateHandwriting();
         s.symbolKeyButtons.clear();
@@ -544,9 +570,9 @@ final class ImeLetterRows {
             s.imeStyler.applyKeyboardGeometry();
             return;
         }
-        // 九键切数字仍然是九键。The digit layer keeps the grid the user picked three columns for;
-        // only handwriting hands its panel over to the 26-key symbol rows.
-        if (s.displayedTouchLayout(s.view) == MSIMEInputService.QUANPIN_NINE_KEY_LAYOUT) {
+        // 中文数字入口复用九宫格；字母层仍按原方案构建，扩展符号页另走通用符号行。
+        if (numberPadDrawn() || (s.keyboardLayer == KeyboardLayout.Layer.LETTERS
+                && s.displayedTouchLayout(s.view) == MSIMEInputService.QUANPIN_NINE_KEY_LAYOUT)) {
             s.imeLayoutRows.rebuildNineKeyRows();
             s.imeStyler.applyKeyboardGeometry();
             return;
@@ -557,21 +583,21 @@ final class ImeLetterRows {
             s.imeStyler.applyKeyboardGeometry();
             return;
         }
-        // 笔画键盘的符号页与手写一样交给 26 键符号行，字母层才画笔画网格。
+        // 笔画字母层画笔画网格，数字层已由前面的数字九宫格接管。
         if (s.keyboardLayer == KeyboardLayout.Layer.LETTERS
             && s.displayedTouchLayout(s.view) == KeyboardLayout.STROKE_LAYOUT) {
             s.imeLayoutRows.rebuildStrokeRows();
             s.imeStyler.applyKeyboardGeometry();
             return;
         }
-        // 注音 9 键同样只在字母层画自己的网格，符号页和笔画一样是新设计的 123 / #+= 层。
+        // 注音 9 键只在字母层画音键，数字层直接上屏数字，不交给引擎组音。
         if (s.keyboardLayer == KeyboardLayout.Layer.LETTERS
             && s.displayedTouchLayout(s.view) == KeyboardLayout.ZHUYIN_NINE_KEY_LAYOUT) {
             s.imeLayoutRows.rebuildZhuyinNineKeyRows();
             s.imeStyler.applyKeyboardGeometry();
             return;
         }
-        // 14 键只在字母层画自己的三行；123 层与 26 键相同，是新设计层。
+        // 14 键只在字母层画自己的三行，数字层与 26 键复用同一个九宫格。
         if (s.keyboardLayer == KeyboardLayout.Layer.LETTERS
             && s.displayedTouchLayout(s.view) == KeyboardLayout.FOURTEEN_KEY_LAYOUT) {
             rebuildFourteenKeyRows();
@@ -579,7 +605,8 @@ final class ImeLetterRows {
             return;
         }
         if (s.keyboardLayer == KeyboardLayout.Layer.SYMBOLS
-                && drawsDesignLayer(s.displayedTouchLayout(s.view))) {
+                && (drawsDesignLayer(s.displayedTouchLayout(s.view))
+                    || s.displayedTouchLayout(s.view) == MSIMEInputService.QUANPIN_NINE_KEY_LAYOUT)) {
             rebuildDesignLayer();
             s.imeBottomRow.updateActionRow();
             s.imeStyler.applyKeyboardGeometry();

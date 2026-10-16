@@ -316,8 +316,10 @@ final class ImeBottomRow {
 
     /** 新设计的 123 / #+= 层自带底行，这时功能行整行不显示。 */
     boolean layerOwnsBottomRow() {
+        int layout = s.imeLetterRows.drawnTouchLayout();
         return s.keyboardLayer == KeyboardLayout.Layer.SYMBOLS
-            && ImeLetterRows.drawsDesignLayer(s.imeLetterRows.drawnTouchLayout());
+            && !s.imeLetterRows.numberPadDrawn(layout)
+            && (ImeLetterRows.drawsDesignLayer(layout) || layout == KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT);
     }
 
     /** 按当前键面重挂常驻按键，保留空格手势与删除连按的状态和监听器。 */
@@ -327,6 +329,7 @@ final class ImeBottomRow {
         s.imeStyler.refreshSeasonIfNeeded();
         s.imeLetterRows.updateSecondRowIndent();
         int layout = s.imeLetterRows.drawnTouchLayout();
+        boolean numberPad = s.imeLetterRows.numberPadDrawn(layout);
         boolean globe = s.offersGlobeKey();
         boolean ownBottom = layerOwnsBottomRow();
         boolean chinesePunctuation = s.sendsChinesePunctuation();
@@ -339,10 +342,11 @@ final class ImeBottomRow {
             // type('.') 没有会话时也会直接上屏字面句点（密码框等），与旁边的逗号键一致。
             ViewPolicy.setEnabled(periodButton, s.connection != null);
         }
-        boolean nineKeyDigits = layout == KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT
-            && s.keyboardLayer == KeyboardLayout.Layer.SYMBOLS;
         if (s.spaceButton instanceof SpaceKeyFace face)
-            face.setSchemeLabel(nineKeyDigits ? "" : spaceLabel());
+            face.setSchemeLabel(numberPad ? "" : spaceLabel());
+        // 借用数字页的 0 记普通数字键，原拼音九键才记 Nine0；同一个常驻按键每次按当前键面重登。
+        if (numberPad) s.keyId(zeroButton(), layout == KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT
+            ? "Nine0" : KeyPressIds.forCharacter('0'));
         syncSplitSpace();
         if (s.globeButton != null) s.globeButton.setContentDescription("切换输入法");
         // Every keystroke reaches render(), and re-parenting eight keys under the pressed one is a
@@ -350,10 +354,11 @@ final class ImeBottomRow {
         // 分离时空格拆成两半、空隙按可见键居中，所以常用标点键显示与否也会改变排布。
         boolean split = !ownBottom && s.splitKeyboardDrawn();
         boolean swapLanguageNumber = s.localSettings.bool(AndroidLocalSettings.SWAP_LANGUAGE_NUMBER_KEYS);
-        String signature = layout + ":" + globe + ":" + ownBottom + ":" + split + ":" + swapLanguageNumber + ":" + nineKeyDigits
+        String signature = layout + ":" + numberPad + ":" + globe + ":" + ownBottom + ":" + split + ":" + swapLanguageNumber
             + (split && s.quickPunctuationButton != null ? ":" + s.quickPunctuationButton.getVisibility() : "");
         java.util.List<KeyboardActionRow.DesignEntry> entries = ownBottom ? java.util.List.of()
-            : KeyboardActionRow.designEntries(layout, globe, swapLanguageNumber, nineKeyDigits);
+            : KeyboardActionRow.designEntries(numberPad ? KeyboardLayout.QUANPIN_NINE_KEY_LAYOUT : layout,
+                globe, swapLanguageNumber, numberPad);
         // Visibility is re-asserted every time: the reply surface hides this row and restores it
         // without the surface itself having changed.
         ViewPolicy.setVisible(s.actionRow, !entries.isEmpty());
