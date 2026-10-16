@@ -33,6 +33,7 @@ import {
   type CustomSkinLibraryAction,
   type FloatingToolbarPreferences,
   type HostCapabilities,
+  type Preferences,
   type SavedTouchKeyboardSkin,
   type SettingsClient,
   type UpdateCheckResult,
@@ -1521,17 +1522,13 @@ test("a provider-credential host runs the AI service controls without a token", 
   expect(screen.queryByLabelText("AI API Token")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
   await screen.findByText("已获取 2 个可用模型。");
-  fireEvent.change(screen.getByLabelText("AI 测试输入"), { target: { value: "fixture input" } });
-  fireEvent.click(screen.getByRole("button", { name: "发送并润色" }));
-  await screen.findByText("fixture-polished");
   // An empty token goes out because there is none to send; the provider ignores
   // it and authenticates from its own configuration.
   expect(fetchModels.mock.calls[0][0]).toMatchObject({ provider: "deepseek", token: "" });
-  expect(testAi.mock.calls[0][0]).toMatchObject({
-    provider: "deepseek",
-    text: "fixture input",
-    token: "",
-  });
+  // Linux 是桌面：这份配置只给拼音联想用，润色测试测不出用户实际得到的结果，已经撤掉。
+  expect(screen.queryByLabelText("AI 测试输入")).toBeNull();
+  expect(screen.queryByRole("button", { name: "发送并润色" })).toBeNull();
+  expect(testAi).not.toHaveBeenCalled();
   cleanup();
 });
 
@@ -2174,9 +2171,9 @@ test("the macOS shortcuts page omits the maintenance chords and 维护与诊断 
   expect(screen.queryByText("输入上下文维护快捷键")).toBeNull();
   expect(screen.queryByText("Ctrl+Shift+Option+T")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "维护与诊断" }));
-  fireEvent.click(screen.getByRole("button", { name: "重新注册" }));
+  fireEvent.click(screen.getByRole("button", { name: "修复" }));
   await waitFor(() => expect(restartInputMethod).toHaveBeenCalledOnce());
-  expect(await screen.findByText("已重新注册输入源。")).toBeDefined();
+  expect(await screen.findByText("输入源已修复。")).toBeDefined();
 });
 
 test("Linux restart copy covers both input method frameworks", async () => {
@@ -2203,24 +2200,31 @@ test("Linux restart copy covers both input method frameworks", async () => {
   expect(await screen.findByText("已请求重启输入法服务。")).toBeDefined();
 });
 
-test("macOS service page exposes installation separately from re-registration", async () => {
+test("the macOS service page repairs the input source in one action: install, then register", async () => {
   const installInputSource = vi.fn().mockResolvedValue(undefined);
+  const restartInputMethod = vi.fn().mockResolvedValue(undefined);
   render(
     <SettingsPage
       client={{
         load: vi.fn().mockResolvedValue(initial),
         save: vi.fn(),
-        restartInputMethod: vi.fn().mockResolvedValue(undefined),
+        restartInputMethod,
         installInputSource,
         host: testHost({ platform: "macos", restart_input_method: true, panel_windows: true }),
       }}
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "维护与诊断" }));
-  expect(await screen.findByText("安装或更新水杉输入源")).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "安装 / 更新" }));
-  await waitFor(() => expect(installInputSource).toHaveBeenCalledOnce());
-  expect(await screen.findByText("输入源已安装并注册。")).toBeDefined();
+  expect(await screen.findByText("修复输入源")).toBeDefined();
+  expect(screen.queryByText("安装或更新水杉输入源")).toBeNull();
+  expect(screen.queryByRole("button", { name: "重新注册" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "修复" }));
+  await waitFor(() => expect(restartInputMethod).toHaveBeenCalledOnce());
+  expect(installInputSource).toHaveBeenCalledOnce();
+  expect(installInputSource.mock.invocationCallOrder[0]).toBeLessThan(
+    restartInputMethod.mock.invocationCallOrder[0],
+  );
+  expect(await screen.findByText("输入源已修复。")).toBeDefined();
 });
 
 test("macOS reports the start-time input method refresh and a source that still needs enabling", async () => {
@@ -2326,7 +2330,7 @@ test("macOS stays quiet when the input method is current and enabled, and points
     />,
   );
   const banner = await screen.findByRole("alert", { name: "水杉输入法安装状态" });
-  expect(within(banner).getByText(/点「安装 \/ 更新」重试/)).toBeDefined();
+  expect(within(banner).getByText(/点「修复」重试/)).toBeDefined();
   expect(within(banner).queryByRole("button", { name: "打开键盘设置" })).toBeNull();
 });
 
@@ -2498,7 +2502,15 @@ test("macOS 维护与诊断 page exposes reversible uninstall with explicit data
   expect(within(about).queryByText("卸载水杉输入法")).toBeNull();
   const groupTitles = (scope: HTMLElement) =>
     [...scope.querySelectorAll("[data-group-title]")].map((node) => node.textContent);
-  expect(groupTitles(about)).toEqual(["版本与更新", "系统信息", "许可与隐私"]);
+  // 桌面上「帮助与反馈」并进「关于」，几组接在「版本与更新」后面。
+  expect(groupTitles(about)).toEqual([
+    "版本与更新",
+    "帮助",
+    "提交可复现的问题",
+    "反馈与交流",
+    "系统信息",
+    "许可与隐私",
+  ]);
   fireEvent.click(screen.getByRole("button", { name: "维护与诊断" }));
   const developer = await screen.findByRole("group", { name: "维护与诊断" });
   expect(await within(developer).findByText("卸载水杉输入法")).toBeDefined();
@@ -2839,14 +2851,59 @@ test("clipboard history reloads when its page opens while an earlier list is pen
   expect(screen.queryByText("synthetic stale")).toBeNull();
 });
 
-test("clipboard history ignores an initial list that finishes after a manual sync", async () => {
-  const initialList = deferred<Array<{ text: string; timestampMs: number; pinned: boolean }>>();
-  const list = vi.fn().mockImplementation(() => initialList.promise);
+/** 剪贴板历史从关到开并保存：保存回执里开关是开的，「剪贴板」页据此自动同步一次系统剪贴板。 */
+function clipboardHistoryOffClient(clipboard: NonNullable<SettingsClient["clipboard"]>) {
+  const save = vi.fn(async (revision: number, preferences: Preferences) => ({
+    ...initial,
+    revision: revision + 1,
+    preferences,
+  }));
+  const client: SettingsClient = {
+    load: vi.fn().mockResolvedValue({
+      ...initial,
+      preferences: { ...initial.preferences, clipboard_history: false },
+    }),
+    save,
+    clipboard,
+  };
+  return { client, save };
+}
+
+async function turnClipboardHistoryOnAndSave(save: ReturnType<typeof vi.fn>) {
+  fireEvent.click(screen.getByRole("switch", { name: "剪贴板历史" }));
+  saveSettingsNow();
+  await waitFor(() => expect(save).toHaveBeenCalled());
+}
+
+test("turning clipboard history on and saving syncs the system clipboard once, and there is no sync button", async () => {
+  const list = vi.fn().mockResolvedValue([]);
   const sync = vi
     .fn()
     .mockResolvedValue([
       { text: "synthetic synced", timestampMs: 1_789_000_000_000, pinned: false },
     ]);
+  const { client, save } = clipboardHistoryOffClient({ list, sync, clear: vi.fn() });
+  render(<SettingsPage client={client} />);
+  await settingsReady();
+  fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
+  expect(screen.queryByRole("button", { name: "从系统剪贴板同步" })).toBeNull();
+  // 只打开开关、还没保存时不同步：宿主读的是保存后的开关。
+  fireEvent.click(screen.getByRole("switch", { name: "剪贴板历史" }));
+  expect(sync).not.toHaveBeenCalled();
+  saveSettingsNow();
+  await waitFor(() => expect(save).toHaveBeenCalled());
+  expect(await screen.findByText("synthetic synced")).toBeDefined();
+  expect(sync).toHaveBeenCalledTimes(1);
+  // 之后离开再回来不会再同步。
+  fireEvent.click(screen.getByRole("button", { name: "输入" }));
+  fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  expect(sync).toHaveBeenCalledTimes(1);
+});
+
+test("opening the page with clipboard history already on does not sync", async () => {
+  const list = vi.fn().mockResolvedValue([]);
+  const sync = vi.fn().mockResolvedValue([]);
   const snapshot = { ...initial, preferences: { ...initial.preferences, clipboard_history: true } };
   render(
     <SettingsPage
@@ -2860,7 +2917,23 @@ test("clipboard history ignores an initial list that finishes after a manual syn
   await settingsReady();
   fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
   await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-  fireEvent.click(screen.getByRole("button", { name: "从系统剪贴板同步" }));
+  expect(sync).not.toHaveBeenCalled();
+});
+
+test("clipboard history ignores a list that finishes after the sync turning it on ran", async () => {
+  const initialList = deferred<Array<{ text: string; timestampMs: number; pinned: boolean }>>();
+  const list = vi.fn().mockImplementation(() => initialList.promise);
+  const sync = vi
+    .fn()
+    .mockResolvedValue([
+      { text: "synthetic synced", timestampMs: 1_789_000_000_000, pinned: false },
+    ]);
+  const { client, save } = clipboardHistoryOffClient({ list, sync, clear: vi.fn() });
+  render(<SettingsPage client={client} />);
+  await settingsReady();
+  fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
+  await turnClipboardHistoryOnAndSave(save);
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
   expect(await screen.findByText("synthetic synced")).toBeDefined();
 
   await act(async () =>
@@ -2872,7 +2945,7 @@ test("clipboard history ignores an initial list that finishes after a manual syn
   expect(screen.queryByText("synthetic stale")).toBeNull();
 });
 
-test("clipboard history waits for a sync before accepting deletion", async () => {
+test("clipboard history waits for the sync turning it on before accepting deletion", async () => {
   const pendingSync = deferred<Array<{ text: string; timestampMs: number; pinned: boolean }>>();
   const entry = { text: "synthetic record", timestampMs: 1_789_000_000_000, pinned: false };
   let entries = [entry];
@@ -2880,22 +2953,19 @@ test("clipboard history waits for a sync before accepting deletion", async () =>
   const remove = vi.fn().mockImplementation(async () => {
     entries = [];
   });
-  const snapshot = { ...initial, preferences: { ...initial.preferences, clipboard_history: true } };
-  render(
-    <SettingsPage
-      client={{
-        load: vi.fn().mockResolvedValue(snapshot),
-        save: vi.fn(),
-        clipboard: { list, sync: () => pendingSync.promise, remove, clear: vi.fn() },
-      }}
-    />,
-  );
+  const { client, save } = clipboardHistoryOffClient({
+    list,
+    sync: () => pendingSync.promise,
+    remove,
+    clear: vi.fn(),
+  });
+  render(<SettingsPage client={client} />);
   await settingsReady();
   fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
+  await turnClipboardHistoryOnAndSave(save);
   const row = (await screen.findByText(entry.text)).closest(
     "[data-clipboard-entry-row]",
   ) as HTMLElement;
-  fireEvent.click(screen.getByRole("button", { name: "从系统剪贴板同步" }));
   const deleteButton = within(row).getByRole("button", {
     name: "删除剪贴板记录",
   }) as HTMLButtonElement;
@@ -2956,31 +3026,24 @@ test("clipboard history applies a sync that finishes after leaving and reopening
   const oldEntry = { text: "synthetic old", timestampMs: 1_788_000_000_000, pinned: false };
   const newEntry = { text: "synthetic new", timestampMs: 1_789_000_000_000, pinned: false };
   const list = vi.fn().mockResolvedValue([oldEntry]);
-  const snapshot = { ...initial, preferences: { ...initial.preferences, clipboard_history: true } };
-  render(
-    <SettingsPage
-      client={{
-        load: vi.fn().mockResolvedValue(snapshot),
-        save: vi.fn(),
-        clipboard: {
-          list,
-          sync: () => pendingSync.promise,
-          clear: vi.fn().mockResolvedValue(undefined),
-        },
-      }}
-    />,
-  );
+  const { client, save } = clipboardHistoryOffClient({
+    list,
+    sync: () => pendingSync.promise,
+    clear: vi.fn().mockResolvedValue(undefined),
+  });
+  render(<SettingsPage client={client} />);
   await settingsReady();
   fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
+  await turnClipboardHistoryOnAndSave(save);
   expect(await screen.findByText(oldEntry.text)).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "从系统剪贴板同步" }));
 
   fireEvent.click(screen.getByRole("button", { name: "输入" }));
   fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-  expect(
-    (screen.getByRole("button", { name: "从系统剪贴板同步" }) as HTMLButtonElement).disabled,
-  ).toBe(true);
+  // 同步还没回来，开关保持不可用。
+  expect((screen.getByRole("switch", { name: "剪贴板历史" }) as HTMLInputElement).disabled).toBe(
+    true,
+  );
 
   await act(async () => pendingSync.resolve([newEntry]));
   expect(screen.getByText(newEntry.text)).toBeDefined();
@@ -6287,7 +6350,7 @@ test("help, about and feedback pages expose their Windows content and actions", 
   render(<SettingsPage client={client} />);
   await settingsReady();
 
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.click(screen.getByRole("button", { name: "帮助" }));
   expect(await screen.findByText("快速上手")).toBeDefined();
   expect(screen.getByText(/Win \+ Space/)).toBeDefined();
@@ -6303,7 +6366,7 @@ test("help, about and feedback pages expose their Windows content and actions", 
     ),
   );
 
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   expect(await screen.findByText("GitHub Issues")).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: "复制群号" }));
   await waitFor(() => expect(copyText).toHaveBeenCalledWith("829919142"));
@@ -6322,7 +6385,7 @@ test("Linux help quick start covers both Fcitx5 and IBus", async () => {
   render(<SettingsPage client={client} />);
   await settingsReady();
 
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.click(screen.getByRole("button", { name: "帮助" }));
   const intro = await screen.findByText(/Linux 桌面环境下的中文输入法/);
   expect(intro.textContent).toContain("Fcitx5");
@@ -6348,7 +6411,7 @@ test("Linux help network section says what goes online and where credentials liv
   render(<SettingsPage client={client} />);
   await settingsReady();
 
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.click(screen.getByRole("button", { name: "帮助" }));
   const network = await screen.findByText(/日常拼音输入无需联网/);
   const text = network.textContent ?? "";
@@ -6512,7 +6575,7 @@ test("macOS support pages use client project and privacy links", async () => {
   fireEvent.click(screen.getByRole("button", { name: "第三方组件许可" }));
   await waitFor(() => expect(openThirdPartyLicenses).toHaveBeenCalledOnce());
 
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.change(screen.getByRole("combobox", { name: "反馈类型" }), {
     target: { value: "候选词不对" },
   });
@@ -6543,7 +6606,7 @@ test("macOS and iOS help pages use their native host instructions", async () => 
       }}
     />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   // 帮助 is an entry on the 反馈 page, which is only drawn once the settings have loaded.
   fireEvent.click(await screen.findByRole("button", { name: "帮助" }));
   // macOS answers the three questions as term/description rows, not prose, so the page carries the
@@ -6602,7 +6665,7 @@ test("the sidebar follows the six titled navigation groups", async () => {
     ["主题", "候选窗口", "悬浮工具栏"],
     ["屏幕键盘与手写", "语音输入"],
     ["剪贴板", "AI 辅助"],
-    ["维护与诊断", "帮助与反馈", "关于"],
+    ["维护与诊断", "关于"],
   ]);
   // 组名对辅助技术可见；没有账号客户端时「账号」组整组消失，桌面也不再有「社区」入口。
   expect(
@@ -6753,7 +6816,7 @@ test("the feedback report leads with the release and the scheme", async () => {
     />,
   );
   await settingsReady();
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.click(await screen.findByRole("button", { name: "复制报告" }));
   await waitFor(() => expect(copyText).toHaveBeenCalledOnce());
   const report = copyText.mock.calls[0][0] as string;
@@ -6776,7 +6839,7 @@ test("a host that cannot name its release still reports something", async () => 
     />,
   );
   await settingsReady();
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
   fireEvent.click(await screen.findByRole("button", { name: "复制报告" }));
   await waitFor(() => expect(copyText).toHaveBeenCalledOnce());
   const report = copyText.mock.calls[0][0] as string;
@@ -7104,7 +7167,7 @@ const referenceSections: {
   {
     page: "help",
     button: "帮助",
-    via: "帮助与反馈",
+    via: "关于",
     titles: ["快速上手", "基本功能"],
   },
 ];
@@ -7301,8 +7364,9 @@ test.each([
     <SettingsPage client={{ load: vi.fn().mockResolvedValue(initial), save: vi.fn(), host }} />,
   );
   await settingsReady();
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
-  const page = await screen.findByRole("group", { name: "帮助与反馈" });
+  // 桌面上「帮助与反馈」并进了「关于」。
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
+  const page = await screen.findByRole("group", { name: "关于" });
   for (const channel of ["GitHub Issues", "QQ 交流群", "Telegram 群组"]) {
     expect(within(page).getByText(channel)).toBeTruthy();
   }
@@ -7325,14 +7389,73 @@ test("the feedback page opens with 帮助 and links the report to 诊断日志",
     />,
   );
   await settingsReady();
-  fireEvent.click(screen.getByRole("button", { name: "帮助与反馈" }));
-  const page = await screen.findByRole("group", { name: "帮助与反馈" });
+  // 桌面上「帮助与反馈」并进了「关于」。
+  fireEvent.click(screen.getByRole("button", { name: "关于" }));
+  const page = await screen.findByRole("group", { name: "关于" });
   const help = within(page).getByRole("button", { name: "帮助" });
   const kind = within(page).getByRole("combobox", { name: "反馈类型" });
   expect(help.compareDocumentPosition(kind) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(within(page).queryByText("提交问题时建议附上")).toBeNull();
   fireEvent.click(within(page).getByRole("button", { name: "诊断日志" }));
   expect(await screen.findByRole("heading", { name: "维护与诊断" })).toBeDefined();
+});
+
+test("on the desktop 帮助与反馈 lives in 关于: its route opens 关于 and 帮助 returns there", async () => {
+  render(
+    <SettingsPage
+      initialPage="feedback"
+      client={{
+        load: vi.fn().mockResolvedValue(initial),
+        save: vi.fn(),
+        copyText: vi.fn(),
+        host: testHost({ platform: "macos" }),
+      }}
+    />,
+  );
+  const page = await screen.findByRole("group", { name: "关于" });
+  expect(screen.queryByRole("group", { name: "帮助与反馈" })).toBeNull();
+  expect(within(page).getByRole("button", { name: "复制报告" })).toBeTruthy();
+  expect(within(page).getByText("GitHub Issues")).toBeTruthy();
+  const sidebar = screen.getByRole("navigation", { name: "设置分类" });
+  expect(within(sidebar).queryByRole("button", { name: "帮助与反馈" })).toBeNull();
+  fireEvent.click(within(page).getByRole("button", { name: "帮助" }));
+  expect(await screen.findByRole("group", { name: "开始输入" })).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "返回关于" }));
+  expect(await screen.findByRole("group", { name: "关于" })).toBeTruthy();
+});
+
+test("the account page is called 账号 on macOS and keeps 账号与同步 where settings sync", async () => {
+  const accountClient = {
+    status: vi.fn().mockResolvedValue({ user: null }),
+    providers: vi.fn().mockResolvedValue({ email: true, phone: false }),
+    requestCode: vi.fn(),
+    login: vi.fn(),
+    profile: vi.fn(),
+    rename: vi.fn(),
+    logout: vi.fn(),
+    deleteAccount: vi.fn(),
+    clearExpired: vi.fn(),
+  };
+  for (const [platform, title] of [
+    ["macos", "账号"],
+    ["windows", "账号与同步"],
+  ] as const) {
+    render(
+      <SettingsPage
+        client={{
+          load: vi.fn().mockResolvedValue(initial),
+          save: vi.fn(),
+          account: accountClient,
+          host: testHost({ platform }),
+        }}
+      />,
+    );
+    await settingsReady();
+    const sidebar = screen.getByRole("navigation", { name: "设置分类" });
+    fireEvent.click(within(sidebar).getByRole("button", { name: title }));
+    expect(await screen.findByRole("heading", { name: title })).toBeTruthy();
+    cleanup();
+  }
 });
 
 test("the feedback page has no 诊断日志 link where 维护与诊断 has no logs", async () => {
@@ -8043,7 +8166,7 @@ test("macOS sidebar uses the same six groups", async () => {
     // 手写页在 macOS 上只有一个打开按钮，并进屏幕键盘页。
     ["屏幕键盘与手写", "语音输入"],
     ["剪贴板", "AI 辅助"],
-    ["维护与诊断", "帮助与反馈", "关于"],
+    ["维护与诊断", "关于"],
   ]);
 });
 
@@ -8347,7 +8470,11 @@ test("macOS opens handwriting for copying while input-session panels use the nat
   await waitFor(() => expect(client.openHandwriting).toHaveBeenCalledTimes(1));
 
   fireEvent.click(screen.getByRole("button", { name: "剪贴板" }));
-  expect(await screen.findByText(/请从输入法菜单中的「云剪贴板…」打开/)).toBeDefined();
+  // 「云剪贴板」组在 macOS 上没有控件，整组撤掉；去哪里打开的那句说明挪进一直显示的「剪贴板」组。
+  const note = await screen.findByText(/请从输入法菜单中的「云剪贴板…」打开/);
+  const tools = screen.getByRole("group", { name: "剪贴板" });
+  expect(within(tools).getByRole("region", { name: "剪贴板" }).contains(note)).toBe(true);
+  expect(within(tools).queryByRole("region", { name: "云剪贴板" })).toBeNull();
   expect(screen.queryByRole("button", { name: "打开云剪贴板" })).toBeNull();
   // The cloud dictionary only manages words, so it needs no input session and opens from 词库 like on every other desktop.
   expect(screen.queryByRole("button", { name: "打开云词库" })).toBeNull();
@@ -9934,15 +10061,35 @@ test("the AI page is grouped like the other pages", async () => {
   await settingsReady();
   const page = screen.getByRole("group", { name: "AI 辅助" });
   expect(page.querySelector(".section")).toBeNull();
-  expect(pageGroupTitles(page)).toEqual(["服务", "联想", "提示词", "测试工具"]);
+  // 桌面没有「测试工具」（润色测试只在 iOS、Android 上保留），提示词收进「服务」的「更多选项」。
+  expect(pageGroupTitles(page)).toEqual(["服务", "联想"]);
   const endpoint = within(page).getByLabelText("AI 接口地址");
   const more = endpoint.closest("details");
   expect(more).not.toBeNull();
   expect(more!.open).toBe(false);
   expect(within(page).getByRole("region", { name: "联想" }).textContent).toContain("候选数量");
-  expect((within(page).getByLabelText("自定义提示词二") as HTMLTextAreaElement).value).toBe(
-    "second",
+  const prompt = within(page).getByLabelText("AI 联想自定义提示词") as HTMLTextAreaElement;
+  expect(prompt.value).toBe("second");
+  expect(prompt.closest("details")).toBe(more);
+  expect(within(more!).getByRole("button", { name: "获取模型列表" })).toBeTruthy();
+  expect(within(page).queryByRole("button", { name: "发送并润色" })).toBeNull();
+});
+
+test("the macOS AI page has no candidate count, which the host fixes at three", async () => {
+  render(
+    <SettingsPage
+      initialPage="ai"
+      client={{
+        load: vi.fn().mockResolvedValue(initial),
+        save: vi.fn(),
+        aiAssistant: { fetchModels: vi.fn(), test: vi.fn() },
+        host: testHost({ platform: "macos" }),
+      }}
+    />,
   );
-  expect(within(page).queryByLabelText("自定义提示词一")).toBeNull();
-  expect(within(page).queryByLabelText("自定义提示词三")).toBeNull();
+  await settingsReady();
+  const page = screen.getByRole("group", { name: "AI 辅助" });
+  expect(pageGroupTitles(page)).toEqual(["服务"]);
+  expect(within(page).queryByLabelText("AI 候选数量")).toBeNull();
+  expect(within(page).queryByRole("button", { name: "发送并润色" })).toBeNull();
 });

@@ -31,7 +31,13 @@ import {
   requestedPage,
   type MobilePrimaryPageId,
 } from "./settings/settings-navigation-helpers";
-import { pages, subPageParents, type SettingsPageId } from "./settings/settings-page-registry";
+import {
+  desktopPage,
+  desktopPageTitle,
+  pages,
+  subPageParents,
+  type SettingsPageId,
+} from "./settings/settings-page-registry";
 import { settingsPageProjections } from "./settings/settings-page-projections";
 import {
   canReloadSettingsPage,
@@ -463,7 +469,7 @@ import { VoiceSettingsPage } from "./settings/pages/voice-page";
 import { AiSettingsPage } from "./settings/pages/ai-page";
 import { InputSettingsPage } from "./settings/pages/input-page";
 import { ExpressionSettingsPage } from "./settings/pages/expression-page";
-import { DeveloperSettingsPage } from "./settings/pages/developer-page";
+import { DeveloperSettingsPage, McpSettingsPage } from "./settings/pages/developer-page";
 import { DictionarySettingsPage } from "./settings/pages/dictionary-page";
 import { AppearanceSettingsPage } from "./settings/pages/appearance-page";
 import { SkinSettingsPage } from "./settings/pages/skin-page";
@@ -2080,6 +2086,8 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showTypingEffects,
     showTypingEffectStyles,
     showTypingEffectPacks,
+    showEffectIntensity,
+    showAiCandidateLimit,
     typingEffectsFlashOnly,
     showWordbookPacks,
     showSymbolSetPacks,
@@ -2143,13 +2151,15 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     typeof window.history.state.page === "string"
       ? window.history.state.page
       : undefined;
-  const [page, setPage] = useState<SettingsPageId>(() =>
+  const [requestedSettingsPage, setPage] = useState<SettingsPageId>(() =>
     requestedPage(
       initialPage ?? restoredMobilePage ?? (hasHomePage ? "home" : undefined),
       pages,
       "input",
     ),
   );
+  // 桌面上并进别的页的页面（`desktopMergedPages`，例如「帮助与反馈」并进「关于」）照样可以路由打开，显示的是承载它的那一页。
+  const page = mobilePlatform ? requestedSettingsPage : desktopPage(requestedSettingsPage);
   const [accountLoginReturnPage, setAccountLoginReturnPage] = useState<SettingsPageId | null>(null);
   // 源应用里每个底部标签页各有一个导航栈，这个共享页面只有一条扁平路由，所以为每个标签页记住它显示着的那一页：从「输入」去「统计」再回到「设置」，要回到「输入」，而不是把第一个标签页重置为首页。
   const mobileInitialTab = mobileTabForPage(page);
@@ -2495,7 +2505,7 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
   // 只有五笔的版本里辅助码没有用处（五笔不用辅助码），不显示这一组；模糊音照常显示，五笔混拼查全拼时会用到。
   const showHelpcode =
     (!mobilePlatform || showHelpcodeShiftEntry) && editionUsesHelpcode(client.host?.edition);
-  // 维护与诊断页收纳输入法服务（重启、重新注册）、诊断日志、数据目录、本地 MCP 服务和 macOS 的卸载；这些一样都没有的宿主不显示这一页。
+  // 维护与诊断页收纳输入法服务（重启，macOS 上是修复输入源）、诊断日志、数据目录、本地 MCP 服务的入口和 macOS 的卸载；这些一样都没有的宿主不显示这一页。
   const showDeveloperPage =
     Boolean(client.mcpServerStatus) ||
     Boolean(showRestartInputMethod) ||
@@ -2543,14 +2553,19 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     // 桌面上的手写页只有一个打开按钮（HarmonyOS 2-in-1 是一段说明），并进屏幕键盘页；Windows 的原生设置窗口也并成了一页（`SettingsNavigation.h`）。触屏宿主的手写页另有内容，投影本身就不并。
     handwritingOnScreenKeyboardPage:
       macosPlatform || linuxPlatform || windowsPlatform || harmonyPlatform,
+    hasMcp: Boolean(client.mcpServerStatus),
     mobileHiddenPageIds,
     mobilePageTitle,
+    desktopPageTitle: (id, title) => desktopPageTitle(id, title, client.host?.platform),
   });
   // 子页面在导航里点亮它的上级页面，并提供回到上级的入口；标签页的根页面没有上级。触屏宿主上「AI 对话」同样是「AI 辅助」的子页面。
+  // 桌面上子页的上级如果并进了别的页（「帮助」的上级「帮助与反馈」在「关于」里），点亮的是承载它的那一页。
   const navigationPage: SettingsPageId =
     mobilePlatform && mobilePrimaryPageIds.includes(page as MobilePrimaryPageId)
       ? page
-      : (subPageParents[page] ?? page);
+      : mobilePlatform
+        ? (subPageParents[page] ?? page)
+        : desktopPage(subPageParents[page] ?? page);
   const { mobileActiveTab, selectPage, selectMobileTab, openAccountLogin, finishAccountLogin } =
     useSettingsNavigation({
       mobilePlatform,
@@ -2668,6 +2683,8 @@ function useSettingsPageModel({ client, initialPage, route }: SettingsPageProps)
     showTypingEffects,
     showTypingEffectStyles,
     showTypingEffectPacks,
+    showEffectIntensity,
+    showAiCandidateLimit,
     typingEffectsFlashOnly,
     showWordbookPacks,
     showSymbolSetPacks,
@@ -3604,6 +3621,7 @@ function SettingsShell(props: SettingsPageProps) {
                     <ToolsSettingsPage />
                     <PluginsSettingsPage hidden={pluginCommunityShown} />
                     <DeveloperSettingsPage />
+                    <McpSettingsPage />
                     <FeedbackSettingsPage />
                     <HelpSettingsPage
                       busy={busy}
