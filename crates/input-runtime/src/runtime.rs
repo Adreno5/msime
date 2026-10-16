@@ -89,6 +89,9 @@ pub struct Runtime<E: InputEngine = Session> {
     ///
     /// `rerank`, `demote_runner_up_readings` and `normalize_online_slots` reorder the cached list, but the Engine knows nothing of that and selects by its own order. Every call that names a candidate to the Engine goes through [`Self::engine_index`]; without it, an AI candidate seated in slot 1 committed whatever the Engine held at 1.
     pub(crate) engine_order: Vec<usize>,
+    /// 在线候选座位整理的排列与固定英文临时缓冲，跨次刷新保留容量。
+    pub(crate) online_order_scratch: Vec<usize>,
+    pub(crate) online_fixed_english_scratch: Vec<usize>,
     pub(crate) snapshot_valid: bool,
     pub(crate) character_width: CharacterWidth,
     pub(crate) punctuation_marks: PunctuationMarks,
@@ -702,6 +705,8 @@ impl<E: InputEngine> Runtime<E> {
             // presentation reorder actually needs it; engine_index falls back to the seat while
             // the list remains untouched.
             engine_order: Vec::new(),
+            online_order_scratch: Vec::new(),
+            online_fixed_english_scratch: Vec::new(),
             cached,
             snapshot_valid: true,
             character_width: CharacterWidth::Halfwidth,
@@ -1716,6 +1721,8 @@ impl<E: InputEngine> Runtime<E> {
         {
             return false;
         }
+        let mut order_scratch = std::mem::take(&mut self.online_order_scratch);
+        let mut fixed_english_scratch = std::mem::take(&mut self.online_fixed_english_scratch);
 
         const LOCAL_GROUP: usize = 0;
         const CLOUD_GROUP: usize = 1;
@@ -1826,7 +1833,10 @@ impl<E: InputEngine> Runtime<E> {
                 arranged + usize::from(ai_count > 0 && arranged >= ai_seat)
             };
             if seat != index && order.is_none() {
-                order = Some((0..count).collect::<Vec<usize>>());
+                let mut candidate_order = std::mem::take(&mut order_scratch);
+                candidate_order.clear();
+                candidate_order.extend(0..count);
+                order = Some(candidate_order);
             }
             if let Some(order) = &mut order {
                 order[seat] = index;
@@ -1834,26 +1844,32 @@ impl<E: InputEngine> Runtime<E> {
         }
         // 有云候选时固定英文行在在线座位排好后归位，云候选不能把它挤离指定座位（参考 server/src/ipc/candidate_selection_policy.h 的 NormalizeMixedCandidateOrder）。位置从 1 开始，超出末尾时夹到末尾；来源统计给出实际行数，空缓冲不申请存储。没有云候选时其余行保持引擎的次序，引擎已经按固定位置排好了它们。
         if has_cloud && fixed_english_count > 0 {
-            let order = order.get_or_insert_with(|| (0..count).collect::<Vec<usize>>());
+            let order = order.get_or_insert_with(|| {
+                let mut candidate_order = std::mem::take(&mut order_scratch);
+                candidate_order.clear();
+                candidate_order.extend(0..count);
+                candidate_order
+            });
             // 固定英文只在其余行里归位：先把第一条 AI 候选移回其余行之后，归位完再放回它的座位；AI 的尾部始终留在原处。
             if ai_count > 0 {
                 order[ai_seat..=non_ai].rotate_left(1);
             }
-            let mut fixed_english = Vec::with_capacity(fixed_english_count);
+            fixed_english_scratch.clear();
+            fixed_english_scratch.reserve_exact(fixed_english_count);
             let mut write = 0;
             for read in 0..non_ai {
                 let index = order[read];
                 if snapshot.candidate_sources[index] == ENGLISH
                     && snapshot.candidate_positions[index] > 0
                 {
-                    fixed_english.push(index);
+                    fixed_english_scratch.push(index);
                 } else {
                     order[write] = index;
                     write += 1;
                 }
             }
-            fixed_english.sort_by_key(|index| snapshot.candidate_positions[*index]);
-            for index in fixed_english {
+            fixed_english_scratch.sort_by_key(|index| snapshot.candidate_positions[*index]);
+            for &index in &fixed_english_scratch {
                 let seat = usize::from(snapshot.candidate_positions[index] - 1).min(write);
                 order.copy_within(seat..write, seat + 1);
                 order[seat] = index;
@@ -1865,14 +1881,20 @@ impl<E: InputEngine> Runtime<E> {
             }
         }
         let Some(order) = order else {
+            self.online_order_scratch = order_scratch;
+            self.online_fixed_english_scratch = fixed_english_scratch;
             return false;
         };
         // 排列必须包含全部候选，恒等排列不应用到候选数组。
         debug_assert_eq!(order.len(), count);
         if order.len() != count || order.iter().enumerate().all(|(seat, index)| seat == *index) {
+            self.online_order_scratch = order;
+            self.online_fixed_english_scratch = fixed_english_scratch;
             return false;
         }
         self.apply_candidate_order(&order);
+        self.online_order_scratch = order;
+        self.online_fixed_english_scratch = fixed_english_scratch;
         true
     }
 
