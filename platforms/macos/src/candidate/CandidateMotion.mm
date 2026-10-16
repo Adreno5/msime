@@ -40,10 +40,10 @@ CAMediaTimingFunction *Curve(NSString *name)
     return [CAMediaTimingFunction functionWithName:name];
 }
 
-// Web 候选栏进场用的 cubic-bezier(.16, 1, .3, 1)：一开始就走完大半，尾部很长。
+// 进场（卡片和逐行浮现）用标准 ease-out。Web 候选栏的 cubic-bezier(.16, 1, .3, 1) 在 200ms 里第一帧就走完 44%、第三帧走完 83%，候选窗上浮和淡入几乎在三帧内结束，用户在真机上看到的是「没有动画」；ease-out 在第二帧约 26%、五帧约 59%、170ms 到 96%，过程看得见又不拖尾。时长仍是皮肤写的，连续输入照样跳过进场。
 CAMediaTimingFunction *SettleCurve()
 {
-    return [CAMediaTimingFunction functionWithControlPoints:0.16f :1.0f :0.3f :1.0f];
+    return [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
 }
 
 // 以图层中心缩放 scale，再在屏幕方向上抬起 lift 点（负数向下）。AppKit 视图图层的锚点在角上，直接缩放会缩向角落，所以把锚点到中心的偏移补进平移。变换里的平移落在父图层的坐标系里，方向要看父图层是否翻转，不能看图层自己：NSButton 是翻转视图，它的图层 contentsAreFlipped，而它所在的卡片图层并不翻转。
@@ -118,6 +118,7 @@ bool StaggersRows(SkinAnimationPreset preset)
 {
     MSIMECandidateExitWindow *_exitWindow;
     BOOL _exiting;
+    NSString *_lastDecision;
     uint64_t _exitToken;
     // 上一次面板从显示变成隐藏的时间，用于连续输入的判断。
     CFTimeInterval _lastHide;
@@ -183,6 +184,11 @@ bool StaggersRows(SkinAnimationPreset preset)
     return _selectionLayer;
 }
 
+- (NSString *)lastDecision
+{
+    return _lastDecision;
+}
+
 - (BOOL)allowsMotion:(const SkinAnimation &)animation
 {
     return !_reduceMotion && animation.durationMs > 0.0;
@@ -197,6 +203,17 @@ bool StaggersRows(SkinAnimationPreset preset)
     // 正在退场时重新显示、或者刚收起又出现（同一段连续输入），都直接以完整不透明度显示。
     const BOOL enter = !wasVisible && [self allowsMotion:animation] && animation.enter != SkinAnimationPreset::none && !_exiting &&
                        now - _lastHide >= kTypingBurstInterval && content.layer != nil;
+    // 按上面的条件逐条给出没播的原因，顺序与判断一致。
+    const char *reason = wasVisible                                  ? "visible"
+                         : _reduceMotion                             ? "reduce_motion"
+                         : animation.durationMs <= 0.0               ? "no_duration"
+                         : animation.enter == SkinAnimationPreset::none ? "enter_none"
+                         : _exiting                                  ? "exiting"
+                         : now - _lastHide < kTypingBurstInterval    ? "burst"
+                         : content.layer == nil                      ? "no_layer"
+                                                                     : "enter";
+    _lastDecision = [NSString stringWithFormat:@"show=%s since_hide_ms=%.0f", reason,
+                                               isfinite(_lastHide) ? (now - _lastHide) * 1000.0 : -1.0];
     if (enter && panel.hasShadow)
     {
         panel.hasShadow = NO;
@@ -353,6 +370,7 @@ bool StaggersRows(SkinAnimationPreset preset)
     [self endEnter];
     if (!wasVisible)
     {
+        _lastDecision = @"hide=hidden";
         // 已经收起时再收一次（比如上屏后又一个没有候选的键）不重新开始退场；隐私原因的收起则连退场也立即撤掉。
         [panel orderOut:nil];
         if (!allowExit) [self finishExit];
@@ -363,9 +381,15 @@ bool StaggersRows(SkinAnimationPreset preset)
     if (!allowExit || ![self allowsMotion:animation] || animation.exit == SkinAnimationPreset::none || content == nil ||
         content.layer == nil)
     {
+        _lastDecision = !allowExit                                 ? @"hide=immediate"
+                        : _reduceMotion                            ? @"hide=reduce_motion"
+                        : animation.durationMs <= 0.0              ? @"hide=no_duration"
+                        : animation.exit == SkinAnimationPreset::none ? @"hide=exit_none"
+                                                                   : @"hide=no_layer";
         [panel orderOut:nil];
         return;
     }
+    _lastDecision = @"hide=exit";
     NSWindow *exitWindow = [self exitWindowLike:panel];
     [exitWindow setFrame:panel.frame display:NO];
     panel.contentView = [[NSView alloc] initWithFrame:content.frame];
