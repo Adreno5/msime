@@ -2,7 +2,7 @@
 
 ## 目录结构与验证入口
 
-Java/Kotlin 宿主按 `java/app/msime/android/<feature>/` 分为 `account`、`candidate`、`clipboard`、`core`、`dictionary`、`handwriting`、`keyboard`、`policy` 和 `voice`；JNI/C++ 适配位于 `native/`，资源位于 `res/`，按职责组织的回归位于 `tests/<feature>/`，设备脚本位于 `tests/device/`。Tauri/React 设置仍复用 `packages/ui` 和 `apps/desktop/src-tauri/src/platform/android/`，不会在 Android 复制一套页面或 Rust 业务。
+Java/Kotlin 宿主按 `java/app/msime/android/<feature>/` 分为 `account`、`candidate`、`clipboard`、`core`、`dictionary`、`handwriting`、`keyboard`、`policy` 和 `voice`；JNI/C++ 适配位于 `native/`，资源位于 `res/`，按职责组织的回归位于 `tests/<feature>/`，设备脚本位于 `tests/device/`。发布的 APK 的设置界面是原生 Java：设置 App 的各页在 `home/`，另有 `settings/`、`account/`、`community/`、`statistics/` 下的页面；设置的校验、默认值与持久化应当经 JNI 调共享 Rust 层，不在 Java 里复制 Rust 业务（归属见[设置界面按平台归属](../../docs/ARCHITECTURE.md#设置界面按平台归属)）；现有代码还没有完全做到，例如 `voice/VoiceProviderPolicy.java` 里写死了语音服务列表和豆包的两个流式接口地址。`packages/ui` 与 `apps/desktop/src-tauri/src/platform/android/` 的 React 设置只进不发布的 Tauri 合包，见下文「两个 APK 入口，不要选错」。
 
 验证分三层，各有对应入口：`check-host.sh` 做契约守卫与 JVM 冒烟（CI 的 `ci-platforms.yml` android job 跑的就是这条），`build-native.sh` + `verify-native.sh` 做 arm64-v8a（按需加 x86_64）的原生构建与导出校验（包括在线候选的五个 host 导出与五个 JNI 方法），`tests/device/smoke.sh` 在固定的 API 35 arm64 专用 AVD 上跑 instrumentation，覆盖原生输入、Tauri/IME 合包、共享设置、统计与手写流程。
 
@@ -28,11 +28,11 @@ Java/Kotlin 宿主按 `java/app/msime/android/<feature>/` 分为 `account`、`ca
 
 “整套键盘表面”包括候选区、字母/符号/九键/手写主键区、展开候选、剪贴板、输入方案、皮肤、布局调整、语音结果、AI 润色、更多工具、表情和符号面板；这些层必须共用同一个外框（平时是 720 dp，分离式键盘画着时铺满，见下一节），不能只限制字母键而让覆盖面板重新铺满屏幕。系统发生旋转、折叠展开、自由窗口缩放或外接显示器配置变化时，`MSIMEInputService.onConfigurationChanged` 只重新计算外框，再重算按键高度和间距，分离式键盘该画与否因此改变时再重建一次键行；不会重建 Engine session，也不会清空当前组合、候选代次或面板状态。
 
-这条原生键盘策略与共享设置页的响应式布局彼此独立：`platforms/android` 负责系统 IME 窗口，Tauri/React 设置页仍按自身 600 px CSS 断点在手机底部标签栏与大屏侧栏之间切换。`KeyboardFormFactorPolicySmoke` 固定验证 599/600 dp 边界、手机横屏、600 dp 折叠展开态、1280 dp 二合一的 720 dp 上限，以及配置暂时缺失当前宽度时的安全回退；`check-host.sh` 会编译并执行该回归。设备上的旋转、分屏、自由窗口和折叠铰链切换走的是同一条策略，JVM 回归钉住的是策略边界本身。
+这条原生键盘策略与共享设置页的响应式布局彼此独立：`platforms/android` 负责系统 IME 窗口，Tauri/React 设置页仍按自身 600 px CSS 断点在手机底部标签栏与大屏侧栏之间切换。后一句只适用于不发布的 Tauri 合包（`build-client-apk.sh`）；发布的 APK 不含这套页面，设置是 `home/` 下的原生 Java 页面。`KeyboardFormFactorPolicySmoke` 固定验证 599/600 dp 边界、手机横屏、600 dp 折叠展开态、1280 dp 二合一的 720 dp 上限，以及配置暂时缺失当前宽度时的安全回退；`check-host.sh` 会编译并执行该回归。设备上的旋转、分屏、自由窗口和折叠铰链切换走的是同一条策略，JVM 回归钉住的是策略边界本身。
 
 ### 平板横屏分离式键盘
 
-键盘设置「布局」里的「横屏分离式键盘」（本地设置 `platform.android.split_keyboard`，布尔，默认关，随账号同步，在 `crates/client-core` 的 `ANDROID_LOCAL_SETTINGS` 里）打开后，大屏设备（同上，`smallestScreenWidthDp` ≥ 600）横屏时把键盘分成左右两半，中间空出约四分之一的宽度给双手握持。手机横屏、平板竖屏和开关关着时一律照旧。规则集中在无 Android 依赖的 `SplitKeyboardPolicy`，`SplitKeyboardPolicySmoke` 逐条验证：
+键盘设置「布局」里的「横屏分离式键盘」（本地设置 `platform.android.split_keyboard`，布尔，默认关，随账号同步，在 `crates/client-services` 的 `ANDROID_LOCAL_SETTINGS` 里）打开后，大屏设备（同上，`smallestScreenWidthDp` ≥ 600）横屏时把键盘分成左右两半，中间空出约四分之一的宽度给双手握持。手机横屏、平板竖屏和开关关着时一律照旧。规则集中在无 Android 依赖的 `SplitKeyboardPolicy`，`SplitKeyboardPolicySmoke` 逐条验证：
 
 - 分离的布局：标准 26 键一族（全拼、各家双拼连同微软双拼的 `;` 键、五笔、英文、日文罗马字、粤拼、越南语、藏文）、韩文两套式，以及它们的 123 / #+= 层。九键、日文假名网格、手写、大千注音、笔画、注音 9 键和它们的符号页，以及符号、表情、剪贴板、功能面板都不分离；正在画的布局不分离时，键盘和平时一样是 720 dp 居中外框。
 - 分离式键盘画着的时候整套键盘表面不受 720 dp 上限约束，铺满可用宽度（`KeyboardFormFactorPolicy.surfaceWidthDp` 的第三个参数）。候选区、工具栏和盖在键区上的各个面板与键区共用这个外框，同样铺满；它们本身不分成两半。
@@ -181,7 +181,7 @@ Android Tauri 设置仅在 Android WebView 注入统计能力，桌面设置不�
 
 辅助码表不在词库发布里，由仓库自带在 `resources/helpcodes/`：`build-apk.sh` 与 `build-client-apk.sh` 把七套表连同来源声明（`NOTICE.md`、`NOTICE-jiajia.md`、`NOTICE-wubi86.md`）打进 `assets/helpcodes/`。`Bootstrap.prepare` 每次安装包变化后把它们逐个原子替换到 `files/bootstrap/resources/helpcodes/`，Engine 就在资源目录下的这个子目录读辅助码表；共享校验放行真实的 `helpcodes/` 目录，所以首次安装之前就已准备好的配置也在升级后拿到它们，用户自己放进 `helpcodes/custom/` 的表不动。
 
-用户自己的辅助码表从「输入 › 辅助码方案」的「导入辅助码表…」进来（#7176）：`TypingPage` 经 SAF 选一个 `.txt`，原始字节超过 1 MiB 就不读，严格按 UTF-8 解码（GBK 直接提示，不交给核心），再调 `NativeClient.plugins` 的 `import_helpcode_table`，由 client-core 按辅助码表包的严格规则校验，装进 `HostStore.directory` 下的 `plugins/helpcode/<id>/`（id 以 `custom-` 开头）。它不进资源目录的 `helpcodes/custom/`：那里每次安装包变化后由 `Bootstrap.prepare` 管理，而插件目录正是键盘读的 runtime option `preferences_directory`，设置进程和 `:ime` 进程同时写由 `packs.lock` 互斥。导入成功后写 `plugins.helpcode_pack_<shuangpin|quanpin>` 选中它；选内置方案时把这个键清成空字符串，删除正在用的码表时同样清掉，host-api 在包载入不了时也会退回 `*_helpcode.schema`。选择规则在 `HelpcodeChoicePolicy`，由 `tests/home/HelpcodeChoicePolicySmoke.java` 在 JVM 里测。
+用户自己的辅助码表从「输入 › 辅助码方案」的「导入辅助码表…」进来（#7176）：`TypingPage` 经 SAF 选一个 `.txt`，原始字节超过 1 MiB 就不读，严格按 UTF-8 解码（GBK 直接提示，不交给核心），再调 `NativeClient.plugins` 的 `import_helpcode_table`，由 client-services 按辅助码表包的严格规则校验，装进 `HostStore.directory` 下的 `plugins/helpcode/<id>/`（id 以 `custom-` 开头）。它不进资源目录的 `helpcodes/custom/`：那里每次安装包变化后由 `Bootstrap.prepare` 管理，而插件目录正是键盘读的 runtime option `preferences_directory`，设置进程和 `:ime` 进程同时写由 `packs.lock` 互斥。导入成功后写 `plugins.helpcode_pack_<shuangpin|quanpin>` 选中它；选内置方案时把这个键清成空字符串，删除正在用的码表时同样清掉，host-api 在包载入不了时也会退回 `*_helpcode.schema`。选择规则在 `HelpcodeChoicePolicy`，由 `tests/home/HelpcodeChoicePolicySmoke.java` 在 JVM 里测。
 
 触屏键盘和候选栏跟随共享的全局主题 `global_theme`：跟随系统、水杉、浅色、纸白、夜青、墨和自定义，顺序与标题都来自 `msime_client_theme_catalog`，本端不保存主题表。键盘颜色每次由 `msime_client_resolve_theme` 解析，请求带 `layout: "horizontal"`，不带 `skins_directory` 与 `package`（Android 不读取皮肤根目录，自定义主题的外部候选皮肤包因此不参与绘制）。跟随系统绘制设计稿的 Material 3 键盘：浅色底 `#E6EAE2`、白色字母键、`#CFE9D6` 功能键、`#2C7A4B` 强调色，深色一套对应取值；内置主题的明暗固定，解析结果里为空的槽位回落到 Material 3 取值。`screen_keyboard_theme`、`emoji_theme`、`handwriting_theme` 与 `candidate_theme` 各自决定该面板的明暗，`follow` 继承 `theme`，`theme` 为 `system` 时读取 Android 夜间模式。键盘内选择通过共享 revision CAS 写入 `global_theme`，失败恢复最近一次已接受的主题；设置热更新只重新应用视觉样式，不重建 Engine 会话。解析失败时绘制 Material 3 键盘，不把用户设置值当作颜色或资源名直接使用。
 
@@ -235,7 +235,7 @@ Android 14 起可以拿手写笔直接在应用的输入框上写字（#7080，�
 
 普通触屏候选 chip 不把 1、2、3 等序号画进候选文字；序号只通过无障碍描述提供，并继续作为硬件数字行选择的槽位。这样长按、点击和数字行选择共享同一候选身份，同时保持 Apple 触屏候选的纯文字外观。
 
-Tauri/React 共享设置页现在按 Android 原生能力展示候选字体、字号、颜色和边框/悬停控件；Android 不枚举桌面系统字体，字体框允许用户输入完整字体名，保存后由输入法进程消费。这样设置页不会把 Android 未实现的桌面字体目录能力伪装成可用功能。
+以下只适用于不发布的 Tauri 合包（`build-client-apk.sh`），发布的 APK 不含共享设置页，原生设置 App 目前也没有候选字体这一项：Tauri/React 共享设置页现在按 Android 原生能力展示候选字体、字号、颜色和边框/悬停控件；Android 不枚举桌面系统字体，字体框允许用户输入完整字体名，保存后由输入法进程消费。这样设置页不会把 Android 未实现的桌面字体目录能力伪装成可用功能。
 
 “更多”工具页提供键盘内剪贴板历史面板。和 Gboard 一样，开启 `clipboard_history` 后，水杉作为当前输入法时通过 `ClipboardManager.addPrimaryClipChangedListener` 在每次复制后自动记下文本，打开面板时再补读一次（覆盖键盘进程没在运行时的那次复制）；隐私模式、密码类输入框和系统标记为敏感（`ClipDescription.EXTRA_IS_SENSITIVE`）的内容不记。Apple 键盘扩展读剪贴板会触发系统提示，所以只能手动保存，Android 没有这个限制。最多保存 200 条，支持去重、固定、删除、确认清空和点按插入。面板顶行在分段和「清空」之间居中显示已存条数和上限（如 10/200，云端按服务端的 50 条上限；历史未开启、读取失败或云端不可用时不显示）。长按一条后可以「添加到常用语」，经 `CommonPhrasesStore` 存成无编码常用语，回车先换成换行，已经有这条、常用语已满、超过 1000 字或含制表符等常用语不能保存的字符时给出对应提示。本机条目向左滑动露出删除按钮，再点一下才删除（置顶条目同样可以），手势判定在无 Android 依赖的 `ClipboardSwipePolicy`。长按「编辑」打开应用里的编辑页（`ClipboardEditPage`），保存后经共享存储的 `replace` 原地替换这一条，时间戳和固定状态不变，改成已有的文字时两条合并成一条。有记录时本机分段顶行还有「搜索」，打开应用里可搜索的剪贴板历史页（`ClipboardSearchPage`，设置首页搜「剪贴板历史」也能找到）：顶部搜索框按 `Locale.ROOT` 不区分大小写做子串匹配，结果保留原顺序（置顶在前），空查询显示全部，筛选规则在无 Android 依赖的 `ClipboardSearchPolicy`；点按一条复制回系统剪贴板（键盘在别的应用里打开时随即回到那个应用），行尾可以编辑或删除；`clipboard_history` 关着时这一页不列记录，并当场清空本机历史。只搜本机历史，键盘里不放查询框。历史放在输入法私有偏好中，应用禁用备份且不记录内容；共享 `clipboard_history` 关闭时立即清空本机历史；此时入口只在可以显示「云端」的输入框中保留，并直接打开「云端」。非文本、空白或超过 10,000 UTF-16 单元/40,000 UTF-8 字节的内容不会保存。
 
@@ -301,7 +301,7 @@ JVM 冒烟只覆盖无 Android 依赖的策略层；焦点、选区、编辑器�
 
 需要管理 UI 时的本地构建入口（不是本目录的默认入口，见上节）：`ANDROID_SDK_ROOT=<SDK绝对路径> bash platforms/android/build-client-apk.sh <已锁定词库目录> [arm64-v8a|x86_64]`。默认 arm64-v8a，产物仍为 target/android/msime-android.apk；`MSIME_EDITION=<id>` 选版本，规则同 `build-apk.sh`，Tauri 工程经 `ORG_GRADLE_PROJECT_msimeEdition` 换 applicationId、BuildConfig 和应用名（这个工程的 abi 维度归 Tauri 插件，所以版本不做成 flavor）；需要先完成根目录 pnpm install --frozen-lockfile，准备 JDK 21、Android API 36、build-tools 35、固定 NDK/vcpkg 与 Rust Android target。Gradle 8.14.3 使用官方分发摘要固定，AGP/Kotlin 版本由项目固定。参数 --ci 仅用于 Tauri CLI 的非交互模式，不运行 GitHub CI。
 
-apps/desktop/src-tauri/src/lib.rs 是桌面与移动共用的 Tauri commands/入口，Android 调用同一个 client-core PreferencesStore，指向应用私有 files/bootstrap/state，与 bootstrap 和 IME 监控目录一致。packages/ui 的 React 页没有 Android 副本。生成的 Android 工程已纳入源码，Gradle 直接引用 platforms/android/java、共享图标与暂存的锁定资源；不把原生宿主代码复制到 gen。不要重复执行 tauri android init 覆盖本仓定制。受版本控制的 Gradle 设置会从 `TAURI_ANDROID_DIR` 或 Cargo registry 定位锁定 Tauri Android 工程，合包脚本通过 `cargo metadata --locked` 注入精确路径；生成 Kotlin 绑定、native symlink、构建输出和本机配置仍忽略。
+apps/desktop/src-tauri/src/lib.rs 是桌面与移动共用的 Tauri commands/入口，Android 调用同一个 client-core PreferencesStore，指向应用私有 files/bootstrap/state，与 bootstrap 和 IME 监控目录一致。合包直接复用 packages/ui 的 React 页，没有 Android 专用的前端副本；发布 APK 用的是原生设置页，见「目录结构与验证入口」。生成的 Android 工程已纳入源码，Gradle 直接引用 platforms/android/java、共享图标与暂存的锁定资源；不把原生宿主代码复制到 gen。不要重复执行 tauri android init 覆盖本仓定制。受版本控制的 Gradle 设置会从 `TAURI_ANDROID_DIR` 或 Cargo registry 定位锁定 Tauri Android 工程，合包脚本通过 `cargo metadata --locked` 注入精确路径；生成 Kotlin 绑定、native symlink、构建输出和本机配置仍忽略。
 
 Android“我的”页通过 Rust account session 访问固定的 https://api.msime.app 账号服务。邮箱和手机号验证码、刷新、资料更新、退出及注销请求都在原生宿主内完成，WebView 只接收不含凭据的用户和 provider DTO。会话 JSON 由包私有 Android Keystore AES-GCM 密钥加密后写入 SharedPreferences，密钥和密文不跨应用包共享；请求不跟随重定向，普通 JSON 请求和响应均限制为 1 MiB。日常输入不需要登录，账号登录不会上传本地输入或统计。页面同时提供 Apple 对齐的五种 App 图标选择；Android 通过 launcher `activity-alias` 持久化系统选择，切换只启用目标入口并保留原版回退，不进入设置同步或账号云端数据。
 
@@ -313,9 +313,9 @@ Apple 的社区资源入口已迁移到同一页的“皮肤 / 词库 / 回复�
 
 原生宿主 `HomeActivity` 按 Android 改版设计稿绘制 Material 3 界面：主题为 `Theme.Material3.DayNight`，`values/colors.xml` 里写了具体色值的颜色在 `values-night/colors.xml` 都有深色对应值，只有 `ms_warn`、`ms_danger`、`ms_scrim` 和 `app_icon_field` 有意在两种模式下保持同一个值；引用其他颜色的别名（`@color/…`）不单独定义深色值，随所引用的颜色一起切换，明暗跟随共享的 `theme`（跟随系统 / 浅色 / 深色），强调色来自应用主题 `app_theme`（`AppThemeController` 与键盘侧 `ImeStyler` 共用 `AppThemeResolver` 调用 `NativeClient.resolveAppTheme` 按月份解析，水杉四季随季节换色；季节变化时回到前台的 Activity 会重建），跟随系统的键盘皮肤也用同一份色板。底部导航为「设置 / 对话 / 统计 / 我的」四个标签（第二格原先是「社区」，社区内容并进各功能页以后换成 AI 对话；`HostDeepLink` 的标签下标不变，下标 1 现在是对话）；详情页不再是底部面板，而是 `SettingsNavigator` 管理的单一回退栈里的 `DetailPage`（`PageId` 列出全部页面，切换标签清栈，`settings/HostDeepLink` 解析并校验深链），页面用 `GroupCard`、`OptionSheet`、`SegmentedControl` 等共享组件构建。「设置」页是大标题、搜索框、状态卡、键盘预览与分组入口，下设皮肤（含 AI 设计皮肤）、键盘、输入、表达、AI 润色与回复、手写、语音、词库（命名词库与导入导出）、常用语和开发者选项等页；社区内容并进对应的功能页：皮肤页列出社区皮肤（点一下存进皮肤库并换上，页面打开时刷新键盘皮肤面板共用的社区目录缓存），词库页的「发现词库」、表达页的「发现短语」和 AI 润色与回复页的「社区回复模板」各列前几个，每组末尾的「浏览更多…」压入该类作品的完整列表（`CommunityFragment`，带搜索、皮肤分类筛选、详情、举报和获取/添加），返回回到原来的功能页；「统计」页分概览、习惯、按键、成就四段，含时段分布、按键热力图与成就徽章；「我的」页是账号卡、设备管理、隐私、数据导出与删除、云同步开关（`CloudSync` 在回到前台时同步设置、词库、常用语与皮肤）、应用主题、帮助与反馈、关于与其他平台下载。改版新增、其他平台没有的设置存在 `AndroidLocalSettings`（`files/bootstrap/state/android-settings.json`，设置应用与 `:ime` 进程共用，带进程间文件锁和原子写），不写进共享 Preferences。首次启动（尚未看过开屏且未完成引导）先播放描线开屏动画，结束后进入新手引导：启用与设为默认检查、选择输入方案、候选离线释义开关和账号介绍；最后一步的「登录」打开 `LoginSheet`（Apple、Google、邮箱验证码，Apple 走网页授权回到 `AuthRedirectActivity`），关闭面板不登录时按钮变为「开始使用」；已完成引导的老用户不会再看到开屏。设备冒烟脚本在引导页出现时点按「跳过」后继续，并且要等开屏视图 `home_intro` 消失、就绪条件连续两次轮询成立后才开始输入测试。
 
-词库页「导入词库」的来源按 client-core 返回的格式清单列出，依次是文本文件、搜狗细胞词库（`.scel`）、Rime 词典和纯汉字词表；文件名以 `.scel` 结尾时不论从哪个来源选的都按细胞词库读（`DictionaryCollectionsStore.formatForFile`）。细胞词库是二进制文件，按 base64 放进命名词库 `import` 动作的 `bytes_base64`，上限 8 MiB（`MAX_SCEL_IMPORT_BYTES`，编码后连同宿主选项仍在 `msime_client_dictionary_collections` 的 17 MiB 请求上限之内），由 client-core 的 `dictionary::scel` 转成标准文本后照文本导入，权重统一为默认值 10000，不完整或损坏的文件整份拒绝（`import_malformed`）。
+词库页「导入词库」的来源按 client-services 返回的格式清单列出，依次是文本文件、搜狗细胞词库（`.scel`）、Rime 词典和纯汉字词表；文件名以 `.scel` 结尾时不论从哪个来源选的都按细胞词库读（`DictionaryCollectionsStore.formatForFile`）。细胞词库是二进制文件，按 base64 放进命名词库 `import` 动作的 `bytes_base64`，上限 8 MiB（`MAX_SCEL_IMPORT_BYTES`，编码后连同宿主选项仍在 `msime_client_dictionary_collections` 的 17 MiB 请求上限之内），由 client-services 的 `dictionary::scel` 转成标准文本后照文本导入，权重统一为默认值 10000，不完整或损坏的文件整份拒绝（`import_malformed`）。
 
-匿名使用统计走 client-core 的共享上报器（`msime_client_telemetry_*`，JNI 见 `NativeClient.telemetry*`），由 `core/Telemetry.java` 调起：两个进程共用 `files/telemetry/` 和其中的文件锁。会话属于 `:ime` 进程，`MSIMEInputService.onCreate` 开始、`onDestroy` 正常结束；键盘每次弹出时至多每 6 小时补发一次队列（同时记下新一天的 active）。`HomeActivity` 只补发并安装崩溃处理。未捕获异常在交给系统前同步写入崩溃记录（`:ime` 写本会话的记录，主进程写独立记录），下次键盘启动时由共享上报器转成 crash 事件；只留下会话标记（被系统杀掉）不算崩溃。开关是共享偏好 `usage_reporting`（默认开），在“词库与输入”面板“需要留意的”一组，关闭后立即清空队列；不再发送 download 事件，版本取 APK 的 versionName（`version.txt`，发布工作流可覆盖）。公告由“设置”页在回到前台时经 `msime_client_notices` 取（共享缓存一分钟），正文用 Markwon core 渲染（不解析 HTML、不加载图片，链接只以浏览器打开 http/https/mailto），“知道了”按公告 id 记在本机。社区详情面板提供“举报”，用固定的六个原因和可选说明发 `POST /v1/community/reports`，身份为 Google 账号或键盘的匿名账号。
+匿名使用统计走 client-services 的共享上报器（`msime_client_telemetry_*`，JNI 见 `NativeClient.telemetry*`），由 `core/Telemetry.java` 调起：两个进程共用 `files/telemetry/` 和其中的文件锁。会话属于 `:ime` 进程，`MSIMEInputService.onCreate` 开始、`onDestroy` 正常结束；键盘每次弹出时至多每 6 小时补发一次队列（同时记下新一天的 active）。`HomeActivity` 只补发并安装崩溃处理。未捕获异常在交给系统前同步写入崩溃记录（`:ime` 写本会话的记录，主进程写独立记录），下次键盘启动时由共享上报器转成 crash 事件；只留下会话标记（被系统杀掉）不算崩溃。开关是共享偏好 `usage_reporting`（默认开），在“词库与输入”面板“需要留意的”一组，关闭后立即清空队列；不再发送 download 事件，版本取 APK 的 versionName（`version.txt`，发布工作流可覆盖）。公告由“设置”页在回到前台时经 `msime_client_notices` 取（共享缓存一分钟），正文用 Markwon core 渲染（不解析 HTML、不加载图片，链接只以浏览器打开 http/https/mailto），“知道了”按公告 id 记在本机。社区详情面板提供“举报”，用固定的六个原因和可选说明发 `POST /v1/community/reports`，身份为 Google 账号或键盘的匿名账号。
 
 Tauri 合包的“我的”页“云词库”入口打开同包共享云词库面板，继续复用 `packages/ui` 的目录、个人候选、文件和应用流程；入口通过 `msime_mobile_panel=cloud-dictionary` 传给 `MainActivity`，由 WebView 派发受控面板事件。独立原生 APK 没有 WebView，入口会明确提示使用管理界面合包，不伪造一个失效入口。
 
@@ -387,9 +387,11 @@ android_toolchain="$ANDROID_SDK_ROOT/ndk/28.2.13676358/toolchains/llvm/prebuilt/
 CC_aarch64_linux_android="$android_toolchain/aarch64-linux-android28-clang" \
 AR_aarch64_linux_android="$android_toolchain/llvm-ar" \
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$android_toolchain/aarch64-linux-android28-clang" \
-CARGO_TARGET_AARCH64_LINUX_ANDROID_RUNNER="bash $PWD/platforms/android/tests/device/run-core-test.sh" \
-cargo test -p msime-client-core --lib --target aarch64-linux-android --locked
+cargo --config "target.aarch64-linux-android.runner=['bash', '$PWD/platforms/android/tests/device/run-core-test.sh']" \
+  test -p msime-client-base -p msime-client-core -p msime-client-providers -p msime-client-services --lib --target aarch64-linux-android --locked
 ```
+
+runner 用 `--config` 传 TOML 数组，而不是 `CARGO_TARGET_AARCH64_LINUX_ANDROID_RUNNER` 环境变量：cargo 会按空白切开那个变量，仓库路径带空格时脚本就找不到了。`platforms/android/tests/device/build-core-test.sh` 也是这样做的。
 
 8 项测试在 Android 上通过，包含独立 PreferencesStore 的并发冲突和资源失败保护。Android 标准库文件锁不可用，共享锁封装在该目标使用 rustix 安全 flock，其他目标保留标准库锁；不放宽共享核心的 unsafe 禁令。启动页和软键盘均应用系统栏 inset，避免操作被 ActionBar 或导航栏遮挡。
 
