@@ -143,6 +143,19 @@ impl ClipboardHistoryStore {
         }
     }
 
+    /// 导出供阅读的全文快照；不改历史顺序、原文或换行，也不更新存储。
+    pub fn export_text(&self) -> String {
+        use std::fmt::Write;
+        let mut text = format!("水杉剪贴板历史，共 {} 条\n", self.entries.len());
+        for (index, entry) in self.entries.iter().enumerate() {
+            let pinned = if entry.pinned { " · 已置顶" } else { "" };
+            let _ = writeln!(text, "\n========== {}{} ==========", index + 1, pinned);
+            text.push_str(&entry.text);
+            text.push('\n');
+        }
+        text
+    }
+
     pub fn entries(&self) -> &[ClipboardHistoryEntry] {
         &self.entries
     }
@@ -1091,5 +1104,30 @@ mod tests {
                 .count(),
             MAX_TEXT_UTF16_UNITS
         );
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn export_preserves_long_unicode_text_order_and_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.json");
+        let mut store = ClipboardHistoryStore::open(&path);
+        let long = format!("  合成😀\r\n{}\n尾行  ", "家".repeat(5_000));
+        store.push_mobile(long.clone()).unwrap();
+        store.push_mobile("合成新记录".into()).unwrap();
+        store.set_pinned(&long, true).unwrap();
+        let before = fs::read(&path).unwrap();
+        let text = store.export_text();
+        assert!(text.contains("共 2 条"));
+        assert!(text.contains(&format!("1 · 已置顶 ==========\n{long}\n")));
+        assert!(text.find(&long).unwrap() < text.find("合成新记录").unwrap());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        store.clear().unwrap();
+        assert_eq!(store.export_text(), "水杉剪贴板历史，共 0 条\n");
+        assert!(!path.exists());
     }
 }

@@ -151,3 +151,4 @@ platforms/android/tests/device/voice/LocalSpeechHandleDeviceSmoke.java
 
 platforms/android/tests/device/core/BatchEditorActivity.java
 platforms/android/tests/device/keyboard/BatchCompositionDeviceSmoke.java
+platforms/android/tests/device/settings/ClipboardExportDeviceSmoke.java

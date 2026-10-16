@@ -25,7 +25,15 @@ public final class ChatNavigationDeviceSmoke extends DeviceSmoke {
     }
 
     private void reveal(String text) {
-        Predicate<AccessibilityNodeInfo> match = node -> equalsText(text, node.getText());
+        Rect tabs = new Rect();
+        await(id("tab_settings")).getBoundsInScreen(tabs);
+        // 首页内容延伸到底部导航栏后面，isVisibleToUser 不能证明文字没有被导航栏盖住。
+        Predicate<AccessibilityNodeInfo> match = node -> {
+            if (!equalsText(text, node.getText())) return false;
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            return !bounds.isEmpty() && bounds.top >= 0 && bounds.bottom <= tabs.top;
+        };
         for (int attempt = 0; attempt < 8 && !visible(match); attempt++) {
             await(id("keyboard_scroll")).performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
             SystemClock.sleep(300);
@@ -84,11 +92,17 @@ public final class ChatNavigationDeviceSmoke extends DeviceSmoke {
         }
         stage = "back from the community tab returns to settings";
         shellDiscard("input keyevent 4");
+        // 旧版系统的返回事件异步更新窗口，先等事件与动画结束，避免读到上次首页的节点。
+        automation.waitForIdle(500, 5000);
         await(id("tab_settings").and(AccessibilityNodeInfo::isSelected));
         await(id("keyboard_title").and(node -> equalsText("设置", node.getText())));
         stage = "AI settings open secondary chat";
         reveal("AI 润色与回复");
+        stage = "AI settings row click";
         tap(node -> equalsText("AI 润色与回复", node.getText()));
+        stage = "AI settings detail shown";
+        await(id("ms_detail_bar_title").and(node -> equalsText("AI 润色与回复", node.getText())));
+        stage = "AI settings chat link";
         tap(node -> equalsText("AI 对话", node.getText()));
         await(id("tryout_title").and(node -> equalsText("AI 对话", node.getText())));
         await(id("tab_settings").and(AccessibilityNodeInfo::isSelected));
@@ -98,9 +112,18 @@ public final class ChatNavigationDeviceSmoke extends DeviceSmoke {
         tap(id("tryout_back"));
         await(id("ms_detail_bar_title").and(node -> equalsText("AI 润色与回复", node.getText())));
         shellDiscard("input keyevent 4");
+        automation.waitForIdle(500, 5000);
         awaitAny(id("keyboard_title").and(node -> equalsText("设置", node.getText())));
         stage = "home tryout uses secondary chat";
         tap(id("tab_settings"));
+        // 返回时保留了查找 AI 设置的滚动位置，试用按钮可能被紧凑标题栏盖住；
+        // 先回到首页顶部，再验证真实可见按钮的导航与输入焦点。
+        for (int attempt = 0; attempt < 8; attempt++) {
+            if (!await(id("keyboard_scroll")).performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)) break;
+            SystemClock.sleep(300);
+        }
+        dropStaleNodes();
+        awaitStableBounds(id("keyboard_try"));
         tap(id("keyboard_try"));
         await(id("tryout_field").and(AccessibilityNodeInfo::isFocused));
         tap(id("tryout_back"));
